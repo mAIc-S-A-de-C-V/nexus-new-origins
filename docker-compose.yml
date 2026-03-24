@@ -1,0 +1,207 @@
+version: "3.9"
+
+services:
+  # ─── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_CONNECTOR_SERVICE_URL=http://localhost:8001
+      - VITE_PIPELINE_SERVICE_URL=http://localhost:8002
+      - VITE_INFERENCE_SERVICE_URL=http://localhost:8003
+      - VITE_ONTOLOGY_SERVICE_URL=http://localhost:8004
+      - VITE_EVENT_LOG_SERVICE_URL=http://localhost:8005
+      - VITE_AUDIT_SERVICE_URL=http://localhost:8006
+      - VITE_CORRELATION_ENGINE_URL=http://localhost:8008
+    depends_on:
+      - connector-service
+      - ontology-service
+    networks:
+      - nexus-net
+
+  # ─── Backend Services ────────────────────────────────────────────────────────
+  connector-service:
+    build:
+      context: ./backend/connector_service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - REDIS_URL=redis://redis:6379/0
+      - TENANT_ID=tenant-001
+      - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+
+  pipeline-service:
+    build:
+      context: ./backend
+      dockerfile: pipeline_service/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - REDIS_URL=redis://redis:6379/0
+      - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
+      - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+
+  inference-service:
+    build:
+      context: ./backend
+      dockerfile: inference_service/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8003 --reload
+
+  ontology-service:
+    build:
+      context: ./backend
+      dockerfile: ontology_service/Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - CONNECTOR_SERVICE_URL=http://connector-service:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
+
+  event-log-service:
+    build:
+      context: ./backend
+      dockerfile: event_log_service/Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8005 --reload
+
+  audit-service:
+    build:
+      context: ./backend
+      dockerfile: audit_service/Dockerfile
+    ports:
+      - "8006:8006"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8006 --reload
+
+  schema-registry:
+    build:
+      context: ./backend/schema_registry
+      dockerfile: Dockerfile
+    ports:
+      - "8007:8007"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8007 --reload
+
+  correlation-engine:
+    build:
+      context: ./backend
+      dockerfile: correlation_engine/Dockerfile
+    ports:
+      - "8008:8008"
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8008 --reload
+
+  # ─── Infrastructure ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus_pass
+      POSTGRES_DB: nexus
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexus-net
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus_pass
+      POSTGRES_DB: nexus_events
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus_events"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexus-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - nexus-net
+
+volumes:
+  postgres_data:
+  timescale_data:
+  redis_data:
+
+networks:
+  nexus-net:
+    driver: bridge

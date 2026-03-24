@@ -1,0 +1,657 @@
+"""
+Claude API client for schema inference, similarity scoring, and conflict detection.
+Uses the Anthropic SDK with structured JSON output.
+"""
+import json
+import os
+import logging
+from datetime import datetime
+from uuid import uuid4
+import anthropic
+from prompts import (
+    SCHEMA_INFERENCE_PROMPT,
+    SIMILARITY_SCORING_PROMPT,
+    CONFLICT_DETECTION_PROMPT,
+    NEW_OBJECT_SUGGESTION_PROMPT,
+)
+from shared.models import (
+    InferenceResult, FieldInference, SimilarityScore,
+    FieldConflict, NewObjectProposal, ObjectProperty, OntologyLink
+)
+from shared.enums import SemanticType, PiiLevel, ConflictType, ConflictResolution
+
+logger = logging.getLogger(__name__)
+
+MODEL = "claude-sonnet-4-6"
+MAX_TOKENS = 4096
+
+
+class ClaudeInferenceClient:
+    """Wrapper around the Anthropic SDK for structured schema inference tasks."""
+
+    def __init__(self):
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.warning("ANTHROPIC_API_KEY not set — inference will use mock responses")
+        self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
+
+    def _call(self, prompt: str) -> dict:
+        """Make a Claude API call and parse JSON response."""
+        if not self.client:
+            raise ValueError("Anthropic API key not configured")
+
+        message = self.client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            system=(
+                "You are a precise data engineering assistant. Always respond with "
+                "valid JSON only — no markdown, no explanations outside the JSON structure."
+            ),
+        )
+
+        content = message.content[0].text.strip()
+        # Strip markdown code fences robustly (handles ```json, ``` json, trailing newlines, etc.)
+        if content.startswith("```"):
+            # Remove opening fence line (e.g. ```json or ```)
+            content = content[content.index("\n") + 1:]
+            # Remove closing fence
+            if content.rstrip().endswith("```"):
+                content = content.rstrip()[:-3].rstrip()
+
+        logger.debug(f"Claude raw content (first 200): {repr(content[:200])}")
+        return json.loads(content)
+
+    def infer_schema(
+        self,
+        connector_id: str,
+        raw_schema: dict,
+        sample_rows: list[dict],
+    ) -> InferenceResult:
+        """
+        Infer semantic types, PII levels, and field metadata from a raw schema.
+
+        Args:
+            connector_id: The connector this schema came from
+            raw_schema: The raw schema as returned by the connector
+            sample_rows: Up to 5 sample data rows for value-based inference
+
+        Returns:
+            InferenceResult with field-level inferences
+        """
+        schema_hash = _hash_schema(raw_schema)
+
+        try:
+            prompt = (
+                SCHEMA_INFERENCE_PROMPT
+                .replace("{raw_schema}", json.dumps(raw_schema, indent=2)[:3000])
+                .replace("{sample_rows}", json.dumps(sample_rows[:5], indent=2)[:2000])
+            )
+            result = self._call(prompt)
+
+            fields = [
+                FieldInference(
+                    source_field=f["source_field"],
+                    suggested_name=f["suggested_name"],
+                    semantic_type=SemanticType(f["semantic_type"]),
+                    data_type=f["data_type"],
+                    pii_level=PiiLevel(f["pii_level"]),
+                    confidence=float(f["confidence"]),
+                    reasoning=f.get("reasoning", ""),
+                    sample_values=[str(v) for v in f.get("sample_values", []) if v is not None],
+                    nullable=f.get("nullable", True),
+                )
+                for f in result.get("fields", [])
+            ]
+
+            return InferenceResult(
+                connector_id=connector_id,
+                fields=fields,
+                suggested_object_type_name=result.get("suggested_object_type_name", "UnknownObject"),
+                overall_confidence=float(result.get("overall_confidence", 0.0)),
+                raw_schema_hash=schema_hash,
+                warnings=result.get("warnings", []),
+            )
+
+        except Exception as e:
+            logger.error(f"Schema inference failed [{type(e).__name__}]: {e}", exc_info=True)
+            # Return mock response for development
+            return _mock_inference_result(connector_id, raw_schema, schema_hash)
+
+    def detect_conflicts(
+        self,
+        existing_object: dict,
+        incoming_schema: dict,
+    ) -> list[FieldConflict]:
+        """
+        Detect schema conflicts between an existing ObjectType and incoming schema.
+
+        Returns list of FieldConflict objects with suggested resolutions.
+        """
+        try:
+            prompt = (
+                CONFLICT_DETECTION_PROMPT
+                .replace("{existing_object}", json.dumps(existing_object, indent=2)[:3000])
+                .replace("{incoming_schema}", json.dumps(incoming_schema, indent=2)[:3000])
+            )
+            result = self._call(prompt)
+
+            conflicts = []
+            for c in (result if isinstance(result, list) else result.get("conflicts", [])):
+                try:
+                    conflict = FieldConflict(
+                        field_name=c["field_name"],
+                        conflict_type=ConflictType(c["conflict_type"]),
+                        existing_shape=c["existing_shape"],
+                        incoming_shape=c["incoming_shape"],
+                        suggested_resolution=ConflictResolution(c.get("suggested_resolution", "PENDING")),
+                    )
+                    conflicts.append(conflict)
+                except Exception as field_err:
+                    logger.warning(f"Skipping malformed conflict: {field_err}")
+
+            return conflicts
+
+        except Exception as e:
+            logger.error(f"Conflict detection failed: {e}")
+            return []
+
+    def score_similarity(
+        self,
+        existing_object: dict,
+        incoming_schema: dict,
+        schema_a_id: str,
+        object_type_id: str,
+    ) -> SimilarityScore:
+        """
+        Score similarity between an incoming schema and an existing ObjectType.
+
+        Returns SimilarityScore with composite score and decision metadata.
+        """
+        try:
+            prompt = (
+                SIMILARITY_SCORING_PROMPT
+                .replace("{existing_object}", json.dumps(existing_object, indent=2)[:3000])
+                .replace("{incoming_schema}", json.dumps(incoming_schema, indent=2)[:3000])
+            )
+            result = self._call(prompt)
+
+            return SimilarityScore(
+                schema_a_id=schema_a_id,
+                object_type_id=object_type_id,
+                field_name_overlap=float(result.get("field_name_overlap", 0.0)),
+                semantic_type_overlap=float(result.get("semantic_type_overlap", 0.0)),
+                sample_value_overlap=float(result.get("sample_value_overlap", 0.0)),
+                primary_key_resolvable=bool(result.get("primary_key_resolvable", False)),
+                conflicting_fields=result.get("conflicting_fields", []),
+                composite_score=float(result.get("composite_score", 0.0)),
+            )
+
+        except Exception as e:
+            logger.error(f"Similarity scoring failed: {e}")
+            return SimilarityScore(
+                schema_a_id=schema_a_id,
+                object_type_id=object_type_id,
+                field_name_overlap=0.0,
+                semantic_type_overlap=0.0,
+                sample_value_overlap=0.0,
+                primary_key_resolvable=False,
+                conflicting_fields=[],
+                composite_score=0.0,
+            )
+
+    def suggest_object_type(
+        self,
+        incoming_schema: dict,
+        existing_objects: list[dict],
+    ) -> NewObjectProposal:
+        """
+        Suggest a new ObjectType when incoming schema doesn't match existing types.
+        """
+        try:
+            prompt = (
+                NEW_OBJECT_SUGGESTION_PROMPT
+                .replace("{incoming_schema}", json.dumps(incoming_schema, indent=2)[:3000])
+                .replace("{existing_objects}", json.dumps(existing_objects[:3], indent=2)[:2000])
+            )
+            result = self._call(prompt)
+
+            suggested_properties = [
+                ObjectProperty(
+                    name=p["name"],
+                    display_name=p.get("display_name", p["name"]),
+                    semantic_type=SemanticType(p["semantic_type"]),
+                    data_type=p.get("data_type", "string"),
+                    pii_level=PiiLevel(p.get("pii_level", "NONE")),
+                    required=p.get("required", False),
+                    description=p.get("description"),
+                )
+                for p in result.get("suggested_properties", [])
+            ]
+
+            suggested_links = [
+                OntologyLink(
+                    source_object_type_id=result.get("suggested_name", "Unknown"),
+                    target_object_type_id=link["target_object_type_id"],
+                    relationship_type=link["relationship_type"],
+                    join_keys=link.get("join_keys", []),
+                    is_inferred=True,
+                    confidence=link.get("confidence", 0.7),
+                )
+                for link in result.get("suggested_links", [])
+            ]
+
+            return NewObjectProposal(
+                suggested_name=result.get("suggested_name", "NewObject"),
+                suggested_properties=suggested_properties,
+                suggested_links=suggested_links,
+                parent_object_type_id=result.get("parent_object_type_id"),
+                is_sub_type=result.get("is_sub_type", False),
+                similarity_score=0.3,
+                source_connector_id=incoming_schema.get("connector_id", "unknown"),
+            )
+
+        except Exception as e:
+            logger.error(f"Object type suggestion failed: {e}")
+            return NewObjectProposal(
+                suggested_name="NewObject",
+                suggested_properties=[],
+                suggested_links=[],
+                is_sub_type=False,
+                similarity_score=0.0,
+                source_connector_id=incoming_schema.get("connector_id", "unknown"),
+            )
+
+
+    def generate_app(
+        self,
+        description: str,
+        object_type_id: str,
+        object_type_name: str,
+        properties: list[str],
+        sample_rows: list[dict] | None = None,
+    ) -> dict:
+        """
+        Generate a dashboard app layout from a natural language description.
+        Returns a dict with 'app_name', 'app_description', 'icon', and 'components'.
+        """
+        sample_rows = sample_rows or []
+
+        # Build a compact tabular preview: header + rows (truncate long values)
+        def _truncate(v: object, n: int = 45) -> str:
+            if v is None:
+                return "NULL"
+            if isinstance(v, list):
+                if not v:
+                    return "[]"
+                if isinstance(v[0], dict):
+                    # Show count + first item summary (title/subject/name)
+                    first = v[0]
+                    label = (
+                        first.get("title") or first.get("subject") or
+                        first.get("name") or first.get("overview", "")
+                    )
+                    label_s = str(label)[:25] if label else "..."
+                    return f"[{len(v)} items: \"{label_s}\"]"
+                return f"[{len(v)} items]"
+            s = str(v)
+            return s[:n] + "..." if len(s) > n else s
+
+        sample_preview = ""
+        if sample_rows:
+            all_keys = list(dict.fromkeys(k for row in sample_rows for k in row))
+            header = "\t".join(all_keys)
+            rows_text = "\n".join(
+                "\t".join(_truncate(row.get(k)) for k in all_keys)
+                for row in sample_rows[:7]
+            )
+            sample_preview = f"\nSample data ({len(sample_rows)} rows shown):\n{header}\n{rows_text}"
+
+        prompt = f"""You are a dashboard builder AI. Generate a JSON layout for a data dashboard.
+
+User request: "{description}"
+
+Object type: "{object_type_name}" (id: {object_type_id})
+All available fields: {json.dumps(properties[:60])}{sample_preview}
+
+Use the sample data above to understand what fields actually contain values and what they look like.
+Only reference fields that appear in the sample data or the fields list.
+
+Return JSON with this exact structure (no markdown, no extra text):
+{{
+  "app_name": "short descriptive name",
+  "app_description": "one sentence",
+  "icon": "",
+  "components": [
+    {{
+      "id": "c1",
+      "type": "kpi-banner",
+      "title": "string",
+      "objectTypeId": "{object_type_id}",
+      "colSpan": 12
+    }},
+    {{
+      "id": "c2",
+      "type": "metric-card",
+      "title": "string",
+      "objectTypeId": "{object_type_id}",
+      "field": "field_name_or_null",
+      "aggregation": "count | sum | avg | max | min",
+      "colSpan": 3
+    }},
+    {{
+      "id": "c3",
+      "type": "data-table",
+      "title": "string",
+      "objectTypeId": "{object_type_id}",
+      "columns": ["field1", "field2", "field3"],
+      "maxRows": 20,
+      "colSpan": 12
+    }},
+    {{
+      "id": "c4",
+      "type": "bar-chart",
+      "title": "string",
+      "objectTypeId": "{object_type_id}",
+      "labelField": "field_used_for_labels",
+      "valueField": "field_used_for_values_or_null",
+      "colSpan": 6
+    }}
+  ]
+}}
+
+Rules:
+- colSpan must be 3, 4, 6, or 12
+- Always start with one kpi-banner (colSpan 12)
+- Add 2-4 metric-cards based on what makes sense from the user request
+- Add a data-table with columns that are relevant to the user's request
+- Add a bar-chart if the request mentions trends, grouping, or comparison
+- Pick columns for the data-table that actually have data in the sample rows
+- For count aggregation, field may be null or omitted"""
+
+        result = self._call(prompt)
+        return result
+
+    def generate_widget(
+        self,
+        description: str,
+        object_type_id: str,
+        object_type_name: str,
+        properties: list[str],
+        sample_rows: list[dict] | None = None,
+    ) -> dict:
+        """
+        Generate a single widget config from a natural language description.
+        Returns a component config dict (same shape as AppComponent on the frontend).
+        """
+        sample_rows = sample_rows or []
+        today = datetime.now().strftime("%Y-%m-%d")
+        # Monday of the current week
+        from datetime import timedelta
+        now = datetime.now()
+        week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%dT00:00:00")
+        month_start = now.replace(day=1).strftime("%Y-%m-%dT00:00:00")
+
+        sample_preview = ""
+        if sample_rows:
+            all_keys = list(dict.fromkeys(k for row in sample_rows for k in row))[:25]
+            header = "\t".join(all_keys)
+            rows_text = "\n".join(
+                "\t".join(str(row.get(k, ""))[:35] for k in all_keys)
+                for row in sample_rows[:5]
+            )
+            sample_preview = f"\nSample data:\n{header}\n{rows_text}"
+
+        prompt = f"""You are a dashboard widget builder. Generate ONE widget config from a natural language request.
+
+Today: {today}  |  Current week starts: {week_start}  |  Current month starts: {month_start}
+
+User request: "{description}"
+
+Object type: "{object_type_name}" (id: {object_type_id})
+Available fields: {json.dumps(properties[:60])}{sample_preview}
+
+Return a SINGLE JSON widget object (no markdown, no extra text):
+{{
+  "id": "w-auto",
+  "type": "<one of: metric-card | data-table | bar-chart | line-chart | kpi-banner | chat-widget>",
+  "title": "descriptive title based on the request",
+  "objectTypeId": "{object_type_id}",
+  "colSpan": <3 | 4 | 6 | 12>,
+  "field": "field_name (metric-card only, omit otherwise)",
+  "aggregation": "count | sum | avg | max | min (metric-card only)",
+  "columns": ["f1","f2","f3"] "(data-table only)",
+  "maxRows": 50,
+  "labelField": "field (bar-chart only)",
+  "valueField": "field (bar/line-chart only)",
+  "xField": "date field (line-chart only)",
+  "filters": [
+    {{
+      "id": "f1",
+      "field": "field_name",
+      "operator": "eq | neq | contains | gt | gte | lt | lte | after | before | is_empty | is_not_empty",
+      "value": "value (ISO datetime for date filters)"
+    }}
+  ]
+}}
+
+Widget selection rules:
+- "how many" / count query → metric-card with aggregation "count", colSpan 3
+- "average / avg" → metric-card with aggregation "avg", colSpan 3
+- "show me" / list → data-table, colSpan 12
+- "by stage / by type / distribution / per stage" → bar-chart with labelField=<category field>, NO valueField (count mode), colSpan 6
+- "over time / trend / per week / per day / moved per week" → line-chart with xField=<date field>, NO valueField (count per period), colSpan 6
+- chat / ask / question → chat-widget, colSpan 12
+- default to data-table if unclear
+
+Field name rules — CRITICAL:
+- Field names MUST be copied character-for-character from the "Available fields" list above
+- NEVER invent or guess field names. If unsure which field to use, pick the closest one from the list
+- The available fields list is authoritative — if a field is not in the list, do not use it
+- Example: if the list has "hs_lastmodifieddate", never write "hs_last_modified_date"
+
+Filter rules:
+- "current week" → after "{week_start}"
+- "this month" → after "{month_start}"
+- "today" → after "{today}T00:00:00"
+- "last N days" → after the correct ISO date
+- "stage X" → eq filter on the stage/status field
+- Date fields in this dataset are ISO strings — use after/before operators
+
+Line-chart rules:
+- For "per week / per day / over time" with NO explicit numeric value → omit valueField entirely (the renderer groups by date and counts)
+- xField must be a date field from the available fields list
+
+Bar-chart rules:
+- For "per stage / by category / distribution" with NO explicit numeric value → omit valueField entirely (the renderer counts per label)
+- labelField must be the grouping/category field
+
+Only include keys relevant to the widget type. Omit null/empty keys entirely."""
+
+        result = self._call(prompt)
+        return result
+
+    def chat_with_data(
+        self,
+        question: str,
+        object_type_id: str,
+        object_type_name: str,
+        fields: list[str],
+        records: list[dict],
+    ) -> str:
+        """
+        Answer a natural language question about the provided data records.
+        Returns a GitHub-Flavored Markdown answer, optionally with embedded widget specs.
+        """
+        if not self.client:
+            raise ValueError("Anthropic API key not configured")
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        total = len(records)
+        sample = records[:50]
+
+        def _trunc(v: object, n: int = 45) -> str:
+            if v is None:
+                return "null"
+            if isinstance(v, list):
+                return f"[{len(v)} items]"
+            s = str(v)
+            return s[:n] + "..." if len(s) > n else s
+
+        if sample:
+            all_keys = list(dict.fromkeys(k for row in sample for k in row))[:30]
+            header = " | ".join(all_keys)
+            rows_text = "\n".join(
+                " | ".join(_trunc(row.get(k)) for k in all_keys)
+                for row in sample
+            )
+            data_section = (
+                f"Fields: {', '.join(fields[:50])}\n"
+                f"Total records: {total}\n"
+                f"Sample ({len(sample)} rows shown):\n{header}\n{rows_text}"
+            )
+        else:
+            data_section = f"Fields: {', '.join(fields[:50])}\nNo records available."
+
+        fields_json = json.dumps(fields[:40])
+        widget_guide = (
+            "\n\nOPTIONAL — When a chart or table visualization would add real value beyond the text, "
+            "embed a widget spec as a ```widget code block with valid JSON:\n"
+            "- bar-chart: {\"type\":\"bar-chart\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\","
+            "\"labelField\":\"FIELD\",\"colSpan\":12,\"gridH\":5}\n"
+            "- metric-card: {\"type\":\"metric-card\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\","
+            "\"field\":\"FIELD\",\"aggregation\":\"count\",\"colSpan\":6,\"gridH\":3}\n"
+            "- data-table: {\"type\":\"data-table\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\","
+            "\"columns\":[\"FIELD1\",\"FIELD2\"],\"colSpan\":12,\"gridH\":6}\n"
+            f"Replace OBJ_ID with \"{object_type_id}\". "
+            f"Field names MUST be copied exactly from: {fields_json}. "
+            "Only include a widget when it genuinely helps. Do not include more than 2 widgets per answer."
+        )
+
+        message = self.client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            system=(
+                f"You are a data analyst assistant. Today is {today}. "
+                "Format all responses with GitHub-Flavored Markdown: **bold** for key values, "
+                "## headers for sections, bullet lists, and GFM pipe tables for structured data. "
+                "Use numbers, percentages, and specific examples from the data. "
+                "If the answer requires data you don't have, say so clearly."
+                + widget_guide
+            ),
+            messages=[{
+                "role": "user",
+                "content": f"Data ({object_type_name}, {total} total records):\n{data_section}\n\nQuestion: {question}",
+            }],
+        )
+        return message.content[0].text
+
+
+def _hash_schema(schema: dict) -> str:
+    """Compute a stable hash of a schema dict."""
+    import hashlib
+    import json
+    serialized = json.dumps(schema, sort_keys=True)
+    return "sha256:" + hashlib.sha256(serialized.encode()).hexdigest()[:16]
+
+
+def _default_app_layout(
+    object_type_id: str,
+    object_type_name: str,
+    properties: list[str],
+    description: str,
+    sample_rows: list[dict] | None = None,
+) -> dict:
+    """Fallback template-based app layout when Claude is unavailable."""
+    from uuid import uuid4
+
+    # Pick sensible columns — avoid array fields
+    flat_props = [p for p in properties if not p.endswith('[]')]
+    table_cols = flat_props[:8] if flat_props else []
+    name_field = next((p for p in flat_props if p in ('name', 'company_name', 'firstname', 'title')), flat_props[0] if flat_props else None)
+
+    components = [
+        {
+            "id": "c1",
+            "type": "kpi-banner",
+            "title": f"{object_type_name} Overview",
+            "objectTypeId": object_type_id,
+            "colSpan": 12,
+        },
+        {
+            "id": "c2",
+            "type": "metric-card",
+            "title": "Total Records",
+            "objectTypeId": object_type_id,
+            "aggregation": "count",
+            "colSpan": 3,
+        },
+    ]
+
+    if name_field:
+        components.append({
+            "id": "c3",
+            "type": "bar-chart",
+            "title": f"Records by {name_field}",
+            "objectTypeId": object_type_id,
+            "labelField": name_field,
+            "colSpan": 12,
+        })
+
+    if table_cols:
+        components.append({
+            "id": "c4",
+            "type": "data-table",
+            "title": f"All {object_type_name} Records",
+            "objectTypeId": object_type_id,
+            "columns": table_cols,
+            "maxRows": 20,
+            "colSpan": 12,
+        })
+
+    return {
+        "app_name": f"{object_type_name} Dashboard",
+        "app_description": description or f"Overview of {object_type_name} data",
+        "icon": "",
+        "components": components,
+    }
+
+
+def _mock_inference_result(connector_id: str, schema: dict, schema_hash: str) -> InferenceResult:
+    """Return a mock inference result when Claude is unavailable."""
+    return InferenceResult(
+        connector_id=connector_id,
+        fields=[
+            FieldInference(
+                source_field="id",
+                suggested_name="record_id",
+                semantic_type=SemanticType.IDENTIFIER,
+                data_type="string",
+                pii_level=PiiLevel.NONE,
+                confidence=0.99,
+                reasoning="Field named 'id' — universal identifier pattern",
+                sample_values=[],
+                nullable=False,
+            ),
+            FieldInference(
+                source_field="name",
+                suggested_name="name",
+                semantic_type=SemanticType.TEXT,
+                data_type="string",
+                pii_level=PiiLevel.LOW,
+                confidence=0.85,
+                reasoning="Generic 'name' field — likely an entity name",
+                sample_values=[],
+                nullable=True,
+            ),
+        ],
+        suggested_object_type_name="InferredObject",
+        overall_confidence=0.75,
+        raw_schema_hash=schema_hash,
+        warnings=["Using mock inference — ANTHROPIC_API_KEY not configured"],
+    )

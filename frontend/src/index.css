@@ -1,0 +1,187 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --color-base: #F8F9FA;
+  --color-surface: #FFFFFF;
+  --color-text: #0D1117;
+  --color-text-muted: #64748B;
+  --color-text-subtle: #94A3B8;
+  --color-primary: #1A3C6E;
+  --color-primary-interactive: #2563EB;
+  --color-accent: #D97706;
+  --color-status-green: #059669;
+  --color-status-red: #DC2626;
+  --color-status-yellow: #D97706;
+  --color-border: #E2E8F0;
+  --color-border-emphasis: #CBD5E1;
+
+  --font-interface: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+
+  --radius-card: 4px;
+  --radius-chip: 2px;
+
+  --transition-panel: 120ms ease-out;
+  --transition-hover: 80ms ease-out;
+
+  --nav-width-collapsed: 56px;
+  --nav-width-expanded: 220px;
+
+  --table-row-height: 36px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: var(--font-interface);
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+  background-color: var(--color-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+}
+
+code, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-emphasis);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-subtle);
+}
+
+/* Reset */
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Utility classes */
+.text-muted {
+  color: var(--color-text-muted);
+}
+.text-subtle {
+  color: var(--color-text-subtle);
+}
+.mono {
+  font-family: var(--font-mono);
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status dot animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.2); }
+}
+
+.status-dot-live {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Slide-in panel animation */
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideOutRight {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(100%); opacity: 0; }
+}
+
+.panel-slide-in {
+  animation: slideInRight var(--transition-panel) ease-out forwards;
+}
+
+/* React Flow overrides */
+.react-flow__renderer {
+  background: var(--color-base);
+}
+
+.react-flow__background {
+  background-color: var(--color-base);
+}
+
+/* Table base */
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  text-align: left;
+  padding: 0 12px;
+  height: var(--table-row-height);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+td {
+  font-size: var(--font-size-sm);
+  padding: 0 12px;
+  height: var(--table-row-height);
+  border-bottom: 1px solid var(--color-border);
+}
+
+tr:nth-child(even) td {
+  background: #FAFAFA;
+}
+
+tr:nth-child(odd) td {
+  background: var(--color-surface);
+}
+
+/* Focus styles */
+:focus-visible {
+  outline: 2px solid var(--color-primary-interactive);
+  outline-offset: 2px;
+}

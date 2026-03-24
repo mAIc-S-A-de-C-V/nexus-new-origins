@@ -1,0 +1,19 @@
+{
+  "name": "nexus-new-origins",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nexus Origins — Enterprise Data Integration Platform",
+  "scripts": {
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "install:frontend": "cd frontend && npm install",
+    "install:all": "cd frontend && npm install",
+    "start": "cd frontend && npm run dev"
+  },
+  "workspaces": [
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
