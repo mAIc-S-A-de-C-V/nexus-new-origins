@@ -2,11 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY ontology_service/requirements.txt .
+COPY backend/ontology_service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY shared/ ./shared/
-COPY ontology_service/ .
+COPY backend/shared/ ./shared/
+COPY backend/ontology_service/ .
 
 EXPOSE 8004
 

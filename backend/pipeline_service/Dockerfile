@@ -2,11 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY pipeline_service/requirements.txt .
+COPY backend/pipeline_service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY shared/ ./shared/
-COPY pipeline_service/ .
+COPY backend/shared/ ./shared/
+COPY backend/pipeline_service/ .
 
 EXPOSE 8002
 

@@ -2,11 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY correlation_engine/requirements.txt .
+COPY backend/correlation_engine/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY shared/ ./shared/
-COPY correlation_engine/ .
+COPY backend/shared/ ./shared/
+COPY backend/correlation_engine/ .
 
 EXPOSE 8008
 
