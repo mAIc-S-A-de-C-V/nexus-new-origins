@@ -6,16 +6,16 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_CONNECTOR_SERVICE_URL: ${VITE_CONNECTOR_SERVICE_URL:-http://localhost:8001}
+        VITE_PIPELINE_SERVICE_URL: ${VITE_PIPELINE_SERVICE_URL:-http://localhost:8002}
+        VITE_INFERENCE_SERVICE_URL: ${VITE_INFERENCE_SERVICE_URL:-http://localhost:8003}
+        VITE_ONTOLOGY_SERVICE_URL: ${VITE_ONTOLOGY_SERVICE_URL:-http://localhost:8004}
+        VITE_EVENT_LOG_SERVICE_URL: ${VITE_EVENT_LOG_SERVICE_URL:-http://localhost:8005}
+        VITE_AUDIT_SERVICE_URL: ${VITE_AUDIT_SERVICE_URL:-http://localhost:8006}
+        VITE_CORRELATION_ENGINE_URL: ${VITE_CORRELATION_ENGINE_URL:-http://localhost:8008}
     ports:
       - "3000:3000"
-    environment:
-      - VITE_CONNECTOR_SERVICE_URL=http://localhost:8001
-      - VITE_PIPELINE_SERVICE_URL=http://localhost:8002
-      - VITE_INFERENCE_SERVICE_URL=http://localhost:8003
-      - VITE_ONTOLOGY_SERVICE_URL=http://localhost:8004
-      - VITE_EVENT_LOG_SERVICE_URL=http://localhost:8005
-      - VITE_AUDIT_SERVICE_URL=http://localhost:8006
-      - VITE_CORRELATION_ENGINE_URL=http://localhost:8008
     depends_on:
       - connector-service
       - ontology-service

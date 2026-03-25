@@ -15,7 +15,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},EC2_HOST=${{ secrets.EC2_HOST }}
           script: |
             cd nexus-new-origins
             git pull origin main
+            printf 'ANTHROPIC_API_KEY=%s\nVITE_CONNECTOR_SERVICE_URL=http://%s:8001\nVITE_PIPELINE_SERVICE_URL=http://%s:8002\nVITE_INFERENCE_SERVICE_URL=http://%s:8003\nVITE_ONTOLOGY_SERVICE_URL=http://%s:8004\nVITE_EVENT_LOG_SERVICE_URL=http://%s:8005\nVITE_AUDIT_SERVICE_URL=http://%s:8006\nVITE_CORRELATION_ENGINE_URL=http://%s:8008\n' "$ANTHROPIC_API_KEY" "$EC2_HOST" "$EC2_HOST" "$EC2_HOST" "$EC2_HOST" "$EC2_HOST" "$EC2_HOST" "$EC2_HOST" > .env
             sudo DOCKER_BUILDKIT=0 docker-compose up -d --build
