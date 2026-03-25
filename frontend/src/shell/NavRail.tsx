@@ -58,6 +58,7 @@ interface NavRailProps {
 export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => {
   const [expanded, setExpanded] = useState(true);
   const [appsExpanded, setAppsExpanded] = useState(true);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { currentUser, logout } = useAuth();
   const { apps } = useAppStore();
 
@@ -256,15 +257,68 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
         </div>
       </div>
 
-      {/* Bottom: user + logout + collapse */}
-      <div style={{ borderTop: '1px solid #131C2E', padding: '8px 0', flexShrink: 0 }}>
-        {/* User row */}
+      {/* Bottom: user + collapse */}
+      <div style={{ borderTop: '1px solid #131C2E', padding: '8px 0', flexShrink: 0, position: 'relative' }}>
+
+        {/* User dropdown menu */}
+        {userMenuOpen && currentUser && (
+          <>
+            {/* Backdrop */}
+            <div
+              style={{ position: 'fixed', inset: 0, zIndex: 99 }}
+              onClick={() => setUserMenuOpen(false)}
+            />
+            <div style={{
+              position: 'absolute', bottom: '100%', left: 8, right: 8,
+              backgroundColor: '#0F1824', border: '1px solid #1E2D42',
+              borderRadius: 4, overflow: 'hidden', zIndex: 100,
+              boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
+            }}>
+              <button
+                onClick={() => { logout(); setUserMenuOpen(false); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  width: '100%', height: 36, padding: '0 12px',
+                  backgroundColor: 'transparent', color: '#64748B',
+                  cursor: 'pointer', border: 'none', textAlign: 'left',
+                  fontSize: 12, transition: 'color 80ms, background-color 80ms',
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.color = '#F87171';
+                  (e.currentTarget as HTMLElement).style.backgroundColor = '#1A0A0A';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.color = '#64748B';
+                  (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+                }}
+              >
+                <LogOut size={13} />
+                Sign out
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* User row — clickable, opens dropdown */}
         {currentUser && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: expanded ? '6px 14px' : '6px',
-            justifyContent: expanded ? 'flex-start' : 'center',
-          }}>
+          <button
+            onClick={() => setUserMenuOpen((v) => !v)}
+            title={!expanded ? currentUser.name : undefined}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              width: '100%', padding: expanded ? '6px 14px' : '6px',
+              justifyContent: expanded ? 'flex-start' : 'center',
+              backgroundColor: userMenuOpen ? '#0F1620' : 'transparent',
+              border: 'none', cursor: 'pointer',
+              transition: 'background-color 80ms',
+            }}
+            onMouseEnter={(e) => {
+              if (!userMenuOpen) (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
+            }}
+            onMouseLeave={(e) => {
+              if (!userMenuOpen) (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+            }}
+          >
             <div style={{
               width: 26, height: 26, borderRadius: '50%',
               backgroundColor: '#1E1040', border: '1px solid #2D1B69',
@@ -274,43 +328,20 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
               {currentUser.name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
             {expanded && (
-              <div style={{ overflow: 'hidden', flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 500, color: '#E2E8F0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {currentUser.name}
+              <>
+                <div style={{ overflow: 'hidden', flex: 1, minWidth: 0, textAlign: 'left' }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: '#E2E8F0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {currentUser.name}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#334155', letterSpacing: '0.04em' }}>
+                    {currentUser.role}
+                  </div>
                 </div>
-                <div style={{ fontSize: 10, color: '#334155', letterSpacing: '0.04em' }}>
-                  {currentUser.role}
-                </div>
-              </div>
+                <ChevronDown size={11} style={{ color: '#334155', flexShrink: 0, transform: userMenuOpen ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
+              </>
             )}
-          </div>
+          </button>
         )}
-
-        {/* Logout */}
-        <button
-          onClick={logout}
-          title="Sign out"
-          style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            width: '100%', height: 34,
-            padding: expanded ? '0 14px' : '0',
-            justifyContent: expanded ? 'flex-start' : 'center',
-            backgroundColor: 'transparent', color: '#334155',
-            cursor: 'pointer', transition: 'color 80ms, background-color 80ms',
-            border: 'none', flexShrink: 0,
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.color = '#F87171';
-            (e.currentTarget as HTMLElement).style.backgroundColor = '#1A0A0A';
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.color = '#334155';
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-          }}
-        >
-          <LogOut size={15} />
-          {expanded && <span style={{ fontSize: 12 }}>Sign out</span>}
-        </button>
 
         {/* Collapse toggle */}
         <button
