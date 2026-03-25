@@ -1,83 +1,56 @@
 import React, { Suspense, lazy } from 'react';
 import { AppShell } from './shell/AppShell';
+import { TenantProvider, useAuth } from './shell/TenantContext';
+import LoginPage from './pages/LoginPage';
 
-const ConnectorGrid = lazy(() => import('./modules/connectors/ConnectorGrid'));
-const OntologyGraph = lazy(() => import('./modules/ontology/OntologyGraph'));
+const ConnectorGrid   = lazy(() => import('./modules/connectors/ConnectorGrid'));
+const OntologyGraph   = lazy(() => import('./modules/ontology/OntologyGraph'));
 const PipelineBuilder = lazy(() => import('./modules/pipeline/PipelineBuilder'));
-const LineageCanvas = lazy(() => import('./modules/lineage/LineageCanvas'));
-const EventLog = lazy(() => import('./modules/events/EventLog'));
-const AppsPage = lazy(() => import('./modules/apps/AppsPage'));
-const ProjectsModule = lazy(() => import('./modules/projects/ProjectsModule'));
+const LineageCanvas   = lazy(() => import('./modules/lineage/LineageCanvas'));
+const EventLog        = lazy(() => import('./modules/events/EventLog'));
+const AppsPage        = lazy(() => import('./modules/apps/AppsPage'));
+const ProjectsModule  = lazy(() => import('./modules/projects/ProjectsModule'));
+const UsersPage       = lazy(() => import('./modules/users/UsersPage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100%',
-    gap: '12px',
-    color: '#94A3B8',
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    justifyContent: 'center', height: '100%', gap: 12, color: '#475569',
+    backgroundColor: '#F8FAFC',
   }}>
     <div style={{
-      width: 24,
-      height: 24,
-      border: '2px solid #E2E8F0',
-      borderTopColor: '#2563EB',
-      borderRadius: '50%',
+      width: 20, height: 20, border: '2px solid #E2E8F0',
+      borderTopColor: '#7C3AED', borderRadius: '50%',
       animation: 'spin 0.6s linear infinite',
     }} />
-    <span style={{ fontSize: '13px' }}>{message}</span>
-    <style>{`
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-    `}</style>
+    <span style={{ fontSize: 12, letterSpacing: '0.04em' }}>{message}</span>
+    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
   </div>
 );
 
 const ComingSoonPage: React.FC<{ title: string }> = ({ title }) => (
-  <div style={{
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100%',
-  }}>
+  <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
     <div style={{
-      height: 52,
-      backgroundColor: '#FFFFFF',
-      borderBottom: '1px solid #E2E8F0',
-      display: 'flex',
-      alignItems: 'center',
-      padding: '0 24px',
-      gap: '10px',
+      height: 52, backgroundColor: '#fff', borderBottom: '1px solid #E2E8F0',
+      display: 'flex', alignItems: 'center', padding: '0 24px', gap: 10,
     }}>
-      <h1 style={{ fontSize: '16px', fontWeight: 500, color: '#0D1117' }}>{title}</h1>
+      <h1 style={{ fontSize: 15, fontWeight: 600, color: '#0D1117', margin: 0 }}>{title}</h1>
       <span style={{
-        fontSize: '11px',
-        backgroundColor: '#F1F5F9',
-        color: '#64748B',
-        padding: '2px 8px',
-        borderRadius: '2px',
-        fontWeight: 500,
+        fontSize: 10, backgroundColor: '#F1F5F9', color: '#64748B',
+        padding: '2px 8px', fontWeight: 600, letterSpacing: '0.06em',
       }}>
-        Coming Soon
+        COMING SOON
       </span>
     </div>
     <div style={{
-      flex: 1,
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: '8px',
-      color: '#94A3B8',
+      flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+      justifyContent: 'center', gap: 8, color: '#94A3B8',
     }}>
-      <div style={{ fontSize: '14px', fontWeight: 500 }}>This module is under construction</div>
-      <div style={{ fontSize: '12px' }}>Check back soon for updates</div>
+      <div style={{ fontSize: 13, fontWeight: 500 }}>This module is under construction</div>
+      <div style={{ fontSize: 12 }}>Check back soon</div>
     </div>
   </div>
 );
-
 
 const renderPage = (page: string): React.ReactNode => {
   if (page.startsWith('app-')) {
@@ -87,66 +60,51 @@ const renderPage = (page: string): React.ReactNode => {
       </Suspense>
     );
   }
-
   switch (page) {
     case 'connectors':
-      return (
-        <Suspense fallback={<LoadingSpinner message="Loading connectors..." />}>
-          <ConnectorGrid />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner message="Loading connectors..." />}><ConnectorGrid /></Suspense>;
     case 'ontology':
-      return (
-        <Suspense fallback={<LoadingSpinner message="Loading ontology graph..." />}>
-          <OntologyGraph />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner message="Loading ontology..." />}><OntologyGraph /></Suspense>;
     case 'pipelines':
-      return (
-        <Suspense fallback={<LoadingSpinner message="Loading pipeline builder..." />}>
-          <PipelineBuilder />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner message="Loading pipelines..." />}><PipelineBuilder /></Suspense>;
     case 'lineage':
-      return (
-        <Suspense fallback={<LoadingSpinner message="Loading lineage..." />}>
-          <LineageCanvas />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner message="Loading lineage..." />}><LineageCanvas /></Suspense>;
     case 'events':
-      return (
-        <Suspense fallback={<LoadingSpinner message="Loading event log..." />}>
-          <EventLog />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner message="Loading event log..." />}><EventLog /></Suspense>;
     case 'apps':
-      return (
-        <Suspense fallback={<LoadingSpinner message="Loading apps..." />}>
-          <AppsPage />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner message="Loading apps..." />}><AppsPage /></Suspense>;
     case 'projects':
-      return (
-        <Suspense fallback={<LoadingSpinner message="Loading projects..." />}>
-          <ProjectsModule />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner message="Loading projects..." />}><ProjectsModule /></Suspense>;
+    case 'users':
+      return <Suspense fallback={<LoadingSpinner message="Loading users..." />}><UsersPage /></Suspense>;
     case 'settings':
       return <ComingSoonPage title="Settings" />;
     default:
-      return (
-        <Suspense fallback={<LoadingSpinner />}>
-          <ConnectorGrid />
-        </Suspense>
-      );
+      return <Suspense fallback={<LoadingSpinner />}><ConnectorGrid /></Suspense>;
   }
 };
 
-function App() {
+// ── Auth gate ──────────────────────────────────────────────────────────────
+
+const AuthGate: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+
+  if (!isAuthenticated) return <LoginPage />;
+
   return (
     <AppShell>
       {(page) => renderPage(page)}
     </AppShell>
+  );
+};
+
+// ── App ────────────────────────────────────────────────────────────────────
+
+function App() {
+  return (
+    <TenantProvider>
+      <AuthGate />
+    </TenantProvider>
   );
 }
 

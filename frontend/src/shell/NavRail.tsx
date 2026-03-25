@@ -1,10 +1,31 @@
 import React, { useState } from 'react';
 import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
-  ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp, FolderKanban,
+  ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
+  FolderKanban, Users, LogOut,
 } from 'lucide-react';
-import { useUser } from './TenantContext';
+import { useAuth } from './TenantContext';
 import { useAppStore } from '../store/appStore';
+
+// ── maic icon SVG ──────────────────────────────────────────────────────────
+
+const MaicIcon: React.FC<{ size?: number }> = ({ size = 22 }) => (
+  <svg width={size} height={size} viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <line x1="18" y1="18" x2="9"  y2="9"  stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="26" y1="18" x2="35" y2="9"  stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="18" y1="26" x2="9"  y2="35" stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="26" y1="26" x2="35" y2="35" stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="26" y1="22" x2="31" y2="22" stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
+    <circle cx="8"  cy="8"  r="5.5" fill="#7C3AED" />
+    <circle cx="36" cy="8"  r="5.5" fill="#7C3AED" />
+    <circle cx="8"  cy="36" r="5.5" fill="#7C3AED" />
+    <circle cx="36" cy="36" r="5.5" fill="#7C3AED" />
+    <circle cx="33" cy="22" r="3.5" fill="#7C3AED" />
+    <rect x="17" y="17" width="10" height="10" rx="2.5" fill="#7C3AED" />
+  </svg>
+);
+
+// ── Nav items ──────────────────────────────────────────────────────────────
 
 interface NavItem {
   id: string;
@@ -13,221 +34,179 @@ interface NavItem {
   active: boolean;
   comingSoon?: boolean;
   path: string;
+  adminOnly?: boolean;
 }
+
+const NAV_ITEMS: NavItem[] = [
+  { id: 'connectors', label: 'Connectors',  icon: <Plug size={16} />,         active: true,  path: 'connectors' },
+  { id: 'ontology',   label: 'Ontology',    icon: <Network size={16} />,       active: true,  path: 'ontology' },
+  { id: 'lineage',    label: 'Lineage',     icon: <GitBranch size={16} />,     active: false, comingSoon: true, path: 'lineage' },
+  { id: 'events',     label: 'Event Log',   icon: <Activity size={16} />,      active: true,  path: 'events' },
+  { id: 'pipelines',  label: 'Pipelines',   icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
+  { id: 'projects',   label: 'maic',        icon: <FolderKanban size={16} />,  active: true,  path: 'projects' },
+  { id: 'users',      label: 'Users',       icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
+  { id: 'settings',   label: 'Settings',    icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },
+];
+
+// ── Component ──────────────────────────────────────────────────────────────
 
 interface NavRailProps {
   currentPage: string;
   onNavigate: (page: string) => void;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { id: 'connectors', label: 'Connectors', icon: <Plug size={18} />, active: true, path: 'connectors' },
-  { id: 'ontology', label: 'Ontology', icon: <Network size={18} />, active: true, path: 'ontology' },
-  { id: 'lineage', label: 'Lineage', icon: <GitBranch size={18} />, active: false, comingSoon: true, path: 'lineage' },
-  { id: 'events', label: 'Event Log', icon: <Activity size={18} />, active: true, path: 'events' },
-  { id: 'pipelines', label: 'Pipelines', icon: <Workflow size={18} />, active: true, path: 'pipelines' },
-  { id: 'projects', label: 'maic', icon: <FolderKanban size={18} />, active: true, path: 'projects' },
-  { id: 'settings', label: 'Settings', icon: <Settings size={18} />, active: false, comingSoon: true, path: 'settings' },
-];
-
 export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => {
   const [expanded, setExpanded] = useState(true);
   const [appsExpanded, setAppsExpanded] = useState(true);
-  const user = useUser();
+  const { currentUser, logout } = useAuth();
   const { apps } = useAppStore();
 
+  const isAdmin = currentUser?.role === 'ADMIN';
   const width = expanded ? 220 : 56;
 
-  return (
-    <nav
+  const navBtn = (
+    item: NavItem,
+    isActive: boolean,
+    onClick: () => void,
+    indented = false,
+    small = false,
+  ) => (
+    <button
+      key={item.id}
+      onClick={onClick}
+      title={!expanded ? item.label : undefined}
       style={{
-        width,
-        minWidth: width,
-        height: '100vh',
-        backgroundColor: '#0D1117',
-        display: 'flex',
-        flexDirection: 'column',
-        transition: 'width 120ms ease-out, min-width 120ms ease-out',
-        overflow: 'hidden',
-        borderRight: '1px solid #1E293B',
-        flexShrink: 0,
-        position: 'relative',
-        zIndex: 10,
+        display: 'flex', alignItems: 'center', gap: 10,
+        width: '100%', height: small ? 34 : 38,
+        padding: expanded ? (indented ? '0 16px 0 32px' : '0 14px') : '0',
+        justifyContent: expanded ? 'flex-start' : 'center',
+        backgroundColor: isActive ? '#161D2B' : 'transparent',
+        color: isActive ? '#E2E8F0' : item.comingSoon ? '#334155' : '#64748B',
+        cursor: item.active ? 'pointer' : 'default',
+        transition: 'background-color 80ms, color 80ms',
+        borderLeft: isActive ? '2px solid #7C3AED' : '2px solid transparent',
+        borderTop: 'none', borderRight: 'none', borderBottom: 'none',
+        flexShrink: 0, textAlign: 'left',
+      }}
+      onMouseEnter={(e) => {
+        if (!isActive && item.active) {
+          (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
+          (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!isActive) {
+          (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+          (e.currentTarget as HTMLElement).style.color = item.comingSoon ? '#334155' : '#64748B';
+        }
       }}
     >
-      {/* Logo / Brand */}
-      <div style={{
-        height: 56,
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 16px',
-        borderBottom: '1px solid #1E293B',
-        gap: '10px',
-        flexShrink: 0,
-      }}>
-        <div style={{
-          width: 24,
-          height: 24,
-          borderRadius: '4px',
-          backgroundColor: '#2563EB',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-        }}>
-          <span style={{ color: '#fff', fontSize: '12px', fontWeight: 700 }}>N</span>
-        </div>
-        {expanded && (
+      <span style={{ flexShrink: 0, lineHeight: 0, opacity: item.comingSoon ? 0.4 : 1 }}>{item.icon}</span>
+      {expanded && (
+        <>
           <span style={{
-            color: '#F8F9FA',
-            fontSize: '14px',
-            fontWeight: 600,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
+            fontSize: small ? 12 : 13, fontWeight: isActive ? 500 : 400,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            opacity: item.comingSoon ? 0.4 : 1,
           }}>
-            Nexus Origins
+            {item.label}
+          </span>
+          {item.comingSoon && (
+            <span style={{
+              marginLeft: 'auto', fontSize: 9, color: '#334155',
+              border: '1px solid #1E293B', padding: '1px 4px',
+              flexShrink: 0, letterSpacing: '0.04em',
+            }}>
+              SOON
+            </span>
+          )}
+        </>
+      )}
+    </button>
+  );
+
+  return (
+    <nav style={{
+      width, minWidth: width, height: '100vh',
+      backgroundColor: '#080E18',
+      display: 'flex', flexDirection: 'column',
+      transition: 'width 120ms ease-out, min-width 120ms ease-out',
+      overflow: 'hidden',
+      borderRight: '1px solid #131C2E',
+      flexShrink: 0, position: 'relative', zIndex: 10,
+    }}>
+      {/* Logo */}
+      <div style={{
+        height: 52, display: 'flex', alignItems: 'center',
+        padding: expanded ? '0 14px' : '0', justifyContent: expanded ? 'flex-start' : 'center',
+        borderBottom: '1px solid #131C2E', gap: 10, flexShrink: 0,
+      }}>
+        <MaicIcon size={22} />
+        {expanded && (
+          <span style={{ color: '#F8FAFC', fontSize: 15, fontWeight: 700, letterSpacing: '-0.02em', whiteSpace: 'nowrap' }}>
+            maic
           </span>
         )}
       </div>
 
-      {/* Nav Items */}
-      <div style={{ flex: 1, padding: '8px 0', overflowY: 'auto', overflowX: 'hidden' }}>
-        {NAV_ITEMS.map((item) => {
-          const isActive = currentPage === item.path;
-          const isClickable = item.active;
+      {/* Nav items */}
+      <div style={{ flex: 1, padding: '6px 0', overflowY: 'auto', overflowX: 'hidden' }}>
+        {NAV_ITEMS
+          .filter((item) => !item.adminOnly || isAdmin)
+          .map((item) =>
+            navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path)),
+          )}
 
-          return (
-            <button
-              key={item.id}
-              onClick={() => isClickable && onNavigate(item.path)}
-              title={!expanded ? item.label : undefined}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                width: '100%',
-                height: '40px',
-                padding: expanded ? '0 16px' : '0',
-                justifyContent: expanded ? 'flex-start' : 'center',
-                backgroundColor: isActive ? '#1E293B' : 'transparent',
-                color: isActive ? '#F8F9FA' : item.comingSoon ? '#475569' : '#94A3B8',
-                cursor: isClickable ? 'pointer' : 'default',
-                transition: 'background-color 80ms ease-out, color 80ms ease-out',
-                borderLeft: isActive ? '3px solid #2563EB' : '3px solid transparent',
-                position: 'relative',
-                flexShrink: 0,
-              }}
-              onMouseEnter={(e) => {
-                if (!isActive && isClickable) {
-                  (e.currentTarget as HTMLElement).style.backgroundColor = '#1E293B';
-                  (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!isActive) {
-                  (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-                  (e.currentTarget as HTMLElement).style.color = item.comingSoon ? '#475569' : '#94A3B8';
-                }
-              }}
-            >
-              <span style={{ flexShrink: 0, lineHeight: 0 }}>{item.icon}</span>
-              {expanded && (
-                <span style={{
-                  fontSize: '13px',
-                  fontWeight: isActive ? 500 : 400,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}>
-                  {item.label}
-                </span>
-              )}
-              {expanded && item.comingSoon && (
-                <span style={{
-                  marginLeft: 'auto',
-                  fontSize: '10px',
-                  color: '#475569',
-                  backgroundColor: '#1E293B',
-                  padding: '1px 4px',
-                  borderRadius: '2px',
-                  flexShrink: 0,
-                }}>
-                  Soon
-                </span>
-              )}
-            </button>
-          );
-        })}
-
-        {/* ── Apps section ── */}
-        <div style={{ borderTop: '1px solid #1E293B', marginTop: 8, paddingTop: 4 }}>
-          {/* Apps header row */}
+        {/* Apps section */}
+        <div style={{ borderTop: '1px solid #131C2E', marginTop: 6, paddingTop: 4 }}>
           <button
-            onClick={() => {
-              if (expanded) setAppsExpanded((v) => !v);
-              onNavigate('apps');
-            }}
+            onClick={() => { if (expanded) setAppsExpanded((v) => !v); onNavigate('apps'); }}
             title={!expanded ? 'Apps' : undefined}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-              width: '100%',
-              height: '40px',
-              padding: expanded ? '0 16px' : '0',
+              display: 'flex', alignItems: 'center', gap: 10,
+              width: '100%', height: 38,
+              padding: expanded ? '0 14px' : '0',
               justifyContent: expanded ? 'flex-start' : 'center',
-              backgroundColor: currentPage === 'apps' ? '#1E293B' : 'transparent',
-              color: currentPage === 'apps' ? '#F8F9FA' : '#94A3B8',
-              cursor: 'pointer',
-              transition: 'background-color 80ms ease-out, color 80ms ease-out',
-              borderLeft: currentPage === 'apps' ? '3px solid #2563EB' : '3px solid transparent',
+              backgroundColor: currentPage === 'apps' ? '#161D2B' : 'transparent',
+              color: currentPage === 'apps' ? '#E2E8F0' : '#64748B',
+              cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
+              borderLeft: currentPage === 'apps' ? '2px solid #7C3AED' : '2px solid transparent',
+              borderTop: 'none', borderRight: 'none', borderBottom: 'none',
               flexShrink: 0,
             }}
             onMouseEnter={(e) => {
               if (currentPage !== 'apps') {
-                (e.currentTarget as HTMLElement).style.backgroundColor = '#1E293B';
+                (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
                 (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
               }
             }}
             onMouseLeave={(e) => {
               if (currentPage !== 'apps') {
                 (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-                (e.currentTarget as HTMLElement).style.color = '#94A3B8';
+                (e.currentTarget as HTMLElement).style.color = '#64748B';
               }
             }}
           >
-            <span style={{ flexShrink: 0, lineHeight: 0 }}><LayoutDashboard size={18} /></span>
+            <span style={{ flexShrink: 0, lineHeight: 0 }}><LayoutDashboard size={16} /></span>
             {expanded && (
               <>
-                <span style={{ fontSize: '13px', fontWeight: currentPage === 'apps' ? 500 : 400 }}>
-                  Apps
-                </span>
+                <span style={{ fontSize: 13, fontWeight: currentPage === 'apps' ? 500 : 400 }}>Apps</span>
                 {apps.length > 0 && (
                   <span style={{
-                    marginLeft: 'auto',
-                    fontSize: '10px',
-                    color: '#2563EB',
-                    backgroundColor: '#1A3C6E',
-                    padding: '1px 5px',
-                    borderRadius: '10px',
-                    flexShrink: 0,
-                  }}>
-                    {apps.length}
-                  </span>
+                    marginLeft: 'auto', fontSize: 10, color: '#7C3AED',
+                    backgroundColor: '#1E1040', padding: '1px 6px', borderRadius: 10, flexShrink: 0,
+                  }}>{apps.length}</span>
                 )}
                 {apps.length > 0 && (
-                  <span
-                    onClick={(e) => { e.stopPropagation(); setAppsExpanded((v) => !v); }}
-                    style={{ marginLeft: apps.length > 0 ? 4 : 'auto', lineHeight: 0, flexShrink: 0 }}
-                  >
-                    {appsExpanded ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+                  <span onClick={(e) => { e.stopPropagation(); setAppsExpanded((v) => !v); }}
+                    style={{ marginLeft: 4, lineHeight: 0, flexShrink: 0, color: '#475569' }}>
+                    {appsExpanded ? <ChevronDown size={11} /> : <ChevronUp size={11} />}
                   </span>
                 )}
               </>
             )}
           </button>
 
-          {/* Individual app nav items */}
           {expanded && appsExpanded && apps.map((app) => {
             const appPage = `app-${app.id}`;
             const isAppActive = currentPage === appPage;
@@ -236,47 +215,38 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
                 key={app.id}
                 onClick={() => onNavigate(appPage)}
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  width: '100%',
-                  height: '34px',
-                  padding: '0 16px 0 32px',
-                  backgroundColor: isAppActive ? '#1E293B' : 'transparent',
-                  color: isAppActive ? '#F8F9FA' : '#64748B',
-                  cursor: 'pointer',
-                  transition: 'background-color 80ms, color 80ms',
-                  borderLeft: isAppActive ? '3px solid #2563EB' : '3px solid transparent',
-                  flexShrink: 0,
-                  textAlign: 'left',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  width: '100%', height: 32, padding: '0 14px 0 30px',
+                  backgroundColor: isAppActive ? '#161D2B' : 'transparent',
+                  color: isAppActive ? '#E2E8F0' : '#475569',
+                  cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
+                  borderLeft: isAppActive ? '2px solid #7C3AED' : '2px solid transparent',
+                  borderTop: 'none', borderRight: 'none', borderBottom: 'none',
+                  flexShrink: 0, textAlign: 'left',
                 }}
                 onMouseEnter={(e) => {
                   if (!isAppActive) {
-                    (e.currentTarget as HTMLElement).style.backgroundColor = '#1E293B';
+                    (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
                     (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
                   }
                 }}
                 onMouseLeave={(e) => {
                   if (!isAppActive) {
                     (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-                    (e.currentTarget as HTMLElement).style.color = '#64748B';
+                    (e.currentTarget as HTMLElement).style.color = '#475569';
                   }
                 }}
               >
                 <div style={{
-                  width: 16, height: 16, borderRadius: 3,
-                  backgroundColor: '#1A3C6E',
+                  width: 15, height: 15, backgroundColor: '#1E1040',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 9, fontWeight: 700, color: '#60A5FA', flexShrink: 0,
+                  fontSize: 8, fontWeight: 700, color: '#7C3AED', flexShrink: 0,
                 }}>
                   {app.name.charAt(0).toUpperCase()}
                 </div>
                 <span style={{
-                  fontSize: '12px',
-                  fontWeight: isAppActive ? 500 : 400,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
+                  fontSize: 12, fontWeight: isAppActive ? 500 : 400,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 }}>
                   {app.name}
                 </span>
@@ -286,75 +256,78 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
         </div>
       </div>
 
-      {/* Bottom section: user + toggle */}
-      <div style={{
-        borderTop: '1px solid #1E293B',
-        padding: '8px 0',
-        flexShrink: 0,
-      }}>
-        {/* User avatar */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          padding: expanded ? '8px 16px' : '8px',
-          justifyContent: expanded ? 'flex-start' : 'center',
-        }}>
+      {/* Bottom: user + logout + collapse */}
+      <div style={{ borderTop: '1px solid #131C2E', padding: '8px 0', flexShrink: 0 }}>
+        {/* User row */}
+        {currentUser && (
           <div style={{
-            width: 28,
-            height: 28,
-            borderRadius: '50%',
-            backgroundColor: '#1A3C6E',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: expanded ? '6px 14px' : '6px',
+            justifyContent: expanded ? 'flex-start' : 'center',
           }}>
-            <span style={{ color: '#fff', fontSize: '11px', fontWeight: 600 }}>
-              {user.avatarInitials}
-            </span>
-          </div>
-          {expanded && (
-            <div style={{ overflow: 'hidden' }}>
-              <div style={{
-                fontSize: '12px',
-                fontWeight: 500,
-                color: '#F8F9FA',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}>
-                {user.name}
-              </div>
-              <div style={{
-                fontSize: '11px',
-                color: '#475569',
-                whiteSpace: 'nowrap',
-              }}>
-                {user.role}
-              </div>
+            <div style={{
+              width: 26, height: 26, borderRadius: '50%',
+              backgroundColor: '#1E1040', border: '1px solid #2D1B69',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 10, fontWeight: 700, color: '#A78BFA', flexShrink: 0,
+            }}>
+              {currentUser.name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
-          )}
-        </div>
+            {expanded && (
+              <div style={{ overflow: 'hidden', flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#E2E8F0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {currentUser.name}
+                </div>
+                <div style={{ fontSize: 10, color: '#334155', letterSpacing: '0.04em' }}>
+                  {currentUser.role}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Logout */}
+        <button
+          onClick={logout}
+          title="Sign out"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            width: '100%', height: 34,
+            padding: expanded ? '0 14px' : '0',
+            justifyContent: expanded ? 'flex-start' : 'center',
+            backgroundColor: 'transparent', color: '#334155',
+            cursor: 'pointer', transition: 'color 80ms, background-color 80ms',
+            border: 'none', flexShrink: 0,
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLElement).style.color = '#F87171';
+            (e.currentTarget as HTMLElement).style.backgroundColor = '#1A0A0A';
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLElement).style.color = '#334155';
+            (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+          }}
+        >
+          <LogOut size={15} />
+          {expanded && <span style={{ fontSize: 12 }}>Sign out</span>}
+        </button>
 
         {/* Collapse toggle */}
         <button
           onClick={() => setExpanded(!expanded)}
           style={{
-            display: 'flex',
-            alignItems: 'center',
+            display: 'flex', alignItems: 'center',
             justifyContent: expanded ? 'flex-end' : 'center',
-            width: '100%',
-            height: '32px',
-            padding: expanded ? '0 12px' : '0',
-            color: '#475569',
-            transition: 'color 80ms ease-out',
+            width: '100%', height: 28,
+            padding: expanded ? '0 10px' : '0',
+            color: '#1E293B', border: 'none', backgroundColor: 'transparent',
+            cursor: 'pointer', transition: 'color 80ms',
           }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#94A3B8'; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#475569'; }}
-          title={expanded ? 'Collapse sidebar' : 'Expand sidebar'}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#334155'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#1E293B'; }}
+          title={expanded ? 'Collapse' : 'Expand'}
         >
-          {expanded ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+          {expanded ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
         </button>
       </div>
     </nav>

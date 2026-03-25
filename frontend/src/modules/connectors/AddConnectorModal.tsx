@@ -59,7 +59,7 @@ const CREDENTIAL_GUIDES: Record<string, { title: string; steps: GuideStep[] }> =
     steps: [
       { step: 'Open HubSpot Settings', detail: 'Go to app.hubspot.com → click the Settings icon (top right).' },
       { step: 'Go to Private Apps', detail: 'In the left sidebar: Integrations → Private Apps.' },
-      { step: 'Create a Private App', detail: 'Click "Create a private app". Name it e.g. "Nexus Origins".' },
+      { step: 'Create a Private App', detail: 'Click "Create a private app". Name it e.g. "maic".' },
       { step: 'Set Scopes', detail: 'Under the Scopes tab, enable: crm.objects.contacts.read, crm.objects.companies.read, crm.objects.deals.read, crm.schemas.contacts.read.' },
       { step: 'Create & copy token', detail: 'Click "Create app" → confirm. Copy the access token shown — it starts with pat-na1-...' },
       { step: 'Paste below', detail: 'Leave Base URL as https://api.hubapi.com and paste the token in the API Token field.' },
