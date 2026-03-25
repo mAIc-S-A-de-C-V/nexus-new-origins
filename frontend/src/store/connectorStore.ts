@@ -4,6 +4,7 @@ import { ConnectorConfig } from '../types/connector';
 // ─── Store ──────────────────────────────────────────────────────────────────
 
 const API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
+const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
 
 interface ConnectorStoreState {
   connectors: ConnectorConfig[];
@@ -23,31 +24,55 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
   fetchConnectors: async () => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${API}/connectors`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const [connRes, pipeRes] = await Promise.all([
+        fetch(`${API}/connectors`),
+        fetch(`${PIPELINE_API}/pipelines`).catch(() => null),
+      ]);
+      if (!connRes.ok) throw new Error(`HTTP ${connRes.status}`);
+      const data = await connRes.json();
+
+      // Build per-connector pipeline stats from the pipeline service
+      const pipelineStats: Record<string, { count: number; lastRun: string | null }> = {};
+      if (pipeRes?.ok) {
+        const pipes: Record<string, unknown>[] = await pipeRes.json();
+        for (const p of pipes) {
+          const ids = (p.connector_ids as string[]) ?? [];
+          const lastRun = (p.last_run_at as string | null) ?? null;
+          for (const cid of ids) {
+            if (!pipelineStats[cid]) pipelineStats[cid] = { count: 0, lastRun: null };
+            pipelineStats[cid].count += 1;
+            if (lastRun && (!pipelineStats[cid].lastRun || lastRun > pipelineStats[cid].lastRun!)) {
+              pipelineStats[cid].lastRun = lastRun;
+            }
+          }
+        }
+      }
+
       // Normalise snake_case from API to camelCase used by frontend types
-      const connectors: ConnectorConfig[] = data.map((c: Record<string, unknown>) => ({
-        id: c.id,
-        name: c.name,
-        type: c.type,
-        category: c.category,
-        status: c.status,
-        description: c.description,
-        baseUrl: c.base_url,
-        authType: c.auth_type,
-        credentials: c.credentials,
-        paginationStrategy: c.pagination_strategy,
-        activePipelineCount: c.active_pipeline_count ?? 0,
-        lastSync: c.last_sync,
-        lastSyncRowCount: c.last_sync_row_count,
-        schemaHash: c.schema_hash,
-        tags: c.tags ?? [],
-        config: c.config,
-        createdAt: c.created_at,
-        updatedAt: c.updated_at,
-        tenantId: c.tenant_id,
-      }));
+      const connectors: ConnectorConfig[] = data.map((c: Record<string, unknown>) => {
+        const stats = pipelineStats[c.id as string];
+        return {
+          id: c.id,
+          name: c.name,
+          type: c.type,
+          category: c.category,
+          status: c.status,
+          description: c.description,
+          baseUrl: c.base_url,
+          authType: c.auth_type,
+          credentials: c.credentials,
+          paginationStrategy: c.pagination_strategy,
+          activePipelineCount: stats?.count ?? (c.active_pipeline_count as number) ?? 0,
+          lastSync: stats?.lastRun ?? (c.last_sync as string | null) ?? undefined,
+          lastSyncRowCount: c.last_sync_row_count,
+          schemaHash: c.schema_hash,
+          tags: c.tags ?? [],
+          config: c.config,
+          createdAt: c.created_at,
+          updatedAt: c.updated_at,
+          tenantId: c.tenant_id,
+        };
+      });
       set({ connectors, loading: false });
     } catch (err: unknown) {
       set({ error: String(err), loading: false });
