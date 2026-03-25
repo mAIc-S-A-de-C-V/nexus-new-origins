@@ -59,4 +59,5 @@ export interface NexusApp {
   objectTypeIds: string[];
   createdAt: string;
   updatedAt: string;
+  syncInterval?: string;
 }

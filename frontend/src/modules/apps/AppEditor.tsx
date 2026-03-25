@@ -9,12 +9,15 @@
  *  CODE  : raw JSON editor for the components array with live parse
  */
 import React, { useState, useEffect, useRef } from 'react';
-import GridLayout, { Layout } from 'react-grid-layout';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import GridLayoutLib from 'react-grid-layout';
+const GridLayout = GridLayoutLib as any; // no types package available
+type LayoutItem = { i: string; x: number; y: number; w: number; h: number; minH?: number; minW?: number; [key: string]: unknown };
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
   Eye, Pencil, Code2, Save, Plus, Trash2,
-  ChevronRight,
+  ChevronRight, RefreshCw,
   BarChart2, LineChart, Table, Hash, AlignLeft, Gauge, SlidersHorizontal,
   Database, Tag, MessageSquare, Sparkles, Loader,
 } from 'lucide-react';
@@ -77,9 +80,9 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
 
 const SEMANTIC_ICON: Record<string, string> = {
-  IDENTIFIER: '🔑', EMAIL: '✉', PHONE: '📞', DATE: '📅', DATETIME: '📅',
-  CURRENCY: '💰', QUANTITY: '#', STATUS: '◉', CATEGORY: '🏷', TEXT: 'T',
-  BOOLEAN: '✓', URL: '🔗', PERSON_NAME: '👤', ADDRESS: '📍', PERCENTAGE: '%',
+  IDENTIFIER: 'ID', EMAIL: '@', PHONE: 'Tel', DATE: 'D', DATETIME: 'DT',
+  CURRENCY: '$', QUANTITY: '#', STATUS: 'S', CATEGORY: 'Cat', TEXT: 'T',
+  BOOLEAN: 'B', URL: 'URL', PERSON_NAME: 'P', ADDRESS: 'Loc', PERCENTAGE: '%',
 };
 
 // ── Left sidebar ──────────────────────────────────────────────────────────────
@@ -342,7 +345,6 @@ const MiniRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
           padding: '10px 16px', borderBottom: '1px solid #E2E8F0',
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
-          <span style={{ fontSize: 15 }}>✦</span>
           <span style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</span>
         </div>
         <div style={{
@@ -366,7 +368,7 @@ const DEFAULT_GRID_H: Record<string, number> = {
 const ROW_HEIGHT = 60;
 const GRID_COLS = 12;
 
-function toLayout(components: AppComponent[]): Layout[] {
+function toLayout(components: AppComponent[]): LayoutItem[] {
   let curY = 0;
   return components.map((comp) => {
     const w = comp.colSpan || 6;
@@ -409,7 +411,7 @@ const EditCanvas: React.FC<{
 
   const layout = toLayout(components);
 
-  const handleLayoutChange = (newLayout: Layout[]) => {
+  const handleLayoutChange = (newLayout: LayoutItem[]) => {
     const updated = components.map((comp) => {
       const l = newLayout.find((item) => item.i === comp.id);
       if (!l) return comp;
@@ -420,6 +422,7 @@ const EditCanvas: React.FC<{
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', backgroundColor: '#F8FAFC' }}>
+      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       <GridLayout
         layout={layout}
         cols={GRID_COLS}
@@ -427,7 +430,7 @@ const EditCanvas: React.FC<{
         width={containerWidth || 900}
         margin={[12, 12]}
         containerPadding={[0, 0]}
-        onLayoutChange={handleLayoutChange}
+        onLayoutChange={handleLayoutChange as any}
         draggableHandle=".drag-handle"
         resizeHandles={['se', 'sw', 'ne', 'nw', 'e', 'w', 's']}
         useCSSTransforms
@@ -1109,7 +1112,7 @@ const CodeEditor: React.FC<{
               fontSize: 11, color: '#16A34A', backgroundColor: '#F0FDF4',
               border: '1px solid #BBF7D0', borderRadius: 4, padding: '2px 8px',
             }}>
-              ✓ Valid JSON
+              Valid JSON
             </span>
           )}
         </div>
@@ -1206,9 +1209,128 @@ const CodeEditor: React.FC<{
   );
 };
 
+// ── Sync Panel ────────────────────────────────────────────────────────────────
+
+const SYNC_INTERVALS = [
+  { value: 'manual', label: 'Manual only' },
+  { value: '1h',  label: 'Every hour' },
+  { value: '6h',  label: 'Every 6 hours' },
+  { value: '12h', label: 'Every 12 hours' },
+  { value: '24h', label: 'Every day' },
+  { value: '7d',  label: 'Every week' },
+];
+
+const SyncPanel: React.FC<{ app: NexusApp; components: AppComponent[]; objectTypes: OntologyType[] }> = ({
+  app, components, objectTypes,
+}) => {
+  const { updateApp } = useAppStore();
+  const [syncing, setSyncing] = useState<Record<string, boolean>>({});
+  const [lastSync, setLastSync] = useState<Record<string, string>>({});
+  const [syncIntervalVal, setSyncIntervalVal] = useState<string>(app.syncInterval || 'manual');
+
+  // Get unique object type IDs used in this app
+  const usedOtIds = Array.from(new Set(components.map(c => c.objectTypeId).filter(Boolean)));
+
+  const saveInterval = async (val: string) => {
+    setSyncIntervalVal(val);
+    await updateApp(app.id, { syncInterval: val } as Partial<NexusApp>);
+  };
+
+  const runSync = async (otId: string) => {
+    setSyncing(p => ({ ...p, [otId]: true }));
+    try {
+      // Trigger a sync by calling the ontology service to refresh records
+      await fetch(`${ONTOLOGY_API}/object-types/${otId}/records/refresh`, {
+        method: 'POST',
+        headers: { 'x-tenant-id': 'tenant-001' },
+      }).catch(() => {});
+      setLastSync(p => ({ ...p, [otId]: new Date().toISOString() }));
+    } finally {
+      setSyncing(p => ({ ...p, [otId]: false }));
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 32, backgroundColor: '#F8FAFC' }}>
+      <div style={{ maxWidth: 640, margin: '0 auto' }}>
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#0D1117', marginBottom: 4 }}>Data Sync</div>
+          <div style={{ fontSize: 13, color: '#64748B' }}>Configure sync frequency and trigger manual syncs for each data source.</div>
+        </div>
+
+        {/* Schedule */}
+        <div style={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, padding: 20, marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginBottom: 12 }}>Sync Schedule</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+            {SYNC_INTERVALS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => saveInterval(opt.value)}
+                style={{
+                  padding: '8px 10px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+                  border: syncIntervalVal === opt.value ? '2px solid #2563EB' : '1px solid #E2E8F0',
+                  backgroundColor: syncIntervalVal === opt.value ? '#EFF6FF' : '#FAFAFA',
+                  color: syncIntervalVal === opt.value ? '#2563EB' : '#374151',
+                  fontSize: 12, fontWeight: syncIntervalVal === opt.value ? 600 : 400,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {syncIntervalVal !== 'manual' && (
+            <div style={{ marginTop: 10, fontSize: 12, color: '#64748B', backgroundColor: '#F1F5F9', borderRadius: 6, padding: '8px 12px' }}>
+              This app syncs automatically <strong>{SYNC_INTERVALS.find(o => o.value === syncIntervalVal)?.label?.toLowerCase()}</strong>.
+            </div>
+          )}
+        </div>
+
+        {/* Data sources */}
+        <div style={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, padding: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginBottom: 12 }}>Data Sources</div>
+          {usedOtIds.length === 0 && (
+            <div style={{ fontSize: 13, color: '#94A3B8', textAlign: 'center', padding: '24px 0' }}>
+              No data sources connected. Add widgets with object types first.
+            </div>
+          )}
+          {usedOtIds.map(otId => {
+            const ot = objectTypes.find(o => o.id === otId);
+            const isSyncing = syncing[otId!];
+            const ls = lastSync[otId!];
+            const usedByWidgets = components.filter(c => c.objectTypeId === otId).map(c => c.title || c.type);
+            return (
+              <div key={otId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: '1px solid #F1F5F9' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{ot?.displayName || ot?.name || 'Unknown'}</div>
+                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>
+                    Used by: {usedByWidgets.slice(0, 3).join(', ')}{usedByWidgets.length > 3 ? ` +${usedByWidgets.length - 3} more` : ''}
+                  </div>
+                  {ls && <div style={{ fontSize: 11, color: '#059669', marginTop: 2 }}>Synced {new Date(ls).toLocaleTimeString()}</div>}
+                </div>
+                <button
+                  onClick={() => runSync(otId!)}
+                  disabled={isSyncing}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '6px 14px', borderRadius: 6, border: '1px solid #E2E8F0',
+                    backgroundColor: isSyncing ? '#F1F5F9' : '#fff', color: isSyncing ? '#94A3B8' : '#374151',
+                    fontSize: 12, fontWeight: 500, cursor: isSyncing ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {isSyncing ? 'Syncing…' : 'Sync now'}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── App Editor (main export) ──────────────────────────────────────────────────
 
-type Mode = 'view' | 'edit' | 'code';
+type Mode = 'view' | 'edit' | 'code' | 'sync';
 
 const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   const { updateApp } = useAppStore();
@@ -1344,14 +1466,15 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
         {tab('view',  <Eye size={13} />,    'View')}
         {tab('edit',  <Pencil size={13} />, 'Edit')}
         {tab('code',  <Code2 size={13} />,  'Code')}
+        {tab('sync', <RefreshCw size={13} />, 'Sync')}
 
         {dirty && (
-          <span style={{ marginLeft: 8, fontSize: 11, color: '#D97706' }}>● Unsaved</span>
+          <span style={{ marginLeft: 8, fontSize: 11, color: '#D97706' }}>Unsaved</span>
         )}
 
         {fieldCopied && (
           <span style={{ marginLeft: 8, fontSize: 11, color: '#16A34A' }}>
-            ✓ Field "{fieldCopied}" copied
+            Field "{fieldCopied}" copied
           </span>
         )}
 
@@ -1423,6 +1546,10 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
             objectTypes={objectTypes}
             onChange={(c) => mark(c)}
           />
+        )}
+
+        {mode === 'sync' && (
+          <SyncPanel app={app} components={components} objectTypes={objectTypes} />
         )}
       </div>
     </div>

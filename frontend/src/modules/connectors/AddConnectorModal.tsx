@@ -57,7 +57,7 @@ const CREDENTIAL_GUIDES: Record<string, { title: string; steps: GuideStep[] }> =
   HUBSPOT: {
     title: 'How to get your HubSpot API token',
     steps: [
-      { step: 'Open HubSpot Settings', detail: 'Go to app.hubspot.com → click the ⚙ Settings icon (top right).' },
+      { step: 'Open HubSpot Settings', detail: 'Go to app.hubspot.com → click the Settings icon (top right).' },
       { step: 'Go to Private Apps', detail: 'In the left sidebar: Integrations → Private Apps.' },
       { step: 'Create a Private App', detail: 'Click "Create a private app". Name it e.g. "Nexus Origins".' },
       { step: 'Set Scopes', detail: 'Under the Scopes tab, enable: crm.objects.contacts.read, crm.objects.companies.read, crm.objects.deals.read, crm.schemas.contacts.read.' },
@@ -68,7 +68,7 @@ const CREDENTIAL_GUIDES: Record<string, { title: string; steps: GuideStep[] }> =
   SALESFORCE: {
     title: 'How to get your Salesforce credentials',
     steps: [
-      { step: 'Go to Setup', detail: 'In Salesforce, click the ⚙ gear → Setup.' },
+      { step: 'Go to Setup', detail: 'In Salesforce, click the gear icon → Setup.' },
       { step: 'Create a Connected App', detail: 'Search "App Manager" → New Connected App. Enable OAuth, add callback URL.' },
       { step: 'Set OAuth Scopes', detail: 'Add: "Access and manage your data (api)" and "Perform requests on your behalf (refresh_token)".' },
       { step: 'Get Client ID & Secret', detail: 'After saving, click "Manage Consumer Details" — copy the Consumer Key (Client ID) and Consumer Secret.' },

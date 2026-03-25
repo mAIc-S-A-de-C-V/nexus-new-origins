@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
-  ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
+  ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp, FolderKanban,
 } from 'lucide-react';
 import { useUser } from './TenantContext';
 import { useAppStore } from '../store/appStore';
@@ -26,6 +26,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'lineage', label: 'Lineage', icon: <GitBranch size={18} />, active: false, comingSoon: true, path: 'lineage' },
   { id: 'events', label: 'Event Log', icon: <Activity size={18} />, active: true, path: 'events' },
   { id: 'pipelines', label: 'Pipelines', icon: <Workflow size={18} />, active: true, path: 'pipelines' },
+  { id: 'projects', label: 'maic', icon: <FolderKanban size={18} />, active: true, path: 'projects' },
   { id: 'settings', label: 'Settings', icon: <Settings size={18} />, active: false, comingSoon: true, path: 'settings' },
 ];
 

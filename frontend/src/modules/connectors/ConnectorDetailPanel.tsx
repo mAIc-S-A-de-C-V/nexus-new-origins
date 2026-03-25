@@ -195,7 +195,7 @@ export const ConnectorDetailPanel: React.FC<ConnectorDetailPanelProps> = ({
           justifyContent: 'space-between',
           gap: '6px',
         }}>
-          <span>{testResult.success ? '✓' : '✗'} {testResult.message}</span>
+          <span>{testResult.success ? 'OK' : 'Failed'}: {testResult.message}</span>
           {testResult.latency_ms > 0 && (
             <span style={{ color: testResult.success ? '#059669' : '#DC2626', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
               {testResult.latency_ms}ms
@@ -265,9 +265,30 @@ export const ConnectorDetailPanel: React.FC<ConnectorDetailPanelProps> = ({
   );
 };
 
+const SYNC_OPTIONS = [
+  { value: 'manual', label: 'Manual only' },
+  { value: '1h', label: 'Every 1 hour' },
+  { value: '6h', label: 'Every 6 hours' },
+  { value: '12h', label: 'Every 12 hours' },
+  { value: '24h', label: 'Every 24 hours (daily)' },
+  { value: '7d', label: 'Every 7 days (weekly)' },
+];
+
 const OverviewTab: React.FC<{ connector: ConnectorConfig; formatDate: (ts?: string) => string }> = ({
   connector, formatDate,
-}) => (
+}) => {
+  const { updateConnector } = useConnectorStore();
+  const [syncInterval, setSyncInterval] = React.useState<string>(connector.config?.syncInterval || 'manual');
+  const [savingSync, setSavingSync] = React.useState(false);
+
+  const saveSync = async (val: string) => {
+    setSyncInterval(val);
+    setSavingSync(true);
+    await updateConnector(connector.id, { config: { ...connector.config, syncInterval: val } });
+    setSavingSync(false);
+  };
+
+  return (
   <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
     <div style={{
       display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px',
@@ -327,8 +348,40 @@ const OverviewTab: React.FC<{ connector: ConnectorConfig; formatDate: (ts?: stri
         </tbody>
       </table>
     </div>
+
+    {/* Sync Schedule */}
+    <div>
+      <div style={{ fontSize: '13px', fontWeight: 500, color: '#0D1117', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: 6 }}>
+        Sync Schedule
+        {savingSync && <span style={{ fontSize: 11, color: '#94A3B8' }}>Saving…</span>}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+        {SYNC_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            onClick={() => saveSync(opt.value)}
+            style={{
+              padding: '8px 10px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+              border: syncInterval === opt.value ? '2px solid #2563EB' : '1px solid #E2E8F0',
+              backgroundColor: syncInterval === opt.value ? '#EFF6FF' : '#FAFAFA',
+              color: syncInterval === opt.value ? '#2563EB' : '#374151',
+              fontSize: 12, fontWeight: syncInterval === opt.value ? 600 : 400,
+              transition: 'all 100ms',
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      {syncInterval !== 'manual' && (
+        <div style={{ marginTop: 8, fontSize: 12, color: '#64748B', backgroundColor: '#F1F5F9', borderRadius: 6, padding: '8px 12px' }}>
+          This connector will sync automatically <strong>{SYNC_OPTIONS.find(o => o.value === syncInterval)?.label?.toLowerCase()}</strong>. Link a pipeline in the Pipelines tab to trigger it.
+        </div>
+      )}
+    </div>
   </div>
-);
+  );
+};
 
 const ConfigurationTab: React.FC<{
   connector: ConnectorConfig;
@@ -1439,7 +1492,7 @@ const simulateTransform = (value: string, transform: string): { output: string; 
         : { output: d.toISOString() };
     }
     case 'extract_name':
-      return { output: '⚠ NLP required', note: 'spaCy PERSON entity extraction — not available in browser preview' };
+      return { output: 'NLP required', note: 'spaCy PERSON entity extraction — not available in browser preview' };
     case 'extract_company': {
       // Browser heuristic: pick first capitalised token that isn't a stop word
       const stop = new Set(['zoom', 'maic', 'sesion', 'session', 'demo', 'meet', 'call', 'sync', 'con', 'de', 'la', 'el', 'y', 'and', 'the']);
@@ -1458,7 +1511,7 @@ const TransformSandbox: React.FC<{ transform: string; initialInput?: string }> =
   const result = input ? simulateTransform(input, transform) : null;
   return (
     <div style={{ backgroundColor: '#0D1117', borderTop: '1px solid #1E293B', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <div style={{ fontSize: '10px', color: '#60A5FA', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>⚗ Try it</div>
+      <div style={{ fontSize: '10px', color: '#60A5FA', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>Try it</div>
       <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
         <input
           value={input}
@@ -1475,7 +1528,7 @@ const TransformSandbox: React.FC<{ transform: string; initialInput?: string }> =
           <button
             onClick={() => setInput('')}
             style={{ background: 'none', border: 'none', color: '#475569', cursor: 'pointer', fontSize: '12px', padding: '0 2px' }}
-          >✕</button>
+          >x</button>
         )}
       </div>
       {result && (
@@ -1484,7 +1537,7 @@ const TransformSandbox: React.FC<{ transform: string; initialInput?: string }> =
             <span style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-mono)' }}>output:</span>
             <span style={{
               fontSize: '12px', fontFamily: 'var(--font-mono)',
-              color: result.output.startsWith('⚠') ? '#FBBF24' : '#34D399',
+              color: result.output.startsWith('NLP') ? '#FBBF24' : '#34D399',
               backgroundColor: '#0F2027', padding: '1px 8px', borderRadius: '2px',
             }}>
               {result.output || '(empty)'}
@@ -1609,7 +1662,7 @@ const TransformEditorChat: React.FC<{
 
   const applyCode = (code: string) => {
     onCodeChange(code);
-    setMessages((m) => [...m, { role: 'bot', text: '✓ Applied to transform. The sandbox preview above has been updated.' }]);
+    setMessages((m) => [...m, { role: 'bot', text: 'Applied to transform. The sandbox preview above has been updated.' }]);
   };
 
   return (
@@ -1855,7 +1908,7 @@ const MatchSandboxModal: React.FC<{
         {/* Header */}
         <div style={{ padding: '14px 20px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0, backgroundColor: '#F8FAFC' }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '15px', fontWeight: 600, color: '#0D1117' }}>⚗ Match Sandbox</div>
+            <div style={{ fontSize: '15px', fontWeight: 600, color: '#0D1117' }}>Match Sandbox</div>
             <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
               <code style={{ backgroundColor: '#EEF2FF', color: '#4F46E5', padding: '1px 4px', borderRadius: '2px' }}>{sourceField}</code>
               {' '}→ {transform !== 'none' ? <code style={{ backgroundColor: '#FEF3C7', color: '#92400E', padding: '1px 4px', borderRadius: '2px' }}>{transform}</code> : null}
@@ -1876,12 +1929,12 @@ const MatchSandboxModal: React.FC<{
           >
             {'</>'} {editorOpen ? 'Hide editor' : 'Edit transform'}
           </button>
-          <button onClick={onClose} style={{ width: 28, height: 28, borderRadius: '4px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748B', fontSize: '14px' }}>✕</button>
+          <button onClick={onClose} style={{ width: 28, height: 28, borderRadius: '4px', border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748B', fontSize: '14px' }}>x</button>
         </div>
 
         {/* NL Rule bar */}
         <div style={{ padding: '10px 20px', borderBottom: '1px solid #E2E8F0', backgroundColor: '#FAFBFF', display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-          <span style={{ fontSize: '11px', fontWeight: 600, color: '#7C3AED', whiteSpace: 'nowrap' }}>✦ Describe rule:</span>
+          <span style={{ fontSize: '11px', fontWeight: 600, color: '#7C3AED', whiteSpace: 'nowrap' }}>Describe rule:</span>
           <input
             value={nlQuery}
             onChange={(e) => setNlQuery(e.target.value)}
@@ -1898,7 +1951,7 @@ const MatchSandboxModal: React.FC<{
         </div>
         {nlResult && (
           <div style={{ padding: '5px 20px', backgroundColor: '#EDE9FE', fontSize: '11px', color: '#6D28D9', flexShrink: 0 }}>
-            ✦ {nlResult.note}
+            {nlResult.note}
           </div>
         )}
 
@@ -2061,7 +2114,7 @@ const MatchSandboxModal: React.FC<{
                         <span style={{ fontSize: '12px', fontWeight: 700, color: scoreColor(row.best.score), fontFamily: 'var(--font-mono)' }}>
                           {Math.round(row.best.score * 100)}%
                         </span>
-                        <span style={{ fontSize: '9px', color: row.matched ? '#059669' : '#DC2626' }}>{row.matched ? '✓' : '✗'}</span>
+                        <span style={{ fontSize: '9px', color: row.matched ? '#059669' : '#DC2626' }}>{row.matched ? 'ok' : 'no'}</span>
                       </div>
                       <div style={{ height: '4px', backgroundColor: '#F1F5F9', borderRadius: '2px', overflow: 'hidden' }}>
                         <div style={{ height: '100%', width: `${Math.round(row.best.score * 100)}%`, backgroundColor: scoreColor(row.best.score), borderRadius: '2px', transition: 'width 150ms' }} />
@@ -2118,7 +2171,7 @@ const MatchSandboxModal: React.FC<{
                     <button
                       onClick={() => setTargetValues((prev) => prev.filter((_, j) => j !== i))}
                       style={{ height: '26px', width: '22px', border: 'none', borderLeft: '1px solid #F1F5F9', backgroundColor: '#F8FAFC', color: '#94A3B8', cursor: 'pointer', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                    >✕</button>
+                    >x</button>
                   </div>
                 ))}
                 <div style={{ display: 'flex', border: '1px dashed #CBD5E1', borderRadius: '4px', overflow: 'hidden' }}>
@@ -2148,7 +2201,7 @@ const MatchSandboxModal: React.FC<{
               onClick={() => onApply({ algorithm, threshold })}
               style={{ height: '32px', padding: '0 16px', fontSize: '12px', fontWeight: 600, backgroundColor: '#7C3AED', color: '#FFFFFF', border: 'none', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
             >
-              ✓ Apply to Pipeline
+              Apply to Pipeline
             </button>
           </div>
         </div>
@@ -2174,7 +2227,7 @@ const SampleDataPreview: React.FC<{ rows: unknown[] }> = ({ rows }) => {
         <span style={{ fontSize: '12px', fontWeight: 500, color: '#0D1117' }}>
           Sample Data <span style={{ fontWeight: 400, color: '#94A3B8', marginLeft: '4px' }}>{preview.length} rows</span>
         </span>
-        <span style={{ fontSize: '11px', color: '#94A3B8' }}>{collapsed ? '▶ show' : '▼ hide'}</span>
+        <span style={{ fontSize: '11px', color: '#94A3B8' }}>{collapsed ? 'show' : 'hide'}</span>
       </div>
       {!collapsed && (
         <div style={{ overflowX: 'auto' }}>
@@ -2803,7 +2856,7 @@ const CorrelationPanel: React.FC<{
                           borderRadius: '3px', fontSize: '10px', fontWeight: 600, cursor: 'pointer',
                         }}
                       >
-                        ⚗ {nestSandboxOpen ? 'close sandbox' : 'try transform'}
+                        {nestSandboxOpen ? 'close sandbox' : 'try transform'}
                       </button>
                     </div>
                   </div>
@@ -2836,7 +2889,7 @@ const CorrelationPanel: React.FC<{
                         fontSize: '11px', fontWeight: 600, cursor: 'pointer',
                       }}
                     >
-                      ⚗ Open Match Sandbox
+                      Open Match Sandbox
                     </button>
                   </div>
                 </div>

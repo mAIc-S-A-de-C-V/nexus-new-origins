@@ -220,7 +220,7 @@ export const EventLog: React.FC = () => {
                     backgroundColor: currentPipeline.status === 'RUNNING' ? '#ECFDF5' : currentPipeline.status === 'FAILED' ? '#FEF2F2' : '#F1F5F9',
                     color: currentPipeline.status === 'RUNNING' ? '#065F46' : currentPipeline.status === 'FAILED' ? '#991B1B' : '#64748B',
                   }}>
-                    {currentPipeline.status === 'RUNNING' ? '● ' : ''}{currentPipeline.status}
+                    {currentPipeline.status}
                   </span>
                   <span style={{ fontSize: '10px', color: '#94A3B8' }}>v{currentPipeline.version}</span>
                 </div>
@@ -260,7 +260,7 @@ export const EventLog: React.FC = () => {
                     <div style={{ marginTop: '10px', padding: '8px 10px', backgroundColor: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '4px' }}>
                       {quality.issues.map((issue, i) => (
                         <div key={i} style={{ fontSize: '11px', color: '#92400E', display: 'flex', gap: '4px' }}>
-                          <span>⚠</span><span>{issue}</span>
+                          <span>{issue}</span>
                         </div>
                       ))}
                     </div>

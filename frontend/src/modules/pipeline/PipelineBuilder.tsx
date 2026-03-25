@@ -380,7 +380,7 @@ export const PipelineBuilder: React.FC = () => {
         )}
         {isRunning && (
           <span style={{ fontSize: '11px', color: '#D97706', fontFamily: 'var(--font-mono)' }}>
-            ● Pipeline executing...
+            Pipeline executing...
           </span>
         )}
       </div>

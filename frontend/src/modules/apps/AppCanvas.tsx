@@ -56,10 +56,34 @@ function aggLabel(method?: string, field?: string) {
 
 // ── Filter engine ─────────────────────────────────────────────────────────
 
+/**
+ * Resolve a field value from a record, falling back to underscore-insensitive
+ * matching so that ontology names like "hs_last_modified_date" match compact
+ * HubSpot field names like "hs_lastmodifieddate".
+ */
+function resolveRaw(rec: Record<string, unknown>, field: string): unknown {
+  if (rec[field] !== undefined) return rec[field];
+  const normalized = field.replace(/_/g, '').toLowerCase();
+  for (const k of Object.keys(rec)) {
+    if (k.replace(/_/g, '').toLowerCase() === normalized) return rec[k];
+  }
+  return undefined;
+}
+
 function coerce(raw: unknown): { str: string; num: number; date: Date | null } {
   const str = String(raw ?? '');
   const num = parseFloat(str);
-  const date = /\d{4}-\d{2}-\d{2}/.test(str) ? new Date(str) : null;
+  // Parse ISO date strings AND Unix timestamps (ms) like 1742864400000
+  let date: Date | null = null;
+  if (/\d{4}-\d{2}-\d{2}/.test(str)) {
+    date = new Date(str);
+  } else if (/^\d{10,13}$/.test(str.trim())) {
+    // Unix timestamp — 10 digits = seconds, 13 digits = milliseconds
+    const ms = str.length <= 10 ? parseFloat(str) * 1000 : parseFloat(str);
+    date = new Date(ms);
+  } else if (typeof raw === 'number' && raw > 1e9) {
+    date = new Date(raw < 1e12 ? raw * 1000 : raw);
+  }
   return { str, num, date };
 }
 
@@ -71,7 +95,7 @@ function applyFilters(
   return records.filter((rec) =>
     filters.every((f) => {
       if (!f.field || !f.operator) return true;
-      const raw = rec[f.field];
+      const raw = resolveRaw(rec, f.field);
       const { str, num, date } = coerce(raw);
       const fv = f.value ?? '';
       const fvNum = parseFloat(fv);
@@ -82,10 +106,11 @@ function applyFilters(
         case 'neq':         return str !== fv;
         case 'contains':    return str.toLowerCase().includes(fv.toLowerCase());
         case 'not_contains':return !str.toLowerCase().includes(fv.toLowerCase());
-        case 'gt':          return !isNaN(num) && !isNaN(fvNum) ? num > fvNum : str > fv;
-        case 'gte':         return !isNaN(num) && !isNaN(fvNum) ? num >= fvNum : str >= fv;
-        case 'lt':          return !isNaN(num) && !isNaN(fvNum) ? num < fvNum : str < fv;
-        case 'lte':         return !isNaN(num) && !isNaN(fvNum) ? num <= fvNum : str <= fv;
+        // For numeric/date comparisons, prefer date when both sides are dates
+        case 'gt':          return date && fvDate ? date > fvDate : (!isNaN(num) && !isNaN(fvNum) ? num > fvNum : str > fv);
+        case 'gte':         return date && fvDate ? date >= fvDate : (!isNaN(num) && !isNaN(fvNum) ? num >= fvNum : str >= fv);
+        case 'lt':          return date && fvDate ? date < fvDate : (!isNaN(num) && !isNaN(fvNum) ? num < fvNum : str < fv);
+        case 'lte':         return date && fvDate ? date <= fvDate : (!isNaN(num) && !isNaN(fvNum) ? num <= fvNum : str <= fv);
         case 'after':       return date && fvDate ? date > fvDate : str > fv;
         case 'before':      return date && fvDate ? date < fvDate : str < fv;
         case 'is_empty':    return str === '' || raw === null || raw === undefined;
@@ -170,8 +195,9 @@ const DataTable: React.FC<{ comp: AppComponent; records: Record<string, unknown>
   const maxRows = comp.maxRows || 10;
   const shown = records.slice(0, maxRows);
   const allCols = records.length > 0 ? Object.keys(records[0]) : [];
+  // Keep configured columns even if names differ from record keys (underscore-insensitive)
   const cols = comp.columns?.length
-    ? comp.columns.filter((c) => allCols.includes(c))
+    ? comp.columns.filter((c) => records.some((r) => resolveRaw(r, c) !== undefined))
     : allCols.filter((c) => !c.endsWith('[]'));
 
   return (
@@ -220,20 +246,23 @@ const DataTable: React.FC<{ comp: AppComponent; records: Record<string, unknown>
           <tbody>
             {shown.map((row, i) => (
               <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
-                {cols.map((c) => (
-                  <td key={c} style={{
-                    padding: '7px 12px',
-                    color: '#374151',
-                    maxWidth: 200,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {Array.isArray(row[c])
-                      ? `[${(row[c] as unknown[]).length} items]`
-                      : String(row[c] ?? '')}
-                  </td>
-                ))}
+                {cols.map((c) => {
+                  const val = resolveRaw(row, c);
+                  return (
+                    <td key={c} style={{
+                      padding: '7px 12px',
+                      color: '#374151',
+                      maxWidth: 200,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {Array.isArray(val)
+                        ? `[${(val as unknown[]).length} items]`
+                        : String(val ?? '')}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
@@ -421,7 +450,9 @@ const LineChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>
       // Group by date prefix (YYYY-MM-DD → use YYYY-WNN week bucket)
       const weekly: Record<string, number> = {};
       for (const r of records) {
-        const raw = String(r[xField] ?? '').slice(0, 10); // YYYY-MM-DD
+        const rawVal = resolveRaw(r, xField);
+        const { date: parsedDate } = coerce(rawVal);
+        const raw = parsedDate ? parsedDate.toISOString().slice(0, 10) : String(rawVal ?? '').slice(0, 10);
         if (!raw || raw === 'undefined') continue;
         // bucket to week start (Mon)
         const d = new Date(raw);
@@ -716,7 +747,6 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
         padding: '10px 16px', borderBottom: '1px solid #E2E8F0',
         display: 'flex', alignItems: 'center', gap: 8,
       }}>
-        <span style={{ fontSize: 15 }}>✦</span>
         <span style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', flex: 1 }}>{comp.title}</span>
         <span style={{ fontSize: 11, color: '#94A3B8' }}>{records.length} records loaded</span>
       </div>

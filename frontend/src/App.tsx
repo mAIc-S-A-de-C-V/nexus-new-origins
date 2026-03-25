@@ -7,6 +7,7 @@ const PipelineBuilder = lazy(() => import('./modules/pipeline/PipelineBuilder'))
 const LineageCanvas = lazy(() => import('./modules/lineage/LineageCanvas'));
 const EventLog = lazy(() => import('./modules/events/EventLog'));
 const AppsPage = lazy(() => import('./modules/apps/AppsPage'));
+const ProjectsModule = lazy(() => import('./modules/projects/ProjectsModule'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -122,6 +123,12 @@ const renderPage = (page: string): React.ReactNode => {
       return (
         <Suspense fallback={<LoadingSpinner message="Loading apps..." />}>
           <AppsPage />
+        </Suspense>
+      );
+    case 'projects':
+      return (
+        <Suspense fallback={<LoadingSpinner message="Loading projects..." />}>
+          <ProjectsModule />
         </Suspense>
       );
     case 'settings':

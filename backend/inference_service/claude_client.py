@@ -484,72 +484,205 @@ Only include keys relevant to the widget type. Omit null/empty keys entirely."""
         fields: list[str],
         records: list[dict],
     ) -> str:
-        """
-        Answer a natural language question about the provided data records.
-        Returns a GitHub-Flavored Markdown answer, optionally with embedded widget specs.
-        """
+        """Two-pass approach: Claude plans the query from 5 samples, then answers from real results."""
         if not self.client:
             raise ValueError("Anthropic API key not configured")
 
         today = datetime.now().strftime("%Y-%m-%d")
         total = len(records)
-        sample = records[:50]
+        sample = records[:5]
 
-        def _trunc(v: object, n: int = 45) -> str:
-            if v is None:
-                return "null"
-            if isinstance(v, list):
-                return f"[{len(v)} items]"
-            s = str(v)
-            return s[:n] + "..." if len(s) > n else s
+        # ── Pass 1: Query planning ────────────────────────────────────────────
+        sample_json = json.dumps(sample, indent=2)[:3000]
+        plan_prompt = f"""You are a data query planner. Today is {today}.
+Dataset: {object_type_name} ({total} total records)
+Available fields: {json.dumps(fields[:60])}
+Sample records (5 of {total}):
+{sample_json}
 
-        if sample:
-            all_keys = list(dict.fromkeys(k for row in sample for k in row))[:30]
-            header = " | ".join(all_keys)
-            rows_text = "\n".join(
-                " | ".join(_trunc(row.get(k)) for k in all_keys)
-                for row in sample
-            )
-            data_section = (
-                f"Fields: {', '.join(fields[:50])}\n"
-                f"Total records: {total}\n"
-                f"Sample ({len(sample)} rows shown):\n{header}\n{rows_text}"
-            )
+User question: {question}
+
+Respond ONLY with valid JSON (no explanation, no markdown):
+{{
+  "filters": [{{"field": "field_name", "operator": "eq|neq|contains|gt|gte|lt|lte|after|before|is_empty|is_not_empty", "value": "string_value"}}],
+  "groupBy": "field_name or null",
+  "aggregation": "count|sum|avg|max|min or null",
+  "aggregationField": "field_name or null",
+  "sortBy": "field_name or null",
+  "sortDir": "asc or desc",
+  "limit": 200,
+  "selectFields": ["field1", "field2"]
+}}
+
+Rules:
+- filters: use field names exactly as listed above. For date fields, values must be ISO strings like "2026-03-17T00:00:00". Use "after" for "since/this week/today". Empty array if no filter needed.
+- groupBy: field to group by for aggregations. null if not needed.
+- aggregation: use "count" for "how many", "sum"/"avg" for numeric questions. null to return raw rows.
+- selectFields: list the fields the user cares about. Empty array = all fields.
+- limit: max records to return after filtering (default 200)
+"""
+        plan_response = self.client.messages.create(
+            model=MODEL,
+            max_tokens=512,
+            system="You are a data query planner. Output only valid JSON.",
+            messages=[{"role": "user", "content": plan_prompt}],
+        )
+        plan_text = plan_response.content[0].text.strip()
+        # Strip markdown code fences if present
+        if plan_text.startswith("```"):
+            plan_text = "\n".join(plan_text.split("\n")[1:])
+            plan_text = plan_text.rsplit("```", 1)[0]
+
+        try:
+            plan = json.loads(plan_text)
+        except Exception:
+            plan = {"filters": [], "groupBy": None, "aggregation": None,
+                    "aggregationField": None, "sortBy": None, "sortDir": "asc",
+                    "limit": 200, "selectFields": []}
+
+        # ── Apply query plan ─────────────────────────────────────────────────
+        result = _apply_query_plan(records, plan, fields)
+
+        # ── Pass 2: Answer ────────────────────────────────────────────────────
+        def _trunc(v: object, n: int = 80) -> str:
+            if v is None: return "null"
+            if isinstance(v, list): return f"[{len(v)} items]"
+            s = str(v); return s[:n] + "…" if len(s) > n else s
+
+        if isinstance(result, list):
+            keys = list(dict.fromkeys(k for row in result[:50] for k in row))[:30]
+            header = " | ".join(keys)
+            rows_txt = "\n".join(" | ".join(_trunc(row.get(k)) for k in keys) for row in result[:50])
+            result_section = f"{len(result)} records:\n{header}\n{rows_txt}"
         else:
-            data_section = f"Fields: {', '.join(fields[:50])}\nNo records available."
+            result_section = json.dumps(result, indent=2)
 
         fields_json = json.dumps(fields[:40])
         widget_guide = (
-            "\n\nOPTIONAL — When a chart or table visualization would add real value beyond the text, "
-            "embed a widget spec as a ```widget code block with valid JSON:\n"
-            "- bar-chart: {\"type\":\"bar-chart\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\","
-            "\"labelField\":\"FIELD\",\"colSpan\":12,\"gridH\":5}\n"
-            "- metric-card: {\"type\":\"metric-card\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\","
-            "\"field\":\"FIELD\",\"aggregation\":\"count\",\"colSpan\":6,\"gridH\":3}\n"
-            "- data-table: {\"type\":\"data-table\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\","
-            "\"columns\":[\"FIELD1\",\"FIELD2\"],\"colSpan\":12,\"gridH\":6}\n"
-            f"Replace OBJ_ID with \"{object_type_id}\". "
-            f"Field names MUST be copied exactly from: {fields_json}. "
-            "Only include a widget when it genuinely helps. Do not include more than 2 widgets per answer."
+            "\n\nOPTIONAL — embed a widget when it adds real value:\n"
+            "- bar-chart: {\"type\":\"bar-chart\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\",\"labelField\":\"FIELD\",\"colSpan\":12,\"gridH\":5}\n"
+            "- metric-card: {\"type\":\"metric-card\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\",\"field\":\"FIELD\",\"aggregation\":\"count\",\"colSpan\":6,\"gridH\":3}\n"
+            "- data-table: {\"type\":\"data-table\",\"title\":\"...\",\"objectTypeId\":\"OBJ_ID\",\"columns\":[\"F1\",\"F2\"],\"colSpan\":12,\"gridH\":6}\n"
+            f"Replace OBJ_ID with \"{object_type_id}\". Field names from: {fields_json}. Max 2 widgets."
         )
 
         message = self.client.messages.create(
             model=MODEL,
             max_tokens=2048,
             system=(
-                f"You are a data analyst assistant. Today is {today}. "
-                "Format all responses with GitHub-Flavored Markdown: **bold** for key values, "
-                "## headers for sections, bullet lists, and GFM pipe tables for structured data. "
-                "Use numbers, percentages, and specific examples from the data. "
-                "If the answer requires data you don't have, say so clearly."
+                f"You are a data analyst. Today is {today}. Dataset: {object_type_name} ({total} total records). "
+                "Use GFM markdown: **bold** key values, ## headers, bullet lists, pipe tables. "
+                "Be specific with numbers and examples from the data."
                 + widget_guide
             ),
             messages=[{
                 "role": "user",
-                "content": f"Data ({object_type_name}, {total} total records):\n{data_section}\n\nQuestion: {question}",
+                "content": f"Question: {question}\n\nQuery results ({object_type_name}):\n{result_section}",
             }],
         )
         return message.content[0].text
+
+
+def _apply_query_plan(records: list[dict], plan: dict, fields: list[str]) -> object:
+    """Apply a Claude-generated query plan to a list of records."""
+    import re
+    from datetime import datetime as _dt
+
+    def _coerce(raw) -> tuple:
+        s = str(raw) if raw is not None else ""
+        try: num = float(s)
+        except: num = None
+        date = None
+        if re.search(r'\d{4}-\d{2}-\d{2}', s):
+            try: date = _dt.fromisoformat(s.replace("Z",""))
+            except: pass
+        elif re.match(r'^\d{10,13}$', s.strip()):
+            ms = int(s) * (1000 if len(s) <= 10 else 1)
+            try: date = _dt.fromtimestamp(ms / 1000)
+            except: pass
+        return s, num, date
+
+    def _matches(rec, f):
+        raw = rec.get(f.get("field",""))
+        s, num, date = _coerce(raw)
+        op = f.get("operator","eq")
+        fv = str(f.get("value",""))
+        try: fv_num = float(fv)
+        except: fv_num = None
+        fv_date = None
+        if re.search(r'\d{4}-\d{2}-\d{2}', fv):
+            try: fv_date = _dt.fromisoformat(fv.replace("Z",""))
+            except: pass
+        if op == "eq": return s == fv
+        if op == "neq": return s != fv
+        if op == "contains": return fv.lower() in s.lower()
+        if op == "not_contains": return fv.lower() not in s.lower()
+        if op == "gt": return (num > fv_num) if (num is not None and fv_num is not None) else s > fv
+        if op == "gte": return (num >= fv_num) if (num is not None and fv_num is not None) else s >= fv
+        if op == "lt": return (num < fv_num) if (num is not None and fv_num is not None) else s < fv
+        if op == "lte": return (num <= fv_num) if (num is not None and fv_num is not None) else s <= fv
+        if op == "after": return (date > fv_date) if (date and fv_date) else s > fv
+        if op == "before": return (date < fv_date) if (date and fv_date) else s < fv
+        if op == "is_empty": return s == "" or raw is None
+        if op == "is_not_empty": return s != "" and raw is not None
+        return True
+
+    # Filter
+    filters = plan.get("filters") or []
+    filtered = [r for r in records if all(_matches(r, f) for f in filters)] if filters else records
+
+    # Select fields
+    select = plan.get("selectFields") or []
+    if select:
+        filtered = [{k: r.get(k) for k in select} for r in filtered]
+
+    # Sort
+    sort_by = plan.get("sortBy")
+    sort_dir = plan.get("sortDir", "asc")
+    if sort_by:
+        def _sort_key(r):
+            v = r.get(sort_by)
+            _, num, date = _coerce(v)
+            if date: return (2, date)
+            if num is not None: return (1, num)
+            return (0, str(v) if v is not None else "")
+        filtered.sort(key=_sort_key, reverse=(sort_dir == "desc"))
+
+    # Limit
+    limit = plan.get("limit") or 200
+    filtered = filtered[:limit]
+
+    # Aggregate
+    agg = plan.get("aggregation")
+    group_by = plan.get("groupBy")
+    agg_field = plan.get("aggregationField")
+
+    if agg and group_by:
+        groups: dict = {}
+        for r in filtered:
+            key = str(r.get(group_by, ""))
+            if key not in groups: groups[key] = []
+            groups[key].append(r)
+        result = {}
+        for key, rows in groups.items():
+            if agg == "count":
+                result[key] = len(rows)
+            elif agg_field:
+                vals = [float(str(r.get(agg_field,0) or 0)) for r in rows if r.get(agg_field) is not None]
+                if agg == "sum": result[key] = sum(vals)
+                elif agg == "avg": result[key] = sum(vals)/len(vals) if vals else 0
+                elif agg == "max": result[key] = max(vals) if vals else 0
+                elif agg == "min": result[key] = min(vals) if vals else 0
+        return result
+    elif agg and not group_by:
+        if agg == "count": return {"count": len(filtered)}
+        if agg_field:
+            vals = [float(str(r.get(agg_field,0) or 0)) for r in filtered if r.get(agg_field) is not None]
+            if agg == "sum": return {"sum": sum(vals), "field": agg_field}
+            if agg == "avg": return {"avg": sum(vals)/len(vals) if vals else 0, "field": agg_field}
+            if agg == "max": return {"max": max(vals) if vals else 0, "field": agg_field}
+            if agg == "min": return {"min": min(vals) if vals else 0, "field": agg_field}
+    return filtered
 
 
 def _hash_schema(schema: dict) -> str:
