@@ -9,9 +9,11 @@ export interface MaicUser {
   name: string;
   email: string;
   role: UserRole;
-  password: string; // stored locally — prototype only
+  password: string;
   createdAt: string;
   active: boolean;
+  mustChangePassword?: boolean; // true = forced change on next login
+  createdBy?: string;           // id of admin who created them
 }
 
 interface Tenant {
@@ -27,6 +29,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   login: (email: string, password: string) => { success: boolean; error?: string };
   logout: () => void;
+  changePassword: (userId: string, newPassword: string) => void;
   addUser: (data: Omit<MaicUser, 'id' | 'createdAt'>) => MaicUser;
   updateUser: (id: string, patch: Partial<MaicUser>) => void;
   deleteUser: (id: string) => void;
@@ -45,6 +48,7 @@ const DEFAULT_ADMIN: MaicUser = {
   password: 'admin',
   createdAt: new Date().toISOString(),
   active: true,
+  mustChangePassword: false,
 };
 
 function loadUsers(): MaicUser[] {
@@ -52,7 +56,6 @@ function loadUsers(): MaicUser[] {
     const raw = localStorage.getItem(USERS_KEY);
     if (raw) return JSON.parse(raw) as MaicUser[];
   } catch { /* ignore */ }
-  // Seed default admin on first run
   const seed = [DEFAULT_ADMIN];
   localStorage.setItem(USERS_KEY, JSON.stringify(seed));
   return seed;
@@ -79,6 +82,7 @@ const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   login: () => ({ success: false }),
   logout: () => {},
+  changePassword: () => {},
   addUser: () => DEFAULT_ADMIN,
   updateUser: () => {},
   deleteUser: () => {},
@@ -88,10 +92,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [users, setUsers] = useState<MaicUser[]>(() => loadUsers());
   const [currentUser, setCurrentUser] = useState<MaicUser | null>(() => loadSession(loadUsers()));
 
-  // Keep users in sync with localStorage
-  useEffect(() => {
-    saveUsers(users);
-  }, [users]);
+  useEffect(() => { saveUsers(users); }, [users]);
 
   const login = useCallback((email: string, password: string): { success: boolean; error?: string } => {
     const user = users.find(
@@ -108,6 +109,15 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setCurrentUser(null);
   }, []);
 
+  const changePassword = useCallback((userId: string, newPassword: string) => {
+    setUsers((prev) => prev.map((u) =>
+      u.id === userId ? { ...u, password: newPassword, mustChangePassword: false } : u,
+    ));
+    setCurrentUser((prev) =>
+      prev && prev.id === userId ? { ...prev, password: newPassword, mustChangePassword: false } : prev,
+    );
+  }, []);
+
   const addUser = useCallback((data: Omit<MaicUser, 'id' | 'createdAt'>): MaicUser => {
     const user: MaicUser = {
       ...data,
@@ -120,7 +130,6 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const updateUser = useCallback((id: string, patch: Partial<MaicUser>) => {
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
-    // Keep current user in sync
     if (currentUser?.id === id) {
       setCurrentUser((prev) => (prev ? { ...prev, ...patch } : prev));
     }
@@ -138,6 +147,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       isAuthenticated: currentUser !== null,
       login,
       logout,
+      changePassword,
       addUser,
       updateUser,
       deleteUser,

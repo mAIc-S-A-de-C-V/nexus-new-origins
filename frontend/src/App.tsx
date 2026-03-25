@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { AppShell } from './shell/AppShell';
 import { TenantProvider, useAuth } from './shell/TenantContext';
 import LoginPage from './pages/LoginPage';
+import ChangePasswordPage from './pages/ChangePasswordPage';
 
 const ConnectorGrid   = lazy(() => import('./modules/connectors/ConnectorGrid'));
 const OntologyGraph   = lazy(() => import('./modules/ontology/OntologyGraph'));
@@ -87,9 +88,10 @@ const renderPage = (page: string): React.ReactNode => {
 // ── Auth gate ──────────────────────────────────────────────────────────────
 
 const AuthGate: React.FC = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, currentUser } = useAuth();
 
   if (!isAuthenticated) return <LoginPage />;
+  if (currentUser?.mustChangePassword) return <ChangePasswordPage />;
 
   return (
     <AppShell>
