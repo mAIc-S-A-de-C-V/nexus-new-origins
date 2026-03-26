@@ -25,4 +25,5 @@ jobs:
             # Write frontend/.env (baked into Vite build)
             printf 'VITE_CONNECTOR_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8001\nVITE_PIPELINE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8002\nVITE_INFERENCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8003\nVITE_ONTOLOGY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8004\nVITE_EVENT_LOG_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8005\nVITE_AUDIT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8006\nVITE_CORRELATION_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8008\n' > frontend/.env
 
+            sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache frontend
             sudo DOCKER_BUILDKIT=0 docker-compose up -d --build
