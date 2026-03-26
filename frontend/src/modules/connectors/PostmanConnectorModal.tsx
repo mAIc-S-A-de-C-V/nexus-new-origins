@@ -42,17 +42,26 @@ function extractUnknownVars(endpoints: ParsedEndpoint[], knownVars: Record<strin
   return Array.from(found);
 }
 
-// Find {{vars}} that are still unresolved inside credential values (e.g. token: "{{token}}")
-function extractCredVars(auth: { credentials: Record<string, string> }): string[] {
+const TOKEN_VAR_NAMES = new Set(['token', 'access_token', 'auth_token', 'jwt', 'bearer', 'api_key', 'apikey']);
+
+// Find {{vars}} that are still unresolved inside credential values — scans
+// both collection-level auth and all per-endpoint auth credentials.
+function extractCredVars(
+  collectionAuth: { credentials: Record<string, string> },
+  endpoints: ParsedEndpoint[],
+  knownVars: Record<string, string>,
+): string[] {
   const found = new Set<string>();
-  for (const val of Object.values(auth.credentials)) {
-    const matches = String(val).matchAll(/\{\{(\w+)\}\}/g);
-    for (const m of matches) found.add(m[1]);
-  }
+  const scan = (creds: Record<string, string>) => {
+    for (const val of Object.values(creds)) {
+      const matches = String(val).matchAll(/\{\{(\w+)\}\}/g);
+      for (const m of matches) if (!(m[1] in knownVars)) found.add(m[1]);
+    }
+  };
+  scan(collectionAuth.credentials);
+  for (const ep of endpoints) scan(ep.credentials);
   return Array.from(found);
 }
-
-const TOKEN_VAR_NAMES = new Set(['token', 'access_token', 'auth_token', 'jwt', 'bearer', 'api_key', 'apikey']);
 
 function parsePostmanAuth(
   auth: Record<string, unknown> | undefined,
@@ -158,8 +167,10 @@ function parseCollection(json: unknown): ParsedCollection {
 
   const items = (col.item ?? []) as unknown[];
   const endpoints = walkItems(items, collectionAuth, knownVars);
-  const unknownVars = extractUnknownVars(endpoints, knownVars);
-  const credVars = extractCredVars(collectionAuth);
+  const credVars = extractCredVars(collectionAuth, endpoints, knownVars);
+  const credVarSet = new Set(credVars);
+  // Exclude vars that are already handled as credential vars (e.g. {{token}} in query params)
+  const unknownVars = extractUnknownVars(endpoints, knownVars).filter((v) => !credVarSet.has(v));
 
   return { collectionName, collectionAuth, knownVars, unknownVars, credVars, endpoints };
 }
@@ -473,7 +484,7 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
                   }}>
                     <strong>{parsed.unknownVars.length} base URL variable{parsed.unknownVars.length !== 1 ? 's' : ''}</strong> aren't defined in the collection — enter the real server URLs.
                   </div>
-                  {parsed.unknownVars.map((v) => (
+                  {parsed.unknownVars.filter((v) => !TOKEN_VAR_NAMES.has(v.toLowerCase())).map((v) => (
                     <div key={v}>
                       <label style={labelStyle}>
                         {`{{${v.toUpperCase()}}}`}
