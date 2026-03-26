@@ -383,6 +383,72 @@ const OverviewTab: React.FC<{ connector: ConnectorConfig; formatDate: (ts?: stri
   );
 };
 
+// ── Test result with structured step log ─────────────────────────────────────
+
+interface TestStep { step: string; ok: boolean; detail: string; body_preview?: string; }
+
+const TestResultDisplay: React.FC<{
+  result: { success: boolean; message: string; latency_ms: number };
+}> = ({ result }) => {
+  let steps: TestStep[] | null = null;
+  try {
+    const parsed = JSON.parse(result.message);
+    if (parsed.steps) steps = parsed.steps;
+  } catch { /* plain text message */ }
+
+  const bg = result.success ? '#F0FDF4' : '#FEF2F2';
+  const headerColor = result.success ? '#166534' : '#991B1B';
+  const iconOk = '✓';
+  const iconFail = '✗';
+
+  return (
+    <div style={{ backgroundColor: bg, borderTop: '1px solid #E2E8F0' }}>
+      {/* Summary line */}
+      <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: headerColor }}>
+          {result.success ? 'PASS' : 'FAIL'}
+        </span>
+        <span style={{ fontSize: 11, color: '#94A3B8' }}>
+          {result.latency_ms}ms · {new Date().toLocaleTimeString()}
+        </span>
+      </div>
+
+      {/* Step-by-step log */}
+      {steps ? (
+        <div style={{ borderTop: `1px solid ${result.success ? '#BBF7D0' : '#FECACA'}`, padding: '8px 14px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {steps.map((s, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <span style={{
+                flexShrink: 0, fontSize: 11, fontWeight: 700, marginTop: 1,
+                color: s.ok ? '#16A34A' : '#DC2626',
+              }}>{s.ok ? iconOk : iconFail}</span>
+              <div>
+                <div style={{ fontSize: 11, fontFamily: 'monospace', color: s.ok ? '#166534' : '#991B1B', lineHeight: 1.5 }}>
+                  {s.detail}
+                </div>
+                {s.body_preview && (
+                  <div style={{
+                    marginTop: 4, padding: '4px 8px', backgroundColor: '#1E1E2E',
+                    borderRadius: 4, fontSize: 10, fontFamily: 'monospace', color: '#F8D7DA',
+                    maxHeight: 80, overflowY: 'auto', whiteSpace: 'pre-wrap',
+                  }}>
+                    {s.body_preview}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* Fallback: plain text */
+        <div style={{ padding: '0 14px 10px', fontSize: 11, fontFamily: 'monospace', color: headerColor }}>
+          {result.message}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Small connector picker dropdown (excludes self)
 const ConnectorPicker: React.FC<{ value: string; onChange: (id: string) => void; currentId: string; style: React.CSSProperties }> = ({ value, onChange, currentId, style }) => {
   const { connectors } = useConnectorStore();
@@ -639,18 +705,7 @@ const ConfigurationTab: React.FC<{
           </Button>
         </div>
         {testResult ? (
-          <div style={{
-            padding: '10px 14px',
-            backgroundColor: testResult.success ? '#F0FDF4' : '#FEF2F2',
-            fontFamily: 'var(--font-mono)', fontSize: '12px',
-          }}>
-            <div style={{ color: testResult.success ? '#166534' : '#991B1B', marginBottom: '4px', fontWeight: 500 }}>
-              {testResult.success ? 'PASS' : 'FAIL'} — {testResult.message}
-            </div>
-            <div style={{ color: '#94A3B8', fontSize: '11px' }}>
-              Latency: {testResult.latency_ms}ms · {new Date().toLocaleTimeString()}
-            </div>
-          </div>
+          <TestResultDisplay result={testResult} />
         ) : (
           <div style={{ padding: '10px 14px', fontSize: '12px', color: '#94A3B8' }}>
             Run a test to verify your credentials against {connector.type}.

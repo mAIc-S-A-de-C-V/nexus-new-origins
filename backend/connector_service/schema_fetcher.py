@@ -493,22 +493,94 @@ async def _fireflies(creds: dict) -> tuple[dict, list, Optional[str]]:
 # ── REST API test ──────────────────────────────────────────────────────────
 
 async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=None) -> tuple[bool, str]:
+    import json as _json
     if not base_url:
-        return False, "No Base URL configured"
+        return False, _json.dumps({"steps": [{"step": "config", "ok": False, "detail": "No Base URL configured"}]})
+
+    steps = []
+    token = None
+
+    # ── Step 1: resolve auth token ──────────────────────────────────────────
+    auth_mode = "none"
+    if creds.get("authConnectorId"):
+        auth_mode = "connector"
+    elif creds.get("tokenEndpointUrl"):
+        auth_mode = "login_endpoint"
+    elif creds.get("token"):
+        auth_mode = "static"
+
+    if auth_mode == "static":
+        token = creds["token"]
+        steps.append({"step": "auth", "ok": True, "detail": "Using static bearer token"})
+
+    elif auth_mode == "login_endpoint":
+        login_url = creds["tokenEndpointUrl"]
+        method = creds.get("tokenEndpointMethod", "POST")
+        try:
+            import json as _json2
+            body = _json2.loads(creds.get("tokenEndpointBody", "{}"))
+        except Exception:
+            body = {}
+        token_path = creds.get("tokenPath", "token")
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                fn = getattr(client, method.lower())
+                r = await fn(login_url, json=body)
+            if not r.is_success:
+                steps.append({"step": "auth", "ok": False,
+                    "detail": f"POST {login_url} → {r.status_code} {r.reason_phrase}",
+                    "body_preview": r.text[:300]})
+                return False, _json.dumps({"steps": steps})
+            data = r.json()
+            val = data
+            for part in token_path.split("."):
+                val = val[part]
+            token = str(val)
+            steps.append({"step": "auth", "ok": True,
+                "detail": f"POST {login_url} → {r.status_code} OK  ·  token field '{token_path}' extracted"})
+        except Exception as e:
+            steps.append({"step": "auth", "ok": False, "detail": f"Login request failed: {e}"})
+            return False, _json.dumps({"steps": steps})
+
+    elif auth_mode == "connector":
+        try:
+            token = await _resolve_bearer_token(creds, db=db)
+            steps.append({"step": "auth", "ok": True, "detail": "Token fetched from linked connector"})
+        except Exception as e:
+            steps.append({"step": "auth", "ok": False, "detail": f"Linked connector auth failed: {e}"})
+            return False, _json.dumps({"steps": steps})
+
+    else:
+        steps.append({"step": "auth", "ok": True, "detail": "No authentication configured"})
+
+    # ── Step 2: call the actual endpoint ────────────────────────────────────
+    path = cfg.get("path", "")
+    endpoint_method = cfg.get("method", "GET").lower()
+    url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    key_name = creds.get("keyName")
+    key_value = creds.get("keyValue")
+    if key_name and key_value:
+        headers[key_name] = key_value
     try:
-        token = await _resolve_bearer_token(creds, db=db)
-        path = cfg.get("path", "")
-        url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
-        headers = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            r = await client.get(url, headers=headers)
-            if r.status_code in (401, 403):
-                return False, f"Auth failed ({r.status_code}) — check your token or login endpoint"
-            return r.is_success, f"Endpoint returned {r.status_code}"
+            fn = getattr(client, endpoint_method)
+            r = await fn(url, headers=headers)
+        ok = r.is_success
+        detail = f"{endpoint_method.upper()} {url} → {r.status_code} {r.reason_phrase}"
+        if r.status_code == 401:
+            detail += "  ·  Token was accepted by login but rejected by endpoint — may be expired or wrong scope"
+        elif r.status_code == 403:
+            detail += "  ·  Authenticated but forbidden — check API permissions"
+        elif r.status_code == 404:
+            detail += "  ·  Endpoint path not found — check the path in config"
+        steps.append({"step": "request", "ok": ok, "detail": detail})
+        return ok, _json.dumps({"steps": steps})
     except Exception as e:
-        return False, str(e)
+        steps.append({"step": "request", "ok": False, "detail": f"Request failed: {e}"})
+        return False, _json.dumps({"steps": steps})
 
 
 # ── Generic Bearer ─────────────────────────────────────────────────────────
