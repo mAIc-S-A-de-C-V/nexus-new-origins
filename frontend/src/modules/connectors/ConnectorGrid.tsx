@@ -231,6 +231,7 @@ export const ConnectorGrid: React.FC = () => {
         <AddConnectorModal
           connectorType={addingType}
           onClose={() => setAddingType(null)}
+          onSwitchToPostman={() => setAddingType(CONNECTOR_TYPES.find((c) => c.type === 'POSTMAN')!)}
         />
       )}
     </div>
