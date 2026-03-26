@@ -16,11 +16,131 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
             return await _salesforce(base_url, creds)
         if connector_type == "FIREFLIES":
             return await _fireflies(creds)
+        if connector_type == "REST_API":
+            return await _rest_api(base_url, creds, cfg)
         if connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
-            return {}, [], "Schema preview not supported for database connectors — paste your schema in the inference panel."
-        return {}, [], f"Schema auto-fetch not implemented for {connector_type} — paste your schema in the inference panel."
+            return {}, [], "Schema preview not supported for database connectors — connect directly via your DB client."
+        return {}, [], f"Schema fetch not yet supported for {connector_type}."
     except Exception as e:
         return {}, [], str(e)
+
+
+# ── REST API ───────────────────────────────────────────────────────────────
+
+async def _resolve_bearer_token(creds: dict) -> Optional[str]:
+    """Return the bearer token — either static or fetched from a login endpoint."""
+    # Dynamic token: call the auth endpoint
+    endpoint_url = creds.get("tokenEndpointUrl")
+    if endpoint_url:
+        import json as _json
+        method = creds.get("tokenEndpointMethod", "POST").lower()
+        body_raw = creds.get("tokenEndpointBody", "{}")
+        token_path = creds.get("tokenPath", "token")
+        try:
+            body = _json.loads(body_raw)
+        except Exception:
+            body = {}
+        async with httpx.AsyncClient(timeout=10) as client:
+            fn = getattr(client, method)
+            r = await fn(endpoint_url, json=body)
+            if not r.is_success:
+                raise Exception(f"Login endpoint returned {r.status_code}: {r.text[:200]}")
+            data = r.json()
+            # Traverse dot-path (e.g. "data.token")
+            val = data
+            for part in token_path.split("."):
+                val = val[part]
+            return str(val)
+    # Static token
+    return creds.get("token") or creds.get("api_key") or None
+
+
+def _infer_type(v) -> str:
+    if isinstance(v, bool): return "boolean"
+    if isinstance(v, int): return "integer"
+    if isinstance(v, float): return "float"
+    if isinstance(v, str): return "string"
+    if isinstance(v, list): return "array"
+    if isinstance(v, dict): return "object"
+    return "unknown"
+
+
+def _walk_obj(obj, fields: dict, prefix: str, depth: int = 0):
+    if depth > 4 or not isinstance(obj, dict):
+        return
+    for k, v in obj.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            fields[key] = {"type": "object", "label": k}
+            _walk_obj(v, fields, key, depth + 1)
+        elif isinstance(v, list):
+            fields[key] = {"type": "array", "label": k}
+            if v and isinstance(v[0], dict):
+                _walk_obj(v[0], fields, key, depth + 1)
+        else:
+            fields[key] = {"type": _infer_type(v), "label": k, "example": str(v)[:80] if v is not None else ""}
+
+
+def _infer_schema_from_response(data) -> tuple[dict, list]:
+    """Given a parsed JSON response, return (schema_dict, sample_rows)."""
+    if isinstance(data, list):
+        sample = data[0] if data else {}
+        rows = data[:20]
+    elif isinstance(data, dict):
+        # Try common envelope keys: data, results, items, records, response
+        for key in ("data", "results", "items", "records", "response", "list"):
+            if isinstance(data.get(key), list) and data[key]:
+                rows = data[key][:20]
+                sample = rows[0]
+                break
+        else:
+            sample = data
+            rows = [data]
+    else:
+        return {"fields": {}, "source": "inferred"}, []
+
+    fields: dict = {}
+    _walk_obj(sample, fields, "")
+    return {
+        "fields": fields,
+        "total_fields": len(fields),
+        "source": "inferred_from_response",
+        "sample_count": len(rows),
+    }, rows
+
+
+async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict) -> tuple[dict, list, Optional[str]]:
+    if not base_url:
+        return {}, [], "No Base URL configured"
+
+    path = cfg.get("path", "")
+    method = cfg.get("method", "GET").lower()
+    url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
+
+    token = await _resolve_bearer_token(creds)
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    # ApiKey support
+    key_name = creds.get("keyName")
+    key_value = creds.get("keyValue")
+    if key_name and key_value:
+        headers[key_name] = key_value
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        fn = getattr(client, method)
+        r = await fn(url, headers=headers)
+        if r.status_code in (401, 403):
+            return {}, [], f"Auth failed ({r.status_code}) — check your token or credentials"
+        if not r.is_success:
+            return {}, [], f"Endpoint returned {r.status_code}: {r.text[:300]}"
+        try:
+            data = r.json()
+        except Exception:
+            return {}, [], f"Response is not JSON (content-type: {r.headers.get('content-type', '?')})"
+
+    schema, rows = _infer_schema_from_response(data)
+    return schema, rows, None
 
 
 async def test_credentials(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None) -> tuple[bool, str, int]:
@@ -38,6 +158,8 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
             ok, msg = await _fireflies_test(creds)
         elif connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return True, "Credential format accepted — live connection test not available in preview", int((time.time() - start) * 1000)
+        elif connector_type == "REST_API":
+            ok, msg = await _rest_api_test(base_url, creds, cfg)
         else:
             ok, msg = await _generic_bearer_test(base_url, creds)
         latency = int((time.time() - start) * 1000)
@@ -330,6 +452,27 @@ async def _fireflies(creds: dict) -> tuple[dict, list, Optional[str]]:
         ]
 
         return raw_schema, sample_rows, None
+
+
+# ── REST API test ──────────────────────────────────────────────────────────
+
+async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict) -> tuple[bool, str]:
+    if not base_url:
+        return False, "No Base URL configured"
+    try:
+        token = await _resolve_bearer_token(creds)
+        path = cfg.get("path", "")
+        url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            r = await client.get(url, headers=headers)
+            if r.status_code in (401, 403):
+                return False, f"Auth failed ({r.status_code}) — check your token or login endpoint"
+            return r.is_success, f"Endpoint returned {r.status_code}"
+    except Exception as e:
+        return False, str(e)
 
 
 # ── Generic Bearer ─────────────────────────────────────────────────────────

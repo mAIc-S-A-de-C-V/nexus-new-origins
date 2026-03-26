@@ -21,6 +21,7 @@ interface ParsedCollection {
   collectionAuth: { authType: AuthType; credentials: Record<string, string> };
   knownVars: Record<string, string>;  // vars defined in the collection
   unknownVars: string[];              // vars used in URLs but not defined
+  credVars: string[];                 // unresolved {{vars}} found inside auth credentials
   endpoints: ParsedEndpoint[];
 }
 
@@ -40,6 +41,18 @@ function extractUnknownVars(endpoints: ParsedEndpoint[], knownVars: Record<strin
   }
   return Array.from(found);
 }
+
+// Find {{vars}} that are still unresolved inside credential values (e.g. token: "{{token}}")
+function extractCredVars(auth: { credentials: Record<string, string> }): string[] {
+  const found = new Set<string>();
+  for (const val of Object.values(auth.credentials)) {
+    const matches = String(val).matchAll(/\{\{(\w+)\}\}/g);
+    for (const m of matches) found.add(m[1]);
+  }
+  return Array.from(found);
+}
+
+const TOKEN_VAR_NAMES = new Set(['token', 'access_token', 'auth_token', 'jwt', 'bearer', 'api_key', 'apikey']);
 
 function parsePostmanAuth(
   auth: Record<string, unknown> | undefined,
@@ -146,8 +159,9 @@ function parseCollection(json: unknown): ParsedCollection {
   const items = (col.item ?? []) as unknown[];
   const endpoints = walkItems(items, collectionAuth, knownVars);
   const unknownVars = extractUnknownVars(endpoints, knownVars);
+  const credVars = extractCredVars(collectionAuth);
 
-  return { collectionName, collectionAuth, knownVars, unknownVars, endpoints };
+  return { collectionName, collectionAuth, knownVars, unknownVars, credVars, endpoints };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -173,6 +187,14 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
 
   // Variable resolution step
   const [varValues, setVarValues] = useState<Record<string, string>>({});
+
+  // Token config (for {{token}}-style credential vars)
+  const [tokenMode, setTokenMode] = useState<'static' | 'dynamic'>('static');
+  const [staticToken, setStaticToken] = useState('');
+  const [authEndpointUrl, setAuthEndpointUrl] = useState('');
+  const [authEndpointMethod, setAuthEndpointMethod] = useState('POST');
+  const [authEndpointBody, setAuthEndpointBody] = useState('{"username": "", "password": ""}');
+  const [tokenResponsePath, setTokenResponsePath] = useState('token');
 
   // Endpoint selection step
   const [endpoints, setEndpoints] = useState<ParsedEndpoint[]>([]);
@@ -219,7 +241,8 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
         for (const v of result.unknownVars) initVars[v] = result.knownVars[v] ?? '';
         setVarValues(initVars);
 
-        setStage(result.unknownVars.length > 0 ? 'variables' : 'select');
+        const hasVars = result.unknownVars.length > 0 || result.credVars.length > 0;
+        setStage(hasVars ? 'variables' : 'select');
         setError('');
       } catch {
         setError('Could not parse file — make sure it is a valid Postman collection v2 JSON.');
@@ -241,7 +264,6 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
   };
 
   const handleResolveVars = () => {
-    // Re-resolve endpoints with the filled-in var values
     const allVars = { ...parsed!.knownVars, ...varValues };
     const resolved = endpoints.map((ep) => {
       const resolvedUrl = resolveVar(ep.rawUrl, allVars);
@@ -269,7 +291,16 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
 
     const allVars = { ...parsed!.knownVars, ...varValues };
     const credentials: Record<string, string> = {};
-    if (authType === 'Bearer') credentials.token = token;
+    if (authType === 'Bearer') {
+      if (tokenMode === 'dynamic') {
+        credentials.tokenEndpointUrl = authEndpointUrl;
+        credentials.tokenEndpointMethod = authEndpointMethod;
+        credentials.tokenEndpointBody = authEndpointBody;
+        credentials.tokenPath = tokenResponsePath;
+      } else {
+        credentials.token = staticToken || token;
+      }
+    }
     if (authType === 'ApiKey') { credentials.keyName = apiKeyName; credentials.keyValue = apiKeyValue; }
     if (authType === 'Basic') { credentials.username = username; credentials.password = password; }
 
@@ -430,30 +461,130 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
 
           {/* ── Stage: variables ── */}
           {stage === 'variables' && parsed && (
-            <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{
-                padding: '10px 14px', backgroundColor: '#FFF7ED',
-                border: '1px solid #FED7AA', borderRadius: 8,
-                fontSize: 12, color: '#9A3412',
-              }}>
-                This collection uses <strong>{parsed.unknownVars.length} base URL variable{parsed.unknownVars.length !== 1 ? 's' : ''}</strong> that aren't defined in the collection.
-                Enter the real values so each endpoint gets the correct URL.
-              </div>
+            <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-              {parsed.unknownVars.map((v) => (
-                <div key={v}>
-                  <label style={labelStyle}>
-                    {`{{${v.toUpperCase()}}}`}
-                    <span style={{ fontSize: 10, fontWeight: 400, color: '#94A3B8', marginLeft: 6 }}>
-                      used by {endpoints.filter((ep) => ep.baseVar === v).length} endpoint{endpoints.filter((ep) => ep.baseVar === v).length !== 1 ? 's' : ''}
-                    </span>
-                  </label>
-                  <input
-                    value={varValues[v] ?? ''}
-                    onChange={(e) => setVarValues((prev) => ({ ...prev, [v]: e.target.value }))}
-                    placeholder={`https://your-api.com`}
-                    style={inputStyle}
-                  />
+              {/* Base URL variables */}
+              {parsed.unknownVars.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{
+                    padding: '10px 14px', backgroundColor: '#FFF7ED',
+                    border: '1px solid #FED7AA', borderRadius: 8,
+                    fontSize: 12, color: '#9A3412',
+                  }}>
+                    <strong>{parsed.unknownVars.length} base URL variable{parsed.unknownVars.length !== 1 ? 's' : ''}</strong> aren't defined in the collection — enter the real server URLs.
+                  </div>
+                  {parsed.unknownVars.map((v) => (
+                    <div key={v}>
+                      <label style={labelStyle}>
+                        {`{{${v.toUpperCase()}}}`}
+                        <span style={{ fontSize: 10, fontWeight: 400, color: '#94A3B8', marginLeft: 6 }}>
+                          used by {endpoints.filter((ep) => ep.baseVar === v).length} endpoint{endpoints.filter((ep) => ep.baseVar === v).length !== 1 ? 's' : ''}
+                        </span>
+                      </label>
+                      <input
+                        value={varValues[v] ?? ''}
+                        onChange={(e) => setVarValues((prev) => ({ ...prev, [v]: e.target.value }))}
+                        placeholder="https://your-api.com"
+                        style={inputStyle}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Auth credential variables (e.g. {{token}}) */}
+              {parsed.credVars.filter((v) => TOKEN_VAR_NAMES.has(v.toLowerCase())).map((v) => (
+                <div key={v} style={{
+                  border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden',
+                }}>
+                  <div style={{
+                    padding: '10px 14px', backgroundColor: '#EFF6FF',
+                    borderBottom: '1px solid #BFDBFE',
+                    fontSize: 12, color: '#1E40AF',
+                  }}>
+                    <strong>{`{{${v}}}`}</strong> is used as the Bearer token but isn't defined in the collection.
+                    How is it obtained?
+                  </div>
+                  <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                      {(['static', 'dynamic'] as const).map((mode) => (
+                        <label key={mode} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12, color: '#374151' }}>
+                          <input
+                            type="radio"
+                            name={`token-mode-${v}`}
+                            checked={tokenMode === mode}
+                            onChange={() => setTokenMode(mode)}
+                            style={{ accentColor: '#2563EB' }}
+                          />
+                          {mode === 'static' ? 'I have a static token' : 'Generated by a login endpoint'}
+                        </label>
+                      ))}
+                    </div>
+
+                    {tokenMode === 'static' && (
+                      <div>
+                        <label style={labelStyle}>PASTE TOKEN</label>
+                        <input
+                          value={staticToken}
+                          onChange={(e) => setStaticToken(e.target.value)}
+                          placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                          style={inputStyle}
+                        />
+                      </div>
+                    )}
+
+                    {tokenMode === 'dynamic' && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <div style={{ flex: '0 0 80px' }}>
+                            <label style={labelStyle}>METHOD</label>
+                            <select
+                              value={authEndpointMethod}
+                              onChange={(e) => setAuthEndpointMethod(e.target.value)}
+                              style={{ ...inputStyle, cursor: 'pointer' }}
+                            >
+                              {['POST', 'GET'].map((m) => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <label style={labelStyle}>LOGIN ENDPOINT URL</label>
+                            <input
+                              value={authEndpointUrl}
+                              onChange={(e) => setAuthEndpointUrl(e.target.value)}
+                              placeholder="https://auth.example.com/login"
+                              style={inputStyle}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label style={labelStyle}>REQUEST BODY (JSON)</label>
+                          <textarea
+                            value={authEndpointBody}
+                            onChange={(e) => setAuthEndpointBody(e.target.value)}
+                            rows={3}
+                            style={{
+                              ...inputStyle, height: 'auto', padding: '8px 10px',
+                              fontFamily: 'monospace', fontSize: 11, resize: 'vertical',
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label style={labelStyle}>
+                            TOKEN FIELD IN RESPONSE
+                            <span style={{ fontSize: 10, fontWeight: 400, color: '#94A3B8', marginLeft: 6 }}>
+                              dot-path, e.g. <code>data.token</code> or just <code>token</code>
+                            </span>
+                          </label>
+                          <input
+                            value={tokenResponsePath}
+                            onChange={(e) => setTokenResponsePath(e.target.value)}
+                            placeholder="token"
+                            style={inputStyle}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
 
