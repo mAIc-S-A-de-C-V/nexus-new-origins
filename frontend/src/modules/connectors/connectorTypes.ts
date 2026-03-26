@@ -123,6 +123,14 @@ export const CONNECTOR_TYPES: ConnectorTypeDefinition[] = [
     color: '#1E293B',
   },
   {
+    type: 'POSTMAN',
+    displayName: 'Postman Collection',
+    description: 'Import a Postman collection JSON — drag and drop to auto-configure',
+    category: 'REST',
+    iconName: 'PackageOpen',
+    color: '#EF6C1A',
+  },
+  {
     type: 'FIREFLIES',
     displayName: 'Fireflies.ai',
     description: 'Sync meeting transcripts, summaries, and action items from Fireflies',

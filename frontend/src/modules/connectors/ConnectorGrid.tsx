@@ -3,6 +3,7 @@ import { Plus, Search } from 'lucide-react';
 import { ConnectorCard } from './ConnectorCard';
 import { ConnectorDetailPanel } from './ConnectorDetailPanel';
 import { AddConnectorModal } from './AddConnectorModal';
+import { PostmanConnectorModal } from './PostmanConnectorModal';
 import { ConnectorConfig } from '../../types/connector';
 import { CONNECTOR_TYPES, ConnectorTypeDefinition } from './connectorTypes';
 import { useConnectorStore } from '../../store/connectorStore';
@@ -223,7 +224,10 @@ export const ConnectorGrid: React.FC = () => {
       )}
 
       {/* Add connector modal */}
-      {addingType && (
+      {addingType && addingType.type === 'POSTMAN' && (
+        <PostmanConnectorModal onClose={() => setAddingType(null)} />
+      )}
+      {addingType && addingType.type !== 'POSTMAN' && (
         <AddConnectorModal
           connectorType={addingType}
           onClose={() => setAddingType(null)}
