@@ -239,6 +239,7 @@ async def get_schema(
         base_url=row.base_url,
         credentials=row.credentials,
         config=row.config,
+        db=db,
     )
 
     if not error:

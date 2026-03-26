@@ -6,7 +6,7 @@ import httpx
 from typing import Optional
 
 
-async def fetch_schema(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None) -> tuple[dict, list, Optional[str]]:
+async def fetch_schema(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None, db=None) -> tuple[dict, list, Optional[str]]:
     creds = credentials or {}
     cfg = config or {}
     try:
@@ -17,7 +17,7 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
         if connector_type == "FIREFLIES":
             return await _fireflies(creds)
         if connector_type == "REST_API":
-            return await _rest_api(base_url, creds, cfg)
+            return await _rest_api(base_url, creds, cfg, db=db)
         if connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return {}, [], "Schema preview not supported for database connectors — connect directly via your DB client."
         return {}, [], f"Schema fetch not yet supported for {connector_type}."
@@ -27,12 +27,49 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
 
 # ── REST API ───────────────────────────────────────────────────────────────
 
-async def _resolve_bearer_token(creds: dict) -> Optional[str]:
-    """Return the bearer token — either static or fetched from a login endpoint."""
-    # Dynamic token: call the auth endpoint
+async def _resolve_bearer_token(creds: dict, db=None) -> Optional[str]:
+    """Return the bearer token — static, fetched from a login endpoint, or via a referenced connector."""
+    import json as _json
+
+    # Mode: use another connector as the auth source
+    auth_connector_id = creds.get("authConnectorId")
+    if auth_connector_id and db is not None:
+        try:
+            from models import ConnectorRow
+            from sqlalchemy import select as sa_select
+            result = await db.execute(sa_select(ConnectorRow).where(ConnectorRow.id == auth_connector_id))
+            auth_row = result.scalar_one_or_none()
+            if not auth_row:
+                raise Exception(f"Auth connector {auth_connector_id} not found")
+            # Build the URL from the referenced connector
+            auth_base = (auth_row.base_url or "").rstrip("/")
+            auth_path = (auth_row.config or {}).get("path", "")
+            auth_method = (auth_row.config or {}).get("method", "POST").lower()
+            auth_url = auth_base + auth_path
+            # Use the referenced connector's credentials as request body
+            auth_creds = auth_row.credentials or {}
+            body: dict = {}
+            if auth_creds.get("username"):
+                body["username"] = auth_creds["username"]
+            if auth_creds.get("password"):
+                body["password"] = auth_creds["password"]
+            async with httpx.AsyncClient(timeout=10) as client:
+                fn = getattr(client, auth_method)
+                r = await fn(auth_url, json=body)
+                if not r.is_success:
+                    raise Exception(f"Auth connector returned {r.status_code}: {r.text[:200]}")
+                data = r.json()
+            token_path = creds.get("tokenPath", "token")
+            val = data
+            for part in token_path.split("."):
+                val = val[part]
+            return str(val)
+        except Exception as e:
+            raise Exception(f"Failed to get token from connector: {e}")
+
+    # Mode: dynamic login endpoint (manual config)
     endpoint_url = creds.get("tokenEndpointUrl")
     if endpoint_url:
-        import json as _json
         method = creds.get("tokenEndpointMethod", "POST").lower()
         body_raw = creds.get("tokenEndpointBody", "{}")
         token_path = creds.get("tokenPath", "token")
@@ -46,12 +83,12 @@ async def _resolve_bearer_token(creds: dict) -> Optional[str]:
             if not r.is_success:
                 raise Exception(f"Login endpoint returned {r.status_code}: {r.text[:200]}")
             data = r.json()
-            # Traverse dot-path (e.g. "data.token")
             val = data
             for part in token_path.split("."):
                 val = val[part]
             return str(val)
-    # Static token
+
+    # Mode: static token
     return creds.get("token") or creds.get("api_key") or None
 
 
@@ -109,7 +146,7 @@ def _infer_schema_from_response(data) -> tuple[dict, list]:
     }, rows
 
 
-async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict) -> tuple[dict, list, Optional[str]]:
+async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None) -> tuple[dict, list, Optional[str]]:
     if not base_url:
         return {}, [], "No Base URL configured"
 
@@ -117,11 +154,10 @@ async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict) -> tuple[di
     method = cfg.get("method", "GET").lower()
     url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
 
-    token = await _resolve_bearer_token(creds)
+    token = await _resolve_bearer_token(creds, db=db)
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    # ApiKey support
     key_name = creds.get("keyName")
     key_value = creds.get("keyValue")
     if key_name and key_value:
@@ -456,11 +492,11 @@ async def _fireflies(creds: dict) -> tuple[dict, list, Optional[str]]:
 
 # ── REST API test ──────────────────────────────────────────────────────────
 
-async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict) -> tuple[bool, str]:
+async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=None) -> tuple[bool, str]:
     if not base_url:
         return False, "No Base URL configured"
     try:
-        token = await _resolve_bearer_token(creds)
+        token = await _resolve_bearer_token(creds, db=db)
         path = cfg.get("path", "")
         url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
         headers = {}
