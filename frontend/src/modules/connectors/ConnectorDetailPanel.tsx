@@ -383,6 +383,27 @@ const OverviewTab: React.FC<{ connector: ConnectorConfig; formatDate: (ts?: stri
   );
 };
 
+// Small connector picker dropdown (excludes self)
+const ConnectorPicker: React.FC<{ value: string; onChange: (id: string) => void; currentId: string; style: React.CSSProperties }> = ({ value, onChange, currentId, style }) => {
+  const { connectors } = useConnectorStore();
+  const selected = connectors.find((c) => c.id === value);
+  return (
+    <div>
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={{ ...style, cursor: 'pointer' }}>
+        <option value="">— pick a connector —</option>
+        {connectors.filter((c) => c.id !== currentId).map((c) => (
+          <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+        ))}
+      </select>
+      {selected && (
+        <div style={{ marginTop: 4, fontSize: 11, color: '#16A34A' }}>
+          {selected.baseUrl || '(no base URL)'} · {selected.config?.method || 'GET'} {selected.config?.path || '/'}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ConfigurationTab: React.FC<{
   connector: ConnectorConfig;
   testResult: { success: boolean; message: string; latency_ms: number } | null;
@@ -394,7 +415,21 @@ const ConfigurationTab: React.FC<{
 
   const [baseUrl, setBaseUrl] = useState(connector.baseUrl || '');
   const [authType, setAuthType] = useState(connector.authType);
+
+  // Detect token mode from stored credentials
+  const detectTokenMode = (c: Record<string, string>): 'static' | 'dynamic' | 'connector' => {
+    if (c.authConnectorId) return 'connector';
+    if (c.tokenEndpointUrl) return 'dynamic';
+    return 'static';
+  };
+  const [tokenMode, setTokenMode] = useState<'static' | 'dynamic' | 'connector'>(() => detectTokenMode(creds));
   const [token, setToken] = useState(creds.token || '');
+  const [authEndpointUrl, setAuthEndpointUrl] = useState(creds.tokenEndpointUrl || '');
+  const [authEndpointMethod, setAuthEndpointMethod] = useState(creds.tokenEndpointMethod || 'POST');
+  const [authEndpointBody, setAuthEndpointBody] = useState(creds.tokenEndpointBody || '{"username": "", "password": ""}');
+  const [tokenResponsePath, setTokenResponsePath] = useState(creds.tokenPath || 'token');
+  const [authConnectorId, setAuthConnectorId] = useState(creds.authConnectorId || '');
+
   const [apiKeyName, setApiKeyName] = useState(creds.keyName || 'X-API-Key');
   const [apiKeyValue, setApiKeyValue] = useState(creds.keyValue || '');
   const [username, setUsername] = useState(creds.username || '');
@@ -410,7 +445,13 @@ const ConfigurationTab: React.FC<{
     const c = connector.credentials || {};
     setBaseUrl(connector.baseUrl || '');
     setAuthType(connector.authType);
+    setTokenMode(detectTokenMode(c));
     setToken(c.token || '');
+    setAuthEndpointUrl(c.tokenEndpointUrl || '');
+    setAuthEndpointMethod(c.tokenEndpointMethod || 'POST');
+    setAuthEndpointBody(c.tokenEndpointBody || '{"username": "", "password": ""}');
+    setTokenResponsePath(c.tokenPath || 'token');
+    setAuthConnectorId(c.authConnectorId || '');
     setApiKeyName(c.keyName || 'X-API-Key');
     setApiKeyValue(c.keyValue || '');
     setUsername(c.username || '');
@@ -425,7 +466,19 @@ const ConfigurationTab: React.FC<{
     setSaving(true);
     setSaved(false);
     const credentials: Record<string, string> = {};
-    if (authType === 'Bearer') credentials.token = token;
+    if (authType === 'Bearer') {
+      if (tokenMode === 'dynamic') {
+        credentials.tokenEndpointUrl = authEndpointUrl;
+        credentials.tokenEndpointMethod = authEndpointMethod;
+        credentials.tokenEndpointBody = authEndpointBody;
+        credentials.tokenPath = tokenResponsePath;
+      } else if (tokenMode === 'connector') {
+        credentials.authConnectorId = authConnectorId;
+        credentials.tokenPath = tokenResponsePath;
+      } else {
+        credentials.token = token;
+      }
+    }
     if (authType === 'ApiKey') { credentials.keyName = apiKeyName; credentials.keyValue = apiKeyValue; }
     if (authType === 'Basic') { credentials.username = username; credentials.password = password; }
     if (authType === 'OAuth2') { credentials.clientId = clientId; credentials.clientSecret = clientSecret; }
@@ -466,15 +519,68 @@ const ConfigurationTab: React.FC<{
         </FieldGroup>
 
         {authType === 'Bearer' && (
-          <FieldGroup label="Bearer Token">
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="pat-na1-..."
-              style={inputStyle}
-            />
-          </FieldGroup>
+          <>
+            {/* Three-mode toggle */}
+            <FieldGroup label="Token Source">
+              <div style={{ display: 'flex', border: '1px solid #E2E8F0', borderRadius: 5, overflow: 'hidden' }}>
+                {([['static', 'Static token'], ['dynamic', 'Login endpoint'], ['connector', 'Use connector']] as const).map(([m, label]) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setTokenMode(m)}
+                    style={{
+                      flex: 1, padding: '7px 0', border: 'none', cursor: 'pointer',
+                      fontSize: 12, fontWeight: tokenMode === m ? 600 : 400,
+                      backgroundColor: tokenMode === m ? '#2563EB' : '#F8FAFC',
+                      color: tokenMode === m ? '#fff' : '#64748B',
+                      borderRight: m !== 'connector' ? '1px solid #E2E8F0' : 'none',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </FieldGroup>
+
+            {tokenMode === 'static' && (
+              <FieldGroup label="Bearer Token">
+                <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="pat-na1-..." style={inputStyle} />
+              </FieldGroup>
+            )}
+
+            {tokenMode === 'dynamic' && (
+              <>
+                <FieldGroup label="Login Endpoint URL">
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <select value={authEndpointMethod} onChange={(e) => setAuthEndpointMethod(e.target.value)}
+                      style={{ ...inputStyle, width: 80, flexShrink: 0, cursor: 'pointer' }}>
+                      <option>POST</option><option>GET</option>
+                    </select>
+                    <input value={authEndpointUrl} onChange={(e) => setAuthEndpointUrl(e.target.value)}
+                      placeholder="https://api.example.com/login" style={inputStyle} />
+                  </div>
+                </FieldGroup>
+                <FieldGroup label="Request Body (JSON)">
+                  <textarea value={authEndpointBody} onChange={(e) => setAuthEndpointBody(e.target.value)} rows={3}
+                    style={{ ...inputStyle, height: 'auto', padding: '8px 10px', fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }} />
+                </FieldGroup>
+                <FieldGroup label="Token field in response">
+                  <input value={tokenResponsePath} onChange={(e) => setTokenResponsePath(e.target.value)} placeholder="token" style={inputStyle} />
+                </FieldGroup>
+              </>
+            )}
+
+            {tokenMode === 'connector' && (
+              <>
+                <FieldGroup label="Auth Connector">
+                  <ConnectorPicker value={authConnectorId} onChange={setAuthConnectorId} currentId={connector.id} style={inputStyle} />
+                </FieldGroup>
+                <FieldGroup label="Token field in response">
+                  <input value={tokenResponsePath} onChange={(e) => setTokenResponsePath(e.target.value)} placeholder="token" style={inputStyle} />
+                </FieldGroup>
+              </>
+            )}
+          </>
         )}
 
         {authType === 'ApiKey' && (
@@ -560,7 +666,13 @@ const ConfigurationTab: React.FC<{
           const c = connector.credentials || {};
           setBaseUrl(connector.baseUrl || '');
           setAuthType(connector.authType);
+          setTokenMode(detectTokenMode(c));
           setToken(c.token || '');
+          setAuthEndpointUrl(c.tokenEndpointUrl || '');
+          setAuthEndpointMethod(c.tokenEndpointMethod || 'POST');
+          setAuthEndpointBody(c.tokenEndpointBody || '{"username": "", "password": ""}');
+          setTokenResponsePath(c.tokenPath || 'token');
+          setAuthConnectorId(c.authConnectorId || '');
           setSaved(false);
         }}>
           Cancel
