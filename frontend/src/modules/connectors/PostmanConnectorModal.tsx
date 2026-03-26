@@ -1,86 +1,44 @@
 import React, { useState, useCallback } from 'react';
-import { PackageOpen, Upload, CheckCircle, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { PackageOpen, Upload, CheckCircle, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { useConnectorStore } from '../../store/connectorStore';
 import type { AuthType } from '../../types/connector';
 
-interface ParsedCollection {
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface ParsedEndpoint {
   name: string;
-  description: string;
-  baseUrl: string;
+  method: string;
+  rawUrl: string;
+  path: string;
+  baseVar: string;        // e.g. "info" from {{info}}/v1/...
   authType: AuthType;
   credentials: Record<string, string>;
-  headers: Record<string, string>;
-  endpoints: { method: string; path: string; name: string }[];
-  variables: Record<string, string>;
+  selected: boolean;
 }
 
-// ── Postman JSON parser ───────────────────────────────────────────────────────
+interface ParsedCollection {
+  collectionName: string;
+  collectionAuth: { authType: AuthType; credentials: Record<string, string> };
+  knownVars: Record<string, string>;  // vars defined in the collection
+  unknownVars: string[];              // vars used in URLs but not defined
+  endpoints: ParsedEndpoint[];
+}
+
+// ── Parser helpers ────────────────────────────────────────────────────────────
 
 function resolveVar(value: string, vars: Record<string, string>): string {
   return value.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
 }
 
-function extractBaseUrl(items: unknown[], vars: Record<string, string>): string {
-  const flatten = (arr: unknown[]): unknown[] =>
-    arr.flatMap((i: unknown) => {
-      const item = i as Record<string, unknown>;
-      return item.item ? flatten(item.item as unknown[]) : [item];
-    });
-
-  for (const item of flatten(items)) {
-    const req = (item as Record<string, unknown>).request as Record<string, unknown> | undefined;
-    if (!req) continue;
-    const url = req.url;
-    if (!url) continue;
-    const raw: string =
-      typeof url === 'string' ? url : (url as Record<string, unknown>).raw as string ?? '';
-    if (!raw) continue;
-    const resolved = resolveVar(raw, vars);
-    try {
-      const u = new URL(resolved);
-      return `${u.protocol}//${u.host}`;
-    } catch {
-      const match = resolved.match(/^(https?:\/\/[^/]+)/);
-      if (match) return match[1];
+function extractUnknownVars(endpoints: ParsedEndpoint[], knownVars: Record<string, string>): string[] {
+  const found = new Set<string>();
+  for (const ep of endpoints) {
+    const matches = ep.rawUrl.matchAll(/\{\{(\w+)\}\}/g);
+    for (const m of matches) {
+      if (!(m[1] in knownVars)) found.add(m[1]);
     }
   }
-  return '';
-}
-
-function extractEndpoints(
-  items: unknown[],
-  vars: Record<string, string>,
-  max = 40,
-): { method: string; path: string; name: string }[] {
-  const results: { method: string; path: string; name: string }[] = [];
-
-  const walk = (arr: unknown[], prefix = '') => {
-    for (const i of arr) {
-      if (results.length >= max) return;
-      const item = i as Record<string, unknown>;
-      if (item.item) {
-        walk(item.item as unknown[], prefix);
-        continue;
-      }
-      const req = item.request as Record<string, unknown> | undefined;
-      if (!req) continue;
-      const method = String(req.method ?? 'GET').toUpperCase();
-      const url = req.url;
-      const raw: string =
-        typeof url === 'string' ? url : (url as Record<string, unknown>)?.raw as string ?? '';
-      const resolved = resolveVar(raw, vars);
-      let path = resolved;
-      try {
-        path = new URL(resolved).pathname;
-      } catch {
-        path = resolved.replace(/^https?:\/\/[^/]+/, '') || resolved;
-      }
-      results.push({ method, path: path || '/', name: String(item.name ?? '') });
-    }
-  };
-
-  walk(items);
-  return results;
+  return Array.from(found);
 }
 
 function parsePostmanAuth(
@@ -91,82 +49,105 @@ function parsePostmanAuth(
   const type = String(auth.type ?? '').toLowerCase();
 
   if (type === 'bearer') {
-    const arr = (auth.bearer ?? auth['bearer']) as { key: string; value: string }[] | undefined;
+    const arr = auth.bearer as { key: string; value: string }[] | undefined;
     const token = arr?.find((x) => x.key === 'token')?.value ?? '';
     return { authType: 'Bearer', credentials: { token: resolveVar(token, vars) } };
   }
   if (type === 'apikey') {
-    const arr = (auth.apikey ?? auth['apikey']) as { key: string; value: string }[] | undefined;
+    const arr = auth.apikey as { key: string; value: string }[] | undefined;
     const keyName = arr?.find((x) => x.key === 'key')?.value ?? 'x-api-key';
     const keyValue = arr?.find((x) => x.key === 'value')?.value ?? '';
-    return {
-      authType: 'ApiKey',
-      credentials: { keyName: resolveVar(keyName, vars), keyValue: resolveVar(keyValue, vars) },
-    };
+    return { authType: 'ApiKey', credentials: { keyName: resolveVar(keyName, vars), keyValue: resolveVar(keyValue, vars) } };
   }
   if (type === 'basic') {
-    const arr = (auth.basic ?? auth['basic']) as { key: string; value: string }[] | undefined;
+    const arr = auth.basic as { key: string; value: string }[] | undefined;
     const username = arr?.find((x) => x.key === 'username')?.value ?? '';
     const password = arr?.find((x) => x.key === 'password')?.value ?? '';
-    return {
-      authType: 'Basic',
-      credentials: {
-        username: resolveVar(username, vars),
-        password: resolveVar(password, vars),
-      },
-    };
+    return { authType: 'Basic', credentials: { username: resolveVar(username, vars), password: resolveVar(password, vars) } };
   }
   if (type === 'oauth2') {
-    const arr = (auth.oauth2 ?? auth['oauth2']) as { key: string; value: string }[] | undefined;
+    const arr = auth.oauth2 as { key: string; value: string }[] | undefined;
     const clientId = arr?.find((x) => x.key === 'clientId')?.value ?? '';
     const clientSecret = arr?.find((x) => x.key === 'clientSecret')?.value ?? '';
-    return {
-      authType: 'OAuth2',
-      credentials: {
-        clientId: resolveVar(clientId, vars),
-        clientSecret: resolveVar(clientSecret, vars),
-      },
-    };
+    return { authType: 'OAuth2', credentials: { clientId: resolveVar(clientId, vars), clientSecret: resolveVar(clientSecret, vars) } };
   }
   return { authType: 'None', credentials: {} };
+}
+
+function walkItems(
+  items: unknown[],
+  collectionAuth: { authType: AuthType; credentials: Record<string, string> },
+  vars: Record<string, string>,
+): ParsedEndpoint[] {
+  const results: ParsedEndpoint[] = [];
+
+  const walk = (arr: unknown[]) => {
+    for (const i of arr) {
+      const item = i as Record<string, unknown>;
+      if (item.item) {
+        walk(item.item as unknown[]);
+        continue;
+      }
+      const req = item.request as Record<string, unknown> | undefined;
+      if (!req) continue;
+
+      const method = String(req.method ?? 'GET').toUpperCase();
+      const url = req.url;
+      const rawUrl: string =
+        typeof url === 'string' ? url : (url as Record<string, unknown>)?.raw as string ?? '';
+      if (!rawUrl) continue;
+
+      // Extract base var (e.g. "info" from "{{info}}/v1/...")
+      const baseVarMatch = rawUrl.match(/^\{\{(\w+)\}\}/);
+      const baseVar = baseVarMatch ? baseVarMatch[1] : '';
+
+      // Extract path (everything after the first segment)
+      const pathMatch = rawUrl.match(/^\{\{[^}]+\}\}(\/[^?]*)/);
+      const path = pathMatch ? pathMatch[1] : (rawUrl.replace(/^https?:\/\/[^/]+/, '').split('?')[0] || '/');
+
+      // Per-request auth overrides collection auth
+      const reqAuth = req.auth as Record<string, unknown> | undefined;
+      const { authType, credentials } = reqAuth
+        ? parsePostmanAuth(reqAuth, vars)
+        : collectionAuth;
+
+      results.push({
+        name: String(item.name ?? `${method} ${path}`),
+        method,
+        rawUrl,
+        path,
+        baseVar,
+        authType,
+        credentials,
+        selected: true,
+      });
+    }
+  };
+
+  walk(items);
+  return results;
 }
 
 function parseCollection(json: unknown): ParsedCollection {
   const col = json as Record<string, unknown>;
 
-  // Variables
   const varArr = (col.variable ?? []) as { key: string; value: unknown }[];
-  const vars: Record<string, string> = {};
-  for (const v of varArr) vars[v.key] = String(v.value ?? '');
+  const knownVars: Record<string, string> = {};
+  for (const v of varArr) knownVars[v.key] = String(v.value ?? '');
 
-  // Info
   const info = (col.info ?? {}) as Record<string, unknown>;
-  const name = String(info.name ?? 'Postman API');
-  const description =
-    typeof info.description === 'string'
-      ? info.description
-      : String((info.description as Record<string, unknown>)?.content ?? '');
+  const collectionName = String(info.name ?? 'Postman API');
 
-  // Items
-  const items = (col.item ?? []) as unknown[];
-
-  // Base URL
-  const baseUrl = resolveVar(vars.baseUrl ?? vars.base_url ?? vars.url ?? '', vars) ||
-    extractBaseUrl(items, vars);
-
-  // Auth
-  const { authType, credentials } = parsePostmanAuth(
+  const collectionAuth = parsePostmanAuth(
     col.auth as Record<string, unknown> | undefined,
-    vars,
+    knownVars,
   );
 
-  // Headers (collection-level)
-  const headers: Record<string, string> = {};
+  const items = (col.item ?? []) as unknown[];
+  const endpoints = walkItems(items, collectionAuth, knownVars);
+  const unknownVars = extractUnknownVars(endpoints, knownVars);
 
-  // Endpoints
-  const endpoints = extractEndpoints(items, vars);
-
-  return { name, description, baseUrl, authType, credentials, headers, variables: vars, endpoints };
+  return { collectionName, collectionAuth, knownVars, unknownVars, endpoints };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -180,24 +161,34 @@ const METHOD_COLORS: Record<string, string> = {
   DELETE: '#DC2626', HEAD: '#64748B', OPTIONS: '#64748B',
 };
 
+type Stage = 'drop' | 'variables' | 'select' | 'saving';
+
 export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
   const { addConnector } = useConnectorStore();
 
-  const [stage, setStage] = useState<'drop' | 'preview' | 'saving'>('drop');
+  const [stage, setStage] = useState<Stage>('drop');
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
   const [parsed, setParsed] = useState<ParsedCollection | null>(null);
-  const [endpointsOpen, setEndpointsOpen] = useState(false);
 
-  // Editable fields
-  const [name, setName] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
+  // Variable resolution step
+  const [varValues, setVarValues] = useState<Record<string, string>>({});
+
+  // Endpoint selection step
+  const [endpoints, setEndpoints] = useState<ParsedEndpoint[]>([]);
+  const [collectionName, setCollectionName] = useState('');
+
+  // Shared auth
   const [authType, setAuthType] = useState<AuthType>('None');
   const [token, setToken] = useState('');
   const [apiKeyName, setApiKeyName] = useState('');
   const [apiKeyValue, setApiKeyValue] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+
+  // Save progress
+  const [saveProgress, setSaveProgress] = useState(0);
+  const [saveTotal, setSaveTotal] = useState(0);
 
   const processFile = useCallback((file: File) => {
     if (!file.name.endsWith('.json')) {
@@ -210,19 +201,25 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
         const json = JSON.parse(e.target?.result as string);
         const result = parseCollection(json);
         setParsed(result);
-        setName(result.name);
-        setBaseUrl(result.baseUrl);
-        setAuthType(result.authType);
-        if (result.authType === 'Bearer') setToken(result.credentials.token ?? '');
-        if (result.authType === 'ApiKey') {
-          setApiKeyName(result.credentials.keyName ?? '');
-          setApiKeyValue(result.credentials.keyValue ?? '');
+        setCollectionName(result.collectionName);
+        setEndpoints(result.endpoints);
+        setAuthType(result.collectionAuth.authType);
+        if (result.collectionAuth.authType === 'Bearer') setToken(result.collectionAuth.credentials.token ?? '');
+        if (result.collectionAuth.authType === 'ApiKey') {
+          setApiKeyName(result.collectionAuth.credentials.keyName ?? '');
+          setApiKeyValue(result.collectionAuth.credentials.keyValue ?? '');
         }
-        if (result.authType === 'Basic') {
-          setUsername(result.credentials.username ?? '');
-          setPassword(result.credentials.password ?? '');
+        if (result.collectionAuth.authType === 'Basic') {
+          setUsername(result.collectionAuth.credentials.username ?? '');
+          setPassword(result.collectionAuth.credentials.password ?? '');
         }
-        setStage('preview');
+
+        // Init var inputs (pre-fill any known vars)
+        const initVars: Record<string, string> = {};
+        for (const v of result.unknownVars) initVars[v] = result.knownVars[v] ?? '';
+        setVarValues(initVars);
+
+        setStage(result.unknownVars.length > 0 ? 'variables' : 'select');
         setError('');
       } catch {
         setError('Could not parse file — make sure it is a valid Postman collection v2 JSON.');
@@ -243,32 +240,84 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
     if (file) processFile(file);
   };
 
-  const handleSave = async () => {
-    if (!name.trim()) return;
-    setStage('saving');
+  const handleResolveVars = () => {
+    // Re-resolve endpoints with the filled-in var values
+    const allVars = { ...parsed!.knownVars, ...varValues };
+    const resolved = endpoints.map((ep) => {
+      const resolvedUrl = resolveVar(ep.rawUrl, allVars);
+      let path = ep.path;
+      try {
+        path = new URL(resolvedUrl).pathname;
+      } catch {
+        // keep existing path
+      }
+      return { ...ep, path };
+    });
+    setEndpoints(resolved);
+    setStage('select');
+  };
 
+  const toggleAll = (val: boolean) =>
+    setEndpoints((prev) => prev.map((ep) => ({ ...ep, selected: val })));
+
+  const toggleOne = (idx: number) =>
+    setEndpoints((prev) => prev.map((ep, i) => i === idx ? { ...ep, selected: !ep.selected } : ep));
+
+  const handleSave = async () => {
+    const selected = endpoints.filter((ep) => ep.selected);
+    if (selected.length === 0) return;
+
+    const allVars = { ...parsed!.knownVars, ...varValues };
     const credentials: Record<string, string> = {};
     if (authType === 'Bearer') credentials.token = token;
     if (authType === 'ApiKey') { credentials.keyName = apiKeyName; credentials.keyValue = apiKeyValue; }
     if (authType === 'Basic') { credentials.username = username; credentials.password = password; }
 
-    await addConnector({
-      name: name.trim(),
-      type: 'POSTMAN',
-      category: 'REST',
-      status: 'idle',
-      description: parsed?.description || 'Imported from Postman collection',
-      baseUrl: baseUrl || undefined,
-      authType,
-      credentials,
-      paginationStrategy: 'cursor',
-      tags: ['postman', 'rest'],
-      config: parsed
-        ? { endpointCount: String(parsed.endpoints.length), source: 'postman' }
-        : undefined,
-    });
+    setStage('saving');
+    setSaveTotal(selected.length);
+    setSaveProgress(0);
+
+    for (let i = 0; i < selected.length; i++) {
+      const ep = selected[i];
+
+      // Resolve base URL for this endpoint
+      const resolvedRaw = resolveVar(ep.rawUrl, allVars);
+      let baseUrl = '';
+      try {
+        const u = new URL(resolvedRaw);
+        baseUrl = `${u.protocol}//${u.host}`;
+      } catch {
+        // If var not filled in, store what we have
+        const varVal = allVars[ep.baseVar] ?? '';
+        baseUrl = varVal || `{{${ep.baseVar}}}`;
+      }
+
+      await addConnector({
+        name: ep.name,
+        type: 'REST_API',
+        category: 'REST',
+        status: 'idle',
+        description: `${ep.method} ${ep.path}`,
+        baseUrl: baseUrl || undefined,
+        authType,
+        credentials,
+        paginationStrategy: 'none',
+        tags: ['postman', collectionName.toLowerCase().replace(/\s+/g, '-')],
+        config: {
+          method: ep.method,
+          path: ep.path,
+          collectionName,
+          endpointUrl: resolvedRaw,
+        },
+      });
+
+      setSaveProgress(i + 1);
+    }
+
     onClose();
   };
+
+  const selectedCount = endpoints.filter((ep) => ep.selected).length;
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 32, padding: '0 10px',
@@ -276,31 +325,34 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
     fontSize: 12, color: '#0D1117', outline: 'none',
     boxSizing: 'border-box', backgroundColor: '#fff',
   };
-
   const labelStyle: React.CSSProperties = {
     fontSize: 11, fontWeight: 600, color: '#64748B',
     letterSpacing: '0.04em', marginBottom: 4, display: 'block',
   };
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 9999,
-      backgroundColor: 'rgba(0,0,0,0.45)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        backgroundColor: 'rgba(0,0,0,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div style={{
-        backgroundColor: '#fff', borderRadius: 10, width: 520,
-        maxWidth: '94vw', maxHeight: '90vh', display: 'flex',
-        flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+        backgroundColor: '#fff', borderRadius: 10,
+        width: stage === 'select' || stage === 'saving' ? 640 : 520,
+        maxWidth: '94vw', maxHeight: '90vh',
+        display: 'flex', flexDirection: 'column',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
         overflow: 'hidden',
+        transition: 'width 150ms ease-out',
       }}>
 
         {/* Header */}
         <div style={{
           padding: '16px 20px', borderBottom: '1px solid #E2E8F0',
-          display: 'flex', alignItems: 'center', gap: 10,
+          display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
         }}>
           <div style={{
             width: 32, height: 32, borderRadius: 7,
@@ -310,11 +362,12 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
             <PackageOpen size={16} color="#EF6C1A" />
           </div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#0D1117' }}>
-              Postman Collection
-            </div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#0D1117' }}>Postman Collection</div>
             <div style={{ fontSize: 11, color: '#94A3B8' }}>
-              Drop a collection JSON to auto-configure
+              {stage === 'drop' && 'Drop a collection JSON to auto-configure'}
+              {stage === 'variables' && `Resolve variables · ${parsed?.endpoints.length} endpoints found`}
+              {stage === 'select' && `${collectionName} · select endpoints to import`}
+              {stage === 'saving' && `Importing ${saveProgress} / ${saveTotal}…`}
             </div>
           </div>
           <button onClick={onClose} style={{
@@ -325,7 +378,7 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
 
-          {/* ── Drop zone ── */}
+          {/* ── Stage: drop ── */}
           {stage === 'drop' && (
             <div style={{ padding: 24 }}>
               <div
@@ -334,10 +387,8 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
                 onDrop={onDrop}
                 style={{
                   border: `2px dashed ${dragging ? '#EF6C1A' : '#E2E8F0'}`,
-                  borderRadius: 10,
-                  backgroundColor: dragging ? '#FFF7F2' : '#F8FAFC',
-                  padding: '48px 24px',
-                  display: 'flex', flexDirection: 'column',
+                  borderRadius: 10, backgroundColor: dragging ? '#FFF7F2' : '#F8FAFC',
+                  padding: '48px 24px', display: 'flex', flexDirection: 'column',
                   alignItems: 'center', gap: 12,
                   transition: 'all 120ms', cursor: 'pointer',
                 }}
@@ -360,14 +411,10 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
                   </div>
                 </div>
                 <input
-                  id="postman-file-input"
-                  type="file"
-                  accept=".json"
-                  style={{ display: 'none' }}
-                  onChange={onFileInput}
+                  id="postman-file-input" type="file" accept=".json"
+                  style={{ display: 'none' }} onChange={onFileInput}
                 />
               </div>
-
               {error && (
                 <div style={{
                   marginTop: 12, display: 'flex', alignItems: 'center', gap: 8,
@@ -375,138 +422,40 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
                   border: '1px solid #FECACA', borderRadius: 6,
                   fontSize: 12, color: '#DC2626',
                 }}>
-                  <AlertCircle size={14} />
-                  {error}
+                  <AlertCircle size={14} />{error}
                 </div>
               )}
             </div>
           )}
 
-          {/* ── Preview / edit ── */}
-          {(stage === 'preview' || stage === 'saving') && parsed && (
+          {/* ── Stage: variables ── */}
+          {stage === 'variables' && parsed && (
             <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-              {/* Parsed summary */}
               <div style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '10px 14px', backgroundColor: '#F0FDF4',
-                border: '1px solid #BBF7D0', borderRadius: 8,
+                padding: '10px 14px', backgroundColor: '#FFF7ED',
+                border: '1px solid #FED7AA', borderRadius: 8,
+                fontSize: 12, color: '#9A3412',
               }}>
-                <CheckCircle size={15} color="#16A34A" />
-                <div style={{ fontSize: 12, color: '#166534' }}>
-                  Parsed <strong>{parsed.endpoints.length} endpoints</strong> from collection
-                  {parsed.variables && Object.keys(parsed.variables).length > 0
-                    ? ` · ${Object.keys(parsed.variables).length} variables`
-                    : ''}
-                </div>
+                This collection uses <strong>{parsed.unknownVars.length} base URL variable{parsed.unknownVars.length !== 1 ? 's' : ''}</strong> that aren't defined in the collection.
+                Enter the real values so each endpoint gets the correct URL.
               </div>
 
-              {/* Name */}
-              <div>
-                <label style={labelStyle}>CONNECTOR NAME</label>
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  style={inputStyle}
-                  autoFocus
-                />
-              </div>
-
-              {/* Base URL */}
-              <div>
-                <label style={labelStyle}>BASE URL</label>
-                <input
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="https://api.example.com"
-                  style={inputStyle}
-                />
-              </div>
-
-              {/* Auth */}
-              <div>
-                <label style={labelStyle}>AUTHENTICATION</label>
-                <select
-                  value={authType}
-                  onChange={(e) => setAuthType(e.target.value as AuthType)}
-                  style={{ ...inputStyle, cursor: 'pointer' }}
-                >
-                  {(['None', 'Bearer', 'ApiKey', 'Basic', 'OAuth2'] as AuthType[]).map((a) => (
-                    <option key={a} value={a}>{a}</option>
-                  ))}
-                </select>
-              </div>
-
-              {authType === 'Bearer' && (
-                <div>
-                  <label style={labelStyle}>BEARER TOKEN</label>
-                  <input value={token} onChange={(e) => setToken(e.target.value)} style={inputStyle} placeholder="ey..." />
-                </div>
-              )}
-              {authType === 'ApiKey' && (
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={labelStyle}>HEADER NAME</label>
-                    <input value={apiKeyName} onChange={(e) => setApiKeyName(e.target.value)} style={inputStyle} placeholder="x-api-key" />
-                  </div>
-                  <div style={{ flex: 2 }}>
-                    <label style={labelStyle}>KEY VALUE</label>
-                    <input value={apiKeyValue} onChange={(e) => setApiKeyValue(e.target.value)} style={inputStyle} />
-                  </div>
-                </div>
-              )}
-              {authType === 'Basic' && (
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={labelStyle}>USERNAME</label>
-                    <input value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={labelStyle}>PASSWORD</label>
-                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} />
-                  </div>
-                </div>
-              )}
-
-              {/* Endpoints preview */}
-              {parsed.endpoints.length > 0 && (
-                <div style={{ border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden' }}>
-                  <button
-                    onClick={() => setEndpointsOpen((v) => !v)}
-                    style={{
-                      width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '10px 14px', background: '#F8FAFC',
-                      border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#374151',
-                    }}
-                  >
-                    {endpointsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                    {parsed.endpoints.length} endpoints detected
-                    <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>
-                      click to {endpointsOpen ? 'hide' : 'preview'}
+              {parsed.unknownVars.map((v) => (
+                <div key={v}>
+                  <label style={labelStyle}>
+                    {`{{${v.toUpperCase()}}}`}
+                    <span style={{ fontSize: 10, fontWeight: 400, color: '#94A3B8', marginLeft: 6 }}>
+                      used by {endpoints.filter((ep) => ep.baseVar === v).length} endpoint{endpoints.filter((ep) => ep.baseVar === v).length !== 1 ? 's' : ''}
                     </span>
-                  </button>
-                  {endpointsOpen && (
-                    <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-                      {parsed.endpoints.map((ep, i) => (
-                        <div key={i} style={{
-                          display: 'flex', alignItems: 'center', gap: 10,
-                          padding: '7px 14px', borderTop: '1px solid #F1F5F9',
-                          fontSize: 11,
-                        }}>
-                          <span style={{
-                            fontSize: 10, fontWeight: 700, width: 46, textAlign: 'center',
-                            color: METHOD_COLORS[ep.method] ?? '#64748B',
-                            backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0',
-                            borderRadius: 3, padding: '1px 0',
-                          }}>{ep.method}</span>
-                          <span style={{ color: '#475569', fontFamily: 'monospace', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ep.path}</span>
-                          <span style={{ color: '#94A3B8', flexShrink: 0, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ep.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  </label>
+                  <input
+                    value={varValues[v] ?? ''}
+                    onChange={(e) => setVarValues((prev) => ({ ...prev, [v]: e.target.value }))}
+                    placeholder={`https://your-api.com`}
+                    style={inputStyle}
+                  />
                 </div>
-              )}
+              ))}
 
               <button
                 onClick={() => { setParsed(null); setStage('drop'); setError(''); }}
@@ -516,35 +465,244 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
               </button>
             </div>
           )}
+
+          {/* ── Stage: select ── */}
+          {stage === 'select' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+              {/* Summary bar */}
+              <div style={{
+                padding: '10px 20px', backgroundColor: '#F0FDF4',
+                borderBottom: '1px solid #BBF7D0',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <CheckCircle size={14} color="#16A34A" />
+                <span style={{ fontSize: 12, color: '#166534' }}>
+                  <strong>{endpoints.length} endpoints</strong> parsed — each will become its own connector card
+                </span>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                  <button onClick={() => toggleAll(true)} style={{
+                    fontSize: 11, color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  }}>Select all</button>
+                  <span style={{ color: '#CBD5E1', fontSize: 11 }}>·</span>
+                  <button onClick={() => toggleAll(false)} style={{
+                    fontSize: 11, color: '#64748B', background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  }}>None</button>
+                </div>
+              </div>
+
+              {/* Endpoint list */}
+              <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                {endpoints.map((ep, i) => (
+                  <label
+                    key={i}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '7px 20px', borderBottom: '1px solid #F1F5F9',
+                      cursor: 'pointer', backgroundColor: ep.selected ? '#fff' : '#FAFAFA',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={ep.selected}
+                      onChange={() => toggleOne(i)}
+                      style={{ flexShrink: 0, accentColor: '#EF6C1A' }}
+                    />
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, width: 44, textAlign: 'center', flexShrink: 0,
+                      color: METHOD_COLORS[ep.method] ?? '#64748B',
+                      backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0',
+                      borderRadius: 3, padding: '1px 0',
+                    }}>{ep.method}</span>
+                    <span style={{ fontSize: 12, color: '#0D1117', fontWeight: 500, flex: '0 0 160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {ep.name}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#64748B', fontFamily: 'monospace', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {ep.baseVar ? `{${ep.baseVar}}` : ''}{ep.path}
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {/* Auth config */}
+              <div style={{ padding: '16px 20px', borderTop: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <AuthSection
+                  authType={authType} setAuthType={setAuthType}
+                  token={token} setToken={setToken}
+                  apiKeyName={apiKeyName} setApiKeyName={setApiKeyName}
+                  apiKeyValue={apiKeyValue} setApiKeyValue={setApiKeyValue}
+                  username={username} setUsername={setUsername}
+                  password={password} setPassword={setPassword}
+                  inputStyle={inputStyle} labelStyle={labelStyle}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ── Stage: saving ── */}
+          {stage === 'saving' && (
+            <div style={{
+              padding: 40, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', gap: 16,
+            }}>
+              <div style={{ fontSize: 14, color: '#0D1117', fontWeight: 500 }}>
+                Creating connectors…
+              </div>
+              <div style={{
+                width: '100%', maxWidth: 320, height: 6,
+                backgroundColor: '#F1F5F9', borderRadius: 99, overflow: 'hidden',
+              }}>
+                <div style={{
+                  height: '100%', borderRadius: 99,
+                  backgroundColor: '#EF6C1A',
+                  width: saveTotal > 0 ? `${(saveProgress / saveTotal) * 100}%` : '0%',
+                  transition: 'width 200ms ease-out',
+                }} />
+              </div>
+              <div style={{ fontSize: 12, color: '#64748B' }}>
+                {saveProgress} of {saveTotal} connectors saved
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
-        {(stage === 'preview' || stage === 'saving') && (
+        {stage === 'variables' && (
           <div style={{
             padding: '14px 20px', borderTop: '1px solid #E2E8F0',
-            display: 'flex', justifyContent: 'flex-end', gap: 8,
+            display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0,
           }}>
             <button onClick={onClose} style={{
               padding: '7px 16px', border: '1px solid #E2E8F0', borderRadius: 6,
               fontSize: 12, color: '#64748B', backgroundColor: '#fff', cursor: 'pointer',
-            }}>
-              Cancel
-            </button>
+            }}>Cancel</button>
             <button
-              onClick={handleSave}
-              disabled={!name.trim() || stage === 'saving'}
+              onClick={handleResolveVars}
               style={{
                 padding: '7px 20px', border: 'none', borderRadius: 6,
-                fontSize: 12, fontWeight: 600, cursor: name.trim() ? 'pointer' : 'default',
-                backgroundColor: name.trim() && stage !== 'saving' ? '#EF6C1A' : '#E2E8F0',
-                color: name.trim() && stage !== 'saving' ? '#fff' : '#94A3B8',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                backgroundColor: '#EF6C1A', color: '#fff',
               }}
             >
-              {stage === 'saving' ? 'Saving…' : 'Add Connector'}
+              Continue →
+            </button>
+          </div>
+        )}
+
+        {stage === 'select' && (
+          <div style={{
+            padding: '14px 20px', borderTop: '1px solid #E2E8F0',
+            display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexShrink: 0,
+          }}>
+            <span style={{ fontSize: 12, color: '#64748B', marginRight: 'auto' }}>
+              {selectedCount} of {endpoints.length} selected
+            </span>
+            <button onClick={onClose} style={{
+              padding: '7px 16px', border: '1px solid #E2E8F0', borderRadius: 6,
+              fontSize: 12, color: '#64748B', backgroundColor: '#fff', cursor: 'pointer',
+            }}>Cancel</button>
+            <button
+              onClick={handleSave}
+              disabled={selectedCount === 0}
+              style={{
+                padding: '7px 20px', border: 'none', borderRadius: 6,
+                fontSize: 12, fontWeight: 600,
+                cursor: selectedCount > 0 ? 'pointer' : 'default',
+                backgroundColor: selectedCount > 0 ? '#EF6C1A' : '#E2E8F0',
+                color: selectedCount > 0 ? '#fff' : '#94A3B8',
+              }}
+            >
+              Import {selectedCount} connector{selectedCount !== 1 ? 's' : ''}
             </button>
           </div>
         )}
       </div>
+    </div>
+  );
+};
+
+// ── Auth sub-component ────────────────────────────────────────────────────────
+
+interface AuthSectionProps {
+  authType: AuthType; setAuthType: (v: AuthType) => void;
+  token: string; setToken: (v: string) => void;
+  apiKeyName: string; setApiKeyName: (v: string) => void;
+  apiKeyValue: string; setApiKeyValue: (v: string) => void;
+  username: string; setUsername: (v: string) => void;
+  password: string; setPassword: (v: string) => void;
+  inputStyle: React.CSSProperties;
+  labelStyle: React.CSSProperties;
+}
+
+const AuthSection: React.FC<AuthSectionProps> = ({
+  authType, setAuthType, token, setToken,
+  apiKeyName, setApiKeyName, apiKeyValue, setApiKeyValue,
+  username, setUsername, password, setPassword,
+  inputStyle, labelStyle,
+}) => {
+  const [open, setOpen] = useState(true);
+
+  return (
+    <div style={{ border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+          padding: '9px 14px', background: '#F8FAFC',
+          border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#374151',
+        }}
+      >
+        {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        Authentication
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>
+          shared across all imported connectors
+        </span>
+      </button>
+      {open && (
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div>
+            <label style={labelStyle}>TYPE</label>
+            <select
+              value={authType}
+              onChange={(e) => setAuthType(e.target.value as AuthType)}
+              style={{ ...inputStyle, cursor: 'pointer' }}
+            >
+              {(['None', 'Bearer', 'ApiKey', 'Basic', 'OAuth2'] as AuthType[]).map((a) => (
+                <option key={a} value={a}>{a}</option>
+              ))}
+            </select>
+          </div>
+          {authType === 'Bearer' && (
+            <div>
+              <label style={labelStyle}>BEARER TOKEN</label>
+              <input value={token} onChange={(e) => setToken(e.target.value)} style={inputStyle} placeholder="ey..." />
+            </div>
+          )}
+          {authType === 'ApiKey' && (
+            <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>HEADER NAME</label>
+                <input value={apiKeyName} onChange={(e) => setApiKeyName(e.target.value)} style={inputStyle} placeholder="x-api-key" />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label style={labelStyle}>KEY VALUE</label>
+                <input value={apiKeyValue} onChange={(e) => setApiKeyValue(e.target.value)} style={inputStyle} />
+              </div>
+            </div>
+          )}
+          {authType === 'Basic' && (
+            <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>USERNAME</label>
+                <input value={username} onChange={(e) => setUsername(e.target.value)} style={inputStyle} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>PASSWORD</label>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
