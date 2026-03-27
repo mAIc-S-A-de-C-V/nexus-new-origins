@@ -17,7 +17,8 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd nexus-new-origins
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
 
             # Write root .env (runtime secrets for backend services)
             printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\n' > .env
