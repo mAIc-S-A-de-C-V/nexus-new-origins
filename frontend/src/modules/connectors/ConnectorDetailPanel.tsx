@@ -278,7 +278,7 @@ const OverviewTab: React.FC<{ connector: ConnectorConfig; formatDate: (ts?: stri
   connector, formatDate,
 }) => {
   const { updateConnector } = useConnectorStore();
-  const [syncInterval, setSyncInterval] = React.useState<string>(connector.config?.syncInterval || 'manual');
+  const [syncInterval, setSyncInterval] = React.useState<string>((connector.config?.syncInterval as string) || 'manual');
   const [savingSync, setSavingSync] = React.useState(false);
 
   const saveSync = async (val: string) => {
@@ -463,7 +463,7 @@ const ConnectorPicker: React.FC<{ value: string; onChange: (id: string) => void;
       </select>
       {selected && (
         <div style={{ marginTop: 4, fontSize: 11, color: '#16A34A' }}>
-          {selected.baseUrl || '(no base URL)'} · {selected.config?.method || 'GET'} {selected.config?.path || '/'}
+          {selected.baseUrl || '(no base URL)'} · {(selected.config?.method as string) || 'GET'} {(selected.config?.path as string) || '/'}
         </div>
       )}
     </div>
@@ -480,6 +480,8 @@ const ConfigurationTab: React.FC<{
   const creds = connector.credentials || {};
 
   const [baseUrl, setBaseUrl] = useState(connector.baseUrl || '');
+  const [endpointMethod, setEndpointMethod] = useState<string>((connector.config?.method as string) || 'GET');
+  const [endpointPath, setEndpointPath] = useState<string>((connector.config?.path as string) || '');
   const [authType, setAuthType] = useState(connector.authType);
 
   // Detect token mode from stored credentials
@@ -503,6 +505,59 @@ const ConfigurationTab: React.FC<{
   const [clientId, setClientId] = useState(creds.clientId || '');
   const [clientSecret, setClientSecret] = useState(creds.clientSecret || '');
   const [paginationStrategy, setPaginationStrategy] = useState<string>(connector.paginationStrategy || 'cursor');
+  const [endpointBody, setEndpointBody] = useState<string>((connector.config?.body as string) || '');
+  interface HeaderRule {
+    key: string;
+    type: 'static' | 'uuid' | 'randomIp' | 'connector';
+    value: string;
+    connectorId: string;
+    fieldPath: string;
+  }
+  const parseHeaderRules = (h: unknown): HeaderRule[] => {
+    if (!h || typeof h !== 'object') return [];
+    return Object.entries(h as Record<string, string>).map(([key, val]) => {
+      if (val === '{{$guid}}') return { key, type: 'uuid' as const, value: '', connectorId: '', fieldPath: '' };
+      if (val === '{{$randomIP}}') return { key, type: 'randomIp' as const, value: '', connectorId: '', fieldPath: '' };
+      const m = String(val).match(/^\{\{connector:([^:]+):(.+)\}\}$/);
+      if (m) return { key, type: 'connector' as const, value: '', connectorId: m[1], fieldPath: m[2] };
+      return { key, type: 'static' as const, value: String(val), connectorId: '', fieldPath: '' };
+    });
+  };
+  const [headerRules, setHeaderRules] = useState<HeaderRule[]>(() => parseHeaderRules(connector.config?.headers));
+
+  interface QueryParamRule {
+    key: string;
+    type: 'static' | 'today' | 'daysAgo' | 'lastRun' | 'connector';
+    value: string;       // static value
+    format: string;      // date format string
+    daysAgo: string;     // for daysAgo type
+    connectorId: string;
+    fieldPath: string;
+  }
+  const parseQueryParamRules = (qp: unknown): QueryParamRule[] => {
+    if (!qp || typeof qp !== 'object') return [];
+    return Object.entries(qp as Record<string, string>).map(([key, val]) => {
+      const s = String(val);
+      let m;
+      if (s === '{{$today}}' || (m = s.match(/^\{\{\$today:(.+)\}\}$/))) {
+        return { key, type: 'today' as const, value: '', format: m ? m[1] : 'DD/MM/YYYY', daysAgo: '', connectorId: '', fieldPath: '' };
+      }
+      if ((m = s.match(/^\{\{\$daysAgo:(\d+):(.+)\}\}$/))) {
+        return { key, type: 'daysAgo' as const, value: '', format: m[2], daysAgo: m[1], connectorId: '', fieldPath: '' };
+      }
+      if (s === '{{$lastRun}}' || (m = s.match(/^\{\{\$lastRun:(.+)\}\}$/))) {
+        return { key, type: 'lastRun' as const, value: '', format: m ? m[1] : 'DD/MM/YYYY', daysAgo: '', connectorId: '', fieldPath: '' };
+      }
+      if ((m = s.match(/^\{\{connector:([^:]+):(.+)\}\}$/))) {
+        return { key, type: 'connector' as const, value: '', format: '', daysAgo: '', connectorId: m[1], fieldPath: m[2] };
+      }
+      return { key, type: 'static' as const, value: s, format: '', daysAgo: '', connectorId: '', fieldPath: '' };
+    });
+  };
+  const [queryParamRules, setQueryParamRules] = useState<QueryParamRule[]>(() =>
+    parseQueryParamRules(connector.config?.queryParams)
+  );
+
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -510,6 +565,8 @@ const ConfigurationTab: React.FC<{
   useEffect(() => {
     const c = connector.credentials || {};
     setBaseUrl(connector.baseUrl || '');
+    setEndpointMethod((connector.config?.method as string) || 'GET');
+    setEndpointPath((connector.config?.path as string) || '');
     setAuthType(connector.authType);
     setTokenMode(detectTokenMode(c));
     setToken(c.token || '');
@@ -525,6 +582,9 @@ const ConfigurationTab: React.FC<{
     setClientId(c.clientId || '');
     setClientSecret(c.clientSecret || '');
     setPaginationStrategy(connector.paginationStrategy || 'cursor');
+    setEndpointBody((connector.config?.body as string) || '');
+    setHeaderRules(parseHeaderRules(connector.config?.headers));
+    setQueryParamRules(parseQueryParamRules(connector.config?.queryParams));
     setSaved(false);
   }, [connector.id]);
 
@@ -549,11 +609,36 @@ const ConfigurationTab: React.FC<{
     if (authType === 'Basic') { credentials.username = username; credentials.password = password; }
     if (authType === 'OAuth2') { credentials.clientId = clientId; credentials.clientSecret = clientSecret; }
     try {
+      const existingConfig = connector.config || {};
+      const builtHeaders: Record<string, string> = {};
+      for (const r of headerRules) {
+        if (!r.key.trim()) continue;
+        if (r.type === 'uuid') builtHeaders[r.key] = '{{$guid}}';
+        else if (r.type === 'randomIp') builtHeaders[r.key] = '{{$randomIP}}';
+        else if (r.type === 'connector') builtHeaders[r.key] = `{{connector:${r.connectorId}:${r.fieldPath}}}`;
+        else builtHeaders[r.key] = r.value;
+      }
+      const builtQueryParams: Record<string, string> = {};
+      for (const r of queryParamRules) {
+        if (!r.key.trim()) continue;
+        if (r.type === 'today') builtQueryParams[r.key] = `{{$today:${r.format || 'DD/MM/YYYY'}}}`;
+        else if (r.type === 'daysAgo') builtQueryParams[r.key] = `{{$daysAgo:${r.daysAgo || '7'}:${r.format || 'DD/MM/YYYY'}}}`;
+        else if (r.type === 'lastRun') builtQueryParams[r.key] = `{{$lastRun:${r.format || 'DD/MM/YYYY'}}}`;
+        else if (r.type === 'connector') builtQueryParams[r.key] = `{{connector:${r.connectorId}:${r.fieldPath}}}`;
+        else builtQueryParams[r.key] = r.value;
+      }
+      const newConfig = { ...existingConfig };
+      if (endpointMethod) newConfig.method = endpointMethod;
+      if (endpointPath.trim()) newConfig.path = endpointPath.trim();
+      if (endpointBody.trim()) { newConfig.body = endpointBody.trim(); } else { delete newConfig.body; }
+      if (Object.keys(builtHeaders).length > 0) { newConfig.headers = builtHeaders; } else { delete newConfig.headers; }
+      if (Object.keys(builtQueryParams).length > 0) { newConfig.queryParams = builtQueryParams; } else { delete newConfig.queryParams; }
       await updateConnector(connector.id, {
         baseUrl: baseUrl.trim() || undefined,
         authType,
         credentials,
         paginationStrategy: paginationStrategy as any,
+        config: newConfig,
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -569,10 +654,170 @@ const ConfigurationTab: React.FC<{
           <input
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.hubapi.com"
+            placeholder="https://api.example.com"
             style={inputStyle}
           />
         </FieldGroup>
+
+        {connector.type === 'REST_API' && (
+          <FieldGroup label="Endpoint">
+            <div style={{ display: 'flex', gap: 6 }}>
+              <select value={endpointMethod} onChange={(e) => setEndpointMethod(e.target.value)}
+                style={{ ...inputStyle, width: 90, flexShrink: 0, cursor: 'pointer' }}>
+                {['GET','POST','PUT','PATCH','DELETE'].map(m => <option key={m}>{m}</option>)}
+              </select>
+              <input value={endpointPath} onChange={(e) => setEndpointPath(e.target.value)}
+                placeholder="/v1/resource?param=value" style={inputStyle} />
+            </div>
+          </FieldGroup>
+        )}
+
+        {connector.type === 'REST_API' && ['POST', 'PUT', 'PATCH'].includes(endpointMethod.toUpperCase()) && (
+          <FieldGroup label="Request Body (JSON)">
+            <textarea
+              value={endpointBody}
+              onChange={(e) => setEndpointBody(e.target.value)}
+              rows={4}
+              placeholder='{"key": "value"}'
+              style={{ ...inputStyle, height: 'auto', padding: '8px 10px', fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+            />
+          </FieldGroup>
+        )}
+
+        {connector.type === 'REST_API' && (
+          <FieldGroup label="Query Parameters">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {queryParamRules.map((rule, idx) => {
+                const setRule = (patch: Partial<QueryParamRule>) =>
+                  setQueryParamRules((prev) => prev.map((r, i) => i === idx ? { ...r, ...patch } : r));
+                return (
+                  <div key={idx} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    <input value={rule.key} onChange={(e) => setRule({ key: e.target.value })}
+                      placeholder="param" style={{ ...inputStyle, width: 110, flexShrink: 0, fontFamily: 'monospace', fontSize: 12 }} />
+                    <select value={rule.type} onChange={(e) => setRule({ type: e.target.value as QueryParamRule['type'] })}
+                      style={{ ...inputStyle, width: 130, flexShrink: 0, cursor: 'pointer' }}>
+                      <option value="static">Static value</option>
+                      <option value="today">Today's date</option>
+                      <option value="daysAgo">N days ago</option>
+                      <option value="lastRun">Last pipeline run</option>
+                      <option value="connector">From connector</option>
+                    </select>
+
+                    {rule.type === 'static' && (
+                      <input value={rule.value} onChange={(e) => setRule({ value: e.target.value })}
+                        placeholder="value" style={{ ...inputStyle, flex: 1 }} />
+                    )}
+                    {(rule.type === 'today' || rule.type === 'lastRun') && (
+                      <input value={rule.format} onChange={(e) => setRule({ format: e.target.value })}
+                        placeholder="DD/MM/YYYY" style={{ ...inputStyle, width: 120 }}
+                        title="Date format: DD=day, MM=month, YYYY=year" />
+                    )}
+                    {rule.type === 'daysAgo' && (
+                      <>
+                        <input value={rule.daysAgo} onChange={(e) => setRule({ daysAgo: e.target.value })}
+                          placeholder="7" type="number" min="0" style={{ ...inputStyle, width: 60 }} />
+                        <span style={{ lineHeight: '34px', fontSize: 12, color: '#64748B', flexShrink: 0 }}>days ago</span>
+                        <input value={rule.format} onChange={(e) => setRule({ format: e.target.value })}
+                          placeholder="DD/MM/YYYY" style={{ ...inputStyle, width: 120 }}
+                          title="Date format: DD=day, MM=month, YYYY=year" />
+                      </>
+                    )}
+                    {rule.type === 'connector' && (
+                      <>
+                        <ConnectorPicker value={rule.connectorId} onChange={(id) => setRule({ connectorId: id })}
+                          currentId={connector.id} style={{ ...inputStyle, flex: 1 }} />
+                        <input value={rule.fieldPath} onChange={(e) => setRule({ fieldPath: e.target.value })}
+                          placeholder="data.field" style={{ ...inputStyle, width: 110, fontFamily: 'monospace', fontSize: 12 }} />
+                      </>
+                    )}
+                    <button type="button" onClick={() => setQueryParamRules((prev) => prev.filter((_, i) => i !== idx))}
+                      style={{ padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, background: 'none', cursor: 'pointer', color: '#94A3B8', flexShrink: 0 }}>×</button>
+                  </div>
+                );
+              })}
+              <button type="button"
+                onClick={() => setQueryParamRules((prev) => [...prev, { key: '', type: 'static', value: '', format: 'DD/MM/YYYY', daysAgo: '7', connectorId: '', fieldPath: '' }])}
+                style={{ alignSelf: 'flex-start', padding: '5px 10px', border: '1px dashed #CBD5E1', borderRadius: 4, background: 'none', cursor: 'pointer', fontSize: 12, color: '#64748B' }}>
+                + Add Parameter
+              </button>
+            </div>
+          </FieldGroup>
+        )}
+
+        {connector.type === 'REST_API' && (
+          <FieldGroup label="Custom Headers">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {headerRules.map((rule, idx) => (
+                <div key={idx} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                  {/* Key */}
+                  <input
+                    value={rule.key}
+                    onChange={(e) => setHeaderRules((prev) => prev.map((r, i) => i === idx ? { ...r, key: e.target.value } : r))}
+                    placeholder="header-name"
+                    style={{ ...inputStyle, width: 140, flexShrink: 0, fontFamily: 'monospace', fontSize: 12 }}
+                  />
+                  {/* Type selector */}
+                  <select
+                    value={rule.type}
+                    onChange={(e) => setHeaderRules((prev) => prev.map((r, i) => i === idx ? { ...r, type: e.target.value as HeaderRule['type'] } : r))}
+                    style={{ ...inputStyle, width: 130, flexShrink: 0, cursor: 'pointer' }}
+                  >
+                    <option value="static">Static value</option>
+                    <option value="uuid">UUID (auto)</option>
+                    <option value="randomIp">Random IP</option>
+                    <option value="connector">From connector</option>
+                  </select>
+                  {/* Value config */}
+                  {rule.type === 'static' && (
+                    <input
+                      value={rule.value}
+                      onChange={(e) => setHeaderRules((prev) => prev.map((r, i) => i === idx ? { ...r, value: e.target.value } : r))}
+                      placeholder="value"
+                      style={{ ...inputStyle, flex: 1 }}
+                    />
+                  )}
+                  {rule.type === 'uuid' && (
+                    <span style={{ flex: 1, fontSize: 11, color: '#94A3B8', padding: '8px 10px', backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 4 }}>
+                      Auto-generated UUID v4 per request
+                    </span>
+                  )}
+                  {rule.type === 'randomIp' && (
+                    <span style={{ flex: 1, fontSize: 11, color: '#94A3B8', padding: '8px 10px', backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 4 }}>
+                      Auto-generated random IP per request
+                    </span>
+                  )}
+                  {rule.type === 'connector' && (
+                    <div style={{ flex: 1, display: 'flex', gap: 6 }}>
+                      <ConnectorPicker
+                        value={rule.connectorId}
+                        onChange={(id) => setHeaderRules((prev) => prev.map((r, i) => i === idx ? { ...r, connectorId: id } : r))}
+                        currentId={connector.id}
+                        style={{ ...inputStyle, flex: 1 }}
+                      />
+                      <input
+                        value={rule.fieldPath}
+                        onChange={(e) => setHeaderRules((prev) => prev.map((r, i) => i === idx ? { ...r, fieldPath: e.target.value } : r))}
+                        placeholder="data.field"
+                        style={{ ...inputStyle, width: 110, fontFamily: 'monospace', fontSize: 12 }}
+                      />
+                    </div>
+                  )}
+                  {/* Remove */}
+                  <button
+                    type="button"
+                    onClick={() => setHeaderRules((prev) => prev.filter((_, i) => i !== idx))}
+                    style={{ padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, background: 'none', cursor: 'pointer', color: '#94A3B8', flexShrink: 0 }}
+                  >×</button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setHeaderRules((prev) => [...prev, { key: '', type: 'static', value: '', connectorId: '', fieldPath: '' }])}
+                style={{ alignSelf: 'flex-start', padding: '5px 10px', border: '1px dashed #CBD5E1', borderRadius: 4, background: 'none', cursor: 'pointer', fontSize: 12, color: '#64748B' }}
+              >+ Add Header</button>
+            </div>
+          </FieldGroup>
+        )}
 
         <FieldGroup label="Authentication Type">
           <select value={authType} onChange={(e) => setAuthType(e.target.value as typeof authType)} style={inputStyle}>
@@ -728,6 +973,7 @@ const ConfigurationTab: React.FC<{
           setAuthEndpointBody(c.tokenEndpointBody || '{"username": "", "password": ""}');
           setTokenResponsePath(c.tokenPath || 'token');
           setAuthConnectorId(c.authConnectorId || '');
+          setEndpointBody((connector.config?.body as string) || '');
           setSaved(false);
         }}>
           Cancel
@@ -1410,7 +1656,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
                     <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
                       {Object.keys((row as Record<string, unknown>) || {}).map((c) => {
                         const val = (row as Record<string, unknown>)[c];
-                        const display = val == null ? '' : String(val);
+                        const display = val == null ? '' : typeof val === 'object' ? JSON.stringify(val) : String(val);
                         return (
                           <td key={c} style={{ padding: '4px 8px', color: '#0D1117', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)', fontSize: '11px' }} title={display}>
                             {display || <span style={{ color: '#CBD5E1' }}>—</span>}
@@ -1444,7 +1690,9 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
         const sampleVal = (col: string) => {
           for (const row of (fetchedSchema?.sample_rows || [])) {
             const v = (row as Record<string, unknown>)[col];
-            if (v != null && String(v).trim()) return String(v);
+            if (v == null) continue;
+            const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+            if (s.trim()) return s;
           }
           return null;
         };

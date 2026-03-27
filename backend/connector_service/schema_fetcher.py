@@ -3,7 +3,99 @@ Real schema fetchers for each connector type.
 Returns (raw_schema_dict, sample_rows_list, error_message_or_None).
 """
 import httpx
+import uuid as _uuid_mod
+import random as _random_mod
 from typing import Optional
+
+
+def _fmt_date(dt, fmt: str) -> str:
+    """Format a datetime using simple DD/MM/YYYY-style tokens."""
+    return (fmt
+        .replace('YYYY', dt.strftime('%Y'))
+        .replace('MM', dt.strftime('%m'))
+        .replace('DD', dt.strftime('%d'))
+        .replace('HH', dt.strftime('%H'))
+        .replace('mm', dt.strftime('%M'))
+        .replace('ss', dt.strftime('%S')))
+
+
+def _resolve_header_value(value: str) -> str:
+    """Resolve Postman dynamic variables in header values."""
+    value = value.replace('{{$guid}}', str(_uuid_mod.uuid4()))
+    value = value.replace('{{$randomInt}}', str(_random_mod.randint(1, 1000)))
+    value = value.replace('{{$randomIP}}',
+        f"{_random_mod.randint(1,254)}.{_random_mod.randint(0,255)}.{_random_mod.randint(0,255)}.{_random_mod.randint(1,254)}")
+    return value
+
+
+async def _resolve_query_params(query_params: dict, last_sync=None, db=None) -> dict:
+    """Resolve dynamic query param values to concrete strings."""
+    import re as _re
+    from datetime import datetime, timezone, timedelta
+    result = {}
+    now = datetime.now(timezone.utc)
+    for k, v in query_params.items():
+        s = str(v)
+        m = _re.match(r'^\{\{\$today:(.+)\}\}$', s)
+        if m:
+            result[k] = _fmt_date(now, m.group(1))
+            continue
+        m = _re.match(r'^\{\{\$daysAgo:(\d+):(.+)\}\}$', s)
+        if m:
+            dt = now - timedelta(days=int(m.group(1)))
+            result[k] = _fmt_date(dt, m.group(2))
+            continue
+        m = _re.match(r'^\{\{\$lastRun:(.+)\}\}$', s)
+        if m:
+            dt = last_sync if last_sync else (now - timedelta(days=7))
+            result[k] = _fmt_date(dt, m.group(1))
+            continue
+        # From connector
+        m = _re.match(r'^\{\{connector:([^:]+):(.+)\}\}$', s)
+        if m and db is not None:
+            connector_id, field_path = m.group(1), m.group(2)
+            try:
+                from database import ConnectorRow
+                from sqlalchemy import select as sa_select
+                row = (await db.execute(sa_select(ConnectorRow).where(ConnectorRow.id == connector_id))).scalar_one_or_none()
+                if row:
+                    _, sample_rows, err = await _rest_api(row.base_url, row.credentials or {}, row.config or {}, db=db)
+                    if not err and sample_rows:
+                        field_val = sample_rows[0]
+                        for part in field_path.split('.'):
+                            field_val = field_val[part]
+                        result[k] = str(field_val)
+                        continue
+            except Exception:
+                pass
+        result[k] = s  # fallback: use as-is
+    return result
+
+
+async def _resolve_headers(headers: dict, db=None) -> dict:
+    import re as _re
+    result = {}
+    for k, v in headers.items():
+        val = _resolve_header_value(str(v))
+        # Resolve {{connector:id:field.path}} — call the connector and extract the field
+        m = _re.match(r'^\{\{connector:([^:]+):(.+)\}\}$', val)
+        if m and db is not None:
+            connector_id, field_path = m.group(1), m.group(2)
+            try:
+                from database import ConnectorRow
+                from sqlalchemy import select as sa_select
+                row = (await db.execute(sa_select(ConnectorRow).where(ConnectorRow.id == connector_id))).scalar_one_or_none()
+                if row:
+                    _, sample_rows, err = await _rest_api(row.base_url, row.credentials or {}, row.config or {}, db=db)
+                    if not err and sample_rows:
+                        field_val = sample_rows[0]
+                        for part in field_path.split('.'):
+                            field_val = field_val[part]
+                        val = str(field_val)
+            except Exception:
+                pass  # keep original value on failure
+        result[k] = val
+    return result
 
 
 async def fetch_schema(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None, db=None) -> tuple[dict, list, Optional[str]]:
@@ -153,19 +245,42 @@ async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None) ->
     path = cfg.get("path", "")
     method = cfg.get("method", "GET").lower()
     url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
+    raw_qp = cfg.get("queryParams") or {}
+    if raw_qp:
+        import urllib.parse as _urlparse
+        resolved_qp = await _resolve_query_params(raw_qp, db=db)
+        qs = _urlparse.urlencode(resolved_qp)
+        url = url + ("&" if "?" in url else "?") + qs
 
     token = await _resolve_bearer_token(creds, db=db)
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    elif creds.get("username") and creds.get("password"):
+        import base64 as _b64
+        _basic = _b64.b64encode(f"{creds['username']}:{creds['password']}".encode()).decode()
+        headers["Authorization"] = f"Basic {_basic}"
     key_name = creds.get("keyName")
     key_value = creds.get("keyValue")
     if key_name and key_value:
         headers[key_name] = key_value
+    extra_headers = cfg.get("headers") or {}
+    if isinstance(extra_headers, dict):
+        headers.update(await _resolve_headers(extra_headers, db=db))
+
+    body_raw = cfg.get("body")
+    req_kwargs: dict = {"headers": headers}
+    if body_raw and method in ("post", "put", "patch"):
+        import json as _json
+        try:
+            req_kwargs["json"] = _json.loads(body_raw)
+        except Exception:
+            req_kwargs["content"] = body_raw.encode()
+            req_kwargs.setdefault("headers", {})["Content-Type"] = "application/json"
 
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         fn = getattr(client, method)
-        r = await fn(url, headers=headers)
+        r = await fn(url, **req_kwargs)
         if r.status_code in (401, 403):
             return {}, [], f"Auth failed ({r.status_code}) — check your token or credentials"
         if not r.is_success:
@@ -179,7 +294,7 @@ async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None) ->
     return schema, rows, None
 
 
-async def test_credentials(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None) -> tuple[bool, str, int]:
+async def test_credentials(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None, db=None) -> tuple[bool, str, int]:
     """Returns (success, message, latency_ms)."""
     import time
     creds = credentials or {}
@@ -195,7 +310,7 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
         elif connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return True, "Credential format accepted — live connection test not available in preview", int((time.time() - start) * 1000)
         elif connector_type == "REST_API":
-            ok, msg = await _rest_api_test(base_url, creds, cfg)
+            ok, msg = await _rest_api_test(base_url, creds, cfg, db=db)
         else:
             ok, msg = await _generic_bearer_test(base_url, creds)
         latency = int((time.time() - start) * 1000)
@@ -539,7 +654,15 @@ async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=Non
             steps.append({"step": "auth", "ok": True,
                 "detail": f"POST {login_url} → {r.status_code} OK  ·  token field '{token_path}' extracted"})
         except Exception as e:
-            steps.append({"step": "auth", "ok": False, "detail": f"Login request failed: {e}"})
+            # Include the actual response body so user can see the real key names
+            body_preview = ""
+            try:
+                body_preview = r.text[:400]
+            except Exception:
+                pass
+            steps.append({"step": "auth", "ok": False,
+                "detail": f"Login request failed: {e}  ·  Token path '{token_path}' not found in response",
+                "body_preview": body_preview})
             return False, _json.dumps({"steps": steps})
 
     elif auth_mode == "connector":
@@ -550,6 +673,9 @@ async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=Non
             steps.append({"step": "auth", "ok": False, "detail": f"Linked connector auth failed: {e}"})
             return False, _json.dumps({"steps": steps})
 
+    elif creds.get("username") and creds.get("password"):
+        steps.append({"step": "auth", "ok": True, "detail": "Using Basic Auth (username/password)"})
+
     else:
         steps.append({"step": "auth", "ok": True, "detail": "No authentication configured"})
 
@@ -557,17 +683,39 @@ async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=Non
     path = cfg.get("path", "")
     endpoint_method = cfg.get("method", "GET").lower()
     url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
+    raw_qp = cfg.get("queryParams") or {}
+    if raw_qp:
+        import urllib.parse as _urlparse
+        resolved_qp = await _resolve_query_params(raw_qp, db=db)
+        qs = _urlparse.urlencode(resolved_qp)
+        url = url + ("&" if "?" in url else "?") + qs
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    elif creds.get("username") and creds.get("password"):
+        import base64 as _b64
+        _basic = _b64.b64encode(f"{creds['username']}:{creds['password']}".encode()).decode()
+        headers["Authorization"] = f"Basic {_basic}"
     key_name = creds.get("keyName")
     key_value = creds.get("keyValue")
     if key_name and key_value:
         headers[key_name] = key_value
+    # Merge any extra custom headers stored in config
+    extra_headers = cfg.get("headers") or {}
+    if isinstance(extra_headers, dict):
+        headers.update(await _resolve_headers(extra_headers, db=db))
+    body_raw = cfg.get("body")
+    req_kwargs: dict = {"headers": headers}
+    if body_raw and endpoint_method in ("post", "put", "patch"):
+        import json as _json2
+        try:
+            req_kwargs["json"] = _json2.loads(body_raw)
+        except Exception:
+            req_kwargs["content"] = body_raw.encode()
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             fn = getattr(client, endpoint_method)
-            r = await fn(url, headers=headers)
+            r = await fn(url, **req_kwargs)
         ok = r.is_success
         detail = f"{endpoint_method.upper()} {url} → {r.status_code} {r.reason_phrase}"
         if r.status_code == 401:
@@ -576,7 +724,10 @@ async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=Non
             detail += "  ·  Authenticated but forbidden — check API permissions"
         elif r.status_code == 404:
             detail += "  ·  Endpoint path not found — check the path in config"
-        steps.append({"step": "request", "ok": ok, "detail": detail})
+        step_entry: dict = {"step": "request", "ok": ok, "detail": detail}
+        if not ok:
+            step_entry["body_preview"] = r.text[:400]
+        steps.append(step_entry)
         return ok, _json.dumps({"steps": steps})
     except Exception as e:
         steps.append({"step": "request", "ok": False, "detail": f"Request failed: {e}"})

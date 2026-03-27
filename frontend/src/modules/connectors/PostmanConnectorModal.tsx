@@ -14,6 +14,8 @@ interface ParsedEndpoint {
   authType: AuthType;
   credentials: Record<string, string>;
   selected: boolean;
+  headers?: Record<string, string>;  // non-auth request headers
+  body?: string;                     // raw JSON body
 }
 
 interface ParsedCollection {
@@ -133,6 +135,22 @@ function walkItems(
         ? parsePostmanAuth(reqAuth, vars)
         : collectionAuth;
 
+      // Extract non-auth request headers
+      const AUTH_HEADERS = new Set(['authorization', 'content-type']);
+      const rawHeaders = req.header as { key: string; value: string; disabled?: boolean }[] | undefined;
+      const headers: Record<string, string> = {};
+      if (rawHeaders) {
+        for (const h of rawHeaders) {
+          if (h.disabled) continue;
+          if (AUTH_HEADERS.has(h.key.toLowerCase())) continue;
+          headers[h.key] = h.value;
+        }
+      }
+
+      // Extract raw JSON body
+      const bodyObj = req.body as Record<string, unknown> | undefined;
+      const body = bodyObj?.mode === 'raw' && typeof bodyObj.raw === 'string' ? bodyObj.raw.trim() : undefined;
+
       results.push({
         name: String(item.name ?? `${method} ${path}`),
         method,
@@ -142,6 +160,8 @@ function walkItems(
         authType,
         credentials,
         selected: true,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+        body,
       });
     }
   };
@@ -354,6 +374,8 @@ export const PostmanConnectorModal: React.FC<Props> = ({ onClose }) => {
           path: ep.path,
           collectionName,
           endpointUrl: resolvedRaw,
+          ...(ep.headers ? { headers: ep.headers } : {}),
+          ...(ep.body ? { body: ep.body } : {}),
         },
       });
 
@@ -842,7 +864,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                     {selectedAuthConnector && (
                       <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#16A34A' }}>
                         <Link2 size={11} />
-                        {selectedAuthConnector.baseUrl || '(no base URL)'} · {selectedAuthConnector.config?.method || 'GET'} {selectedAuthConnector.config?.path || '/'}
+                        {selectedAuthConnector.baseUrl || '(no base URL)'} · {(selectedAuthConnector.config?.method as string) || 'GET'} {(selectedAuthConnector.config?.path as string) || '/'}
                       </div>
                     )}
                   </div>

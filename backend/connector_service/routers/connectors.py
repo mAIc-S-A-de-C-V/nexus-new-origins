@@ -188,6 +188,7 @@ async def test_connection(
         base_url=row.base_url,
         credentials=row.credentials,
         config=row.config,
+        db=db,
     )
 
     # Update connector status based on test result

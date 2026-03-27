@@ -26,7 +26,7 @@ export interface ConnectorConfig {
   updatedAt: string;
   tenantId: string;
   tags?: string[];
-  config?: Record<string, string>;
+  config?: Record<string, unknown>;
 }
 
 export interface ConnectorHealth {

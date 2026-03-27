@@ -24,7 +24,7 @@ class ConnectorConfig(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     tenant_id: str
     tags: list[str] = Field(default_factory=list)
-    config: Optional[dict[str, str]] = None
+    config: Optional[dict[str, Any]] = None
 
 
 class ConnectorCreateRequest(BaseModel):
@@ -38,7 +38,7 @@ class ConnectorCreateRequest(BaseModel):
     headers: Optional[dict[str, str]] = None
     pagination_strategy: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
-    config: Optional[dict[str, str]] = None
+    config: Optional[dict[str, Any]] = None
 
 
 class ConnectorUpdateRequest(BaseModel):
@@ -50,7 +50,7 @@ class ConnectorUpdateRequest(BaseModel):
     headers: Optional[dict[str, str]] = None
     pagination_strategy: Optional[str] = None
     tags: Optional[list[str]] = None
-    config: Optional[dict[str, str]] = None
+    config: Optional[dict[str, Any]] = None
 
 
 class ConnectionTestResult(BaseModel):

@@ -135,6 +135,9 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
     if (updates.authType !== undefined) body.auth_type = updates.authType;
     if (updates.credentials !== undefined) body.credentials = updates.credentials;
     if (updates.tags !== undefined) body.tags = updates.tags;
+    if (updates.paginationStrategy !== undefined) body.pagination_strategy = updates.paginationStrategy;
+    if (updates.config !== undefined) body.config = updates.config;
+    if (updates.headers !== undefined) body.headers = updates.headers;
     const res = await fetch(`${API}/connectors/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
