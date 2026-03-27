@@ -398,8 +398,8 @@ const TestResultDisplay: React.FC<{
 
   const bg = result.success ? '#F0FDF4' : '#FEF2F2';
   const headerColor = result.success ? '#166534' : '#991B1B';
-  const iconOk = '✓';
-  const iconFail = '✗';
+  const iconOk = 'ok';
+  const iconFail = 'x';
 
   return (
     <div style={{ backgroundColor: bg, borderTop: '1px solid #E2E8F0' }}>

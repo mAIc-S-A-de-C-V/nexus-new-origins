@@ -12,6 +12,7 @@ import { Pipeline } from '../../types/pipeline';
 import { ObjectTypeNodeComponent } from './ObjectTypeNode';
 import { ConnectorFlowNode } from './ConnectorFlowNode';
 import { PipelineFlowNode } from './PipelineFlowNode';
+import { PipelineStepNode } from './PipelineStepNode';
 import { ObjectTypePanel } from './ObjectTypePanel';
 import { Button } from '../../design-system/components/Button';
 import { useOntologyStore } from '../../store/ontologyStore';
@@ -128,14 +129,14 @@ const nodeTypes = {
   objectTypeNode: ObjectTypeNodeComponent,
   connectorNode: ConnectorFlowNode,
   pipelineNode: PipelineFlowNode,
+  pipelineStepNode: PipelineStepNode,
 };
 
-
-// Column x positions for the 3-column layout
+// Column x positions
 const COL_CONNECTOR = 60;
-const COL_PIPELINE = 320;
-const COL_OBJECT = 580;
-const ROW_GAP = 160;
+const COL_STEP_START = 240; // first step x
+const STEP_PITCH = 150;     // horizontal gap between steps
+const ROW_GAP = 120;        // vertical gap between pipeline rows
 
 export const OntologyGraph: React.FC = () => {
   const { objectTypes, links, fetchObjectTypes, fetchLinks } = useOntologyStore();
@@ -166,9 +167,18 @@ export const OntologyGraph: React.FC = () => {
     const connectorRowMap = new Map<string, number>();
     relevantConnectors.forEach((c, i) => connectorRowMap.set(c.id, i));
 
-    // Build index: objectTypeId → row index
-    const objectRowMap = new Map<string, number>();
-    objectTypes.forEach((o, i) => objectRowMap.set(o.id, i));
+    // Calculate max step count across all pipelines to know where to put object type nodes
+    const maxSteps = Math.max(
+      ...pipelines.map((p) => {
+        const authCount = p.connectorIds.filter((cId) => {
+          const c = connectors.find((co) => co.id === cId);
+          return c?.credentials && (c.credentials as Record<string, unknown>).tokenEndpointUrl;
+        }).length;
+        return authCount + p.nodes.length;
+      }),
+      1
+    );
+    const COL_OBJECT = COL_STEP_START + maxSteps * STEP_PITCH + 80;
 
     // --- Connector nodes ---
     relevantConnectors.forEach((c, i) => {
@@ -180,45 +190,121 @@ export const OntologyGraph: React.FC = () => {
       });
     });
 
-    // --- Pipeline nodes ---
-    // Position each pipeline at the centroid y of its connected connectors
-    // so edges don't cross each other.
-    pipelines.forEach((p, i) => {
+    // --- Pipeline step chains ---
+    pipelines.forEach((p, pIdx) => {
       const connectorYs = p.connectorIds
         .map((cId) => connectorRowMap.get(cId))
         .filter((r): r is number => r !== undefined)
         .map((r) => r * ROW_GAP + 40);
 
-      const y = connectorYs.length > 0
+      const pipelineY = connectorYs.length > 0
         ? connectorYs.reduce((a, b) => a + b, 0) / connectorYs.length
-        : i * ROW_GAP + 40;
+        : pIdx * ROW_GAP + 40;
 
-      flowNodes.push({
-        id: `pipe-${p.id}`,
-        type: 'pipelineNode',
-        position: { x: COL_PIPELINE, y },
-        data: { pipeline: p },
+      // Build ordered list of step node IDs for this pipeline (for chaining edges)
+      const stepNodeIds: string[] = [];
+
+      // Auth steps: one per connector that has a tokenEndpointUrl
+      p.connectorIds.forEach((cId) => {
+        const c = connectors.find((co) => co.id === cId);
+        if (!c) return;
+        const creds = (c.credentials as Record<string, unknown>) || {};
+        if (!creds.tokenEndpointUrl) return;
+        const stepId = `step-${p.id}-auth-${cId}`;
+        stepNodeIds.push(stepId);
+        const loginUrl = String(creds.tokenEndpointUrl);
+        flowNodes.push({
+          id: stepId,
+          type: 'pipelineStepNode',
+          position: { x: COL_STEP_START, y: pipelineY },
+          data: {
+            stepType: 'AUTH',
+            label: c.name,
+            subtitle: loginUrl.replace(/^https?:\/\/[^/]+/, '') || loginUrl,
+          },
+        });
       });
 
-      // Connector → Pipeline edges
-      p.connectorIds.forEach((cId) => {
-        if (usedConnectorIds.has(cId)) {
+      // Sort pipeline nodes topologically (SOURCE first, SINK last)
+      const NODE_ORDER: Record<string, number> = {
+        SOURCE: 0, FILTER: 1, MAP: 2, CAST: 2, ENRICH: 3,
+        FLATTEN: 3, DEDUPE: 4, VALIDATE: 5, SINK_OBJECT: 99, SINK_EVENT: 99,
+      };
+      const sortedPipelineNodes = [...p.nodes].sort(
+        (a, b) => (NODE_ORDER[a.type] ?? 50) - (NODE_ORDER[b.type] ?? 50)
+      );
+
+      sortedPipelineNodes.forEach((node) => {
+        const stepId = `step-${p.id}-node-${node.id}`;
+        stepNodeIds.push(stepId);
+        const label =
+          (node.config as Record<string, unknown>)?.label as string ||
+          node.label ||
+          node.id;
+        flowNodes.push({
+          id: stepId,
+          type: 'pipelineStepNode',
+          position: {
+            x: COL_STEP_START + stepNodeIds.indexOf(stepId) * STEP_PITCH,
+            y: pipelineY,
+          },
+          data: {
+            stepType: node.type,
+            label,
+            pipelineName: p.name,
+          },
+        });
+      });
+
+      // Fix positions now that we know all stepNodeIds (indexOf was called mid-loop)
+      stepNodeIds.forEach((sid, idx) => {
+        const n = flowNodes.find((fn) => fn.id === sid);
+        if (n) n.position = { x: COL_STEP_START + idx * STEP_PITCH, y: pipelineY };
+      });
+
+      // Connector → first step edges (one edge per connector)
+      if (stepNodeIds.length > 0) {
+        p.connectorIds.forEach((cId) => {
+          if (!usedConnectorIds.has(cId)) return;
           flowEdges.push({
             id: `e-con-${cId}-pipe-${p.id}`,
             source: `con-${cId}`,
-            target: `pipe-${p.id}`,
+            target: stepNodeIds[0],
             markerEnd: { type: MarkerType.ArrowClosed, color: '#94A3B8' },
             style: { stroke: '#CBD5E1', strokeWidth: 1.5 },
           });
-        }
-      });
+        });
+      } else {
+        // No steps — connect connector directly to object type
+        p.connectorIds.forEach((cId) => {
+          if (!usedConnectorIds.has(cId)) return;
+          flowEdges.push({
+            id: `e-con-${cId}-pipe-${p.id}`,
+            source: `con-${cId}`,
+            target: p.targetObjectTypeId || `con-${cId}`,
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#94A3B8' },
+            style: { stroke: '#CBD5E1', strokeWidth: 1.5 },
+          });
+        });
+      }
 
-      // Pipeline → ObjectType edge
-      if (p.targetObjectTypeId) {
+      // Step-to-step edges within the chain
+      for (let i = 0; i < stepNodeIds.length - 1; i++) {
+        flowEdges.push({
+          id: `e-step-${p.id}-${i}`,
+          source: stepNodeIds[i],
+          target: stepNodeIds[i + 1],
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#94A3B8' },
+          style: { stroke: '#CBD5E1', strokeWidth: 1.5 },
+        });
+      }
+
+      // Last step → ObjectType edge
+      if (p.targetObjectTypeId && stepNodeIds.length > 0) {
         const isLive = p.status === 'RUNNING';
         flowEdges.push({
           id: `e-pipe-${p.id}-ot-${p.targetObjectTypeId}`,
-          source: `pipe-${p.id}`,
+          source: stepNodeIds[stepNodeIds.length - 1],
           target: p.targetObjectTypeId,
           animated: isLive,
           markerEnd: { type: MarkerType.ArrowClosed, color: isLive ? '#6366F1' : '#A5B4FC' },
@@ -301,9 +387,13 @@ export const OntologyGraph: React.FC = () => {
   }, [objectTypes]);
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback((_event, node) => {
-    if (node.id.startsWith('pipe-')) {
-      const pipeId = node.id.replace('pipe-', '');
-      const pipeline = pipelines.find((p) => p.id === pipeId);
+    // Double-click on any pipeline step node expands that pipeline
+    if (node.id.startsWith('step-')) {
+      // step-${pipelineId}-auth-... or step-${pipelineId}-node-...
+      const parts = node.id.split('-');
+      // parts: ['step', ...pipelineId parts..., 'auth'|'node', ...]
+      // Find the pipeline whose id is contained in the step node id
+      const pipeline = pipelines.find((p) => node.id.startsWith(`step-${p.id}-`));
       if (pipeline) setExpandedPipeline(pipeline);
     }
   }, [pipelines]);
