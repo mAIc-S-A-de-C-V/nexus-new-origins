@@ -148,6 +148,25 @@ const COL_STEP_START = 240; // first step x
 const STEP_PITCH = 150;     // horizontal gap between steps
 const ROW_GAP = 120;        // vertical gap between pipeline rows
 
+const CONNECTOR_API = (import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001');
+
+function inferSemanticType(name: string, value: unknown): import('../../types/ontology').SemanticType {
+  const n = name.toLowerCase();
+  if (n === 'id' || n.endsWith('_id') || n.includes('object_id')) return 'IDENTIFIER';
+  if (n.includes('email')) return 'EMAIL';
+  if (n.includes('phone')) return 'PHONE';
+  if (n.includes('date') || n.endsWith('_at') || n.includes('time') || n.includes('createdate')) return 'DATETIME';
+  if (n.includes('amount') || n.includes('revenue') || n.includes('price') || n.includes('cost')) return 'CURRENCY';
+  if (n.includes('status') || n.includes('stage') || n.includes('lifecycle')) return 'STATUS';
+  if (n.includes('url') || n.includes('domain') || n.includes('website') || n.includes('link')) return 'URL';
+  if (n.includes('name') || n.includes('firstname') || n.includes('lastname')) return 'PERSON_NAME';
+  if (typeof value === 'boolean') return 'BOOLEAN';
+  if (typeof value === 'number') return 'QUANTITY';
+  return 'TEXT';
+}
+
+interface ConnectorField { name: string; sample: string; semanticType: import('../../types/ontology').SemanticType; }
+
 export const OntologyGraph: React.FC = () => {
   const { objectTypes, links, fetchObjectTypes, fetchLinks, addObjectType, removeObjectType } = useOntologyStore();
   const { connectors, fetchConnectors } = useConnectorStore();
@@ -162,18 +181,32 @@ export const OntologyGraph: React.FC = () => {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; ot: ObjectType } | null>(null);
+  const [connectorFields, setConnectorFields] = useState<ConnectorField[]>([]);
+  const [selectedFields, setSelectedFields] = useState<Set<string>>(new Set());
+  const [loadingFields, setLoadingFields] = useState(false);
 
   const handleCreateObjectType = async () => {
     if (!createName.trim()) { setCreateError('Name is required'); return; }
     setCreating(true);
     setCreateError('');
     try {
+      const chosenFields = connectorFields.filter(f => selectedFields.has(f.name));
+      const properties = chosenFields.map(f => ({
+        id: genId(),
+        name: f.name,
+        displayName: f.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        semanticType: f.semanticType,
+        dataType: f.semanticType === 'QUANTITY' || f.semanticType === 'CURRENCY' ? 'number' : 'string',
+        piiLevel: (f.semanticType === 'EMAIL' || f.semanticType === 'PHONE' || f.semanticType === 'PERSON_NAME' ? 'MEDIUM' : 'NONE') as import('../../types/ontology').PiiLevel,
+        required: false,
+      }));
+
       const created = await addObjectType({
         id: '',
         name: createName.trim().toLowerCase().replace(/\s+/g, '_'),
         displayName: createName.trim(),
         description: createDesc.trim() || undefined,
-        properties: [],
+        properties,
         sourceConnectorIds: createConnectorId ? [createConnectorId] : [],
         version: 1,
         schemaHealth: 'healthy',
@@ -186,7 +219,9 @@ export const OntologyGraph: React.FC = () => {
       if (createConnectorId) {
         const connector = connectors.find(c => c.id === createConnectorId);
         const srcId = genId();
+        const mapId = genId();
         const sinkId = genId();
+        const mappings = chosenFields.map(f => ({ source: f.name, target: f.name }));
         await addPipeline({
           id: '',
           name: `${createName.trim()} Pipeline`,
@@ -199,15 +234,24 @@ export const OntologyGraph: React.FC = () => {
               config: { connectorId: createConnectorId, pollFrequency: createFrequency },
               position: { x: 100, y: 200 },
             },
+            ...(mappings.length > 0 ? [{
+              id: mapId,
+              type: 'MAP' as const,
+              label: 'Map Fields',
+              config: { mappings },
+              position: { x: 280, y: 200 },
+            }] : []),
             {
               id: sinkId,
               type: 'SINK_OBJECT',
               label: createName.trim(),
               config: { objectTypeId: created.id, writeMode: 'upsert' },
-              position: { x: 400, y: 200 },
+              position: { x: mappings.length > 0 ? 460 : 400, y: 200 },
             },
           ],
-          edges: [{ id: genId(), source: srcId, target: sinkId }],
+          edges: mappings.length > 0
+            ? [{ id: genId(), source: srcId, target: mapId }, { id: genId(), source: mapId, target: sinkId }]
+            : [{ id: genId(), source: srcId, target: sinkId }],
           connectorIds: [createConnectorId],
           targetObjectTypeId: created.id,
           version: 1,
@@ -222,6 +266,8 @@ export const OntologyGraph: React.FC = () => {
       setCreateDesc('');
       setCreateConnectorId('');
       setCreateFrequency('1h');
+      setConnectorFields([]);
+      setSelectedFields(new Set());
       setSelectedObjectType(created);
     } catch (e: unknown) {
       setCreateError(e instanceof Error ? e.message : 'Failed to create');
@@ -236,6 +282,27 @@ export const OntologyGraph: React.FC = () => {
     fetchConnectors();
     fetchPipelines();
   }, []);
+
+  useEffect(() => {
+    if (!createConnectorId) { setConnectorFields([]); setSelectedFields(new Set()); return; }
+    setLoadingFields(true);
+    fetch(`${CONNECTOR_API}/connectors/${createConnectorId}/sample`, { headers: { 'x-tenant-id': 'tenant-001' } })
+      .then(r => r.json())
+      .then(data => {
+        const row: Record<string, unknown> = data.row || (data.rows && data.rows[0]) || {};
+        const fields: ConnectorField[] = Object.entries(row)
+          .filter(([k]) => !k.startsWith('_'))
+          .map(([k, v]) => ({
+            name: k,
+            sample: String(v ?? '').slice(0, 50),
+            semanticType: inferSemanticType(k, v),
+          }));
+        setConnectorFields(fields);
+        setSelectedFields(new Set(fields.map(f => f.name)));
+      })
+      .catch(() => setConnectorFields([]))
+      .finally(() => setLoadingFields(false));
+  }, [createConnectorId]);
 
   const buildGraph = useCallback(() => {
     const flowNodes: Node[] = [];
@@ -512,7 +579,7 @@ export const OntologyGraph: React.FC = () => {
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <Button variant="primary" size="sm" icon={<Plus size={12} />} onClick={() => { setCreateName(''); setCreateDesc(''); setCreateError(''); setShowCreateModal(true); }}>New Object Type</Button>
+          <Button variant="primary" size="sm" icon={<Plus size={12} />} onClick={() => { setCreateName(''); setCreateDesc(''); setCreateError(''); setCreateConnectorId(''); setConnectorFields([]); setSelectedFields(new Set()); setShowCreateModal(true); }}>New Object Type</Button>
         </div>
       </div>
 
@@ -601,20 +668,20 @@ export const OntologyGraph: React.FC = () => {
       {/* New Object Type modal */}
       {showCreateModal && createPortal(
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ backgroundColor: '#FFFFFF', borderRadius: '4px', width: 440, padding: '24px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+          <div style={{ backgroundColor: '#FFFFFF', borderRadius: '4px', width: 560, maxHeight: '90vh', display: 'flex', flexDirection: 'column', padding: '24px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexShrink: 0 }}>
               <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#0D1117' }}>New Object Type</h2>
               <button onClick={() => setShowCreateModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B', padding: 4 }}><X size={16} /></button>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto', flex: 1 }}>
               <div>
                 <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151', display: 'block', marginBottom: '6px' }}>Display Name <span style={{ color: '#DC2626' }}>*</span></label>
                 <input
                   autoFocus
                   value={createName}
                   onChange={e => setCreateName(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleCreateObjectType(); if (e.key === 'Escape') setShowCreateModal(false); }}
-                  placeholder="e.g. Incident"
+                  onKeyDown={e => { if (e.key === 'Escape') setShowCreateModal(false); }}
+                  placeholder="e.g. Deal"
                   style={{ width: '100%', height: '36px', border: '1px solid #E2E8F0', borderRadius: '3px', padding: '0 10px', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
                 />
                 {createName.trim() && (
@@ -633,8 +700,10 @@ export const OntologyGraph: React.FC = () => {
                   style={{ width: '100%', border: '1px solid #E2E8F0', borderRadius: '3px', padding: '8px 10px', fontSize: '13px', resize: 'none', boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit' }}
                 />
               </div>
-              <div style={{ height: '1px', backgroundColor: '#F1F5F9', margin: '4px 0' }} />
-              <p style={{ fontSize: '11px', color: '#94A3B8', margin: '0 0 8px' }}>Optional — auto-creates a pipeline that feeds this object</p>
+
+              <div style={{ height: '1px', backgroundColor: '#F1F5F9', margin: '4px 0', flexShrink: 0 }} />
+              <p style={{ fontSize: '11px', color: '#94A3B8', margin: '-8px 0 0' }}>Optional — auto-creates a pipeline that feeds this object</p>
+
               <div>
                 <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151', display: 'block', marginBottom: '6px' }}>Source Connector</label>
                 <select
@@ -646,6 +715,7 @@ export const OntologyGraph: React.FC = () => {
                   {connectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
+
               {createConnectorId && (
                 <div>
                   <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151', display: 'block', marginBottom: '6px' }}>Sync Frequency</label>
@@ -658,8 +728,55 @@ export const OntologyGraph: React.FC = () => {
                   </select>
                 </div>
               )}
+
+              {/* Field picker */}
+              {createConnectorId && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151' }}>
+                      Fields {loadingFields ? '(loading…)' : connectorFields.length > 0 ? `(${selectedFields.size} / ${connectorFields.length} selected)` : ''}
+                    </label>
+                    {connectorFields.length > 0 && (
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={() => setSelectedFields(new Set(connectorFields.map(f => f.name)))} style={{ fontSize: '11px', color: '#2563EB', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>All</button>
+                        <button onClick={() => setSelectedFields(new Set())} style={{ fontSize: '11px', color: '#64748B', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>None</button>
+                      </div>
+                    )}
+                  </div>
+                  {loadingFields ? (
+                    <div style={{ fontSize: '12px', color: '#94A3B8', padding: '12px', border: '1px solid #F1F5F9', borderRadius: '3px', textAlign: 'center' }}>Fetching fields from connector…</div>
+                  ) : connectorFields.length > 0 ? (
+                    <div style={{ border: '1px solid #E2E8F0', borderRadius: '3px', maxHeight: '220px', overflowY: 'auto' }}>
+                      {connectorFields.map((f, i) => (
+                        <div
+                          key={f.name}
+                          onClick={() => setSelectedFields(prev => {
+                            const next = new Set(prev);
+                            next.has(f.name) ? next.delete(f.name) : next.add(f.name);
+                            return next;
+                          })}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px',
+                            cursor: 'pointer', userSelect: 'none',
+                            backgroundColor: i % 2 === 0 ? '#FFFFFF' : '#F8FAFC',
+                            borderBottom: i < connectorFields.length - 1 ? '1px solid #F1F5F9' : 'none',
+                          }}
+                        >
+                          <input type="checkbox" checked={selectedFields.has(f.name)} readOnly style={{ margin: 0, flexShrink: 0 }} />
+                          <span style={{ fontSize: '12px', fontWeight: 500, color: '#0D1117', minWidth: '140px', fontFamily: 'var(--font-mono)' }}>{f.name}</span>
+                          <span style={{ fontSize: '10px', color: '#FFFFFF', backgroundColor: '#64748B', borderRadius: '2px', padding: '1px 5px', flexShrink: 0 }}>{f.semanticType}</span>
+                          <span style={{ fontSize: '11px', color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{f.sample || '—'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: '#94A3B8', padding: '12px', border: '1px solid #F1F5F9', borderRadius: '3px', textAlign: 'center' }}>No sample data available — fields can be mapped in the pipeline editor</div>
+                  )}
+                </div>
+              )}
+
               {createError && <p style={{ fontSize: '12px', color: '#DC2626' }}>{createError}</p>}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px', flexShrink: 0 }}>
                 <button onClick={() => setShowCreateModal(false)} style={{ height: '32px', padding: '0 14px', border: '1px solid #E2E8F0', borderRadius: '3px', background: '#FFFFFF', fontSize: '13px', cursor: 'pointer', color: '#374151' }}>Cancel</button>
                 <button onClick={handleCreateObjectType} disabled={creating} style={{ height: '32px', padding: '0 14px', border: 'none', borderRadius: '3px', background: '#2563EB', color: '#FFFFFF', fontSize: '13px', cursor: creating ? 'not-allowed' : 'pointer', opacity: creating ? 0.7 : 1 }}>
                   {creating ? 'Creating…' : (createConnectorId ? 'Create + Pipeline' : 'Create')}
