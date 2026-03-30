@@ -268,6 +268,53 @@ async def get_schema(
     }
 
 
+@router.post("/{connector_id}/fetch-row")
+async def fetch_row(
+    connector_id: str,
+    body: dict,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Call this connector's configured endpoint with query param overrides.
+    Used by the pipeline ENRICH node to perform per-row detail lookups.
+    Body: {"params": {"id": "INC-123"}}
+    Returns: {"row": {...}, "rows": [...]}
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    overrides: dict = body.get("params", {})
+    config = dict(row.config or {})
+    existing_qp = dict(config.get("queryParams") or {})
+    existing_qp.update({k: str(v) for k, v in overrides.items()})
+    config["queryParams"] = existing_qp
+
+    _, sample_rows, error = await fetch_schema(
+        connector_type=row.type,
+        base_url=row.base_url,
+        credentials=row.credentials,
+        config=config,
+        db=db,
+    )
+
+    if error:
+        raise HTTPException(status_code=502, detail=error)
+
+    return {
+        "row": sample_rows[0] if sample_rows else {},
+        "rows": sample_rows,
+    }
+
+
 @router.put("/{connector_id}/inference")
 async def save_inference_result(
     connector_id: str,

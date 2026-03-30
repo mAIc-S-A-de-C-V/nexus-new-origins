@@ -1,0 +1,1573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Nexus Origins — Developer Guide</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #0D1117;
+    background: #FFFFFF;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 60px 48px;
+  }
+
+  /* ── Cover ── */
+  .cover {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-bottom: 3px solid #1A3C6E;
+    margin-bottom: 80px;
+    page-break-after: always;
+  }
+  .cover-eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: #2563EB;
+    margin-bottom: 20px;
+  }
+  .cover h1 {
+    font-size: 48px;
+    font-weight: 700;
+    line-height: 1.1;
+    color: #0D1117;
+    margin-bottom: 20px;
+  }
+  .cover h1 span { color: #2563EB; }
+  .cover-sub {
+    font-size: 18px;
+    color: #475569;
+    margin-bottom: 48px;
+    max-width: 580px;
+  }
+  .cover-meta {
+    display: flex;
+    gap: 32px;
+    font-size: 12px;
+    color: #94A3B8;
+  }
+  .cover-meta strong { color: #64748B; }
+
+  /* ── Typography ── */
+  h1 { font-size: 32px; font-weight: 700; color: #0D1117; margin: 64px 0 20px; line-height: 1.2; }
+  h2 { font-size: 22px; font-weight: 700; color: #0D1117; margin: 48px 0 14px; padding-bottom: 8px; border-bottom: 2px solid #E2E8F0; }
+  h3 { font-size: 16px; font-weight: 600; color: #1A3C6E; margin: 32px 0 10px; }
+  h4 { font-size: 13px; font-weight: 600; color: #374151; margin: 20px 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+  p  { margin-bottom: 14px; color: #374151; }
+  ul, ol { margin: 0 0 14px 20px; color: #374151; }
+  li { margin-bottom: 6px; }
+  strong { font-weight: 600; color: #0D1117; }
+  em { font-style: italic; color: #475569; }
+  a  { color: #2563EB; text-decoration: none; }
+
+  /* ── Code ── */
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: #F1F5F9;
+    border: 1px solid #E2E8F0;
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: #1A3C6E;
+  }
+  pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: #0D1117;
+    color: #E2E8F0;
+    border-radius: 6px;
+    padding: 20px 22px;
+    margin: 16px 0 20px;
+    overflow-x: auto;
+    line-height: 1.6;
+    border-left: 3px solid #2563EB;
+  }
+  pre .c  { color: #6B7280; }
+  pre .k  { color: #60A5FA; }
+  pre .s  { color: #A3E635; }
+  pre .f  { color: #FBBF24; }
+  pre .n  { color: #F9FAFB; }
+  pre .p  { color: #94A3B8; }
+
+  /* ── Callouts ── */
+  .callout {
+    border-radius: 4px;
+    padding: 14px 18px;
+    margin: 20px 0;
+    border-left: 4px solid;
+    font-size: 13px;
+  }
+  .callout.info  { background: #EFF6FF; border-color: #2563EB; color: #1E40AF; }
+  .callout.warn  { background: #FFFBEB; border-color: #D97706; color: #92400E; }
+  .callout.tip   { background: #F0FDF4; border-color: #059669; color: #065F46; }
+  .callout.rule  { background: #FDF4FF; border-color: #7C3AED; color: #4C1D95; }
+  .callout strong { display: block; margin-bottom: 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+
+  /* ── Tables ── */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 13px; }
+  th { background: #1A3C6E; color: #FFFFFF; font-weight: 600; padding: 10px 14px; text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  td { padding: 9px 14px; border-bottom: 1px solid #F1F5F9; vertical-align: top; }
+  tr:nth-child(even) td { background: #F8FAFC; }
+  td code { font-size: 11px; }
+
+  /* ── Arch diagram ── */
+  .arch {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 24px 0;
+  }
+  .arch-box {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 6px;
+    padding: 12px;
+    text-align: center;
+    font-size: 11px;
+  }
+  .arch-box .port { font-family: 'JetBrains Mono', monospace; color: #2563EB; font-size: 10px; }
+  .arch-box .name { font-weight: 600; font-size: 12px; margin: 4px 0; }
+  .arch-box .desc { color: #64748B; font-size: 10px; }
+
+  /* ── Flow diagram ── */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 20px 0;
+    flex-wrap: wrap;
+  }
+  .flow-node {
+    background: #1A3C6E;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 8px 14px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .flow-node.green  { background: #059669; }
+  .flow-node.purple { background: #7C3AED; }
+  .flow-node.amber  { background: #D97706; }
+  .flow-node.red    { background: #DC2626; }
+  .flow-node.gray   { background: #475569; }
+  .flow-arrow { color: #94A3B8; font-size: 18px; padding: 0 6px; }
+
+  /* ── Badge ── */
+  .badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 9999px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .badge.post   { background: #DCFCE7; color: #166534; }
+  .badge.get    { background: #DBEAFE; color: #1E40AF; }
+  .badge.put    { background: #FEF9C3; color: #713F12; }
+  .badge.delete { background: #FEE2E2; color: #7F1D1D; }
+
+  /* ── Section divider ── */
+  .section-divider {
+    margin: 60px 0 40px;
+    border: none;
+    border-top: 2px solid #E2E8F0;
+  }
+
+  /* ── TOC ── */
+  .toc { margin: 32px 0 48px; }
+  .toc h3 { margin-top: 0; }
+  .toc ol { counter-reset: toc-counter; list-style: none; margin: 0; }
+  .toc > ol > li { counter-increment: toc-counter; margin-bottom: 6px; }
+  .toc > ol > li::before {
+    content: counter(toc-counter) ".";
+    font-weight: 700;
+    color: #2563EB;
+    margin-right: 8px;
+    font-size: 13px;
+  }
+  .toc-sub { margin: 4px 0 4px 24px; list-style: disc; color: #64748B; font-size: 12px; }
+
+  /* ── Print ── */
+  @media print {
+    body { padding: 0; }
+    .cover { page-break-after: always; }
+    h2 { page-break-before: auto; }
+    pre { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════ COVER -->
+<div class="cover">
+  <p class="cover-eyebrow">Nexus Origins Platform</p>
+  <h1>Developer <span>Guide</span></h1>
+  <p class="cover-sub">How to build Nexus-native applications — with full event log integration, ontological objects, connector-ready APIs, and process mining from day one.</p>
+  <div class="cover-meta">
+    <div><strong>Version</strong> 1.0</div>
+    <div><strong>Platform</strong> Nexus Origins</div>
+    <div><strong>Audience</strong> Application Developers</div>
+    <div><strong>Updated</strong> March 2026</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ TOC -->
+<div class="toc">
+  <h3>Table of Contents</h3>
+  <ol>
+    <li>Platform Architecture Overview
+      <ul class="toc-sub">
+        <li>The eight microservices</li>
+        <li>Data flow end-to-end</li>
+      </ul>
+    </li>
+    <li>The Nexus Development Philosophy
+      <ul class="toc-sub">
+        <li>Event-first thinking</li>
+        <li>Everything is an ontological object</li>
+        <li>Apps expose APIs, pipelines own the model</li>
+      </ul>
+    </li>
+    <li>Building a Nexus-Native Application
+      <ul class="toc-sub">
+        <li>Backend structure (FastAPI)</li>
+        <li>Event emission pattern</li>
+        <li>Making your API connector-ready</li>
+      </ul>
+    </li>
+    <li>Designing Ontological Objects
+      <ul class="toc-sub">
+        <li>Choosing your entities</li>
+        <li>Properties and semantic types</li>
+        <li>Relationships (links)</li>
+      </ul>
+    </li>
+    <li>Connecting through Pipelines
+      <ul class="toc-sub">
+        <li>SOURCE → transforms → SINK_OBJECT</li>
+        <li>ENRICH for multi-endpoint enrichment</li>
+        <li>SINK_EVENT for process mining</li>
+      </ul>
+    </li>
+    <li>Deep Example: MAIC Projects App
+      <ul class="toc-sub">
+        <li>Domain model &amp; APIs</li>
+        <li>Event emission plan</li>
+        <li>Connectors to create</li>
+        <li>Ontological objects to design</li>
+        <li>Pipelines to build</li>
+        <li>Process mining case study</li>
+      </ul>
+    </li>
+    <li>Claude Prompt for Nexus-Native Development</li>
+    <li>Quick Reference — API Endpoints</li>
+  </ol>
+</div>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 1. ARCHITECTURE -->
+<h1>1. Platform Architecture Overview</h1>
+
+<p>Nexus Origins is a microservices platform where every piece of enterprise data — regardless of where it lives — converges into a unified, versioned ontology. Eight services work together to make that happen:</p>
+
+<div class="arch">
+  <div class="arch-box">
+    <div class="port">:8001</div>
+    <div class="name">Connector Service</div>
+    <div class="desc">Manages API credentials, fetches schemas, discovers sample data</div>
+  </div>
+  <div class="arch-box">
+    <div class="port">:8002</div>
+    <div class="name">Pipeline Service</div>
+    <div class="desc">DAG executor — SOURCE → transforms → SINK. Built-in scheduler.</div>
+  </div>
+  <div class="arch-box">
+    <div class="port">:8003</div>
+    <div class="name">Inference Service</div>
+    <div class="desc">Claude AI — semantic type detection, conflict resolution</div>
+  </div>
+  <div class="arch-box">
+    <div class="port">:8004</div>
+    <div class="name">Ontology Service</div>
+    <div class="desc">Object types, properties, links, versioned records, app registry</div>
+  </div>
+  <div class="arch-box">
+    <div class="port">:8005</div>
+    <div class="name">Event Log Service</div>
+    <div class="desc">Process mining event store — case/activity/timestamp</div>
+  </div>
+  <div class="arch-box">
+    <div class="port">:8006</div>
+    <div class="name">Audit Service</div>
+    <div class="desc">Immutable audit trail for every platform action</div>
+  </div>
+  <div class="arch-box">
+    <div class="port">:8007</div>
+    <div class="name">Schema Registry</div>
+    <div class="desc">Raw schema snapshots and versioning</div>
+  </div>
+  <div class="arch-box">
+    <div class="port">:8008</div>
+    <div class="name">Correlation Engine</div>
+    <div class="desc">Cross-source entity resolution and similarity scoring</div>
+  </div>
+</div>
+
+<h3>End-to-End Data Flow</h3>
+
+<div class="flow">
+  <div class="flow-node">External API / App</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node amber">Connector</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node purple">Pipeline DAG</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">Ontology Record</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node red">Event Log</div>
+</div>
+
+<p>A <strong>Connector</strong> defines how to reach an external API (auth, endpoint, query params). A <strong>Pipeline</strong> pulls data from one or more connectors, applies transformations (filter, map, enrich, dedupe), and pushes the result to an <strong>Object Type</strong> in the ontology. Any state change in that object type emits an <strong>Event</strong> to the event log, enabling process mining.</p>
+
+<div class="callout info">
+  <strong>Key Insight</strong>
+  The pipeline <em>is</em> the object type's source of truth. Once a pipeline successfully runs and binds to an object type, all future data comes through that pipeline — not direct connector pulls. This mirrors how Palantir Foundry works: datasets are owned by transforms, not raw sources.
+</div>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 2. PHILOSOPHY -->
+<h1>2. The Nexus Development Philosophy</h1>
+
+<h2>2.1 Event-First Thinking</h2>
+
+<p>In a Nexus-native app, <em>every meaningful state change emits an event</em>. Not as an afterthought — as a first-class design decision made before you write a single route.</p>
+
+<p>Ask yourself before building any feature:</p>
+<ul>
+  <li><strong>What is the case?</strong> The thing being tracked over time (a project, incident, order, patient).</li>
+  <li><strong>What are the activities?</strong> Discrete named transitions (<code>PROJECT_CREATED</code>, <code>STAGE_MOVED</code>, <code>COMMENT_ADDED</code>).</li>
+  <li><strong>What is the timestamp?</strong> When did this transition actually happen?</li>
+  <li><strong>What attributes matter?</strong> Who did it, from what state, to what state, with what payload?</li>
+</ul>
+
+<p>The event log answers "what happened and when" for any case. Process mining then automatically discovers bottlenecks, variants, and deviations — without any extra configuration.</p>
+
+<div class="callout rule">
+  <strong>Rule #1</strong>
+  If a row changes state in your database, emit an event. If something is created, emit an event. If something is assigned, moved, closed, or deleted — emit an event.
+</div>
+
+<h2>2.2 Everything Is an Ontological Object</h2>
+
+<p>Your application's domain objects are not just rows in a database. They are <strong>ontological objects</strong> — versioned, typed, linked entities in the Nexus knowledge graph.</p>
+
+<p>When you design a new entity (say, a Project), think:</p>
+<ul>
+  <li>What are the <strong>canonical properties</strong> (id, name, status, created_at)?</li>
+  <li>What is the <strong>semantic type</strong> of each property (IDENTIFIER, STATUS, DATE, PERSON_NAME…)?</li>
+  <li>What other objects does it <strong>relate to</strong> (Project has_many Stages, belongs_to Company)?</li>
+  <li>What is the <strong>primary key</strong> used for upsert/merge (always one IDENTIFIER field)?</li>
+</ul>
+
+<p>When these objects live in the ontology, every other app and pipeline can reference them. A project management app and an incident tracking app can both link to the same <code>TeamMember</code> object type.</p>
+
+<h2>2.3 Apps Expose APIs, Pipelines Own the Model</h2>
+
+<p>Your application's job is to expose clean, paginated REST APIs. The Nexus platform's job is to consume those APIs via connectors and pipelines and maintain the ontological model.</p>
+
+<p>This separation is intentional:</p>
+<ul>
+  <li>Your app doesn't need to know about ontologies or pipelines.</li>
+  <li>The platform doesn't need to know about your business logic.</li>
+  <li>Multiple pipelines can consume the same app API differently — enriching, filtering, or combining with other sources.</li>
+</ul>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 3. BUILDING -->
+<h1>3. Building a Nexus-Native Application</h1>
+
+<h2>3.1 Backend Structure (FastAPI)</h2>
+
+<p>All Nexus services use FastAPI with async SQLAlchemy. Your app should follow the same pattern to feel native:</p>
+
+<pre><span class="c"># app/main.py</span>
+<span class="k">from</span> <span class="n">fastapi</span> <span class="k">import</span> <span class="n">FastAPI</span>
+<span class="k">from</span> <span class="n">fastapi.middleware.cors</span> <span class="k">import</span> <span class="n">CORSMiddleware</span>
+<span class="k">from</span> <span class="n">routers</span> <span class="k">import</span> <span class="n">projects</span><span class="p">,</span> <span class="n">stages</span><span class="p">,</span> <span class="n">comments</span>
+<span class="k">from</span> <span class="n">database</span> <span class="k">import</span> <span class="n">init_db</span>
+
+<span class="n">app</span> <span class="p">=</span> <span class="n">FastAPI</span><span class="p">(</span><span class="n">title</span><span class="p">=</span><span class="s">"My App"</span><span class="p">)</span>
+<span class="n">app</span><span class="p">.</span><span class="n">add_middleware</span><span class="p">(</span><span class="n">CORSMiddleware</span><span class="p">,</span> <span class="n">allow_origins</span><span class="p">=[</span><span class="s">"*"</span><span class="p">],</span> <span class="n">allow_methods</span><span class="p">=[</span><span class="s">"*"</span><span class="p">],</span> <span class="n">allow_headers</span><span class="p">=[</span><span class="s">"*"</span><span class="p">])</span>
+
+<span class="n">app</span><span class="p">.</span><span class="n">include_router</span><span class="p">(</span><span class="n">projects</span><span class="p">.</span><span class="n">router</span><span class="p">,</span> <span class="n">prefix</span><span class="p">=</span><span class="s">"/projects"</span><span class="p">)</span>
+<span class="n">app</span><span class="p">.</span><span class="n">include_router</span><span class="p">(</span><span class="n">stages</span><span class="p">.</span><span class="n">router</span><span class="p">,</span>   <span class="n">prefix</span><span class="p">=</span><span class="s">"/stages"</span><span class="p">)</span>
+<span class="n">app</span><span class="p">.</span><span class="n">include_router</span><span class="p">(</span><span class="n">comments</span><span class="p">.</span><span class="n">router</span><span class="p">,</span> <span class="n">prefix</span><span class="p">=</span><span class="s">"/comments"</span><span class="p">)</span>
+
+<span class="p">@</span><span class="n">app</span><span class="p">.</span><span class="n">on_event</span><span class="p">(</span><span class="s">"startup"</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">startup</span><span class="p">():</span>
+    <span class="k">await</span> <span class="n">init_db</span><span class="p">()</span>
+
+<span class="p">@</span><span class="n">app</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">"/health"</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">health</span><span class="p">():</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s">"status"</span><span class="p">:</span> <span class="s">"ok"</span><span class="p">}</span></pre>
+
+<h3>The tenant_id header</h3>
+<p>Every Nexus service reads <code>x-tenant-id</code> from the request header to scope data. Your app must do the same:</p>
+
+<pre><span class="k">from</span> <span class="n">fastapi</span> <span class="k">import</span> <span class="n">Header</span>
+<span class="k">from</span> <span class="n">typing</span> <span class="k">import</span> <span class="n">Optional</span>
+
+<span class="k">def</span> <span class="f">_tid</span><span class="p">(</span><span class="n">x_tenant_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]):</span>
+    <span class="k">return</span> <span class="n">x_tenant_id</span> <span class="k">or</span> <span class="s">"tenant-001"</span>
+
+<span class="p">@</span><span class="n">router</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">""</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">list_projects</span><span class="p">(</span><span class="n">x_tenant_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="n">Header</span><span class="p">(</span><span class="k">None</span><span class="p">)):</span>
+    <span class="n">tid</span> <span class="p">=</span> <span class="f">_tid</span><span class="p">(</span><span class="n">x_tenant_id</span><span class="p">)</span>
+    <span class="c"># query DB scoped to this tenant...</span></pre>
+
+<h2>3.2 Event Emission Pattern</h2>
+
+<p>Copy this pattern into every router that changes state. It fires asynchronously so it never slows down your response:</p>
+
+<pre><span class="k">import</span> <span class="n">asyncio</span>
+<span class="k">import</span> <span class="n">httpx</span>
+<span class="k">from</span> <span class="n">uuid</span> <span class="k">import</span> <span class="n">uuid4</span>
+<span class="k">from</span> <span class="n">datetime</span> <span class="k">import</span> <span class="n">datetime</span><span class="p">,</span> <span class="n">timezone</span>
+
+<span class="n">EVENT_LOG_URL</span> <span class="p">=</span> <span class="s">"http://event-log-service:8005"</span>
+
+<span class="k">async def</span> <span class="f">emit_event</span><span class="p">(</span>
+    <span class="n">case_id</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span>          <span class="c"># the primary entity being tracked</span>
+    <span class="n">activity</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span>        <span class="c"># e.g. "PROJECT_CREATED", "STAGE_MOVED"</span>
+    <span class="n">object_type_id</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span>  <span class="c"># the ontological object type</span>
+    <span class="n">object_id</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span>       <span class="c"># the specific record id</span>
+    <span class="n">tenant_id</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span>
+    <span class="n">pipeline_id</span><span class="p">:</span> <span class="n">str</span> <span class="p">=</span> <span class="s">""</span><span class="p">,</span>
+    <span class="n">connector_id</span><span class="p">:</span> <span class="n">str</span> <span class="p">=</span> <span class="s">""</span><span class="p">,</span>
+    <span class="n">attributes</span><span class="p">:</span> <span class="n">dict</span> <span class="p">=</span> <span class="k">None</span>
+<span class="p">):</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">async with</span> <span class="n">httpx</span><span class="p">.</span><span class="n">AsyncClient</span><span class="p">(</span><span class="n">timeout</span><span class="p">=</span><span class="n">3.0</span><span class="p">)</span> <span class="k">as</span> <span class="n">client</span><span class="p">:</span>
+            <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="s">f"</span><span class="p">{</span><span class="n">EVENT_LOG_URL</span><span class="p">}</span><span class="s">/events"</span><span class="p">,</span> <span class="n">json</span><span class="p">={</span>
+                <span class="s">"id"</span><span class="p">:</span> <span class="n">str</span><span class="p">(</span><span class="n">uuid4</span><span class="p">()),</span>
+                <span class="s">"case_id"</span><span class="p">:</span> <span class="n">case_id</span><span class="p">,</span>
+                <span class="s">"activity"</span><span class="p">:</span> <span class="n">activity</span><span class="p">,</span>
+                <span class="s">"timestamp"</span><span class="p">:</span> <span class="n">datetime</span><span class="p">.</span><span class="n">now</span><span class="p">(</span><span class="n">timezone</span><span class="p">.</span><span class="n">utc</span><span class="p">).</span><span class="n">isoformat</span><span class="p">(),</span>
+                <span class="s">"object_type_id"</span><span class="p">:</span> <span class="n">object_type_id</span><span class="p">,</span>
+                <span class="s">"object_id"</span><span class="p">:</span> <span class="n">object_id</span><span class="p">,</span>
+                <span class="s">"pipeline_id"</span><span class="p">:</span> <span class="n">pipeline_id</span><span class="p">,</span>
+                <span class="s">"connector_id"</span><span class="p">:</span> <span class="n">connector_id</span><span class="p">,</span>
+                <span class="s">"tenant_id"</span><span class="p">:</span> <span class="n">tenant_id</span><span class="p">,</span>
+                <span class="s">"attributes"</span><span class="p">:</span> <span class="n">attributes</span> <span class="k">or</span> <span class="p">{},</span>
+            <span class="p">})</span>
+    <span class="k">except</span> <span class="n">Exception</span><span class="p">:</span>
+        <span class="k">pass</span>  <span class="c"># event log failures must never break the app</span>
+
+<span class="c"># Usage inside a route:</span>
+<span class="p">@</span><span class="n">router</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="s">"/projects/{pid}/stages"</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">create_stage</span><span class="p">(</span><span class="n">pid</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">StageIn</span><span class="p">,</span> <span class="n">x_tenant_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="n">Header</span><span class="p">(</span><span class="k">None</span><span class="p">)):</span>
+    <span class="n">tid</span> <span class="p">=</span> <span class="f">_tid</span><span class="p">(</span><span class="n">x_tenant_id</span><span class="p">)</span>
+    <span class="n">stage</span> <span class="p">=</span> <span class="k">await</span> <span class="n">db_create_stage</span><span class="p">(</span><span class="n">pid</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
+    <span class="n">asyncio</span><span class="p">.</span><span class="n">create_task</span><span class="p">(</span><span class="n">emit_event</span><span class="p">(</span>
+        <span class="n">case_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span>
+        <span class="n">activity</span><span class="p">=</span><span class="s">"STAGE_CREATED"</span><span class="p">,</span>
+        <span class="n">object_type_id</span><span class="p">=</span><span class="s">"project"</span><span class="p">,</span>
+        <span class="n">object_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span>
+        <span class="n">tenant_id</span><span class="p">=</span><span class="n">tid</span><span class="p">,</span>
+        <span class="n">attributes</span><span class="p">={</span><span class="s">"stage_name"</span><span class="p">:</span> <span class="n">body</span><span class="p">.</span><span class="n">name</span><span class="p">,</span> <span class="s">"stage_type"</span><span class="p">:</span> <span class="n">body</span><span class="p">.</span><span class="n">stage_type</span><span class="p">}</span>
+    <span class="p">))</span>
+    <span class="k">return</span> <span class="n">stage</span></pre>
+
+<h2>3.3 Making Your API Connector-Ready</h2>
+
+<p>The Nexus Connector Service pulls data from your API to populate the ontology. For this to work well, your endpoints must follow these rules:</p>
+
+<table>
+  <tr><th>Rule</th><th>Why</th><th>Example</th></tr>
+  <tr>
+    <td><strong>Always return arrays</strong> for list endpoints</td>
+    <td>The pipeline SOURCE node expects a list to iterate</td>
+    <td><code>GET /projects → [{...}, {...}]</code></td>
+  </tr>
+  <tr>
+    <td><strong>Include the primary ID</strong> in every record</td>
+    <td>ENRICH and DEDUPE nodes use it for joins and dedup</td>
+    <td>Every object has <code>"id": "uuid"</code></td>
+  </tr>
+  <tr>
+    <td><strong>Support pagination</strong> via query param</td>
+    <td>Large datasets need batching</td>
+    <td><code>GET /projects?page=1&limit=100</code></td>
+  </tr>
+  <tr>
+    <td><strong>Support detail lookup</strong> by ID</td>
+    <td>ENRICH node calls this per-row with a join key</td>
+    <td><code>GET /projects?id=abc123</code></td>
+  </tr>
+  <tr>
+    <td><strong>Support date filtering</strong></td>
+    <td>Incremental sync — only changed records</td>
+    <td><code>GET /projects?updated_after=2024-01-01</code></td>
+  </tr>
+  <tr>
+    <td><strong>Include timestamps</strong> on every record</td>
+    <td>Pipeline SINK_EVENT needs a timestamp field</td>
+    <td><code>"created_at"</code>, <code>"updated_at"</code></td>
+  </tr>
+  <tr>
+    <td><strong>Flat is better than nested</strong> (or provide both)</td>
+    <td>The FLATTEN node can explode arrays, but flat is simpler</td>
+    <td>Top-level fields preferred over deep nesting</td>
+  </tr>
+</table>
+
+<div class="callout tip">
+  <strong>Design Tip</strong>
+  Add a <code>GET /list</code> and <code>GET /detail?id=X</code> pair for every major entity. List gives the pipeline all IDs; detail gives the ENRICH node the full record per row. This is the core Nexus data pattern.
+</div>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 4. ONTOLOGY -->
+<h1>4. Designing Ontological Objects</h1>
+
+<h2>4.1 Choosing Your Entities</h2>
+
+<p>An ontological object type maps to a real-world entity that persists, evolves, and participates in relationships. Good candidates:</p>
+<ul>
+  <li>Things with an identity that survives beyond a single transaction</li>
+  <li>Things you want to query, filter, and join across systems</li>
+  <li>Things that go through states over time (good for process mining)</li>
+</ul>
+<p>Bad candidates: lookup values, enums, intermediate join tables, raw API response envelopes.</p>
+
+<h2>4.2 Property Semantic Types</h2>
+
+<p>Every property has a semantic type that the platform uses for inference, PII detection, and display formatting:</p>
+
+<table>
+  <tr><th>Semantic Type</th><th>Use for</th><th>PII?</th></tr>
+  <tr><td><code>IDENTIFIER</code></td><td>Primary keys, UUIDs, external IDs</td><td>No</td></tr>
+  <tr><td><code>PERSON_NAME</code></td><td>Full name, first name, last name</td><td>High</td></tr>
+  <tr><td><code>EMAIL</code></td><td>Email addresses</td><td>High</td></tr>
+  <tr><td><code>STATUS</code></td><td>State machine values (active, closed, pending)</td><td>No</td></tr>
+  <tr><td><code>DATE</code></td><td>Date-only fields (start_date, due_date)</td><td>Low</td></tr>
+  <tr><td><code>DATETIME</code></td><td>Full timestamps (created_at, updated_at)</td><td>Low</td></tr>
+  <tr><td><code>CATEGORY</code></td><td>Type fields, tags, department codes</td><td>No</td></tr>
+  <tr><td><code>QUANTITY</code></td><td>Counts, durations, numeric measures</td><td>No</td></tr>
+  <tr><td><code>CURRENCY</code></td><td>Monetary amounts</td><td>No</td></tr>
+  <tr><td><code>URL</code></td><td>Links, endpoints, resource paths</td><td>No</td></tr>
+  <tr><td><code>TEXT</code></td><td>Free text, descriptions, comments</td><td>Medium</td></tr>
+  <tr><td><code>BOOLEAN</code></td><td>Flags, yes/no fields</td><td>No</td></tr>
+</table>
+
+<h2>4.3 Relationships (Links)</h2>
+
+<p>Object types can be linked to each other. When you link two types, the Nexus graph shows the relationship and pipelines can traverse it:</p>
+
+<table>
+  <tr><th>Relationship Type</th><th>Meaning</th><th>Example</th></tr>
+  <tr><td><code>has_many</code></td><td>One parent, many children</td><td>Project has_many Stages</td></tr>
+  <tr><td><code>belongs_to</code></td><td>Child references parent</td><td>Stage belongs_to Project</td></tr>
+  <tr><td><code>has_one</code></td><td>One-to-one</td><td>Project has_one ProjectManager</td></tr>
+  <tr><td><code>many_to_many</code></td><td>Many-to-many</td><td>Project many_to_many TeamMember</td></tr>
+</table>
+
+<p>Links require <strong>join keys</strong> — the field on each side that connects the records. For example: <code>Stage.project_id → Project.id</code>.</p>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 5. PIPELINES -->
+<h1>5. Connecting Through Pipelines</h1>
+
+<h2>5.1 The Standard Pipeline Pattern</h2>
+
+<div class="flow">
+  <div class="flow-node">SOURCE</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node purple">FILTER</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node amber">MAP</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">SINK OBJECT</div>
+</div>
+
+<p>The <strong>SOURCE</strong> node fetches all records from a connector. Optional transform nodes clean the data. <strong>SINK OBJECT</strong> pushes records to an Object Type via <code>POST /object-types/{id}/records/ingest</code> — which upserts them into the ontology.</p>
+
+<h2>5.2 ENRICH — For Multi-Endpoint APIs</h2>
+
+<div class="flow">
+  <div class="flow-node">SOURCE (list)</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node amber">ENRICH (detail)</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">SINK OBJECT</div>
+</div>
+
+<p>When your list endpoint returns summary records and a separate detail endpoint returns the full record per ID, use <strong>ENRICH</strong>:</p>
+<ul>
+  <li><strong>Join Key</strong> — the field on the list row that holds the ID (e.g. <code>id</code>)</li>
+  <li><strong>Lookup Param</strong> — the query param on the detail endpoint (e.g. <code>id</code>)</li>
+  <li><strong>Detail Connector</strong> — the connector pointing at your detail endpoint</li>
+</ul>
+<p>The executor calls the detail endpoint once per row, concurrently (10 at a time), merges the result onto the row, and passes the fat record to the next node.</p>
+
+<h2>5.3 SINK EVENT — For Process Mining</h2>
+
+<div class="flow">
+  <div class="flow-node">SOURCE</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">SINK OBJECT</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node red">SINK EVENT</div>
+</div>
+
+<p>Add a <strong>SINK EVENT</strong> node after SINK OBJECT to convert records into process mining events. Configure:</p>
+<ul>
+  <li><strong>Activity Field</strong> — which field contains the activity name (e.g. <code>status</code>, <code>stage_type</code>)</li>
+  <li><strong>Case ID Field</strong> — which field is the case identifier (e.g. <code>project_id</code>)</li>
+  <li><strong>Timestamp Field</strong> — which field is the event time (e.g. <code>updated_at</code>)</li>
+</ul>
+
+<div class="callout warn">
+  <strong>Important</strong>
+  The SINK EVENT node generates one event per record, per run. For true process mining, emit events from your app's routes (Section 3.2) — those capture real-time state transitions, not batch snapshots.
+</div>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ MICROSERVICE -->
+<h1>4. Structuring a New Microservice</h1>
+
+<p>Every Nexus app is a standalone microservice: its own FastAPI process, its own database tables (in the shared Postgres), its own Docker image, its own port. This section walks you through creating one from scratch and wiring it into the platform.</p>
+
+<h2>4.1 Folder Structure</h2>
+
+<pre><span class="n">backend/</span>
+<span class="n">  my_app_service/</span>
+<span class="n">    __init__.py</span>
+<span class="n">    main.py</span>          <span class="c"># FastAPI app + startup</span>
+<span class="n">    database.py</span>      <span class="c"># SQLAlchemy models + session</span>
+<span class="n">    Dockerfile</span>
+<span class="n">    requirements.txt</span>
+<span class="n">    routers/</span>
+<span class="n">      __init__.py</span>
+<span class="n">      projects.py</span>    <span class="c"># one file per entity group</span>
+<span class="n">      stages.py</span>
+<span class="n">      comments.py</span></pre>
+
+<h2>4.2 The Database Pattern (JSONB Row Storage)</h2>
+
+<p>Every Nexus service uses the same storage pattern: a SQLAlchemy table with a <code>data</code> JSON column that holds the full serialized object. This avoids schema migrations when you add fields to your objects — you just put them in the JSON blob.</p>
+
+<pre><span class="c"># database.py</span>
+<span class="k">import</span> <span class="n">os</span>
+<span class="k">from</span> <span class="n">sqlalchemy.ext.asyncio</span> <span class="k">import</span> <span class="n">create_async_engine</span><span class="p">,</span> <span class="n">AsyncSession</span><span class="p">,</span> <span class="n">async_sessionmaker</span>
+<span class="k">from</span> <span class="n">sqlalchemy.orm</span> <span class="k">import</span> <span class="n">DeclarativeBase</span>
+<span class="k">from</span> <span class="n">sqlalchemy</span> <span class="k">import</span> <span class="n">Column</span><span class="p">,</span> <span class="n">String</span><span class="p">,</span> <span class="n">DateTime</span><span class="p">,</span> <span class="n">JSON</span><span class="p">,</span> <span class="n">func</span>
+
+<span class="n">DATABASE_URL</span> <span class="p">=</span> <span class="n">os</span><span class="p">.</span><span class="n">environ</span><span class="p">.</span><span class="n">get</span><span class="p">(</span>
+    <span class="s">"DATABASE_URL"</span><span class="p">,</span>
+    <span class="s">"postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus"</span>
+<span class="p">)</span>
+<span class="n">engine</span> <span class="p">=</span> <span class="n">create_async_engine</span><span class="p">(</span><span class="n">DATABASE_URL</span><span class="p">,</span> <span class="n">echo</span><span class="p">=</span><span class="k">False</span><span class="p">)</span>
+<span class="n">AsyncSessionLocal</span> <span class="p">=</span> <span class="n">async_sessionmaker</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="n">expire_on_commit</span><span class="p">=</span><span class="k">False</span><span class="p">)</span>
+
+<span class="k">class</span> <span class="n">Base</span><span class="p">(</span><span class="n">DeclarativeBase</span><span class="p">):</span>
+    <span class="k">pass</span>
+
+<span class="c"># One Row class per entity. Pattern: indexed columns for querying,</span>
+<span class="c"># data JSON column for everything else.</span>
+<span class="k">class</span> <span class="n">ProjectRow</span><span class="p">(</span><span class="n">Base</span><span class="p">):</span>
+    <span class="n">__tablename__</span> <span class="p">=</span> <span class="s">"my_app_projects"</span>   <span class="c"># prefix with app name to avoid conflicts</span>
+    <span class="n">id</span>         <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">String</span><span class="p">,</span> <span class="n">primary_key</span><span class="p">=</span><span class="k">True</span><span class="p">)</span>
+    <span class="n">tenant_id</span>  <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">String</span><span class="p">,</span> <span class="n">nullable</span><span class="p">=</span><span class="k">False</span><span class="p">,</span> <span class="n">index</span><span class="p">=</span><span class="k">True</span><span class="p">)</span>
+    <span class="n">company_id</span> <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">String</span><span class="p">,</span> <span class="n">nullable</span><span class="p">=</span><span class="k">False</span><span class="p">,</span> <span class="n">index</span><span class="p">=</span><span class="k">True</span><span class="p">)</span>  <span class="c"># index FK you filter by</span>
+    <span class="n">data</span>       <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">JSON</span><span class="p">,</span> <span class="n">nullable</span><span class="p">=</span><span class="k">False</span><span class="p">)</span>                   <span class="c"># full object as JSON</span>
+    <span class="n">created_at</span> <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">DateTime</span><span class="p">(</span><span class="n">timezone</span><span class="p">=</span><span class="k">True</span><span class="p">),</span> <span class="n">server_default</span><span class="p">=</span><span class="n">func</span><span class="p">.</span><span class="n">now</span><span class="p">())</span>
+    <span class="n">updated_at</span> <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">DateTime</span><span class="p">(</span><span class="n">timezone</span><span class="p">=</span><span class="k">True</span><span class="p">),</span> <span class="n">server_default</span><span class="p">=</span><span class="n">func</span><span class="p">.</span><span class="n">now</span><span class="p">(),</span> <span class="n">onupdate</span><span class="p">=</span><span class="n">func</span><span class="p">.</span><span class="n">now</span><span class="p">())</span>
+
+<span class="k">class</span> <span class="n">StageRow</span><span class="p">(</span><span class="n">Base</span><span class="p">):</span>
+    <span class="n">__tablename__</span> <span class="p">=</span> <span class="s">"my_app_stages"</span>
+    <span class="n">id</span>         <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">String</span><span class="p">,</span> <span class="n">primary_key</span><span class="p">=</span><span class="k">True</span><span class="p">)</span>
+    <span class="n">tenant_id</span>  <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">String</span><span class="p">,</span> <span class="n">nullable</span><span class="p">=</span><span class="k">False</span><span class="p">,</span> <span class="n">index</span><span class="p">=</span><span class="k">True</span><span class="p">)</span>
+    <span class="n">project_id</span> <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">String</span><span class="p">,</span> <span class="n">nullable</span><span class="p">=</span><span class="k">False</span><span class="p">,</span> <span class="n">index</span><span class="p">=</span><span class="k">True</span><span class="p">)</span>
+    <span class="n">data</span>       <span class="p">=</span> <span class="n">Column</span><span class="p">(</span><span class="n">JSON</span><span class="p">,</span> <span class="n">nullable</span><span class="p">=</span><span class="k">False</span><span class="p">)</span>
+
+<span class="c"># Tables are created automatically on startup — no migrations needed.</span>
+<span class="k">async def</span> <span class="f">init_db</span><span class="p">():</span>
+    <span class="k">async with</span> <span class="n">engine</span><span class="p">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+        <span class="k">await</span> <span class="n">conn</span><span class="p">.</span><span class="n">run_sync</span><span class="p">(</span><span class="n">Base</span><span class="p">.</span><span class="n">metadata</span><span class="p">.</span><span class="n">create_all</span><span class="p">)</span>
+
+<span class="k">async def</span> <span class="f">get_session</span><span class="p">()</span> <span class="p">-></span> <span class="n">AsyncSession</span><span class="p">:</span>
+    <span class="k">async with</span> <span class="n">AsyncSessionLocal</span><span class="p">()</span> <span class="k">as</span> <span class="n">session</span><span class="p">:</span>
+        <span class="k">yield</span> <span class="n">session</span></pre>
+
+<div class="callout warn">
+  <strong>Critical: flag_modified</strong>
+  When you mutate a JSON column in-place (e.g. <code>row.data["progress"] = 80</code>), SQLAlchemy won't detect the change automatically. You MUST call <code>from sqlalchemy.orm import attributes; attributes.flag_modified(row, "data")</code> before committing, or the update will be silently lost.
+</div>
+
+<h2>4.3 A Complete Router (CRUD + events)</h2>
+
+<pre><span class="c"># routers/projects.py</span>
+<span class="k">from</span> <span class="n">fastapi</span> <span class="k">import</span> <span class="n">APIRouter</span><span class="p">,</span> <span class="n">Depends</span><span class="p">,</span> <span class="n">HTTPException</span><span class="p">,</span> <span class="n">Header</span>
+<span class="k">from</span> <span class="n">sqlalchemy.ext.asyncio</span> <span class="k">import</span> <span class="n">AsyncSession</span>
+<span class="k">from</span> <span class="n">sqlalchemy</span> <span class="k">import</span> <span class="n">select</span>
+<span class="k">from</span> <span class="n">sqlalchemy.orm</span> <span class="k">import</span> <span class="n">attributes</span>
+<span class="k">from</span> <span class="n">pydantic</span> <span class="k">import</span> <span class="n">BaseModel</span>
+<span class="k">from</span> <span class="n">uuid</span> <span class="k">import</span> <span class="n">uuid4</span>
+<span class="k">from</span> <span class="n">datetime</span> <span class="k">import</span> <span class="n">datetime</span><span class="p">,</span> <span class="n">timezone</span>
+<span class="k">from</span> <span class="n">typing</span> <span class="k">import</span> <span class="n">Optional</span>
+<span class="k">import</span> <span class="n">asyncio</span>
+<span class="k">from</span> <span class="n">database</span> <span class="k">import</span> <span class="n">get_session</span><span class="p">,</span> <span class="n">ProjectRow</span>
+<span class="k">from</span> <span class="n">events</span> <span class="k">import</span> <span class="n">emit_event</span>  <span class="c"># shared helper in your service</span>
+
+<span class="n">router</span> <span class="p">=</span> <span class="n">APIRouter</span><span class="p">()</span>
+
+<span class="k">class</span> <span class="n">ProjectIn</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="n">name</span><span class="p">:</span> <span class="n">str</span>
+    <span class="n">status</span><span class="p">:</span> <span class="n">str</span> <span class="p">=</span> <span class="s">"active"</span>
+    <span class="n">company_id</span><span class="p">:</span> <span class="n">str</span>
+    <span class="n">description</span><span class="p">:</span> <span class="n">str</span> <span class="p">=</span> <span class="s">""</span>
+
+<span class="c"># ── LIST (flat, connector-friendly) ──────────────────────────────</span>
+<span class="p">@</span><span class="n">router</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">""</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">list_projects</span><span class="p">(</span>
+    <span class="n">id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="k">None</span><span class="p">,</span>          <span class="c"># ENRICH detail lookup: ?id=abc</span>
+    <span class="n">status</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="k">None</span><span class="p">,</span>       <span class="c"># ?status=active</span>
+    <span class="n">updated_after</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="k">None</span><span class="p">,</span> <span class="c"># incremental sync</span>
+    <span class="n">x_tenant_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="n">Header</span><span class="p">(</span><span class="k">None</span><span class="p">),</span>
+    <span class="n">db</span><span class="p">:</span> <span class="n">AsyncSession</span> <span class="p">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_session</span><span class="p">),</span>
+<span class="p">):</span>
+    <span class="n">tid</span> <span class="p">=</span> <span class="n">x_tenant_id</span> <span class="k">or</span> <span class="s">"tenant-001"</span>
+    <span class="n">stmt</span> <span class="p">=</span> <span class="n">select</span><span class="p">(</span><span class="n">ProjectRow</span><span class="p">).</span><span class="n">where</span><span class="p">(</span><span class="n">ProjectRow</span><span class="p">.</span><span class="n">tenant_id</span> <span class="p">==</span> <span class="n">tid</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">id</span><span class="p">:</span>   <span class="n">stmt</span> <span class="p">=</span> <span class="n">stmt</span><span class="p">.</span><span class="n">where</span><span class="p">(</span><span class="n">ProjectRow</span><span class="p">.</span><span class="n">id</span> <span class="p">==</span> <span class="n">id</span><span class="p">)</span>
+    <span class="n">rows</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">db</span><span class="p">.</span><span class="n">execute</span><span class="p">(</span><span class="n">stmt</span><span class="p">)).</span><span class="n">scalars</span><span class="p">().</span><span class="n">all</span><span class="p">()</span>
+    <span class="k">return</span> <span class="p">[</span><span class="n">r</span><span class="p">.</span><span class="n">data</span> <span class="k">for</span> <span class="n">r</span> <span class="k">in</span> <span class="n">rows</span><span class="p">]</span>  <span class="c"># returns array — connector-ready</span>
+
+<span class="c"># ── CREATE ────────────────────────────────────────────────────────</span>
+<span class="p">@</span><span class="n">router</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="s">""</span><span class="p">,</span> <span class="n">status_code</span><span class="p">=</span><span class="n">201</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">create_project</span><span class="p">(</span>
+    <span class="n">body</span><span class="p">:</span> <span class="n">ProjectIn</span><span class="p">,</span>
+    <span class="n">x_tenant_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="n">Header</span><span class="p">(</span><span class="k">None</span><span class="p">),</span>
+    <span class="n">db</span><span class="p">:</span> <span class="n">AsyncSession</span> <span class="p">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_session</span><span class="p">),</span>
+<span class="p">):</span>
+    <span class="n">tid</span> <span class="p">=</span> <span class="n">x_tenant_id</span> <span class="k">or</span> <span class="s">"tenant-001"</span>
+    <span class="n">pid</span> <span class="p">=</span> <span class="n">str</span><span class="p">(</span><span class="n">uuid4</span><span class="p">())</span>
+    <span class="n">now</span> <span class="p">=</span> <span class="n">datetime</span><span class="p">.</span><span class="n">now</span><span class="p">(</span><span class="n">timezone</span><span class="p">.</span><span class="n">utc</span><span class="p">).</span><span class="n">isoformat</span><span class="p">()</span>
+    <span class="n">data</span> <span class="p">=</span> <span class="p">{</span><span class="s">"id"</span><span class="p">:</span> <span class="n">pid</span><span class="p">,</span> <span class="s">"created_at"</span><span class="p">:</span> <span class="n">now</span><span class="p">,</span> <span class="s">"updated_at"</span><span class="p">:</span> <span class="n">now</span><span class="p">,</span> <span class="p">**</span><span class="n">body</span><span class="p">.</span><span class="n">model_dump</span><span class="p">()}</span>
+    <span class="n">db</span><span class="p">.</span><span class="n">add</span><span class="p">(</span><span class="n">ProjectRow</span><span class="p">(</span><span class="n">id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">tenant_id</span><span class="p">=</span><span class="n">tid</span><span class="p">,</span> <span class="n">company_id</span><span class="p">=</span><span class="n">body</span><span class="p">.</span><span class="n">company_id</span><span class="p">,</span> <span class="n">data</span><span class="p">=</span><span class="n">data</span><span class="p">))</span>
+    <span class="k">await</span> <span class="n">db</span><span class="p">.</span><span class="n">commit</span><span class="p">()</span>
+    <span class="n">asyncio</span><span class="p">.</span><span class="n">create_task</span><span class="p">(</span><span class="n">emit_event</span><span class="p">(</span>
+        <span class="n">case_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">activity</span><span class="p">=</span><span class="s">"PROJECT_CREATED"</span><span class="p">,</span>
+        <span class="n">object_type_id</span><span class="p">=</span><span class="s">"project"</span><span class="p">,</span> <span class="n">object_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">tenant_id</span><span class="p">=</span><span class="n">tid</span><span class="p">,</span>
+        <span class="n">attributes</span><span class="p">={</span><span class="s">"name"</span><span class="p">:</span> <span class="n">body</span><span class="p">.</span><span class="n">name</span><span class="p">,</span> <span class="s">"company_id"</span><span class="p">:</span> <span class="n">body</span><span class="p">.</span><span class="n">company_id</span><span class="p">}</span>
+    <span class="p">))</span>
+    <span class="k">return</span> <span class="n">data</span>
+
+<span class="c"># ── UPDATE ────────────────────────────────────────────────────────</span>
+<span class="p">@</span><span class="n">router</span><span class="p">.</span><span class="n">put</span><span class="p">(</span><span class="s">"/{pid}"</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">update_project</span><span class="p">(</span>
+    <span class="n">pid</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">ProjectIn</span><span class="p">,</span>
+    <span class="n">x_tenant_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="n">Header</span><span class="p">(</span><span class="k">None</span><span class="p">),</span>
+    <span class="n">db</span><span class="p">:</span> <span class="n">AsyncSession</span> <span class="p">=</span> <span class="n">Depends</span><span class="p">(</span><span class="n">get_session</span><span class="p">),</span>
+<span class="p">):</span>
+    <span class="n">tid</span> <span class="p">=</span> <span class="n">x_tenant_id</span> <span class="k">or</span> <span class="s">"tenant-001"</span>
+    <span class="n">row</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">db</span><span class="p">.</span><span class="n">execute</span><span class="p">(</span>
+        <span class="n">select</span><span class="p">(</span><span class="n">ProjectRow</span><span class="p">).</span><span class="n">where</span><span class="p">(</span><span class="n">ProjectRow</span><span class="p">.</span><span class="n">id</span> <span class="p">==</span> <span class="n">pid</span><span class="p">,</span> <span class="n">ProjectRow</span><span class="p">.</span><span class="n">tenant_id</span> <span class="p">==</span> <span class="n">tid</span><span class="p">)</span>
+    <span class="p">)).</span><span class="n">scalar_one_or_none</span><span class="p">()</span>
+    <span class="k">if not</span> <span class="n">row</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">HTTPException</span><span class="p">(</span><span class="n">404</span><span class="p">)</span>
+
+    <span class="n">old_status</span> <span class="p">=</span> <span class="n">row</span><span class="p">.</span><span class="n">data</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">"status"</span><span class="p">)</span>  <span class="c"># capture before overwriting</span>
+    <span class="n">row</span><span class="p">.</span><span class="n">data</span> <span class="p">=</span> <span class="p">{</span><span class="p">**</span><span class="n">row</span><span class="p">.</span><span class="n">data</span><span class="p">,</span> <span class="p">**</span><span class="n">body</span><span class="p">.</span><span class="n">model_dump</span><span class="p">(),</span>
+                <span class="s">"updated_at"</span><span class="p">:</span> <span class="n">datetime</span><span class="p">.</span><span class="n">now</span><span class="p">(</span><span class="n">timezone</span><span class="p">.</span><span class="n">utc</span><span class="p">).</span><span class="n">isoformat</span><span class="p">()}</span>
+    <span class="n">attributes</span><span class="p">.</span><span class="n">flag_modified</span><span class="p">(</span><span class="n">row</span><span class="p">,</span> <span class="s">"data"</span><span class="p">)</span>  <span class="c"># REQUIRED for JSON mutation</span>
+    <span class="k">await</span> <span class="n">db</span><span class="p">.</span><span class="n">commit</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="n">old_status</span> <span class="p">!=</span> <span class="n">body</span><span class="p">.</span><span class="n">status</span><span class="p">:</span>
+        <span class="n">asyncio</span><span class="p">.</span><span class="n">create_task</span><span class="p">(</span><span class="n">emit_event</span><span class="p">(</span>
+            <span class="n">case_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">activity</span><span class="p">=</span><span class="s">"PROJECT_STATUS_CHANGED"</span><span class="p">,</span>
+            <span class="n">object_type_id</span><span class="p">=</span><span class="s">"project"</span><span class="p">,</span> <span class="n">object_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">tenant_id</span><span class="p">=</span><span class="n">tid</span><span class="p">,</span>
+            <span class="n">attributes</span><span class="p">={</span><span class="s">"from"</span><span class="p">:</span> <span class="n">old_status</span><span class="p">,</span> <span class="s">"to"</span><span class="p">:</span> <span class="n">body</span><span class="p">.</span><span class="n">status</span><span class="p">}</span>
+        <span class="p">))</span>
+    <span class="k">return</span> <span class="n">row</span><span class="p">.</span><span class="n">data</span></pre>
+
+<h2>4.4 Dockerfile</h2>
+
+<p>Every service follows the same Dockerfile pattern. If your service is inside <code>backend/</code> and uses <code>shared/</code> models, it must be built from the <code>backend/</code> context so both folders are available:</p>
+
+<pre><span class="c"># backend/my_app_service/Dockerfile</span>
+<span class="k">FROM</span> <span class="n">python:3.12-slim</span>
+
+<span class="k">WORKDIR</span> <span class="s">/app</span>
+
+<span class="c"># Copy requirements first (layer caching)</span>
+<span class="k">COPY</span> <span class="n">my_app_service/requirements.txt</span> <span class="n">.</span>
+<span class="k">RUN</span> <span class="n">pip install --no-cache-dir -r requirements.txt</span>
+
+<span class="c"># Copy shared models, then the service itself</span>
+<span class="k">COPY</span> <span class="n">shared/ ./shared/</span>
+<span class="k">COPY</span> <span class="n">my_app_service/ .</span>
+
+<span class="k">EXPOSE</span> <span class="n">9000</span>
+
+<span class="k">CMD</span> <span class="p">[</span><span class="s">"uvicorn"</span><span class="p">,</span> <span class="s">"main:app"</span><span class="p">,</span> <span class="s">"--host"</span><span class="p">,</span> <span class="s">"0.0.0.0"</span><span class="p">,</span> <span class="s">"--port"</span><span class="p">,</span> <span class="s">"9000"</span><span class="p">]</span></pre>
+
+<h2>4.5 requirements.txt</h2>
+
+<pre><span class="n">fastapi==0.115.0</span>
+<span class="n">uvicorn[standard]==0.30.6</span>
+<span class="n">sqlalchemy[asyncio]==2.0.35</span>
+<span class="n">asyncpg==0.29.0</span>
+<span class="n">pydantic==2.9.2</span>
+<span class="n">httpx==0.27.2</span>
+<span class="n">python-multipart==0.0.12</span></pre>
+
+<h2>4.6 Registering in docker-compose.yml</h2>
+
+<p>Add your service to <code>docker-compose.yml</code> following this pattern. Pick the next available port (currently 8008 is the last — use 9000+):</p>
+
+<pre><span class="c"># docker-compose.yml — add this block</span>
+<span class="n">my-app-service</span><span class="p">:</span>
+  <span class="n">build</span><span class="p">:</span>
+    <span class="n">context</span><span class="p">:</span> <span class="s">./backend</span>               <span class="c"># build from backend/ so shared/ is available</span>
+    <span class="n">dockerfile</span><span class="p">:</span> <span class="s">my_app_service/Dockerfile</span>
+  <span class="n">ports</span><span class="p">:</span>
+    <span class="p">-</span> <span class="s">"9000:9000"</span>
+  <span class="n">environment</span><span class="p">:</span>
+    <span class="p">-</span> <span class="n">DATABASE_URL</span><span class="p">=</span><span class="n">postgresql+asyncpg</span><span class="p">://</span><span class="n">nexus</span><span class="p">:</span><span class="n">nexus_pass@postgres</span><span class="p">:</span><span class="n">5432</span><span class="p">/</span><span class="n">nexus</span>
+    <span class="p">-</span> <span class="n">EVENT_LOG_SERVICE_URL</span><span class="p">=</span><span class="n">http</span><span class="p">://</span><span class="n">event-log-service</span><span class="p">:</span><span class="n">8005</span>
+    <span class="c"># Add any other service URLs you need to call:</span>
+    <span class="p">-</span> <span class="n">ONTOLOGY_SERVICE_URL</span><span class="p">=</span><span class="n">http</span><span class="p">://</span><span class="n">ontology-service</span><span class="p">:</span><span class="n">8004</span>
+  <span class="n">depends_on</span><span class="p">:</span>
+    <span class="n">postgres</span><span class="p">:</span>
+      <span class="n">condition</span><span class="p">:</span> <span class="n">service_healthy</span>
+  <span class="n">networks</span><span class="p">:</span>
+    <span class="p">-</span> <span class="n">nexus-net</span>
+  <span class="n">command</span><span class="p">:</span> <span class="n">uvicorn main</span><span class="p">:</span><span class="n">app --host 0.0.0.0 --port 9000 --reload</span></pre>
+
+<div class="callout info">
+  <strong>Network</strong>
+  All services communicate using their Docker service name as the hostname (e.g. <code>http://event-log-service:8005</code>). This only works when both services are on the same <code>nexus-net</code> network. Never use <code>localhost</code> for inter-service calls inside Docker.
+</div>
+
+<h2>4.7 Inter-Service Communication</h2>
+
+<p>Use <code>httpx.AsyncClient</code> for all calls to other Nexus services. Read the target URL from an environment variable so it works both in Docker and local development:</p>
+
+<pre><span class="k">import</span> <span class="n">os</span>
+<span class="k">import</span> <span class="n">httpx</span>
+
+<span class="n">ONTOLOGY_URL</span> <span class="p">=</span> <span class="n">os</span><span class="p">.</span><span class="n">environ</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">"ONTOLOGY_SERVICE_URL"</span><span class="p">,</span> <span class="s">"http://ontology-service:8004"</span><span class="p">)</span>
+
+<span class="c"># Calling another service — always use async with and a timeout</span>
+<span class="k">async with</span> <span class="n">httpx</span><span class="p">.</span><span class="n">AsyncClient</span><span class="p">(</span><span class="n">timeout</span><span class="p">=</span><span class="n">10.0</span><span class="p">)</span> <span class="k">as</span> <span class="n">client</span><span class="p">:</span>
+    <span class="n">resp</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">get</span><span class="p">(</span>
+        <span class="s">f"{ONTOLOGY_URL}/object-types"</span><span class="p">,</span>
+        <span class="n">headers</span><span class="p">={</span><span class="s">"x-tenant-id"</span><span class="p">:</span> <span class="n">tid</span><span class="p">}</span>   <span class="c"># always forward tenant_id</span>
+    <span class="p">)</span>
+    <span class="n">resp</span><span class="p">.</span><span class="n">raise_for_status</span><span class="p">()</span>
+    <span class="n">data</span> <span class="p">=</span> <span class="n">resp</span><span class="p">.</span><span class="n">json</span><span class="p">()</span></pre>
+
+<h2>4.8 Deploy After Changes</h2>
+
+<p>After editing any backend service, rebuild just that service (not the whole stack):</p>
+
+<pre><span class="c"># Rebuild and restart a single service</span>
+<span class="n">docker-compose up -d --build my-app-service</span>
+
+<span class="c"># View logs</span>
+<span class="n">docker-compose logs -f my-app-service</span>
+
+<span class="c"># Restart without rebuilding (for env var changes only)</span>
+<span class="n">docker-compose restart my-app-service</span></pre>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 6. EXAMPLE -->
+<h1>6. Deep Example: MAIC Projects App</h1>
+
+<p>The MAIC Projects app manages software development projects across companies, with stages (Discovery → HUs → UX → Dev → Entrega), team members, and comments. Here is a complete walkthrough of how to build it as a first-class Nexus citizen.</p>
+
+<h2>6.1 Domain Model &amp; API Design</h2>
+
+<h3>Entities and Their APIs</h3>
+
+<table>
+  <tr><th>Entity</th><th>Description</th><th>Key Fields</th></tr>
+  <tr><td><strong>Company</strong></td><td>Client organization owning projects</td><td>id, name, color, description</td></tr>
+  <tr><td><strong>TeamMember</strong></td><td>MAIC developer, PM, QA, or analyst</td><td>id, name, role, email, company_id</td></tr>
+  <tr><td><strong>Project</strong></td><td>A software delivery engagement</td><td>id, name, status, pm_id, company_id, object_type_id</td></tr>
+  <tr><td><strong>Stage</strong></td><td>A phase within a project</td><td>id, project_id, stage_type, progress, assigned_to_id, start_date, end_date</td></tr>
+  <tr><td><strong>Comment</strong></td><td>Discussion thread entry on a stage</td><td>id, stage_id, project_id, text, author, created_at</td></tr>
+</table>
+
+<h3>Full API Surface (connector-ready)</h3>
+
+<pre><span class="c"># Companies</span>
+<span class="n">GET</span>    <span class="s">/companies</span>                       <span class="c"># list all companies</span>
+<span class="n">GET</span>    <span class="s">/companies/{cid}</span>                 <span class="c"># company detail</span>
+<span class="n">POST</span>   <span class="s">/companies</span>                       <span class="c"># create</span>
+<span class="n">PUT</span>    <span class="s">/companies/{cid}</span>                 <span class="c"># update</span>
+<span class="n">DELETE</span> <span class="s">/companies/{cid}</span>                 <span class="c"># delete</span>
+
+<span class="c"># Team Members</span>
+<span class="n">GET</span>    <span class="s">/companies/{cid}/members</span>         <span class="c"># list members of a company</span>
+<span class="n">GET</span>    <span class="s">/members</span>                         <span class="c"># list ALL members (connector-friendly)</span>
+<span class="n">GET</span>    <span class="s">/members?id={id}</span>                 <span class="c"># detail lookup for ENRICH</span>
+<span class="n">POST</span>   <span class="s">/companies/{cid}/members</span>
+<span class="n">PUT</span>    <span class="s">/members/{mid}</span>
+<span class="n">DELETE</span> <span class="s">/members/{mid}</span>
+
+<span class="c"># Projects</span>
+<span class="n">GET</span>    <span class="s">/projects</span>                        <span class="c"># list all projects (all companies)</span>
+<span class="n">GET</span>    <span class="s">/projects?id={id}</span>               <span class="c"># detail lookup for ENRICH</span>
+<span class="n">GET</span>    <span class="s">/projects?company_id={cid}</span>       <span class="c"># filter by company</span>
+<span class="n">GET</span>    <span class="s">/projects?status=active</span>          <span class="c"># filter by status</span>
+<span class="n">GET</span>    <span class="s">/projects?updated_after={iso}</span>    <span class="c"># incremental sync</span>
+<span class="n">POST</span>   <span class="s">/companies/{cid}/projects</span>
+<span class="n">PUT</span>    <span class="s">/projects/{pid}</span>
+<span class="n">DELETE</span> <span class="s">/projects/{pid}</span>
+
+<span class="c"># Stages</span>
+<span class="n">GET</span>    <span class="s">/projects/{pid}/stages</span>           <span class="c"># stages for a project</span>
+<span class="n">GET</span>    <span class="s">/stages</span>                          <span class="c"># ALL stages (connector-friendly flat list)</span>
+<span class="n">POST</span>   <span class="s">/projects/{pid}/stages</span>
+<span class="n">PUT</span>    <span class="s">/stages/{sid}</span>
+<span class="n">DELETE</span> <span class="s">/stages/{sid}</span>
+
+<span class="c"># Comments</span>
+<span class="n">GET</span>    <span class="s">/stages/{sid}/comments</span>           <span class="c"># comments on a stage</span>
+<span class="n">GET</span>    <span class="s">/comments</span>                        <span class="c"># ALL comments flat list (connector-friendly)</span>
+<span class="n">POST</span>   <span class="s">/stages/{sid}/comments</span>
+<span class="n">DELETE</span> <span class="s">/comments/{cid}</span></pre>
+
+<div class="callout tip">
+  <strong>Pattern</strong>
+  Note the flat list endpoints (<code>GET /projects</code>, <code>GET /stages</code>, <code>GET /comments</code>) alongside the hierarchical ones. Connectors always need a flat, filterable list they can pull in bulk. Design for both humans (hierarchical UI) and machines (flat API).
+</div>
+
+<h2>6.2 Event Emission Plan</h2>
+
+<p>Before writing routes, plan every event the app will emit:</p>
+
+<table>
+  <tr><th>Route</th><th>Activity</th><th>case_id</th><th>Key Attributes</th></tr>
+  <tr><td>POST /companies/{cid}/projects</td><td><code>PROJECT_CREATED</code></td><td>project.id</td><td>company_id, name, pm_id</td></tr>
+  <tr><td>PUT /projects/{pid} (status change)</td><td><code>PROJECT_STATUS_CHANGED</code></td><td>pid</td><td>from_status, to_status</td></tr>
+  <tr><td>PUT /projects/{pid} (pm change)</td><td><code>PROJECT_PM_ASSIGNED</code></td><td>pid</td><td>old_pm_id, new_pm_id</td></tr>
+  <tr><td>POST /projects/{pid}/stages</td><td><code>STAGE_CREATED</code></td><td>pid</td><td>stage_type, stage_name</td></tr>
+  <tr><td>PUT /stages/{sid} (progress)</td><td><code>STAGE_PROGRESS_UPDATED</code></td><td>stage.project_id</td><td>stage_type, old_progress, new_progress</td></tr>
+  <tr><td>PUT /stages/{sid} (assignee)</td><td><code>STAGE_ASSIGNED</code></td><td>stage.project_id</td><td>stage_type, assigned_to_id</td></tr>
+  <tr><td>PUT /stages/{sid} (start/end date)</td><td><code>STAGE_DATED</code></td><td>stage.project_id</td><td>stage_type, start_date, end_date</td></tr>
+  <tr><td>POST /stages/{sid}/comments</td><td><code>COMMENT_ADDED</code></td><td>stage.project_id</td><td>stage_type, author, text_length</td></tr>
+  <tr><td>DELETE /projects/{pid}</td><td><code>PROJECT_DELETED</code></td><td>pid</td><td>name, company_id</td></tr>
+</table>
+
+<p>Notice that <code>case_id</code> is always the <strong>project ID</strong>, even for stage and comment events. This is because the "case" in process mining terms is the project lifecycle — all events for a project belong to the same case, enabling analysis of the full project journey.</p>
+
+<h3>Implementing differential event emission (update routes)</h3>
+
+<pre><span class="p">@</span><span class="n">router</span><span class="p">.</span><span class="n">put</span><span class="p">(</span><span class="s">"/{pid}"</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">update_project</span><span class="p">(</span><span class="n">pid</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">ProjectIn</span><span class="p">,</span> <span class="n">x_tenant_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">str</span><span class="p">]</span> <span class="p">=</span> <span class="n">Header</span><span class="p">(</span><span class="k">None</span><span class="p">)):</span>
+    <span class="n">tid</span> <span class="p">=</span> <span class="f">_tid</span><span class="p">(</span><span class="n">x_tenant_id</span><span class="p">)</span>
+    <span class="n">old</span> <span class="p">=</span> <span class="k">await</span> <span class="n">db_get_project</span><span class="p">(</span><span class="n">pid</span><span class="p">)</span>  <span class="c"># read before updating</span>
+    <span class="n">updated</span> <span class="p">=</span> <span class="k">await</span> <span class="n">db_update_project</span><span class="p">(</span><span class="n">pid</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
+
+    <span class="c"># Emit targeted event based on what changed</span>
+    <span class="k">if</span> <span class="n">old</span><span class="p">[</span><span class="s">"status"</span><span class="p">]</span> <span class="p">!=</span> <span class="n">body</span><span class="p">.</span><span class="n">status</span><span class="p">:</span>
+        <span class="n">asyncio</span><span class="p">.</span><span class="n">create_task</span><span class="p">(</span><span class="n">emit_event</span><span class="p">(</span>
+            <span class="n">case_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">activity</span><span class="p">=</span><span class="s">"PROJECT_STATUS_CHANGED"</span><span class="p">,</span>
+            <span class="n">object_type_id</span><span class="p">=</span><span class="s">"project"</span><span class="p">,</span> <span class="n">object_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">tenant_id</span><span class="p">=</span><span class="n">tid</span><span class="p">,</span>
+            <span class="n">attributes</span><span class="p">={</span><span class="s">"from"</span><span class="p">:</span> <span class="n">old</span><span class="p">[</span><span class="s">"status"</span><span class="p">],</span> <span class="s">"to"</span><span class="p">:</span> <span class="n">body</span><span class="p">.</span><span class="n">status</span><span class="p">}</span>
+        <span class="p">))</span>
+    <span class="k">if</span> <span class="n">old</span><span class="p">[</span><span class="s">"pmId"</span><span class="p">]</span> <span class="p">!=</span> <span class="n">body</span><span class="p">.</span><span class="n">pm_id</span><span class="p">:</span>
+        <span class="n">asyncio</span><span class="p">.</span><span class="n">create_task</span><span class="p">(</span><span class="n">emit_event</span><span class="p">(</span>
+            <span class="n">case_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">activity</span><span class="p">=</span><span class="s">"PROJECT_PM_ASSIGNED"</span><span class="p">,</span>
+            <span class="n">object_type_id</span><span class="p">=</span><span class="s">"project"</span><span class="p">,</span> <span class="n">object_id</span><span class="p">=</span><span class="n">pid</span><span class="p">,</span> <span class="n">tenant_id</span><span class="p">=</span><span class="n">tid</span><span class="p">,</span>
+            <span class="n">attributes</span><span class="p">={</span><span class="s">"from_pm"</span><span class="p">:</span> <span class="n">old</span><span class="p">[</span><span class="s">"pmId"</span><span class="p">],</span> <span class="s">"to_pm"</span><span class="p">:</span> <span class="n">body</span><span class="p">.</span><span class="n">pm_id</span><span class="p">}</span>
+        <span class="p">))</span>
+    <span class="k">return</span> <span class="n">updated</span></pre>
+
+<h2>6.3 Connectors to Create in Nexus</h2>
+
+<p>Each connector points at a specific endpoint. Create these in the Nexus Connectors panel:</p>
+
+<table>
+  <tr><th>Connector Name</th><th>Method</th><th>Endpoint</th><th>Query Params</th><th>Purpose</th></tr>
+  <tr><td>MAIC — All Projects</td><td>GET</td><td><code>/projects</code></td><td>—</td><td>SOURCE for Projects pipeline</td></tr>
+  <tr><td>MAIC — Project Detail</td><td>GET</td><td><code>/projects</code></td><td><code>id={{id}}</code> (static placeholder)</td><td>ENRICH detail lookup per project</td></tr>
+  <tr><td>MAIC — All Stages</td><td>GET</td><td><code>/stages</code></td><td>—</td><td>SOURCE for Stages pipeline</td></tr>
+  <tr><td>MAIC — All Comments</td><td>GET</td><td><code>/comments</code></td><td>—</td><td>SOURCE for Comments pipeline</td></tr>
+  <tr><td>MAIC — All Members</td><td>GET</td><td><code>/members</code></td><td>—</td><td>SOURCE for TeamMember pipeline</td></tr>
+  <tr><td>MAIC — Companies</td><td>GET</td><td><code>/companies</code></td><td>—</td><td>SOURCE for Company pipeline</td></tr>
+</table>
+
+<h3>Connector configuration (MAIC — All Projects)</h3>
+
+<pre><span class="n">Base URL</span><span class="p">:</span>        <span class="s">http://maic-projects-app:9000</span>
+<span class="n">Auth Type</span><span class="p">:</span>       <span class="n">None</span> <span class="p">(</span><span class="k">or</span> <span class="n">Bearer</span> <span class="k">if</span> <span class="n">you</span> <span class="n">added</span> <span class="n">auth</span><span class="p">)</span>
+<span class="n">Endpoint</span><span class="p">:</span>        <span class="s">/projects</span>
+<span class="n">Method</span><span class="p">:</span>          <span class="n">GET</span>
+<span class="n">Query Params</span><span class="p">:</span>    <span class="p">(</span><span class="n">none</span> <span class="n">required</span><span class="p">)</span>
+<span class="n">Response Path</span><span class="p">:</span>   <span class="p">(</span><span class="n">root</span> <span class="p">—</span> <span class="n">endpoint</span> <span class="n">returns</span> <span class="n">array</span> <span class="n">directly</span><span class="p">)</span></pre>
+
+<h2>6.4 Ontological Objects to Design</h2>
+
+<p>Create these Object Types in Nexus Ontology:</p>
+
+<h3>Object Type: Project</h3>
+
+<table>
+  <tr><th>Property</th><th>Semantic Type</th><th>Data Type</th><th>PII</th><th>Required</th></tr>
+  <tr><td>id</td><td>IDENTIFIER</td><td>string</td><td>NONE</td><td>Yes</td></tr>
+  <tr><td>name</td><td>TEXT</td><td>string</td><td>NONE</td><td>Yes</td></tr>
+  <tr><td>status</td><td>STATUS</td><td>string</td><td>NONE</td><td>Yes</td></tr>
+  <tr><td>description</td><td>TEXT</td><td>string</td><td>NONE</td><td>No</td></tr>
+  <tr><td>company_id</td><td>IDENTIFIER</td><td>string</td><td>NONE</td><td>Yes</td></tr>
+  <tr><td>pm_id</td><td>IDENTIFIER</td><td>string</td><td>NONE</td><td>No</td></tr>
+  <tr><td>created_at</td><td>DATETIME</td><td>string</td><td>NONE</td><td>Yes</td></tr>
+  <tr><td>stage_count</td><td>QUANTITY</td><td>integer</td><td>NONE</td><td>No</td></tr>
+  <tr><td>overall_progress</td><td>PERCENTAGE</td><td>float</td><td>NONE</td><td>No</td></tr>
+</table>
+
+<h3>Object Type: Stage</h3>
+
+<table>
+  <tr><th>Property</th><th>Semantic Type</th><th>Data Type</th><th>PII</th></tr>
+  <tr><td>id</td><td>IDENTIFIER</td><td>string</td><td>NONE</td></tr>
+  <tr><td>project_id</td><td>IDENTIFIER</td><td>string</td><td>NONE</td></tr>
+  <tr><td>name</td><td>TEXT</td><td>string</td><td>NONE</td></tr>
+  <tr><td>stage_type</td><td>CATEGORY</td><td>string</td><td>NONE</td></tr>
+  <tr><td>progress</td><td>PERCENTAGE</td><td>integer</td><td>NONE</td></tr>
+  <tr><td>assigned_to_id</td><td>IDENTIFIER</td><td>string</td><td>NONE</td></tr>
+  <tr><td>start_date</td><td>DATE</td><td>string</td><td>NONE</td></tr>
+  <tr><td>end_date</td><td>DATE</td><td>string</td><td>NONE</td></tr>
+</table>
+
+<h3>Object Type: TeamMember</h3>
+
+<table>
+  <tr><th>Property</th><th>Semantic Type</th><th>PII</th></tr>
+  <tr><td>id</td><td>IDENTIFIER</td><td>NONE</td></tr>
+  <tr><td>name</td><td>PERSON_NAME</td><td>HIGH</td></tr>
+  <tr><td>email</td><td>EMAIL</td><td>HIGH</td></tr>
+  <tr><td>role</td><td>CATEGORY</td><td>NONE</td></tr>
+  <tr><td>company_id</td><td>IDENTIFIER</td><td>NONE</td></tr>
+</table>
+
+<h3>Object Type: Comment</h3>
+
+<table>
+  <tr><th>Property</th><th>Semantic Type</th><th>PII</th></tr>
+  <tr><td>id</td><td>IDENTIFIER</td><td>NONE</td></tr>
+  <tr><td>stage_id</td><td>IDENTIFIER</td><td>NONE</td></tr>
+  <tr><td>project_id</td><td>IDENTIFIER</td><td>NONE</td></tr>
+  <tr><td>text</td><td>TEXT</td><td>MEDIUM</td></tr>
+  <tr><td>author</td><td>PERSON_NAME</td><td>HIGH</td></tr>
+  <tr><td>created_at</td><td>DATETIME</td><td>NONE</td></tr>
+</table>
+
+<h3>Links Between Object Types</h3>
+
+<table>
+  <tr><th>Source</th><th>Relationship</th><th>Target</th><th>Join Keys</th></tr>
+  <tr><td>Project</td><td>has_many</td><td>Stage</td><td>Project.id → Stage.project_id</td></tr>
+  <tr><td>Stage</td><td>belongs_to</td><td>Project</td><td>Stage.project_id → Project.id</td></tr>
+  <tr><td>Stage</td><td>has_many</td><td>Comment</td><td>Stage.id → Comment.stage_id</td></tr>
+  <tr><td>Project</td><td>many_to_many</td><td>TeamMember</td><td>Project.pm_id → TeamMember.id</td></tr>
+  <tr><td>Stage</td><td>belongs_to</td><td>TeamMember</td><td>Stage.assigned_to_id → TeamMember.id</td></tr>
+</table>
+
+<h2>6.5 Pipelines to Build</h2>
+
+<h3>Pipeline 1: Projects (with stage enrichment)</h3>
+
+<div class="flow">
+  <div class="flow-node">SOURCE<br/><small>All Projects</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node amber">ENRICH<br/><small>Project Detail</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node purple">MAP<br/><small>rename fields</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">SINK OBJECT<br/><small>Project OT</small></div>
+</div>
+
+<table>
+  <tr><th>Node</th><th>Config</th></tr>
+  <tr>
+    <td>SOURCE</td>
+    <td>Connector: MAIC All Projects · Frequency: 1h</td>
+  </tr>
+  <tr>
+    <td>ENRICH</td>
+    <td>Detail Connector: MAIC Project Detail · Join Key: <code>id</code> · Lookup Param: <code>id</code></td>
+  </tr>
+  <tr>
+    <td>MAP</td>
+    <td><code>{"pmId": "pm_id", "companyId": "company_id", "objectTypeId": "object_type_id"}</code></td>
+  </tr>
+  <tr>
+    <td>SINK OBJECT</td>
+    <td>Target Object Type: Project · Write Mode: upsert · Merge Key: <code>id</code></td>
+  </tr>
+</table>
+
+<h3>Pipeline 2: Stages (for process mining)</h3>
+
+<div class="flow">
+  <div class="flow-node">SOURCE<br/><small>All Stages</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node gray">DEDUPE<br/><small>by id</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">SINK OBJECT<br/><small>Stage OT</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node red">SINK EVENT<br/><small>Process Mining</small></div>
+</div>
+
+<table>
+  <tr><th>Node</th><th>Config</th></tr>
+  <tr><td>SOURCE</td><td>Connector: MAIC All Stages · Frequency: 30m</td></tr>
+  <tr><td>DEDUPE</td><td>Keys: <code>id</code> · Strategy: keep_last</td></tr>
+  <tr><td>SINK OBJECT</td><td>Target: Stage · Write Mode: upsert · Merge Key: <code>id</code></td></tr>
+  <tr><td>SINK EVENT</td><td>Activity Field: <code>stage_type</code> · Case ID: <code>project_id</code> · Timestamp: <code>updated_at</code></td></tr>
+</table>
+
+<h3>Pipeline 3: Comments (team collaboration mining)</h3>
+
+<div class="flow">
+  <div class="flow-node">SOURCE<br/><small>All Comments</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">SINK OBJECT<br/><small>Comment OT</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node red">SINK EVENT<br/><small>COMMENT_ADDED</small></div>
+</div>
+
+<p>This pipeline feeds the event log with <code>COMMENT_ADDED</code> events keyed to <code>project_id</code>, so the process mining view shows communication activity per project.</p>
+
+<h3>Pipeline 4: Team Members</h3>
+
+<div class="flow">
+  <div class="flow-node">SOURCE<br/><small>All Members</small></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-node green">SINK OBJECT<br/><small>TeamMember OT</small></div>
+</div>
+
+<p>Simple 1-node pipeline. Run once daily. Keeps the team roster current in the ontology so it can be joined from Stage and Project records.</p>
+
+<h2>6.6 Process Mining Case Study</h2>
+
+<p>Once all pipelines run, here is what the event log looks like for a single project:</p>
+
+<table>
+  <tr><th>case_id</th><th>activity</th><th>timestamp</th><th>attributes</th></tr>
+  <tr><td>proj-abc</td><td>PROJECT_CREATED</td><td>2026-01-10T09:00Z</td><td>name: "CRM Redesign", company_id: co-1</td></tr>
+  <tr><td>proj-abc</td><td>STAGE_CREATED</td><td>2026-01-10T09:01Z</td><td>stage_type: discovery</td></tr>
+  <tr><td>proj-abc</td><td>STAGE_ASSIGNED</td><td>2026-01-10T09:05Z</td><td>stage_type: discovery, assigned_to_id: member-7</td></tr>
+  <tr><td>proj-abc</td><td>STAGE_DATED</td><td>2026-01-10T09:06Z</td><td>start_date: 2026-01-11, end_date: 2026-01-20</td></tr>
+  <tr><td>proj-abc</td><td>discovery</td><td>2026-01-15T14:00Z</td><td>progress: 50 <em>(from pipeline)</em></td></tr>
+  <tr><td>proj-abc</td><td>COMMENT_ADDED</td><td>2026-01-16T10:30Z</td><td>author: "Ana", stage: discovery</td></tr>
+  <tr><td>proj-abc</td><td>hu</td><td>2026-01-21T08:00Z</td><td>progress: 0 <em>(from pipeline — stage entered)</em></td></tr>
+  <tr><td>proj-abc</td><td>PROJECT_PM_ASSIGNED</td><td>2026-01-22T11:00Z</td><td>from_pm: member-3, to_pm: member-5</td></tr>
+  <tr><td>proj-abc</td><td>development</td><td>2026-02-05T09:00Z</td><td>progress: 0</td></tr>
+  <tr><td>proj-abc</td><td>PROJECT_STATUS_CHANGED</td><td>2026-03-01T16:00Z</td><td>from: active, to: completed</td></tr>
+</table>
+
+<p>Process mining on this log automatically reveals:</p>
+<ul>
+  <li><strong>Happy path</strong>: discovery → HUs → UX → development → entrega</li>
+  <li><strong>Bottlenecks</strong>: which stage has the longest average dwell time</li>
+  <li><strong>Rework</strong>: stages revisited after being marked complete</li>
+  <li><strong>PM instability</strong>: projects with multiple PM reassignments</li>
+  <li><strong>Comment patterns</strong>: high-comment stages often signal blockers</li>
+</ul>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 7. CLAUDE PROMPT -->
+<h1>7. Claude Prompt for Nexus-Native Development</h1>
+
+<p>Paste this prompt at the beginning of any Claude session when building Nexus apps:</p>
+
+<div style="background:#0D1117;border:1px solid #2563EB;border-radius:6px;padding:24px;margin:20px 0;">
+<pre style="background:none;border:none;padding:0;margin:0;color:#E2E8F0;font-size:12px;line-height:1.7;">You are building a Nexus Origins-native application. Follow these rules:
+
+## PLATFORM CONTEXT
+Nexus Origins is an enterprise data integration platform with 8 microservices:
+- Connector Service (:8001) — API credential management and schema discovery
+- Pipeline Service (:8002) — DAG executor (SOURCE → transforms → SINK) with built-in scheduler
+- Inference Service (:8003) — Claude AI for semantic type detection
+- Ontology Service (:8004) — Versioned object types, records, links, and app registry
+- Event Log Service (:8005) — Process mining event store (case/activity/timestamp)
+- Audit Service (:8006) — Immutable audit trail
+- Schema Registry (:8007) — Raw schema versioning
+- Correlation Engine (:8008) — Cross-source entity resolution
+
+## RULE 1: EVENT-FIRST DESIGN
+Before writing any route, define:
+1. case_id — the primary entity being tracked over time (project_id, incident_id, order_id)
+2. activities — named state transitions (PROJECT_CREATED, STAGE_MOVED, COMMENT_ADDED)
+3. timestamps — when each transition happened
+4. attributes — who did it, from what state, to what state
+
+Every meaningful state change MUST emit an event asynchronously to the Event Log Service.
+Event log failures must never block the response (always fire-and-forget with try/except).
+
+## RULE 2: CONNECTOR-READY APIs
+Every entity needs:
+- A flat list endpoint: GET /entities (returns array, supports ?updated_after=ISO for incremental sync)
+- A detail lookup: GET /entities?id={id} (for ENRICH node per-row calls)
+- Pagination: ?page=N&limit=100
+- Always include: id, created_at, updated_at on every record
+
+## RULE 3: ONTOLOGICAL THINKING
+For every entity, define:
+- Primary key field (semantic type: IDENTIFIER)
+- Status field if it has states (semantic type: STATUS)
+- All timestamp fields (semantic type: DATETIME or DATE)
+- PII fields (PERSON_NAME, EMAIL → pii_level: HIGH)
+- Foreign keys to related objects (semantic type: IDENTIFIER)
+
+## RULE 4: TENANT ISOLATION
+Every route reads x-tenant-id from header:
+  def _tid(x_tenant_id: Optional[str]) -> str:
+      return x_tenant_id or "tenant-001"
+All DB queries must be scoped: WHERE tenant_id = tid
+
+## RULE 5: ASYNC SQLALCHEMY PATTERN
+Always use async SQLAlchemy with AsyncSession.
+Use flag_modified(row, "data") when mutating JSONB fields.
+Use uuid4() for all IDs. Store ISO timestamps (datetime.now(timezone.utc).isoformat()).
+
+## RULE 6: PIPELINE DESIGN
+When designing pipelines for your app:
+- SOURCE → SINK_OBJECT for simple entities
+- SOURCE → ENRICH → SINK_OBJECT when list + detail endpoints exist
+- Add SINK_EVENT after SINK_OBJECT for entities that participate in process mining
+- Set pollFrequency on SOURCE: 5m for real-time, 1h for hourly, 1d for daily
+
+## EVENT EMISSION TEMPLATE
+async def emit_event(case_id, activity, object_type_id, object_id, tenant_id, attributes=None):
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post("http://event-log-service:8005/events", json={
+                "id": str(uuid4()),
+                "case_id": case_id,
+                "activity": activity,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "object_type_id": object_type_id,
+                "object_id": object_id,
+                "pipeline_id": "",
+                "connector_id": "",
+                "tenant_id": tenant_id,
+                "attributes": attributes or {},
+            })
+    except Exception:
+        pass  # never block on event log
+
+# In every state-changing route:
+asyncio.create_task(emit_event(...))
+
+## WHAT TO BUILD
+When given an application to build, produce in order:
+1. Entity list with semantic types and PII classification
+2. Event emission plan (case_id, all activities, key attributes)
+3. Full API surface (list + detail + CRUD)
+4. FastAPI router code with event emission
+5. Connector configuration table (what to create in Nexus)
+6. Pipeline topology (node types and config)
+7. Ontological object type definitions (properties + links)</pre>
+</div>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ 8. REFERENCE -->
+<h1>8. Quick Reference — Nexus API Endpoints</h1>
+
+<h3>Connector Service <code>:8001</code></h3>
+<p>
+  <code>GET /connectors</code> <span class="badge get">GET</span> List connectors<br/>
+  <code>POST /connectors</code> <span class="badge post">POST</span> Create connector<br/>
+  <code>POST /connectors/{id}/test</code> <span class="badge post">POST</span> Test credentials<br/>
+  <code>GET /connectors/{id}/schema</code> <span class="badge get">GET</span> Fetch schema + sample rows<br/>
+  <code>POST /connectors/{id}/fetch-row</code> <span class="badge post">POST</span> Per-row detail lookup (ENRICH)
+</p>
+
+<h3>Pipeline Service <code>:8002</code></h3>
+<p>
+  <code>GET /pipelines</code> <span class="badge get">GET</span> List pipelines<br/>
+  <code>POST /pipelines</code> <span class="badge post">POST</span> Create pipeline<br/>
+  <code>POST /pipelines/{id}/run</code> <span class="badge post">POST</span> Trigger run (async)<br/>
+  <code>GET /pipelines/{id}/runs</code> <span class="badge get">GET</span> Run history
+</p>
+
+<h3>Ontology Service <code>:8004</code></h3>
+<p>
+  <code>GET /object-types</code> <span class="badge get">GET</span> List object types<br/>
+  <code>POST /object-types</code> <span class="badge post">POST</span> Create object type<br/>
+  <code>POST /object-types/{id}/records/ingest</code> <span class="badge post">POST</span> Push records from pipeline<br/>
+  <code>POST /object-types/{id}/records/sync</code> <span class="badge post">POST</span> Pull from connectors (blocked if pipeline-owned)<br/>
+  <code>GET /object-types/{id}/records</code> <span class="badge get">GET</span> Query persisted records<br/>
+  <code>POST /object-types/links</code> <span class="badge post">POST</span> Create relationship link
+</p>
+
+<h3>Event Log Service <code>:8005</code></h3>
+<p>
+  <code>POST /events</code> <span class="badge post">POST</span> Ingest single event<br/>
+  <code>POST /events/batch</code> <span class="badge post">POST</span> Ingest events in bulk<br/>
+  <code>GET /events</code> <span class="badge get">GET</span> Query events (by case_id, pipeline_id, time range)
+</p>
+
+<hr class="section-divider" />
+
+<!-- ═══════════════════════════════════════════════════════════ CORE -->
+<h1>9. Contributing to the Nexus Core Platform</h1>
+
+<p>The core platform is the set of services and the frontend that every app builds on top of. This section is for developers who need to extend or modify the platform itself — adding a new pipeline node type, modifying an existing service, or adding a page to the frontend shell.</p>
+
+<h2>9.1 Repository Layout</h2>
+
+<pre><span class="n">nexus-new-origins/</span>
+<span class="n">  backend/</span>
+<span class="n">    connector_service/</span>        <span class="c"># :8001 — connector CRUD, schema fetcher, range scans</span>
+<span class="n">    pipeline_service/</span>         <span class="c"># :8002 — DAG executor, scheduler, run history</span>
+<span class="n">    inference_service/</span>        <span class="c"># :8003 — Claude AI, semantic type detection</span>
+<span class="n">    ontology_service/</span>         <span class="c"># :8004 — object types, records, links, apps, projects</span>
+<span class="n">    event_log_service/</span>        <span class="c"># :8005 — TimescaleDB event store</span>
+<span class="n">    audit_service/</span>            <span class="c"># :8006 — immutable audit trail</span>
+<span class="n">    schema_registry/</span>          <span class="c"># :8007 — raw schema snapshots</span>
+<span class="n">    correlation_engine/</span>       <span class="c"># :8008 — cross-source entity resolution</span>
+<span class="n">    shared/</span>
+<span class="n">      models.py</span>               <span class="c"># ALL shared Pydantic models (Pipeline, ObjectType, Event…)</span>
+<span class="n">      enums.py</span>                <span class="c"># NodeType, PipelineStatus, SemanticType…</span>
+<span class="n">  frontend/</span>
+<span class="n">    src/</span>
+<span class="n">      App.tsx</span>                 <span class="c"># page router — maps page names to module components</span>
+<span class="n">      shell/</span>
+<span class="n">        AppShell.tsx</span>          <span class="c"># layout: NavRail + main content area</span>
+<span class="n">        NavRail.tsx</span>           <span class="c"># left navigation with icons</span>
+<span class="n">        TenantContext.tsx</span>     <span class="c"># auth + tenant state</span>
+<span class="n">      modules/</span>               <span class="c"># one folder per platform section</span>
+<span class="n">        connectors/           ConnectorGrid, ConnectorDetailPanel, AddConnectorModal</span>
+<span class="n">        pipeline/             PipelineBuilder, NodePalette, NodeConfigPanel</span>
+<span class="n">        ontology/             OntologyGraph, ObjectTypePanel, ObjectTypeNode</span>
+<span class="n">        events/               EventLog.tsx</span>
+<span class="n">        lineage/              LineageCanvas.tsx</span>
+<span class="n">        apps/                 AppsPage, AppEditor, AppCanvas</span>
+<span class="n">        projects/             ProjectsModule, GanttChart</span>
+<span class="n">      store/</span>                  <span class="c"># Zustand stores — one per domain</span>
+<span class="n">        connectorStore.ts</span>
+<span class="n">        pipelineStore.ts</span>
+<span class="n">        ontologyStore.ts</span>
+<span class="n">        navigationStore.ts</span>
+<span class="n">      types/</span>                  <span class="c"># TypeScript interfaces matching backend models</span>
+<span class="n">      design-system/</span>
+<span class="n">        components/</span>           <span class="c"># Button, Badge, Card, Tag, StatusDot</span>
+<span class="n">        tokens.ts</span>             <span class="c"># colours, node colours for pipeline</span>
+<span class="n">  docker-compose.yml</span>
+<span class="n">  docs/</span></pre>
+
+<h2>9.2 Adding a New Page to the Frontend</h2>
+
+<p>The frontend routing is a simple switch in <code>App.tsx</code>. Adding a new page takes three steps:</p>
+
+<h4>Step 1 — Create your module</h4>
+<pre><span class="c">// frontend/src/modules/my_module/MyPage.tsx</span>
+<span class="k">import</span> <span class="n">React</span> <span class="k">from</span> <span class="s">'react'</span><span class="p">;</span>
+
+<span class="k">export const</span> <span class="n">MyPage</span><span class="p">:</span> <span class="n">React.FC</span> <span class="p">=</span> <span class="p">()</span> <span class="p">=></span> <span class="p">(</span>
+  <span class="p">&lt;</span><span class="n">div</span> <span class="n">style</span><span class="p">={{</span> <span class="n">display</span><span class="p">:</span> <span class="s">'flex'</span><span class="p">,</span> <span class="n">flexDirection</span><span class="p">:</span> <span class="s">'column'</span><span class="p">,</span> <span class="n">height</span><span class="p">:</span> <span class="s">'100%'</span> <span class="p">}}&gt;</span>
+    <span class="p">{</span><span class="c">/* Header bar — 52px, white, bottom border */</span><span class="p">}</span>
+    <span class="p">&lt;</span><span class="n">div</span> <span class="n">style</span><span class="p">={{</span>
+      <span class="n">height</span><span class="p">:</span> <span class="n">52</span><span class="p">,</span> <span class="n">backgroundColor</span><span class="p">:</span> <span class="s">'#FFFFFF'</span><span class="p">,</span> <span class="n">borderBottom</span><span class="p">:</span> <span class="s">'1px solid #E2E8F0'</span><span class="p">,</span>
+      <span class="n">display</span><span class="p">:</span> <span class="s">'flex'</span><span class="p">,</span> <span class="n">alignItems</span><span class="p">:</span> <span class="s">'center'</span><span class="p">,</span> <span class="n">padding</span><span class="p">:</span> <span class="s">'0 16px'</span><span class="p">,</span> <span class="n">flexShrink</span><span class="p">:</span> <span class="n">0</span><span class="p">,</span>
+    <span class="p">}}&gt;</span>
+      <span class="p">&lt;</span><span class="n">h1</span> <span class="n">style</span><span class="p">={{</span> <span class="n">fontSize</span><span class="p">:</span> <span class="s">'16px'</span><span class="p">,</span> <span class="n">fontWeight</span><span class="p">:</span> <span class="n">500</span><span class="p">,</span> <span class="n">color</span><span class="p">:</span> <span class="s">'#0D1117'</span> <span class="p">}}&gt;</span><span class="n">My Page</span><span class="p">&lt;/</span><span class="n">h1</span><span class="p">&gt;</span>
+    <span class="p">&lt;/</span><span class="n">div</span><span class="p">&gt;</span>
+    <span class="p">&lt;</span><span class="n">div</span> <span class="n">style</span><span class="p">={{</span> <span class="n">flex</span><span class="p">:</span> <span class="n">1</span><span class="p">,</span> <span class="n">overflow</span><span class="p">:</span> <span class="s">'auto'</span><span class="p">,</span> <span class="n">padding</span><span class="p">:</span> <span class="s">'24px'</span> <span class="p">}}&gt;</span>
+      <span class="p">{</span><span class="c">/* content */</span><span class="p">}</span>
+    <span class="p">&lt;/</span><span class="n">div</span><span class="p">&gt;</span>
+  <span class="p">&lt;/</span><span class="n">div</span><span class="p">&gt;</span>
+<span class="p">);</span>
+<span class="k">export default</span> <span class="n">MyPage</span><span class="p">;</span></pre>
+
+<h4>Step 2 — Register in App.tsx</h4>
+<pre><span class="c">// Top of App.tsx — with the other lazy imports</span>
+<span class="k">const</span> <span class="n">MyPage</span> <span class="p">=</span> <span class="n">lazy</span><span class="p">(()</span> <span class="p">=></span> <span class="n">import</span><span class="p">(</span><span class="s">'./modules/my_module/MyPage'</span><span class="p">));</span>
+
+<span class="c">// Inside renderPage() switch statement</span>
+<span class="k">case</span> <span class="s">'my-page'</span><span class="p">:</span>
+  <span class="k">return</span> <span class="p">&lt;</span><span class="n">Suspense</span> <span class="n">fallback</span><span class="p">={&lt;</span><span class="n">LoadingSpinner</span> <span class="p">/&gt;}&gt;&lt;</span><span class="n">MyPage</span> <span class="p">/&gt;&lt;/</span><span class="n">Suspense</span><span class="p">&gt;;</span></pre>
+
+<h4>Step 3 — Add to NavRail (frontend/src/shell/NavRail.tsx)</h4>
+<pre><span class="c">// Add to the nav items array — icon from lucide-react</span>
+<span class="p">{</span> <span class="n">id</span><span class="p">:</span> <span class="s">'my-page'</span><span class="p">,</span> <span class="n">label</span><span class="p">:</span> <span class="s">'My Page'</span><span class="p">,</span> <span class="n">icon</span><span class="p">:</span> <span class="n">LayoutDashboard</span> <span class="p">}</span></pre>
+
+<h2>9.3 The Zustand Store Pattern</h2>
+
+<p>All frontend state lives in Zustand stores. Each store owns one domain, fetches from the backend, and exposes typed actions. Components never call <code>fetch()</code> directly — they call store methods.</p>
+
+<pre><span class="c">// store/myStore.ts</span>
+<span class="k">import</span> <span class="p">{</span> <span class="n">create</span> <span class="p">}</span> <span class="k">from</span> <span class="s">'zustand'</span><span class="p">;</span>
+
+<span class="k">const</span> <span class="n">API</span> <span class="p">=</span> <span class="k">import</span><span class="p">.</span><span class="n">meta</span><span class="p">.</span><span class="n">env</span><span class="p">.</span><span class="n">VITE_MY_SERVICE_URL</span> <span class="p">||</span> <span class="s">'http://localhost:9000'</span><span class="p">;</span>
+
+<span class="k">interface</span> <span class="n">MyStoreState</span> <span class="p">{</span>
+  <span class="n">items</span><span class="p">:</span> <span class="n">MyItem</span><span class="p">[];</span>
+  <span class="n">loading</span><span class="p">:</span> <span class="k">boolean</span><span class="p">;</span>
+  <span class="n">fetchItems</span><span class="p">:</span> <span class="p">()</span> <span class="p">=></span> <span class="n">Promise</span><span class="p">&lt;</span><span class="k">void</span><span class="p">&gt;;</span>
+  <span class="n">addItem</span><span class="p">:</span> <span class="p">(</span><span class="n">item</span><span class="p">:</span> <span class="n">MyItem</span><span class="p">)</span> <span class="p">=></span> <span class="n">Promise</span><span class="p">&lt;</span><span class="n">MyItem</span><span class="p">&gt;;</span>
+<span class="p">}</span>
+
+<span class="k">export const</span> <span class="n">useMyStore</span> <span class="p">=</span> <span class="n">create</span><span class="p">&lt;</span><span class="n">MyStoreState</span><span class="p">&gt;((</span><span class="n">set</span><span class="p">)</span> <span class="p">=></span> <span class="p">({</span>
+  <span class="n">items</span><span class="p">:</span> <span class="p">[],</span> <span class="n">loading</span><span class="p">:</span> <span class="k">false</span><span class="p">,</span>
+
+  <span class="n">fetchItems</span><span class="p">:</span> <span class="k">async</span> <span class="p">()</span> <span class="p">=></span> <span class="p">{</span>
+    <span class="n">set</span><span class="p">({</span> <span class="n">loading</span><span class="p">:</span> <span class="k">true</span> <span class="p">});</span>
+    <span class="k">const</span> <span class="n">data</span> <span class="p">=</span> <span class="k">await</span> <span class="n">fetch</span><span class="p">(</span><span class="s">`</span><span class="p">${</span><span class="n">API</span><span class="p">}</span><span class="s">/items`</span><span class="p">).</span><span class="n">then</span><span class="p">(</span><span class="n">r</span> <span class="p">=></span> <span class="n">r</span><span class="p">.</span><span class="n">json</span><span class="p">());</span>
+    <span class="n">set</span><span class="p">({</span> <span class="n">items</span><span class="p">:</span> <span class="n">data</span><span class="p">,</span> <span class="n">loading</span><span class="p">:</span> <span class="k">false</span> <span class="p">});</span>
+  <span class="p">},</span>
+
+  <span class="n">addItem</span><span class="p">:</span> <span class="k">async</span> <span class="p">(</span><span class="n">item</span><span class="p">)</span> <span class="p">=></span> <span class="p">{</span>
+    <span class="k">const</span> <span class="n">created</span> <span class="p">=</span> <span class="k">await</span> <span class="n">fetch</span><span class="p">(</span><span class="s">`</span><span class="p">${</span><span class="n">API</span><span class="p">}</span><span class="s">/items`</span><span class="p">,</span> <span class="p">{</span>
+      <span class="n">method</span><span class="p">:</span> <span class="s">'POST'</span><span class="p">,</span> <span class="n">headers</span><span class="p">:</span> <span class="p">{</span> <span class="s">'Content-Type'</span><span class="p">:</span> <span class="s">'application/json'</span> <span class="p">},</span>
+      <span class="n">body</span><span class="p">:</span> <span class="n">JSON</span><span class="p">.</span><span class="n">stringify</span><span class="p">(</span><span class="n">item</span><span class="p">),</span>
+    <span class="p">}).</span><span class="n">then</span><span class="p">(</span><span class="n">r</span> <span class="p">=></span> <span class="n">r</span><span class="p">.</span><span class="n">json</span><span class="p">());</span>
+    <span class="n">set</span><span class="p">((</span><span class="n">s</span><span class="p">)</span> <span class="p">=></span> <span class="p">({</span> <span class="n">items</span><span class="p">:</span> <span class="p">[...</span><span class="n">s</span><span class="p">.</span><span class="n">items</span><span class="p">,</span> <span class="n">created</span><span class="p">]</span> <span class="p">}));</span>
+    <span class="k">return</span> <span class="n">created</span><span class="p">;</span>
+  <span class="p">},</span>
+<span class="p">}));</span>
+
+<span class="c">// In your component:</span>
+<span class="k">const</span> <span class="p">{</span> <span class="n">items</span><span class="p">,</span> <span class="n">loading</span><span class="p">,</span> <span class="n">fetchItems</span> <span class="p">}</span> <span class="p">=</span> <span class="n">useMyStore</span><span class="p">();</span>
+<span class="n">useEffect</span><span class="p">(()</span> <span class="p">=></span> <span class="p">{</span> <span class="n">fetchItems</span><span class="p">();</span> <span class="p">},</span> <span class="p">[]);</span></pre>
+
+<h2>9.4 Adding a New Backend Endpoint</h2>
+
+<p>Backend route → store action → component. Three-step flow:</p>
+
+<pre><span class="c"># 1. Add the route (e.g. in ontology_service/routers/ontology.py)</span>
+<span class="p">@</span><span class="n">router</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="s">"/{ot_id}/my-action"</span><span class="p">)</span>
+<span class="k">async def</span> <span class="f">my_action</span><span class="p">(</span><span class="n">ot_id</span><span class="p">:</span> <span class="n">str</span><span class="p">,</span> <span class="n">body</span><span class="p">:</span> <span class="n">MyIn</span><span class="p">,</span> <span class="n">db</span><span class="p">=</span><span class="n">Depends</span><span class="p">(</span><span class="n">get_session</span><span class="p">)):</span>
+    <span class="p">...</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s">"ok"</span><span class="p">:</span> <span class="k">True</span><span class="p">}</span>
+
+<span class="c"># 2. Rebuild just that service</span>
+<span class="n">docker-compose up -d --build ontology-service</span>
+
+<span class="c"># 3. Add to ontologyStore.ts, then rebuild frontend</span>
+<span class="n">docker-compose up -d --build frontend</span></pre>
+
+<h2>9.5 Adding a New Pipeline Node Type</h2>
+
+<p>Must be done in two places — backend executor and frontend palette.</p>
+
+<h4>Backend — shared/enums.py + dag_executor.py</h4>
+<pre><span class="c"># shared/enums.py — add to NodeType</span>
+<span class="k">class</span> <span class="n">NodeType</span><span class="p">(</span><span class="n">str</span><span class="p">,</span> <span class="n">Enum</span><span class="p">):</span>
+    <span class="n">MY_NODE</span> <span class="p">=</span> <span class="s">"MY_NODE"</span>
+
+<span class="c"># dag_executor.py — add to execute() dispatch</span>
+<span class="k">elif</span> <span class="n">node_type</span> <span class="p">==</span> <span class="n">NodeType</span><span class="p">.</span><span class="n">MY_NODE</span><span class="p">:</span>
+    <span class="n">records_out</span> <span class="p">=</span> <span class="k">await</span> <span class="n">self</span><span class="p">.</span><span class="n">_my_node</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">records_in</span><span class="p">)</span>
+
+<span class="k">async def</span> <span class="f">_my_node</span><span class="p">(</span><span class="n">self</span><span class="p">,</span> <span class="n">node</span><span class="p">:</span> <span class="n">PipelineNode</span><span class="p">,</span> <span class="n">records_in</span><span class="p">:</span> <span class="n">list</span><span class="p">[</span><span class="n">dict</span><span class="p">])</span> <span class="p">-></span> <span class="n">list</span><span class="p">[</span><span class="n">dict</span><span class="p">]:</span>
+    <span class="n">cfg</span> <span class="p">=</span> <span class="n">node</span><span class="p">.</span><span class="n">config</span>
+    <span class="c"># transform records, return new list</span>
+    <span class="k">return</span> <span class="n">records_in</span></pre>
+
+<h4>Frontend — pipelineTypes.ts + types/pipeline.ts</h4>
+<pre><span class="c">// types/pipeline.ts — add to NodeType union</span>
+<span class="k">export type</span> <span class="n">NodeType</span> <span class="p">=</span> <span class="s">'SOURCE'</span> <span class="p">|</span> <span class="s">'FILTER'</span> <span class="p">|</span> <span class="p">...</span> <span class="p">|</span> <span class="s">'MY_NODE'</span><span class="p">;</span>
+
+<span class="c">// modules/pipeline/pipelineTypes.ts — add to NODE_TYPE_DEFS</span>
+<span class="p">{</span>
+  <span class="n">type</span><span class="p">:</span> <span class="s">'MY_NODE'</span><span class="p">,</span>
+  <span class="n">label</span><span class="p">:</span> <span class="s">'My Node'</span><span class="p">,</span>
+  <span class="n">description</span><span class="p">:</span> <span class="s">'What it does'</span><span class="p">,</span>
+  <span class="n">color</span><span class="p">:</span> <span class="s">'#7C3AED'</span><span class="p">,</span>
+  <span class="n">iconName</span><span class="p">:</span> <span class="s">'Sparkles'</span><span class="p">,</span>  <span class="c">// any lucide-react icon name</span>
+  <span class="n">configFields</span><span class="p">:</span> <span class="p">[</span>
+    <span class="p">{</span> <span class="n">key</span><span class="p">:</span> <span class="s">'myParam'</span><span class="p">,</span> <span class="n">label</span><span class="p">:</span> <span class="s">'My Parameter'</span><span class="p">,</span> <span class="n">type</span><span class="p">:</span> <span class="s">'text'</span><span class="p">,</span> <span class="n">required</span><span class="p">:</span> <span class="k">true</span> <span class="p">},</span>
+  <span class="p">],</span>
+<span class="p">},</span></pre>
+
+<h2>9.6 Design System Components</h2>
+
+<table>
+  <tr><th>Component</th><th>Key Props</th></tr>
+  <tr><td><strong>Button</strong><br/><code>design-system/components/Button</code></td><td><code>variant</code>: primary | secondary | ghost · <code>size</code>: sm | md · <code>icon</code>: ReactNode · <code>loading</code>: boolean</td></tr>
+  <tr><td><strong>Badge</strong><br/><code>design-system/components/Badge</code></td><td><code>variant</code>: default | success | warning | error | info</td></tr>
+  <tr><td><strong>Card</strong><br/><code>design-system/components/Card</code></td><td>Standard border + padding wrapper</td></tr>
+  <tr><td><strong>Tag</strong><br/><code>design-system/components/Tag</code></td><td><code>color</code>: hex string for tint</td></tr>
+  <tr><td><strong>StatusDot</strong><br/><code>design-system/components/StatusDot</code></td><td><code>status</code>: healthy | warning | degraded | unknown</td></tr>
+</table>
+
+<h2>9.7 Frontend Environment Variables</h2>
+
+<p>Service URLs are injected at build time as Vite env vars. Add your service to docker-compose <code>build.args</code> and read it in your store:</p>
+
+<pre><span class="c">// In your store</span>
+<span class="k">const</span> <span class="n">MY_API</span> <span class="p">=</span> <span class="k">import</span><span class="p">.</span><span class="n">meta</span><span class="p">.</span><span class="n">env</span><span class="p">.</span><span class="n">VITE_MY_SERVICE_URL</span> <span class="p">||</span> <span class="s">'http://localhost:9000'</span><span class="p">;</span></pre>
+
+<table>
+  <tr><th>Variable</th><th>Default</th><th>Used by</th></tr>
+  <tr><td><code>VITE_CONNECTOR_SERVICE_URL</code></td><td>:8001</td><td>connectorStore</td></tr>
+  <tr><td><code>VITE_PIPELINE_SERVICE_URL</code></td><td>:8002</td><td>pipelineStore</td></tr>
+  <tr><td><code>VITE_ONTOLOGY_SERVICE_URL</code></td><td>:8004</td><td>ontologyStore</td></tr>
+  <tr><td><code>VITE_EVENT_LOG_SERVICE_URL</code></td><td>:8005</td><td>EventLog module</td></tr>
+</table>
+
+<h2>9.8 Shared Models</h2>
+
+<p>If your entity is referenced by multiple services (pipelines, ontology, etc.), add it to <code>backend/shared/models.py</code>. It is copied into every service image at build time. Never redefine a model locally if it already exists in shared — local copies silently diverge.</p>
+
+<h2>9.9 Day-to-Day Development Workflow</h2>
+
+<table>
+  <tr><th>Task</th><th>Command</th></tr>
+  <tr><td>Start everything</td><td><code>docker-compose up -d</code></td></tr>
+  <tr><td>Rebuild one service</td><td><code>docker-compose up -d --build ontology-service</code></td></tr>
+  <tr><td>Rebuild frontend</td><td><code>docker-compose up -d --build frontend</code></td></tr>
+  <tr><td>Rebuild everything</td><td><code>docker-compose up -d --build</code></td></tr>
+  <tr><td>Tail logs for one service</td><td><code>docker-compose logs -f pipeline-service</code></td></tr>
+  <tr><td>Tail all logs</td><td><code>docker-compose logs -f</code></td></tr>
+  <tr><td>Stop everything</td><td><code>docker-compose down</code></td></tr>
+  <tr><td>Stop + wipe all data ⚠️</td><td><code>docker-compose down -v</code></td></tr>
+  <tr><td>Shell into a container</td><td><code>docker-compose exec ontology-service bash</code></td></tr>
+  <tr><td>Check service health</td><td><code>curl http://localhost:8004/health</code></td></tr>
+</table>
+
+<div class="callout tip">
+  <strong>Hot Reload</strong>
+  All backend services run with <code>--reload</code>. Code changes inside a running container are picked up instantly. You only need <code>--build</code> when you change <code>requirements.txt</code>, the Dockerfile, or anything in <code>shared/</code>.
+</div>
+
+<div style="margin-top:80px;padding-top:24px;border-top:1px solid #E2E8F0;font-size:11px;color:#94A3B8;text-align:center;">
+  Nexus Origins Developer Guide · Version 1.0 · March 2026<br/>
+  To print as PDF: File → Print → Save as PDF (set margins to Minimum)
+</div>
+
+</body>
+</html>

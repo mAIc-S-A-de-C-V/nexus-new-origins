@@ -120,6 +120,7 @@ class ObjectType(BaseModel):
     description: Optional[str] = None
     properties: list[ObjectProperty] = Field(default_factory=list)
     source_connector_ids: list[str] = Field(default_factory=list)
+    source_pipeline_id: Optional[str] = None
     version: int = 1
     schema_health: str = "healthy"
     created_at: datetime = Field(default_factory=datetime.utcnow)

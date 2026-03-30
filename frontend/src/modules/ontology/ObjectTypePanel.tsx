@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search } from 'lucide-react';
+import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search, GitBranch, Play } from 'lucide-react';
 import { ObjectType, ObjectTypeVersion, SchemaDiff } from '../../types/ontology';
 import { PropertyList } from './PropertyList';
 import { SchemaDiffViewer } from './SchemaDiffViewer';
 import { Badge } from '../../design-system/components/Badge';
 import { useOntologyStore } from '../../store/ontologyStore';
+import { usePipelineStore } from '../../store/pipelineStore';
 
 const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
@@ -68,13 +69,49 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
 
   const [dataSyncing, setDataSyncing] = React.useState(false);
   const [dataSource, setDataSource] = React.useState<'persisted' | 'live'>('persisted');
+  const { pipelines, fetchPipelines, runPipeline } = usePipelineStore();
+
+  const sourcePipeline = React.useMemo(
+    () => pipelines.find((p) => p.id === objectType.sourcePipelineId),
+    [pipelines, objectType.sourcePipelineId]
+  );
+
+  useEffect(() => {
+    if (objectType.sourcePipelineId && pipelines.length === 0) fetchPipelines();
+  }, [objectType.sourcePipelineId]);
+
+  const handleRunPipeline = React.useCallback(async () => {
+    if (!objectType.sourcePipelineId) return;
+    setDataSyncing(true);
+    try {
+      await runPipeline(objectType.sourcePipelineId);
+      // Poll for completion then reload data
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        const res = await fetch(`${import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002'}/pipelines/${objectType.sourcePipelineId}/runs`);
+        if (res.ok) {
+          const runs = await res.json();
+          const latest = runs[0];
+          if (latest && (latest.status === 'COMPLETED' || latest.status === 'FAILED')) {
+            clearInterval(poll);
+            if (latest.status === 'COMPLETED') await loadData();
+            setDataSyncing(false);
+          }
+        }
+        if (attempts > 30) { clearInterval(poll); setDataSyncing(false); }
+      }, 2000);
+    } catch {
+      setDataSyncing(false);
+    }
+  }, [objectType.sourcePipelineId, runPipeline]);
 
   const loadData = React.useCallback(async () => {
-    if (!objectType.sourceConnectorIds.length) return;
+    if (!objectType.sourceConnectorIds.length && !objectType.sourcePipelineId) return;
     setDataLoading(true);
     setDataError(null);
     try {
-      // Try persisted records first
+      // Always try persisted records first (pipeline-pushed or previously synced)
       const recordsRes = await fetch(`${ONTOLOGY_API}/object-types/${objectType.id}/records`);
       if (recordsRes.ok) {
         const recordsData = await recordsRes.json();
@@ -84,7 +121,13 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
           return;
         }
       }
-      // Fall back to live connector schema
+      // Pipeline-backed but no records yet — tell the user to run the pipeline
+      if (objectType.sourcePipelineId) {
+        setDataRows([]);
+        setDataSource('persisted');
+        return;
+      }
+      // Connector-backed fallback: live schema fetch
       const results = await Promise.all(
         objectType.sourceConnectorIds.map((cid) =>
           fetch(`${CONNECTOR_API}/connectors/${cid}/schema`)
@@ -102,9 +145,13 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
     } finally {
       setDataLoading(false);
     }
-  }, [objectType.id, objectType.sourceConnectorIds]);
+  }, [objectType.id, objectType.sourceConnectorIds, objectType.sourcePipelineId]);
 
   const handleSync = React.useCallback(async () => {
+    if (objectType.sourcePipelineId) {
+      await handleRunPipeline();
+      return;
+    }
     setDataSyncing(true);
     try {
       await fetch(`${ONTOLOGY_API}/object-types/${objectType.id}/records/sync`, { method: 'POST' });
@@ -112,7 +159,7 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
     } finally {
       setDataSyncing(false);
     }
-  }, [objectType.id, loadData]);
+  }, [objectType.id, objectType.sourcePipelineId, loadData, handleRunPipeline]);
 
   useEffect(() => {
     if (activeTab !== 'data') return;
@@ -262,23 +309,46 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
         </div>
       </div>
 
-      {/* Source connectors */}
-      <div style={{
-        padding: '8px 16px',
-        borderBottom: '1px solid #E2E8F0',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        flexWrap: 'wrap',
-      }}>
-        <span style={{ fontSize: '11px', color: '#94A3B8', marginRight: '2px' }}>Fed by:</span>
-        {objectType.sourceConnectorIds.length > 0
-          ? objectType.sourceConnectorIds.map((id) => (
-              <Badge key={id} label={id} bg="#F1F5F9" color="#475569" size="sm" />
-            ))
-          : <span style={{ fontSize: '11px', color: '#CBD5E1' }}>No sources configured</span>
-        }
-      </div>
+      {/* Pipeline backing or source connectors */}
+      {objectType.sourcePipelineId ? (
+        <div style={{
+          padding: '8px 16px',
+          borderBottom: '1px solid #E2E8F0',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          backgroundColor: '#FFFBEB',
+        }}>
+          <GitBranch size={13} style={{ color: '#D97706', flexShrink: 0 }} />
+          <span style={{ fontSize: '11px', color: '#92400E', fontWeight: 500 }}>
+            Backed by pipeline:
+          </span>
+          <span style={{ fontSize: '11px', color: '#0D1117', fontWeight: 600 }}>
+            {sourcePipeline?.name || objectType.sourcePipelineId}
+          </span>
+          <span style={{ fontSize: '10px', color: '#D97706', marginLeft: 'auto',
+            backgroundColor: '#FEF3C7', padding: '1px 6px', borderRadius: '2px', fontWeight: 500 }}>
+            Pipeline-owned
+          </span>
+        </div>
+      ) : (
+        <div style={{
+          padding: '8px 16px',
+          borderBottom: '1px solid #E2E8F0',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: '11px', color: '#94A3B8', marginRight: '2px' }}>Fed by:</span>
+          {objectType.sourceConnectorIds.length > 0
+            ? objectType.sourceConnectorIds.map((id) => (
+                <Badge key={id} label={id} bg="#F1F5F9" color="#475569" size="sm" />
+              ))
+            : <span style={{ fontSize: '11px', color: '#CBD5E1' }}>No sources configured</span>
+          }
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', borderBottom: '1px solid #E2E8F0', padding: '0 16px', flexShrink: 0 }}>
@@ -311,13 +381,15 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
             rows={dataRows}
             loading={dataLoading}
             error={dataError}
-            hasConnectors={objectType.sourceConnectorIds.length > 0}
+            hasConnectors={objectType.sourceConnectorIds.length > 0 || !!objectType.sourcePipelineId}
             objectTypeName={objectType.displayName}
             arrayProperties={objectType.properties.filter((p) => p.dataType === 'array' || p.name.endsWith('[]'))}
             properties={objectType.properties}
             onSync={handleSync}
             syncing={dataSyncing}
             dataSource={dataSource}
+            isPipelineBacked={!!objectType.sourcePipelineId}
+            pipelineName={sourcePipeline?.name}
           />
         )}
 
@@ -647,7 +719,9 @@ const DataTab: React.FC<{
   onSync?: () => void;
   syncing?: boolean;
   dataSource?: 'persisted' | 'live';
-}> = ({ rows, loading, error, hasConnectors, objectTypeName, arrayProperties = [], properties = [], onSync, syncing, dataSource }) => {
+  isPipelineBacked?: boolean;
+  pipelineName?: string;
+}> = ({ rows, loading, error, hasConnectors, objectTypeName, arrayProperties = [], properties = [], onSync, syncing, dataSource, isPipelineBacked, pipelineName }) => {
   const [modalOpen, setModalOpen] = useState(false);
 
   if (!hasConnectors) {
@@ -660,7 +734,7 @@ const DataTab: React.FC<{
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: '40px 0', color: '#60A5FA', fontSize: '13px' }}>
-        Fetching sample records…
+        Fetching records…
       </div>
     );
   }
@@ -673,8 +747,30 @@ const DataTab: React.FC<{
   }
   if (rows.length === 0) {
     return (
-      <div style={{ textAlign: 'center', padding: '40px 0', color: '#94A3B8', fontSize: '13px' }}>
-        No sample data available from connector
+      <div style={{ textAlign: 'center', padding: '40px 0', color: '#94A3B8', fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
+        {isPipelineBacked ? (
+          <>
+            <GitBranch size={24} style={{ color: '#D97706' }} />
+            <span>No records yet — run the pipeline to populate this object type</span>
+            {onSync && (
+              <button
+                onClick={onSync}
+                disabled={syncing}
+                style={{
+                  height: '32px', padding: '0 16px', borderRadius: '4px',
+                  border: 'none', backgroundColor: '#D97706',
+                  color: '#FFFFFF', fontSize: '12px', fontWeight: 600,
+                  cursor: syncing ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                }}
+              >
+                <Play size={12} />
+                {syncing ? 'Running…' : `Run ${pipelineName || 'Pipeline'}`}
+              </button>
+            )}
+          </>
+        ) : (
+          <span>No sample data available from connector</span>
+        )}
       </div>
     );
   }
@@ -710,15 +806,18 @@ const DataTab: React.FC<{
             <button
               onClick={onSync}
               disabled={syncing}
-              title="Pull from all source connectors, join nested arrays, and save merged records"
+              title={isPipelineBacked ? `Run pipeline to refresh records` : 'Pull from all source connectors and save merged records'}
               style={{
                 height: '32px', padding: '0 12px', borderRadius: '4px', flexShrink: 0,
-                border: '1px solid #2563EB', backgroundColor: syncing ? '#DBEAFE' : '#2563EB',
-                color: syncing ? '#2563EB' : '#FFFFFF', fontSize: '12px', fontWeight: 500,
+                border: `1px solid ${isPipelineBacked ? '#D97706' : '#2563EB'}`,
+                backgroundColor: syncing ? '#FEF3C7' : isPipelineBacked ? '#D97706' : '#2563EB',
+                color: syncing ? '#92400E' : '#FFFFFF', fontSize: '12px', fontWeight: 500,
                 cursor: syncing ? 'wait' : 'pointer', whiteSpace: 'nowrap',
+                display: 'flex', alignItems: 'center', gap: '5px',
               }}
             >
-              {syncing ? 'Syncing…' : '↻ Sync'}
+              {isPipelineBacked ? <Play size={11} /> : null}
+              {syncing ? (isPipelineBacked ? 'Running…' : 'Syncing…') : isPipelineBacked ? 'Run Pipeline' : '↻ Sync'}
             </button>
           )}
         </div>

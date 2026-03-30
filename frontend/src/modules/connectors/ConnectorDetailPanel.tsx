@@ -527,12 +527,14 @@ const ConfigurationTab: React.FC<{
 
   interface QueryParamRule {
     key: string;
-    type: 'static' | 'today' | 'daysAgo' | 'lastRun' | 'connector';
+    type: 'static' | 'today' | 'daysAgo' | 'lastRun' | 'connector' | 'range';
     value: string;       // static value
     format: string;      // date format string
     daysAgo: string;     // for daysAgo type
     connectorId: string;
     fieldPath: string;
+    rangeMin: string;    // for range type — first value (inclusive)
+    rangeMax: string;    // for range type — last value (inclusive)
   }
   const parseQueryParamRules = (qp: unknown): QueryParamRule[] => {
     if (!qp || typeof qp !== 'object') return [];
@@ -540,18 +542,21 @@ const ConfigurationTab: React.FC<{
       const s = String(val);
       let m;
       if (s === '{{$today}}' || (m = s.match(/^\{\{\$today:(.+)\}\}$/))) {
-        return { key, type: 'today' as const, value: '', format: m ? m[1] : 'DD/MM/YYYY', daysAgo: '', connectorId: '', fieldPath: '' };
+        return { key, type: 'today' as const, value: '', format: m ? m[1] : 'DD/MM/YYYY', daysAgo: '', connectorId: '', fieldPath: '', rangeMin: '', rangeMax: '' };
       }
       if ((m = s.match(/^\{\{\$daysAgo:(\d+):(.+)\}\}$/))) {
-        return { key, type: 'daysAgo' as const, value: '', format: m[2], daysAgo: m[1], connectorId: '', fieldPath: '' };
+        return { key, type: 'daysAgo' as const, value: '', format: m[2], daysAgo: m[1], connectorId: '', fieldPath: '', rangeMin: '', rangeMax: '' };
       }
       if (s === '{{$lastRun}}' || (m = s.match(/^\{\{\$lastRun:(.+)\}\}$/))) {
-        return { key, type: 'lastRun' as const, value: '', format: m ? m[1] : 'DD/MM/YYYY', daysAgo: '', connectorId: '', fieldPath: '' };
+        return { key, type: 'lastRun' as const, value: '', format: m ? m[1] : 'DD/MM/YYYY', daysAgo: '', connectorId: '', fieldPath: '', rangeMin: '', rangeMax: '' };
       }
       if ((m = s.match(/^\{\{connector:([^:]+):(.+)\}\}$/))) {
-        return { key, type: 'connector' as const, value: '', format: '', daysAgo: '', connectorId: m[1], fieldPath: m[2] };
+        return { key, type: 'connector' as const, value: '', format: '', daysAgo: '', connectorId: m[1], fieldPath: m[2], rangeMin: '', rangeMax: '' };
       }
-      return { key, type: 'static' as const, value: s, format: '', daysAgo: '', connectorId: '', fieldPath: '' };
+      if ((m = s.match(/^\{\{\$range:(\d+):(\d+)\}\}$/))) {
+        return { key, type: 'range' as const, value: '', format: '', daysAgo: '', connectorId: '', fieldPath: '', rangeMin: m[1], rangeMax: m[2] };
+      }
+      return { key, type: 'static' as const, value: s, format: '', daysAgo: '', connectorId: '', fieldPath: '', rangeMin: '', rangeMax: '' };
     });
   };
   const [queryParamRules, setQueryParamRules] = useState<QueryParamRule[]>(() =>
@@ -625,6 +630,7 @@ const ConfigurationTab: React.FC<{
         else if (r.type === 'daysAgo') builtQueryParams[r.key] = `{{$daysAgo:${r.daysAgo || '7'}:${r.format || 'DD/MM/YYYY'}}}`;
         else if (r.type === 'lastRun') builtQueryParams[r.key] = `{{$lastRun:${r.format || 'DD/MM/YYYY'}}}`;
         else if (r.type === 'connector') builtQueryParams[r.key] = `{{connector:${r.connectorId}:${r.fieldPath}}}`;
+        else if (r.type === 'range') builtQueryParams[r.key] = `{{$range:${r.rangeMin || '1'}:${r.rangeMax || '1'}}}`;
         else builtQueryParams[r.key] = r.value;
       }
       const newConfig = { ...existingConfig };
@@ -701,6 +707,7 @@ const ConfigurationTab: React.FC<{
                       <option value="daysAgo">N days ago</option>
                       <option value="lastRun">Last pipeline run</option>
                       <option value="connector">From connector</option>
+                      <option value="range">Range (iterate min→max)</option>
                     </select>
 
                     {rule.type === 'static' && (
@@ -730,13 +737,34 @@ const ConfigurationTab: React.FC<{
                           placeholder="data.field" style={{ ...inputStyle, width: 110, fontFamily: 'monospace', fontSize: 12 }} />
                       </>
                     )}
+                    {rule.type === 'range' && (
+                      <>
+                        <input value={rule.rangeMin} onChange={(e) => setRule({ rangeMin: e.target.value })}
+                          placeholder="1" type="number" min="0"
+                          title="First value (inclusive)"
+                          style={{ ...inputStyle, width: 64 }} />
+                        <span style={{ lineHeight: '34px', fontSize: 12, color: '#64748B', flexShrink: 0 }}>→</span>
+                        <input value={rule.rangeMax} onChange={(e) => setRule({ rangeMax: e.target.value })}
+                          placeholder="56" type="number" min="0"
+                          title="Last value (inclusive)"
+                          style={{ ...inputStyle, width: 64 }} />
+                        <span style={{
+                          lineHeight: '34px', fontSize: 10, color: '#D97706',
+                          backgroundColor: '#FEF3C7', padding: '0 6px', borderRadius: 3, flexShrink: 0,
+                        }}>
+                          {rule.rangeMin && rule.rangeMax
+                            ? `${Number(rule.rangeMax) - Number(rule.rangeMin) + 1} calls`
+                            : 'set range'}
+                        </span>
+                      </>
+                    )}
                     <button type="button" onClick={() => setQueryParamRules((prev) => prev.filter((_, i) => i !== idx))}
                       style={{ padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, background: 'none', cursor: 'pointer', color: '#94A3B8', flexShrink: 0 }}>×</button>
                   </div>
                 );
               })}
               <button type="button"
-                onClick={() => setQueryParamRules((prev) => [...prev, { key: '', type: 'static', value: '', format: 'DD/MM/YYYY', daysAgo: '7', connectorId: '', fieldPath: '' }])}
+                onClick={() => setQueryParamRules((prev) => [...prev, { key: '', type: 'static', value: '', format: 'DD/MM/YYYY', daysAgo: '7', connectorId: '', fieldPath: '', rangeMin: '1', rangeMax: '1' }])}
                 style={{ alignSelf: 'flex-start', padding: '5px 10px', border: '1px dashed #CBD5E1', borderRadius: 4, background: 'none', cursor: 'pointer', fontSize: 12, color: '#64748B' }}>
                 + Add Parameter
               </button>

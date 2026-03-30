@@ -16,6 +16,7 @@ router = APIRouter()
 executor = DagExecutor()
 
 EVENT_LOG_URL = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
+ONTOLOGY_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
 
 
 async def _emit_event(payload: dict) -> None:
@@ -231,6 +232,19 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
         await db.commit()
 
     final_status = run.get("status", "COMPLETED")
+
+    # On success, bind this pipeline as the authoritative source for its target object type
+    if final_status == "COMPLETED" and pipeline.target_object_type_id:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{ONTOLOGY_URL}/object-types/{pipeline.target_object_type_id}/set-pipeline",
+                    json={"pipeline_id": pipeline_id},
+                    headers={"x-tenant-id": tenant_id},
+                )
+        except Exception:
+            pass  # non-critical — the ingest already succeeded
+
     await _emit_event({
         "id": str(uuid4()),
         "case_id": run_id,

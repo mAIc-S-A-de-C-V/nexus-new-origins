@@ -71,6 +71,15 @@ async def sync_records(
         raise HTTPException(status_code=404, detail="Object type not found")
 
     ot_data = ot_row.data
+
+    # Pipeline-backed objects must be synced by running the pipeline, not by pulling connectors directly
+    source_pipeline_id = ot_data.get("source_pipeline_id")
+    if source_pipeline_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This object type is backed by pipeline '{source_pipeline_id}'. Run the pipeline to sync records — direct connector sync is disabled.",
+        )
+
     # Data is stored as snake_case by Pydantic serialization
     source_connector_ids: list[str] = ot_data.get("source_connector_ids", [])
     properties: list[dict] = ot_data.get("properties", [])
@@ -167,6 +176,80 @@ async def sync_records(
         "primary_records": len(primary_records),
         "nested_connectors": len(array_connector_map),
         "message": f"Upserted {upserted} records",
+    }
+
+
+# ── POST ingest (pipeline push) ─────────────────────────────────────────────
+
+@router.post("/{ot_id}/records/ingest")
+async def ingest_records(
+    ot_id: str,
+    payload: dict,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Directly upsert records produced by a pipeline into this object type.
+    Called by the DAG executor's SINK_OBJECT node — the pipeline owns the data,
+    not the connector. Records are stamped with _pipeline_id and _pipeline_run_at.
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    records: list[dict] = payload.get("records", [])
+    pk_field: str = payload.get("pk_field", "id")
+    pipeline_id: str = payload.get("pipeline_id", "")
+
+    if not records:
+        return {"ingested": 0, "message": "No records provided"}
+
+    result = await db.execute(
+        select(ObjectTypeRow).where(
+            ObjectTypeRow.id == ot_id,
+            ObjectTypeRow.tenant_id == tenant_id,
+        )
+    )
+    ot_row = result.scalar_one_or_none()
+    if not ot_row:
+        raise HTTPException(status_code=404, detail="Object type not found")
+
+    if not records[0].get(pk_field):
+        pk_field = _guess_pk(records[0])
+
+    run_at = datetime.now(timezone.utc).isoformat()
+    ingested = 0
+
+    for record in records:
+        record = dict(record)
+        record["_pipeline_id"] = pipeline_id
+        record["_pipeline_run_at"] = run_at
+
+        source_id = str(record.get(pk_field) or uuid4())
+
+        existing = await db.execute(
+            select(ObjectRecordRow).where(
+                ObjectRecordRow.object_type_id == ot_id,
+                ObjectRecordRow.tenant_id == tenant_id,
+                ObjectRecordRow.source_id == source_id,
+            )
+        )
+        row = existing.scalar_one_or_none()
+        if row:
+            row.data = record
+            row.updated_at = datetime.now(timezone.utc)
+        else:
+            db.add(ObjectRecordRow(
+                id=str(uuid4()),
+                object_type_id=ot_id,
+                tenant_id=tenant_id,
+                source_id=source_id,
+                data=record,
+            ))
+        ingested += 1
+
+    await db.commit()
+    return {
+        "ingested": ingested,
+        "pipeline_id": pipeline_id,
+        "message": f"Ingested {ingested} records from pipeline {pipeline_id}",
     }
 
 

@@ -182,6 +182,42 @@ async def get_diff(
     )
 
 
+@router.post("/{object_type_id}/set-pipeline")
+async def set_source_pipeline(
+    object_type_id: str,
+    body: dict,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Bind a pipeline as the authoritative data source for this object type.
+    Called automatically by the pipeline service after a successful run.
+    Once set, records/sync is blocked — the pipeline owns the data.
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ObjectTypeRow).where(
+            ObjectTypeRow.id == object_type_id,
+            ObjectTypeRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Object type not found")
+
+    pipeline_id: str = body.get("pipeline_id", "")
+    if not pipeline_id:
+        raise HTTPException(status_code=400, detail="pipeline_id is required")
+
+    ot_data = dict(row.data)
+    ot_data["source_pipeline_id"] = pipeline_id
+    ot_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    row.data = ot_data
+    await db.commit()
+
+    return {"object_type_id": object_type_id, "source_pipeline_id": pipeline_id}
+
+
 @router.post("/{object_type_id}/enrich", response_model=ObjectType)
 async def apply_enrichment(
     object_type_id: str,

@@ -242,10 +242,43 @@ async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None) ->
     if not base_url:
         return {}, [], "No Base URL configured"
 
+    # ── Range partition scan ──────────────────────────────────────────────────
+    # If any query param is {{$range:min:max}}, iterate that param over min→max,
+    # call the endpoint once per value, and aggregate all rows into one result.
+    import re as _re
+    raw_qp = cfg.get("queryParams") or {}
+    range_key = None
+    range_min = range_max = 0
+    for k, v in raw_qp.items():
+        m = _re.match(r'^\{\{\$range:(\d+):(\d+)\}\}$', str(v))
+        if m:
+            range_key = k
+            range_min = int(m.group(1))
+            range_max = int(m.group(2))
+            break
+
+    if range_key:
+        all_rows: list = []
+        merged_schema: dict = {}
+        for val in range(range_min, range_max + 1):
+            iter_qp = {k: (str(val) if k == range_key else v) for k, v in raw_qp.items()}
+            iter_cfg = {**cfg, "queryParams": iter_qp}
+            schema, rows, err = await _rest_api(base_url, creds, iter_cfg, db=db)
+            if not err and rows:
+                all_rows.extend(rows)
+                if not merged_schema:
+                    merged_schema = schema
+        if all_rows:
+            merged_schema["sample_count"] = len(all_rows)
+            merged_schema["range_param"] = range_key
+            merged_schema["range"] = f"{range_min}–{range_max}"
+            return merged_schema, all_rows, None
+        return {}, [], f"No data returned from any {range_key} value in range {range_min}–{range_max}"
+    # ─────────────────────────────────────────────────────────────────────────
+
     path = cfg.get("path", "")
     method = cfg.get("method", "GET").lower()
     url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
-    raw_qp = cfg.get("queryParams") or {}
     if raw_qp:
         import urllib.parse as _urlparse
         resolved_qp = await _resolve_query_params(raw_qp, db=db)
@@ -686,7 +719,13 @@ async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=Non
     raw_qp = cfg.get("queryParams") or {}
     if raw_qp:
         import urllib.parse as _urlparse
-        resolved_qp = await _resolve_query_params(raw_qp, db=db)
+        import re as _re2
+        # Resolve range params to their min value for the test call
+        resolved_for_test = {
+            k: (_re2.sub(r'^\{\{\$range:(\d+):\d+\}\}$', r'\1', str(v)))
+            for k, v in raw_qp.items()
+        }
+        resolved_qp = await _resolve_query_params(resolved_for_test, db=db)
         qs = _urlparse.urlencode(resolved_qp)
         url = url + ("&" if "?" in url else "?") + qs
     headers = {}

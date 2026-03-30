@@ -69,14 +69,13 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
   {
     type: 'ENRICH',
     label: 'Enrich',
-    description: 'Add data from another source',
+    description: 'Per-row detail lookup — for each incoming row, call a second connector using a field value as the lookup key and merge the full response back onto the row.',
     color: '#D97706',
     iconName: 'Sparkles',
     configFields: [
-      { key: 'lookupConnectorId', label: 'Lookup Connector', type: 'select', options: [] },
-      { key: 'joinKey', label: 'Join Key', type: 'text', placeholder: 'customer_id' },
-      { key: 'lookupEndpoint', label: 'Lookup Endpoint', type: 'text' },
-      { key: 'fields', label: 'Fields to Add', type: 'textarea' },
+      { key: 'lookupConnectorId', label: 'Detail Connector', type: 'select', options: [], required: true },
+      { key: 'joinKey', label: 'Join Key (field on incoming row)', type: 'text', placeholder: 'id', required: true },
+      { key: 'lookupField', label: 'Lookup Param (query param on detail endpoint)', type: 'text', placeholder: 'id' },
     ],
   },
   {

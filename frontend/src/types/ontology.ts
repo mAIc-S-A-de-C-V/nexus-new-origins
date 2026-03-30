@@ -58,6 +58,7 @@ export interface ObjectType {
   description?: string;
   properties: ObjectProperty[];
   sourceConnectorIds: string[];
+  sourcePipelineId?: string;
   version: number;
   schemaHealth: 'healthy' | 'warning' | 'degraded';
   createdAt: string;

@@ -139,11 +139,86 @@ const STEP_PITCH = 150;     // horizontal gap between steps
 const ROW_GAP = 120;        // vertical gap between pipeline rows
 
 export const OntologyGraph: React.FC = () => {
-  const { objectTypes, links, fetchObjectTypes, fetchLinks } = useOntologyStore();
+  const { objectTypes, links, fetchObjectTypes, fetchLinks, addObjectType, removeObjectType } = useOntologyStore();
   const { connectors, fetchConnectors } = useConnectorStore();
-  const { pipelines, fetchPipelines } = usePipelineStore();
+  const { pipelines, fetchPipelines, addPipeline } = usePipelineStore();
   const [selectedObjectType, setSelectedObjectType] = useState<ObjectType | null>(null);
   const [expandedPipeline, setExpandedPipeline] = useState<import('../../types/pipeline').Pipeline | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createDesc, setCreateDesc] = useState('');
+  const [createConnectorId, setCreateConnectorId] = useState('');
+  const [createFrequency, setCreateFrequency] = useState('1h');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; ot: ObjectType } | null>(null);
+
+  const handleCreateObjectType = async () => {
+    if (!createName.trim()) { setCreateError('Name is required'); return; }
+    setCreating(true);
+    setCreateError('');
+    try {
+      const created = await addObjectType({
+        id: '',
+        name: createName.trim().toLowerCase().replace(/\s+/g, '_'),
+        displayName: createName.trim(),
+        description: createDesc.trim() || undefined,
+        properties: [],
+        sourceConnectorIds: createConnectorId ? [createConnectorId] : [],
+        version: 1,
+        schemaHealth: 'healthy',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tenantId: 'default',
+      });
+
+      // Auto-create pipeline if a connector was selected
+      if (createConnectorId) {
+        const connector = connectors.find(c => c.id === createConnectorId);
+        const srcId = crypto.randomUUID();
+        const sinkId = crypto.randomUUID();
+        await addPipeline({
+          id: '',
+          name: `${createName.trim()} Pipeline`,
+          status: 'DRAFT',
+          nodes: [
+            {
+              id: srcId,
+              type: 'SOURCE',
+              label: connector?.name || 'Source',
+              config: { connectorId: createConnectorId, pollFrequency: createFrequency },
+              position: { x: 100, y: 200 },
+            },
+            {
+              id: sinkId,
+              type: 'SINK_OBJECT',
+              label: createName.trim(),
+              config: { objectTypeId: created.id, writeMode: 'upsert' },
+              position: { x: 400, y: 200 },
+            },
+          ],
+          edges: [{ id: crypto.randomUUID(), source: srcId, target: sinkId }],
+          connectorIds: [createConnectorId],
+          targetObjectTypeId: created.id,
+          version: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          tenantId: 'default',
+        });
+      }
+
+      setShowCreateModal(false);
+      setCreateName('');
+      setCreateDesc('');
+      setCreateConnectorId('');
+      setCreateFrequency('1h');
+      setSelectedObjectType(created);
+    } catch (e: unknown) {
+      setCreateError(e instanceof Error ? e.message : 'Failed to create');
+    } finally {
+      setCreating(false);
+    }
+  };
 
   useEffect(() => {
     fetchObjectTypes();
@@ -411,10 +486,8 @@ export const OntologyGraph: React.FC = () => {
           {objectTypes.map((ot) => (
             <button
               key={ot.id}
-              onClick={() => {
-                const node = nodes.find((n) => n.id === ot.id);
-                setSelectedObjectType(ot);
-              }}
+              onClick={() => setSelectedObjectType(ot)}
+              onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, ot }); }}
               style={{
                 height: '26px', padding: '0 10px', borderRadius: '2px',
                 border: `1px solid ${selectedObjectType?.id === ot.id ? '#2563EB' : '#E2E8F0'}`,
@@ -429,7 +502,7 @@ export const OntologyGraph: React.FC = () => {
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <Button variant="primary" size="sm" icon={<Plus size={12} />}>New Object Type</Button>
+          <Button variant="primary" size="sm" icon={<Plus size={12} />} onClick={() => { setCreateName(''); setCreateDesc(''); setCreateError(''); setShowCreateModal(true); }}>New Object Type</Button>
         </div>
       </div>
 
@@ -477,6 +550,115 @@ export const OntologyGraph: React.FC = () => {
           pipeline={expandedPipeline}
           onClose={() => setExpandedPipeline(null)}
         />
+      )}
+
+      {/* Tab right-click context menu */}
+      {ctxMenu && createPortal(
+        <>
+          <div onMouseDown={() => setCtxMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 9998 }} />
+          <div
+            onMouseDown={e => e.stopPropagation()}
+            style={{
+              position: 'fixed', left: ctxMenu.x, top: ctxMenu.y, zIndex: 9999,
+              backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '4px',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.15)', minWidth: '160px', padding: '4px 0',
+            }}
+          >
+            <button
+              onMouseDown={() => { setCtxMenu(null); setSelectedObjectType(ctxMenu.ot); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 14px', background: 'none', border: 'none', fontSize: '13px', cursor: 'pointer', color: '#0D1117' }}
+            >
+              Open
+            </button>
+            <div style={{ height: '1px', backgroundColor: '#F1F5F9', margin: '3px 0' }} />
+            <button
+              onMouseDown={async () => {
+                const ot = ctxMenu.ot;
+                setCtxMenu(null);
+                if (!confirm(`Delete "${ot.name}"? This cannot be undone.`)) return;
+                if (selectedObjectType?.id === ot.id) setSelectedObjectType(null);
+                await removeObjectType(ot.id);
+              }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 14px', background: 'none', border: 'none', fontSize: '13px', cursor: 'pointer', color: '#DC2626' }}
+            >
+              Delete
+            </button>
+          </div>
+        </>,
+        document.body
+      )}
+
+      {/* New Object Type modal */}
+      {showCreateModal && createPortal(
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+          <div style={{ backgroundColor: '#FFFFFF', borderRadius: '4px', width: 440, padding: '24px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#0D1117' }}>New Object Type</h2>
+              <button onClick={() => setShowCreateModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B', padding: 4 }}><X size={16} /></button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151', display: 'block', marginBottom: '6px' }}>Display Name <span style={{ color: '#DC2626' }}>*</span></label>
+                <input
+                  autoFocus
+                  value={createName}
+                  onChange={e => setCreateName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleCreateObjectType(); if (e.key === 'Escape') setShowCreateModal(false); }}
+                  placeholder="e.g. Incident"
+                  style={{ width: '100%', height: '36px', border: '1px solid #E2E8F0', borderRadius: '3px', padding: '0 10px', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
+                />
+                {createName.trim() && (
+                  <p style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>
+                    ID: <code style={{ fontFamily: 'var(--font-mono)' }}>{createName.trim().toLowerCase().replace(/\s+/g, '_')}</code>
+                  </p>
+                )}
+              </div>
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151', display: 'block', marginBottom: '6px' }}>Description</label>
+                <textarea
+                  value={createDesc}
+                  onChange={e => setCreateDesc(e.target.value)}
+                  placeholder="Optional description..."
+                  rows={2}
+                  style={{ width: '100%', border: '1px solid #E2E8F0', borderRadius: '3px', padding: '8px 10px', fontSize: '13px', resize: 'none', boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit' }}
+                />
+              </div>
+              <div style={{ height: '1px', backgroundColor: '#F1F5F9', margin: '4px 0' }} />
+              <p style={{ fontSize: '11px', color: '#94A3B8', margin: '0 0 8px' }}>Optional — auto-creates a pipeline that feeds this object</p>
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151', display: 'block', marginBottom: '6px' }}>Source Connector</label>
+                <select
+                  value={createConnectorId}
+                  onChange={e => setCreateConnectorId(e.target.value)}
+                  style={{ width: '100%', height: '36px', border: '1px solid #E2E8F0', borderRadius: '3px', padding: '0 10px', fontSize: '13px', boxSizing: 'border-box', outline: 'none', background: '#FFFFFF' }}
+                >
+                  <option value="">None (create manually later)</option>
+                  {connectors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              {createConnectorId && (
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 500, color: '#374151', display: 'block', marginBottom: '6px' }}>Sync Frequency</label>
+                  <select
+                    value={createFrequency}
+                    onChange={e => setCreateFrequency(e.target.value)}
+                    style={{ width: '100%', height: '36px', border: '1px solid #E2E8F0', borderRadius: '3px', padding: '0 10px', fontSize: '13px', boxSizing: 'border-box', outline: 'none', background: '#FFFFFF' }}
+                  >
+                    {['on_demand','5m','15m','30m','1h','6h','12h','1d'].map(f => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </div>
+              )}
+              {createError && <p style={{ fontSize: '12px', color: '#DC2626' }}>{createError}</p>}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+                <button onClick={() => setShowCreateModal(false)} style={{ height: '32px', padding: '0 14px', border: '1px solid #E2E8F0', borderRadius: '3px', background: '#FFFFFF', fontSize: '13px', cursor: 'pointer', color: '#374151' }}>Cancel</button>
+                <button onClick={handleCreateObjectType} disabled={creating} style={{ height: '32px', padding: '0 14px', border: 'none', borderRadius: '3px', background: '#2563EB', color: '#FFFFFF', fontSize: '13px', cursor: creating ? 'not-allowed' : 'pointer', opacity: creating ? 0.7 : 1 }}>
+                  {creating ? 'Creating…' : (createConnectorId ? 'Create + Pipeline' : 'Create')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
 
       {/* Status bar */}

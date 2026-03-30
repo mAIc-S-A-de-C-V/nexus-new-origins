@@ -8,7 +8,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   Play, Square, ChevronLeft, ChevronRight,
-  Plus, Save, RotateCcw
+  Plus, Save, RotateCcw, Trash2
 } from 'lucide-react';
 import { PipelineNodeComponent } from './PipelineNode';
 import { PipelineEdgeComponent } from './PipelineEdge';
@@ -39,7 +39,7 @@ const statusConfig: Record<PipelineStatus, { label: string; bg: string; text: st
 };
 
 export const PipelineBuilder: React.FC = () => {
-  const { pipelines, selectedPipelineId, selectPipeline, updatePipelineNodes, fetchPipelines, runPipeline, addPipeline } = usePipelineStore();
+  const { pipelines, selectedPipelineId, selectPipeline, updatePipelineNodes, fetchPipelines, runPipeline, addPipeline, removePipeline } = usePipelineStore();
   const { consumePendingPipeline } = useNavigationStore();
   const [paletteVisible, setPaletteVisible] = useState(true);
   const [selectedNode, setSelectedNode] = useState<PipelineNode | null>(null);
@@ -215,6 +215,24 @@ export const PipelineBuilder: React.FC = () => {
             ))}
           </select>
           <Button variant="ghost" size="sm" icon={<Plus size={12} />}>New</Button>
+          {currentPipeline && (
+            <button
+              onClick={async () => {
+                if (!confirm(`Delete pipeline "${currentPipeline.name}"? This cannot be undone.`)) return;
+                const remaining = pipelines.filter(p => p.id !== currentPipeline.id);
+                if (remaining.length > 0) selectPipeline(remaining[0].id);
+                await removePipeline(currentPipeline.id);
+              }}
+              title="Delete pipeline"
+              style={{
+                height: '28px', width: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'none', border: '1px solid #FCA5A5', borderRadius: '4px',
+                color: '#DC2626', cursor: 'pointer',
+              }}
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
         </div>
 
         {currentPipeline && (

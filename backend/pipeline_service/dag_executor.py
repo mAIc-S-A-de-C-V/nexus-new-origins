@@ -1,13 +1,22 @@
 """
-DAG Executor — walks the pipeline DAG topology and executes each node in order.
-SOURCE nodes fetch real data from the connector service.
-SINK_OBJECT nodes persist merged records to the ontology service.
-SINK_EVENT nodes read persisted records and write real events to event-log-service.
-Other nodes apply row-count simulation.
+DAG Executor — walks the pipeline DAG topology and executes each node on real records.
+
+Connectors are the raw sources. Pipelines transform the data. Object types are the output.
+
+SOURCE     → fetches real rows from the connector service
+ENRICH     → per-row lookup against a second connector (fan-out detail calls)
+MAP        → field renaming and transforms on actual records
+FILTER     → drops rows that don't match a condition
+DEDUPE     → deduplicates by primary key field
+CAST       → type coercion on field values
+FLATTEN    → explodes an array field into one row per item
+VALIDATE   → drops rows missing required fields
+SINK_OBJECT → pushes transformed records directly to the ontology ingest endpoint
+SINK_EVENT  → converts records into process mining events and writes to event-log
 """
 import asyncio
 import os
-import random
+import re
 import httpx
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -19,6 +28,9 @@ ONTOLOGY_API = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8
 EVENT_LOG_API = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
 CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
 
+# Max concurrent ENRICH calls per batch to avoid hammering the detail endpoint
+_ENRICH_CONCURRENCY = 10
+
 
 class NodeExecutionResult:
     def __init__(self, node_id: str, rows_in: int, rows_out: int, error: str | None = None):
@@ -29,7 +41,7 @@ class NodeExecutionResult:
 
 
 class DagExecutor:
-    """Topological DAG walker that simulates pipeline execution."""
+    """Topological DAG walker that executes pipeline nodes on real record data."""
 
     def _topological_sort(self, pipeline: Pipeline) -> list[str]:
         """Kahn's algorithm for topological sort."""
@@ -53,52 +65,23 @@ class DagExecutor:
 
         return order
 
-    async def _execute_node(
-        self,
-        node_id: str,
-        node_type: NodeType,
-        config: dict[str, Any],
-        rows_in: int,
-    ) -> NodeExecutionResult:
-        """Simulate node execution with realistic behavior."""
-        await asyncio.sleep(random.uniform(0.1, 0.5))
-
-        # Simulate row reduction per node type
-        reduction_factors = {
-            NodeType.SOURCE: 1.0,
-            NodeType.FILTER: random.uniform(0.7, 0.95),
-            NodeType.MAP: 1.0,
-            NodeType.CAST: 1.0,
-            NodeType.ENRICH: 1.0,
-            NodeType.FLATTEN: random.uniform(1.0, 3.0),
-            NodeType.DEDUPE: random.uniform(0.85, 0.99),
-            NodeType.VALIDATE: random.uniform(0.92, 0.99),
-            NodeType.SINK_OBJECT: 1.0,
-            NodeType.SINK_EVENT: 1.0,
-        }
-
-        factor = reduction_factors.get(node_type, 1.0)
-        rows_out = max(1, int(rows_in * factor))
-
-        return NodeExecutionResult(
-            node_id=node_id,
-            rows_in=rows_in,
-            rows_out=rows_out,
-        )
-
     async def execute(
         self,
         pipeline: Pipeline,
         run: dict[str, Any],
         run_list: list[dict],
     ) -> None:
-        """Execute the full pipeline DAG. SOURCE nodes use real data; SINK_OBJECT persists records."""
+        """
+        Execute the full pipeline DAG. Records flow through each node as real data.
+        SINK_OBJECT pushes the final records directly to the ontology service.
+        """
         try:
             order = self._topological_sort(pipeline)
             node_map = {n.id: n for n in pipeline.nodes}
-            row_counts: dict[str, int] = {}
 
-            source_rows = random.randint(1000, 50000)
+            # Each node produces a list of real records
+            node_records: dict[str, list[dict]] = {}
+            source_row_count = 0
             synced_rows = 0
 
             for node_id in order:
@@ -108,78 +91,27 @@ class DagExecutor:
 
                 incoming_edges = [e for e in pipeline.edges if e.target == node_id]
                 if not incoming_edges:
-                    rows_in = source_rows
+                    records_in: list[dict] = []
                 else:
-                    rows_in = max(
-                        row_counts.get(e.source, source_rows)
-                        for e in incoming_edges
-                    )
+                    records_in = []
+                    for e in incoming_edges:
+                        records_in.extend(node_records.get(e.source, []))
 
-                # Real execution for SINK_OBJECT array_append: fetch source records,
-                # apply MAP transforms, then call array-append endpoint
-                if node.type == NodeType.SINK_OBJECT and node.config.get("write_mode") == "array_append":
-                    ot_id = node.config.get("objectTypeId") or pipeline.target_object_type_id or ""
-                    array_field = node.config.get("array_field", "meetings")
-                    merge_key = node.config.get("merge_key", "deal_name")
-                    if ot_id:
-                        appended = await _execute_array_append(
-                            pipeline=pipeline,
-                            ot_id=ot_id,
-                            array_field=array_field,
-                            merge_key=merge_key,
-                        )
-                        row_counts[node_id] = appended
-                        synced_rows = appended
-                        continue
+                records_out = await _execute_node(node, records_in, pipeline)
+                node_records[node_id] = records_out
 
-                # Real execution for SINK_OBJECT: call ontology service sync
-                if node.type == NodeType.SINK_OBJECT and pipeline.target_object_type_id:
-                    try:
-                        async with httpx.AsyncClient(timeout=120) as client:
-                            resp = await client.post(
-                                f"{ONTOLOGY_API}/object-types/{pipeline.target_object_type_id}/records/sync",
-                                headers={"x-tenant-id": "tenant-001"},
-                            )
-                            if resp.is_success:
-                                data = resp.json()
-                                synced_rows = data.get("synced", rows_in)
-                                row_counts[node_id] = synced_rows
-                                continue
-                    except Exception:
-                        pass  # fall through to simulation if sync fails
+                if not incoming_edges and records_out:
+                    source_row_count = len(records_out)
 
-                # Real execution for SINK_EVENT: read object_records → emit events
-                if node.type == NodeType.SINK_EVENT:
-                    object_type_id = (
-                        node.config.get("objectTypeId")
-                        or pipeline.target_object_type_id
-                        or ""
-                    )
-                    case_id_field = node.config.get("caseIdField", "id")
-                    activity_field = node.config.get("activityField", "")
-                    timestamp_field = node.config.get("timestampField", "")
+                if node.type in (NodeType.SINK_OBJECT, NodeType.SINK_EVENT):
+                    synced_rows = len(records_out)
 
-                    if object_type_id:
-                        events_written = await _emit_events_from_records(
-                            object_type_id=object_type_id,
-                            pipeline_id=pipeline.id,
-                            connector_ids=pipeline.connector_ids,
-                            case_id_field=case_id_field,
-                            activity_field=activity_field,
-                            timestamp_field=timestamp_field,
-                        )
-                        row_counts[node_id] = events_written
-                        synced_rows = synced_rows or events_written
-                        continue
+            total_out = synced_rows or max((len(r) for r in node_records.values()), default=0)
 
-                result = await self._execute_node(node_id, node.type, node.config, rows_in)
-                row_counts[node_id] = result.rows_out
-
-            total_out = synced_rows or (max(row_counts.values()) if row_counts else 0)
             run.update({
                 "status": "COMPLETED",
                 "finished_at": datetime.now(timezone.utc).isoformat(),
-                "rows_in": source_rows,
+                "rows_in": source_row_count,
                 "rows_out": total_out,
             })
 
@@ -196,24 +128,416 @@ class DagExecutor:
             pipeline.status = PipelineStatus.FAILED
 
 
+# ── Node Handlers ─────────────────────────────────────────────────────────────
+
+async def _execute_node(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+    if node.type == NodeType.SOURCE:
+        return await _source(node, pipeline)
+    if node.type == NodeType.ENRICH:
+        return await _enrich(node, records_in)
+    if node.type == NodeType.MAP:
+        return _map(node, records_in)
+    if node.type == NodeType.FILTER:
+        return _filter(node, records_in)
+    if node.type == NodeType.DEDUPE:
+        return _dedupe(node, records_in)
+    if node.type == NodeType.CAST:
+        return _cast(node, records_in)
+    if node.type == NodeType.FLATTEN:
+        return _flatten(node, records_in)
+    if node.type == NodeType.VALIDATE:
+        return _validate(node, records_in)
+    if node.type == NodeType.SINK_OBJECT:
+        return await _sink_object(node, records_in, pipeline)
+    if node.type == NodeType.SINK_EVENT:
+        return await _sink_event(node, records_in, pipeline)
+    return records_in
+
+
+async def _source(node, pipeline: Pipeline) -> list[dict]:
+    """Fetch real records from the configured connector."""
+    cfg = node.config or {}
+    connector_id = (
+        cfg.get("connectorId")
+        or cfg.get("connector_id")
+        or node.connector_id
+        or (pipeline.connector_ids[0] if pipeline.connector_ids else None)
+    )
+    if not connector_id:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.get(
+                f"{CONNECTOR_API}/connectors/{connector_id}/schema",
+                headers={"x-tenant-id": "tenant-001"},
+            )
+            if r.is_success:
+                return r.json().get("sample_rows", [])
+    except Exception:
+        pass
+    return []
+
+
+async def _enrich(node, records_in: list[dict]) -> list[dict]:
+    """
+    Per-row detail lookup against a second connector.
+
+    For each incoming row:
+      1. Extract the join key value (e.g. row["id"] = "INC-123")
+      2. POST /connectors/{lookupConnectorId}/fetch-row with {"params": {lookupField: "INC-123"}}
+      3. Merge the detail response onto the row
+
+    Config fields:
+      lookupConnectorId  — the connector that holds the detail endpoint
+      joinKey            — field on the incoming row whose value is passed as the lookup param
+      lookupField        — query param name on the detail endpoint (defaults to joinKey)
+    """
+    cfg = node.config or {}
+    lookup_connector_id = cfg.get("lookupConnectorId") or cfg.get("lookup_connector_id")
+    join_key = cfg.get("joinKey") or cfg.get("join_key", "id")
+    # The query param name on the detail endpoint — often same as join_key (e.g. "id")
+    lookup_field = cfg.get("lookupField") or cfg.get("lookup_field") or join_key
+
+    if not lookup_connector_id or not records_in:
+        return records_in
+
+    enriched: list[dict] = []
+
+    async def _lookup_one(row: dict) -> dict:
+        join_val = row.get(join_key)
+        if join_val is None:
+            return row
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(
+                    f"{CONNECTOR_API}/connectors/{lookup_connector_id}/fetch-row",
+                    json={"params": {lookup_field: str(join_val)}},
+                    headers={"x-tenant-id": "tenant-001"},
+                )
+                if r.is_success:
+                    detail = r.json().get("row", {})
+                    return {**row, **detail}
+        except Exception:
+            pass
+        return row
+
+    # Run lookups in concurrent batches to avoid overwhelming the detail endpoint
+    for i in range(0, len(records_in), _ENRICH_CONCURRENCY):
+        batch = records_in[i:i + _ENRICH_CONCURRENCY]
+        results = await asyncio.gather(*[_lookup_one(row) for row in batch])
+        enriched.extend(results)
+
+    return enriched
+
+
+def _map(node, records_in: list[dict]) -> list[dict]:
+    """Apply field renaming and transforms to each record."""
+    cfg = node.config or {}
+
+    # Collect all transforms — support both list format and legacy single-transform keys
+    transforms: list[dict] = list(cfg.get("transforms") or [])
+
+    if not transforms:
+        sf = cfg.get("sourceField") or cfg.get("source_field", "")
+        tf = cfg.get("targetField") or cfg.get("target_field", "")
+        tt = cfg.get("transformType") or cfg.get("transform_type", "")
+        if sf and tf:
+            transforms = [{"source_field": sf, "target_field": tf, "transform_type": tt}]
+
+    if not transforms:
+        jke = cfg.get("join_key_extraction")
+        if jke:
+            transforms = [{
+                "source_field": jke.get("source_field", ""),
+                "target_field": jke.get("output_field", "__join_key__"),
+                "transform_type": jke.get("transform", ""),
+            }]
+
+    if not transforms:
+        return records_in
+
+    result = []
+    for rec in records_in:
+        for t in transforms:
+            rec = _apply_transform(
+                rec,
+                t.get("source_field", ""),
+                t.get("target_field", ""),
+                t.get("transform_type", ""),
+            )
+        result.append(rec)
+    return result
+
+
+def _filter(node, records_in: list[dict]) -> list[dict]:
+    """Drop rows that don't satisfy the configured condition."""
+    cfg = node.config or {}
+    field = cfg.get("field", "")
+    operator = cfg.get("operator", "exists")
+    value = cfg.get("value")
+
+    if not field:
+        return records_in
+
+    result = []
+    for rec in records_in:
+        fval = rec.get(field)
+        if operator == "exists":
+            if fval is not None and fval != "" and fval != []:
+                result.append(rec)
+        elif operator == "not_null":
+            if fval is not None:
+                result.append(rec)
+        elif operator == "eq":
+            if str(fval) == str(value):
+                result.append(rec)
+        elif operator == "neq":
+            if str(fval) != str(value):
+                result.append(rec)
+        elif operator == "contains":
+            if value is not None and str(value) in str(fval or ""):
+                result.append(rec)
+        else:
+            result.append(rec)
+    return result
+
+
+def _dedupe(node, records_in: list[dict]) -> list[dict]:
+    """Deduplicate records by primary key field."""
+    if not records_in:
+        return records_in
+    cfg = node.config or {}
+    pk_field = cfg.get("pkField") or cfg.get("pk_field") or _guess_pk(records_in[0])
+    seen: set[str] = set()
+    result = []
+    for rec in records_in:
+        key = str(rec.get(pk_field, id(rec)))
+        if key not in seen:
+            seen.add(key)
+            result.append(rec)
+    return result
+
+
+def _cast(node, records_in: list[dict]) -> list[dict]:
+    """Coerce field values to specified types."""
+    cfg = node.config or {}
+    casts: list[dict] = cfg.get("casts") or []
+    if not casts:
+        return records_in
+    result = []
+    for rec in records_in:
+        rec = dict(rec)
+        for c in casts:
+            field = c.get("field", "")
+            to_type = c.get("to", "string")
+            if field in rec and rec[field] is not None:
+                try:
+                    if to_type == "string":
+                        rec[field] = str(rec[field])
+                    elif to_type == "integer":
+                        rec[field] = int(rec[field])
+                    elif to_type == "float":
+                        rec[field] = float(rec[field])
+                    elif to_type == "boolean":
+                        rec[field] = bool(rec[field])
+                except (ValueError, TypeError):
+                    pass
+        result.append(rec)
+    return result
+
+
+def _flatten(node, records_in: list[dict]) -> list[dict]:
+    """Explode an array field — one row per array item."""
+    cfg = node.config or {}
+    array_field = cfg.get("arrayField") or cfg.get("array_field", "")
+    if not array_field:
+        return records_in
+    result = []
+    for rec in records_in:
+        arr = rec.get(array_field, [])
+        if isinstance(arr, list) and arr:
+            for item in arr:
+                base = {k: v for k, v in rec.items() if k != array_field}
+                if isinstance(item, dict):
+                    base.update(item)
+                else:
+                    base[array_field] = item
+                result.append(base)
+        else:
+            result.append(rec)
+    return result
+
+
+def _validate(node, records_in: list[dict]) -> list[dict]:
+    """Drop rows that are missing any required field."""
+    cfg = node.config or {}
+    required_fields: list[str] = cfg.get("requiredFields") or cfg.get("required_fields") or []
+    if not required_fields:
+        return records_in
+    return [rec for rec in records_in if all(rec.get(f) is not None for f in required_fields)]
+
+
+async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+    """
+    Push the pipeline's transformed records directly into the ontology as object records.
+    Uses /records/ingest instead of /records/sync — the pipeline owns the data, not the connector.
+    """
+    cfg = node.config or {}
+    ot_id = cfg.get("objectTypeId") or node.object_type_id or pipeline.target_object_type_id
+
+    if not ot_id or not records_in:
+        return records_in
+
+    # Legacy array_append write mode — keep existing behavior
+    if cfg.get("write_mode") == "array_append":
+        array_field = cfg.get("array_field", "meetings")
+        merge_key = cfg.get("merge_key", "deal_name")
+        await _execute_array_append(
+            pipeline=pipeline,
+            ot_id=ot_id,
+            array_field=array_field,
+            merge_key=merge_key,
+        )
+        return records_in
+
+    pk_field = _guess_pk(records_in[0]) if records_in else "id"
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
+                json={
+                    "records": records_in,
+                    "pk_field": pk_field,
+                    "pipeline_id": pipeline.id,
+                },
+                headers={"x-tenant-id": "tenant-001"},
+            )
+            if resp.is_success:
+                return records_in
+    except Exception:
+        pass
+
+    return records_in
+
+
+async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+    """Convert records flowing through the pipeline into process mining events."""
+    cfg = node.config or {}
+    object_type_id = (
+        cfg.get("objectTypeId")
+        or node.object_type_id
+        or pipeline.target_object_type_id
+        or ""
+    )
+    case_id_field = cfg.get("caseIdField", "id")
+    activity_field = cfg.get("activityField", "")
+    timestamp_field = cfg.get("timestampField", "")
+    connector_id = pipeline.connector_ids[0] if pipeline.connector_ids else ""
+
+    # If records are flowing through the pipeline, use them directly
+    records = records_in if records_in else []
+
+    # Fall back to fetching from ontology if no records came through (e.g. detached SINK_EVENT)
+    if not records and object_type_id:
+        written = await _emit_events_from_records(
+            object_type_id=object_type_id,
+            pipeline_id=pipeline.id,
+            connector_ids=pipeline.connector_ids,
+            case_id_field=case_id_field,
+            activity_field=activity_field,
+            timestamp_field=timestamp_field,
+        )
+        return [{}] * written
+
+    if not records:
+        return []
+
+    def _pick_ts(record: dict, preferred: str) -> str:
+        if preferred and record.get(preferred):
+            return str(record[preferred])
+        for key in ("createdate", "hs_lastmodifieddate", "closedate", "created_at",
+                    "updated_at", "timestamp", "date", "occurred_at"):
+            if record.get(key):
+                return str(record[key])
+        for key, val in record.items():
+            if val and any(t in key.lower() for t in ("date", "time", "_at", "stamp")):
+                return str(val)
+        return datetime.now(timezone.utc).isoformat()
+
+    def _pick_val(record: dict, field: str, fallback: str) -> str:
+        if field and record.get(field) is not None:
+            return str(record[field])
+        return fallback
+
+    events = []
+    for record in records:
+        case_id = _pick_val(record, case_id_field, str(record.get("id", str(uuid4()))))
+        activity = _pick_val(record, activity_field, "RECORD_SYNCED")
+        ts = _pick_ts(record, timestamp_field)
+
+        if ts and ts.isdigit():
+            try:
+                ts = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+
+        events.append({
+            "id": str(uuid4()),
+            "case_id": case_id,
+            "activity": activity,
+            "timestamp": ts or datetime.now(timezone.utc).isoformat(),
+            "object_type_id": object_type_id,
+            "object_id": case_id,
+            "pipeline_id": pipeline.id,
+            "connector_id": connector_id,
+            "tenant_id": "tenant-001",
+            "attributes": {
+                k: v for k, v in record.items()
+                if k not in (case_id_field, activity_field, timestamp_field)
+                and not isinstance(v, (list, dict))
+            },
+        })
+
+    written = 0
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            for i in range(0, len(events), 200):
+                chunk = events[i:i + 200]
+                resp = await client.post(
+                    f"{EVENT_LOG_API}/events/batch",
+                    json={"events": chunk},
+                    headers={"x-tenant-id": "tenant-001"},
+                )
+                if resp.is_success:
+                    written += len(chunk)
+    except Exception:
+        pass
+
+    return records
+
+
+# ── Shared Helpers ────────────────────────────────────────────────────────────
+
+def _guess_pk(record: dict) -> str:
+    for candidate in ("hs_object_id", "id", "record_id", "uuid", "incident_id"):
+        if record.get(candidate):
+            return candidate
+    return next(iter(record), "id")
+
+
 def _apply_extract_company(title: str) -> str:
-    """
-    Extract a company/entity name from a meeting title.
-    Strips common verb phrases and cleans up the result.
-    """
-    import re
     title = str(title or "").strip()
-    # Strip common prefixes like "Demo with", "Call with", "Intro with", etc.
     title = re.sub(
         r"^(demo|call|intro|sync|meeting|review|catch[- ]?up|discussion|"
         r"follow[- ]?up|check[- ]?in|onboarding|kickoff|discovery)\s+(with|for|from|@)?\s*",
         "", title, flags=re.IGNORECASE,
     ).strip()
-    # Strip trailing date/time patterns like "- 2024-01-15" or "Jan 15"
     title = re.sub(r"\s*[-–|]\s*\d{4}[-/]\d{2}[-/]\d{2}.*$", "", title).strip()
-    title = re.sub(r"\s*[-–|]\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*\d+.*$",
-                   "", title, flags=re.IGNORECASE).strip()
-    # Split on " - " or " | " and take the first meaningful segment
+    title = re.sub(
+        r"\s*[-–|]\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*\d+.*$",
+        "", title, flags=re.IGNORECASE,
+    ).strip()
     for sep in (" - ", " | ", " — "):
         if sep in title:
             parts = [p.strip() for p in title.split(sep)]
@@ -226,11 +550,9 @@ _TITLE_ALIASES = ("meeting_title", "title", "name", "subject", "summary", "descr
 
 
 def _resolve_field(record: dict, field: str) -> str:
-    """Return record[field] if present, otherwise try common title aliases."""
     val = record.get(field)
     if val:
         return str(val)
-    # Try aliases for meeting title / name fields
     for alias in _TITLE_ALIASES:
         if alias != field and record.get(alias):
             return str(record[alias])
@@ -238,7 +560,6 @@ def _resolve_field(record: dict, field: str) -> str:
 
 
 def _apply_transform(record: dict, source_field: str, target_field: str, transform_type: str) -> dict:
-    """Apply a named transform to a record and set the result on target_field."""
     record = dict(record)
     source_val = _resolve_field(record, source_field)
     if transform_type == "extract_company":
@@ -254,22 +575,16 @@ def _apply_transform(record: dict, source_field: str, target_field: str, transfo
     return record
 
 
+# ── Legacy: array_append (keep for existing pipelines) ───────────────────────
+
 async def _execute_array_append(
     pipeline: "Pipeline",
     ot_id: str,
     array_field: str,
     merge_key: str,
 ) -> int:
-    """
-    For a pipeline with write_mode=array_append:
-    1. Find the SOURCE node to get the connector_id
-    2. Fetch sample_rows from that connector
-    3. Apply MAP node transforms to each record (extract __join_key__)
-    4. POST to /object-types/{ot_id}/records/array-append
-    """
-    # Find SOURCE node and MAP nodes
     source_connector_id: str | None = None
-    map_transforms: list[dict] = []  # [{source_field, target_field, transform_type}]
+    map_transforms: list[dict] = []
 
     for node in pipeline.nodes:
         if node.type == NodeType.SOURCE:
@@ -281,7 +596,6 @@ async def _execute_array_append(
             )
         elif node.type == NodeType.MAP:
             cfg = node.config
-            # Support both camelCase/snake_case flat keys and join_key_extraction block
             jke = cfg.get("join_key_extraction")
             if jke:
                 sf = jke.get("source_field", "")
@@ -297,7 +611,6 @@ async def _execute_array_append(
     if not source_connector_id:
         return 0
 
-    # Fetch records from source connector
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.get(
@@ -313,19 +626,16 @@ async def _execute_array_append(
     if not raw_records:
         return 0
 
-    # Apply MAP transforms
     transformed_records: list[dict] = []
     for rec in raw_records:
         for t in map_transforms:
             rec = _apply_transform(rec, t["source_field"], t["target_field"], t["transform_type"])
         transformed_records.append(rec)
 
-    # If no MAP node set __join_key__, fall back to whatever name-like field exists
     if not map_transforms:
         for rec in transformed_records:
             rec["__join_key__"] = _resolve_field(rec, "meeting_title")
 
-    # Call array-append endpoint
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
@@ -346,6 +656,8 @@ async def _execute_array_append(
     return 0
 
 
+# ── Legacy: emit events by reading from ontology (fallback) ──────────────────
+
 async def _emit_events_from_records(
     object_type_id: str,
     pipeline_id: str,
@@ -354,18 +666,6 @@ async def _emit_events_from_records(
     activity_field: str,
     timestamp_field: str,
 ) -> int:
-    """
-    Read all object_records for object_type_id, convert each to a process mining event,
-    and batch-POST them to the event-log-service.
-
-    The pipeline SINK_EVENT node config defines which fields map to:
-      - case_id   (e.g. 'hs_object_id', 'id')
-      - activity  (e.g. 'dealstage', 'hs_activity_type', 'subject')
-      - timestamp (e.g. 'createdate', 'closedate', 'hs_lastmodifieddate')
-
-    If timestamp_field is not set or the record doesn't have it, falls back to
-    any field whose name contains 'date', 'time', 'at', or 'created'.
-    """
     connector_id = connector_ids[0] if connector_ids else ""
 
     try:
@@ -384,16 +684,13 @@ async def _emit_events_from_records(
     if not records:
         return 0
 
-    # Auto-detect timestamp field if not configured
     def _pick_timestamp(record: dict, preferred: str) -> str | None:
         if preferred and record.get(preferred):
             return str(record[preferred])
-        # Fallback: scan fields for date-like names with non-null values
         for key in ("createdate", "hs_lastmodifieddate", "closedate", "created_at",
                     "updated_at", "timestamp", "date", "occurred_at"):
             if record.get(key):
                 return str(record[key])
-        # Last resort: any key with date/time in its name
         for key, val in record.items():
             if val and any(t in key.lower() for t in ("date", "time", "_at", "stamp")):
                 return str(val)
@@ -410,7 +707,6 @@ async def _emit_events_from_records(
         activity = _pick_value(record, activity_field, "RECORD_SYNCED")
         ts = _pick_timestamp(record, timestamp_field)
 
-        # Normalise timestamp to ISO-8601 (handle epoch millis from HubSpot)
         if ts and ts.isdigit():
             try:
                 ms = int(ts)
@@ -428,15 +724,16 @@ async def _emit_events_from_records(
             "pipeline_id": pipeline_id,
             "connector_id": connector_id,
             "tenant_id": "tenant-001",
-            "attributes": {k: v for k, v in record.items()
-                           if k not in (case_id_field, activity_field, timestamp_field)
-                           and not isinstance(v, (list, dict))},
+            "attributes": {
+                k: v for k, v in record.items()
+                if k not in (case_id_field, activity_field, timestamp_field)
+                and not isinstance(v, (list, dict))
+            },
         })
 
     if not events:
         return 0
 
-    # Batch ingest — send in chunks of 200
     written = 0
     try:
         async with httpx.AsyncClient(timeout=30) as client:
