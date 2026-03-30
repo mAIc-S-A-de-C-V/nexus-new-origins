@@ -20,10 +20,10 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Write root .env (runtime secrets for backend services)
-            printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\n' > .env
+            # Write root .env — read by docker-compose for build arg substitution AND runtime secrets
+            printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nVITE_CONNECTOR_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8001\nVITE_PIPELINE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8002\nVITE_INFERENCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8003\nVITE_ONTOLOGY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8004\nVITE_EVENT_LOG_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8005\nVITE_AUDIT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8006\nVITE_CORRELATION_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8008\nVITE_PROJECT_MGMT_URL=http://${{ secrets.EC2_HOST }}:9000\n' > .env
 
-            # Write frontend/.env (baked into Vite build)
+            # Write frontend/.env as well (Vite fallback during build)
             printf 'VITE_CONNECTOR_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8001\nVITE_PIPELINE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8002\nVITE_INFERENCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8003\nVITE_ONTOLOGY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8004\nVITE_EVENT_LOG_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8005\nVITE_AUDIT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8006\nVITE_CORRELATION_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8008\nVITE_PROJECT_MGMT_URL=http://${{ secrets.EC2_HOST }}:9000\n' > frontend/.env
 
             sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache
