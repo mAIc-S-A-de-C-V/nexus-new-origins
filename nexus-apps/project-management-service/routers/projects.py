@@ -215,11 +215,48 @@ async def list_all_projects(
     db: AsyncSession = Depends(get_session),
     x_tenant_id: Optional[str] = Header(None),
 ):
+    """Returns all projects with their stages, progress, and comments embedded."""
     tid = _tid(x_tenant_id)
-    rows = (await db.execute(
+    project_rows = (await db.execute(
         select(ProjectRow).where(ProjectRow.tenant_id == tid)
     )).scalars().all()
-    return [r.data for r in rows]
+
+    # Fetch all stages for all projects in one query
+    all_stage_rows = (await db.execute(
+        select(ProjectStageRow).where(ProjectStageRow.tenant_id == tid)
+    )).scalars().all()
+
+    # Index stages by project_id
+    stages_by_project: dict = {}
+    for sr in all_stage_rows:
+        pid = sr.project_id
+        if pid not in stages_by_project:
+            stages_by_project[pid] = []
+        stages_by_project[pid].append(sr.data)
+
+    # Fetch company names for context
+    company_rows = (await db.execute(
+        select(CompanyRow).where(CompanyRow.tenant_id == tid)
+    )).scalars().all()
+    company_names = {r.id: r.data.get("name", "") for r in company_rows}
+
+    result = []
+    for pr in project_rows:
+        p = dict(pr.data)
+        stages = sorted(stages_by_project.get(pr.id, []), key=lambda s: s.get("order", 0))
+        p["company_name"] = company_names.get(pr.company_id, "")
+        p["stages"] = stages
+        p["total_progress"] = (
+            sum(s.get("progress", 0) for s in stages) // len(stages) if stages else 0
+        )
+        p["total_comments"] = sum(len(s.get("comments", [])) for s in stages)
+        p["all_comments"] = [
+            {**c, "stage_name": s.get("name"), "stage_type": s.get("stageType")}
+            for s in stages
+            for c in s.get("comments", [])
+        ]
+        result.append(p)
+    return result
 
 
 @router.get("/members/all")
@@ -227,11 +264,57 @@ async def list_all_members(
     db: AsyncSession = Depends(get_session),
     x_tenant_id: Optional[str] = Header(None),
 ):
+    """Returns all members with their stage assignments and comments made."""
     tid = _tid(x_tenant_id)
-    rows = (await db.execute(
+    member_rows = (await db.execute(
         select(TeamMemberRow).where(TeamMemberRow.tenant_id == tid)
     )).scalars().all()
-    return [r.data for r in rows]
+
+    # Fetch all projects and stages to build activity context
+    project_rows = (await db.execute(
+        select(ProjectRow).where(ProjectRow.tenant_id == tid)
+    )).scalars().all()
+    project_names = {r.id: r.data.get("name", "") for r in project_rows}
+
+    all_stage_rows = (await db.execute(
+        select(ProjectStageRow).where(ProjectStageRow.tenant_id == tid)
+    )).scalars().all()
+
+    result = []
+    for mr in member_rows:
+        m = dict(mr.data)
+        mid = mr.id
+
+        # Stages assigned to this member
+        assignments = []
+        comments_made = []
+        for sr in all_stage_rows:
+            s = sr.data
+            project_name = project_names.get(s.get("projectId", ""), "")
+            if s.get("assignedToId") == mid:
+                assignments.append({
+                    "project_name": project_name,
+                    "stage_name": s.get("name"),
+                    "stage_type": s.get("stageType"),
+                    "progress": s.get("progress", 0),
+                    "start_date": s.get("startDate", ""),
+                    "end_date": s.get("endDate", ""),
+                })
+            # Comments made by this member (matched by name)
+            for c in s.get("comments", []):
+                if c.get("author") == m.get("name"):
+                    comments_made.append({
+                        "project_name": project_name,
+                        "stage_name": s.get("name"),
+                        "text": c.get("text", ""),
+                        "created_at": c.get("createdAt", ""),
+                    })
+
+        m["assignments"] = assignments
+        m["comments_made"] = comments_made
+        m["active_stages"] = len([a for a in assignments if a["progress"] < 100])
+        result.append(m)
+    return result
 
 
 @router.get("/companies/{cid}/projects")
