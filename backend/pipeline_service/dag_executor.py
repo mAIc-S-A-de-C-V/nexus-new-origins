@@ -446,6 +446,92 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
 
     pk_field = _guess_pk(records_in[0]) if records_in else "id"
 
+    # ── Fetch existing records to diff (Celonis-style record-level events) ──
+    existing_by_pk: dict[str, dict] = {}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(
+                f"{ONTOLOGY_API}/object-types/{ot_id}/records",
+                headers={"x-tenant-id": "tenant-001"},
+            )
+            if r.is_success:
+                for rec in r.json().get("records", []):
+                    key = str(rec.get(pk_field, ""))
+                    if key:
+                        existing_by_pk[key] = rec
+    except Exception:
+        pass
+
+    # ── Build per-record events with field-level diffs ──
+    connector_id = pipeline.connector_ids[0] if pipeline.connector_ids else ""
+    record_events: list[dict] = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    for rec in records_in:
+        pk_val = str(rec.get(pk_field, ""))
+        if not pk_val:
+            continue
+
+        existing = existing_by_pk.get(pk_val)
+        if existing is None:
+            # Brand-new record
+            record_events.append({
+                "id": str(uuid4()),
+                "case_id": pk_val,
+                "activity": "RECORD_CREATED",
+                "timestamp": now,
+                "object_type_id": ot_id,
+                "object_id": pk_val,
+                "pipeline_id": pipeline.id,
+                "connector_id": connector_id,
+                "tenant_id": "tenant-001",
+                "attributes": {
+                    "pk_field": pk_field,
+                    "record_snapshot": {k: v for k, v in rec.items() if not isinstance(v, (list, dict))},
+                },
+            })
+        else:
+            # Existing record — compute field-level diffs
+            changed_fields = []
+            for field, new_val in rec.items():
+                if isinstance(new_val, (list, dict)):
+                    continue
+                old_val = existing.get(field)
+                if str(old_val) != str(new_val):
+                    changed_fields.append({"field": field, "from": old_val, "to": new_val})
+
+            if changed_fields:
+                record_events.append({
+                    "id": str(uuid4()),
+                    "case_id": pk_val,
+                    "activity": "RECORD_UPDATED",
+                    "timestamp": now,
+                    "object_type_id": ot_id,
+                    "object_id": pk_val,
+                    "pipeline_id": pipeline.id,
+                    "connector_id": connector_id,
+                    "tenant_id": "tenant-001",
+                    "attributes": {
+                        "pk_field": pk_field,
+                        "changed_fields": changed_fields,
+                        "fields_changed": len(changed_fields),
+                    },
+                })
+
+    # ── Emit record-level events ──
+    if record_events:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                for i in range(0, len(record_events), 200):
+                    await client.post(
+                        f"{EVENT_LOG_API}/events/batch",
+                        json={"events": record_events[i:i + 200]},
+                        headers={"x-tenant-id": "tenant-001"},
+                    )
+        except Exception:
+            pass
+
+    # ── Ingest records into ontology ──
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
