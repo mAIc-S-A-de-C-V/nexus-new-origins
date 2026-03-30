@@ -160,63 +160,53 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
       <div style={{ flex: 1, padding: '6px 0', overflowY: 'auto', overflowX: 'hidden' }}>
         {NAV_ITEMS
           .filter((item) => !item.adminOnly || isAdmin)
-          .map((item) => (
-            <React.Fragment key={item.id}>
-              {navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path))}
-              {/* maic group injected after pipelines */}
-              {item.id === 'pipelines' && (
-                <>
-                  {/* maic group header */}
-                  <button
-                    onClick={() => { if (expanded) setMaicExpanded((v) => !v); else onNavigate('projects'); }}
-                    title={!expanded ? 'maic' : undefined}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      width: '100%', height: 38,
-                      padding: expanded ? '0 14px' : '0',
-                      justifyContent: expanded ? 'flex-start' : 'center',
-                      backgroundColor: (currentPage === 'projects' || currentPage === 'finance') ? '#161D2B' : 'transparent',
-                      color: (currentPage === 'projects' || currentPage === 'finance') ? '#E2E8F0' : '#64748B',
-                      cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
-                      borderLeft: (currentPage === 'projects' || currentPage === 'finance') ? '2px solid #7C3AED' : '2px solid transparent',
-                      borderTop: 'none', borderRight: 'none', borderBottom: 'none',
-                      flexShrink: 0,
-                    }}
-                    onMouseEnter={(e) => {
-                      if (currentPage !== 'projects' && currentPage !== 'finance') {
-                        (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
-                        (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (currentPage !== 'projects' && currentPage !== 'finance') {
-                        (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-                        (e.currentTarget as HTMLElement).style.color = '#64748B';
-                      }
-                    }}
-                  >
-                    <span style={{ flexShrink: 0, lineHeight: 0 }}><FolderKanban size={16} /></span>
-                    {expanded && (
-                      <>
-                        <span style={{ fontSize: 13, fontWeight: (currentPage === 'projects' || currentPage === 'finance') ? 500 : 400 }}>maic</span>
-                        <span
-                          onClick={(e) => { e.stopPropagation(); setMaicExpanded((v) => !v); }}
-                          style={{ marginLeft: 'auto', lineHeight: 0, flexShrink: 0, color: '#475569' }}
-                        >
-                          {maicExpanded ? <ChevronDown size={11} /> : <ChevronUp size={11} />}
-                        </span>
-                      </>
-                    )}
-                  </button>
+          .map((item) =>
+            navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path)),
+          )}
 
-                  {/* maic sub-items */}
-                  {expanded && maicExpanded && MAIC_SUBITEMS.map((sub) =>
-                    navBtn(sub, currentPage === sub.path, () => onNavigate(sub.path), true, true),
-                  )}
-                </>
-              )}
-            </React.Fragment>
-          ))}
+        {/* ── maic group ───────────────────────────────────────────────── */}
+        <button
+          onClick={() => expanded ? setMaicExpanded((v) => !v) : onNavigate('projects')}
+          title={!expanded ? 'maic' : undefined}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            width: '100%', height: 38,
+            padding: expanded ? '0 14px' : '0',
+            justifyContent: expanded ? 'flex-start' : 'center',
+            backgroundColor: (currentPage === 'projects' || currentPage === 'finance') ? '#161D2B' : 'transparent',
+            color: (currentPage === 'projects' || currentPage === 'finance') ? '#E2E8F0' : '#64748B',
+            cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
+            borderLeft: (currentPage === 'projects' || currentPage === 'finance') ? '2px solid #7C3AED' : '2px solid transparent',
+            borderTop: 'none', borderRight: 'none', borderBottom: 'none',
+            flexShrink: 0,
+          }}
+          onMouseEnter={(e) => {
+            if (currentPage !== 'projects' && currentPage !== 'finance') {
+              (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
+              (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (currentPage !== 'projects' && currentPage !== 'finance') {
+              (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+              (e.currentTarget as HTMLElement).style.color = '#64748B';
+            }
+          }}
+        >
+          <span style={{ flexShrink: 0, lineHeight: 0 }}><FolderKanban size={16} /></span>
+          {expanded && (
+            <>
+              <span style={{ fontSize: 13, fontWeight: (currentPage === 'projects' || currentPage === 'finance') ? 500 : 400 }}>maic</span>
+              <span style={{ marginLeft: 'auto', lineHeight: 0, flexShrink: 0, color: '#475569' }}>
+                {maicExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+              </span>
+            </>
+          )}
+        </button>
+
+        {expanded && maicExpanded && MAIC_SUBITEMS.map((sub) =>
+          navBtn(sub, currentPage === sub.path, () => onNavigate(sub.path), true, true),
+        )}
 
         {/* Apps section */}
         <div style={{ borderTop: '1px solid #131C2E', marginTop: 6, paddingTop: 4 }}>
