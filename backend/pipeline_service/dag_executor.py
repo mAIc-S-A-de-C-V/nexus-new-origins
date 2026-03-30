@@ -634,9 +634,9 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
         or pipeline.target_object_type_id
         or ""
     )
-    case_id_field = cfg.get("caseIdField", "id")
-    activity_field = cfg.get("activityField", "")
-    timestamp_field = cfg.get("timestampField", "")
+    case_id_field = cfg.get("caseIdField") or cfg.get("case_id_field", "id")
+    activity_field = cfg.get("activityField") or cfg.get("activity_field", "")
+    timestamp_field = cfg.get("timestampField") or cfg.get("timestamp_field", "")
     connector_id = pipeline.connector_ids[0] if pipeline.connector_ids else ""
 
     # If records are flowing through the pipeline, use them directly

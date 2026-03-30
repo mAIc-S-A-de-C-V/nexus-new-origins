@@ -7,6 +7,14 @@ import hashlib
 
 router = APIRouter()
 
+_SYSTEM_EXCL = (
+    "AND activity NOT IN ("
+    "'PIPELINE_RUN_STARTED','PIPELINE_RUN_COMPLETED','PIPELINE_RUN_FAILED',"
+    "'PIPELINE_COMPLETED','PIPELINE_FAILED',"
+    "'CONNECTOR_SCHEMA_FETCHED','CONNECTOR_TEST_PASSED','CONNECTOR_TEST_FAILED'"
+    ")"
+)
+
 
 def _variant_id(activities: list[str]) -> str:
     seq = "→".join(activities)
@@ -26,7 +34,7 @@ async def list_cases(
 ):
     tenant_id = x_tenant_id or "tenant-001"
 
-    sql = text("""
+    sql = text(f"""
         WITH case_agg AS (
             SELECT
                 case_id,
@@ -39,6 +47,7 @@ async def list_cases(
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
               AND case_id != ''
+              {_SYSTEM_EXCL}
             GROUP BY case_id
         ),
         case_computed AS (
@@ -135,7 +144,7 @@ async def get_case_timeline(
 ):
     tenant_id = x_tenant_id or "tenant-001"
 
-    sql = text("""
+    sql = text(f"""
         SELECT
             id,
             activity,
@@ -149,6 +158,7 @@ async def get_case_timeline(
         WHERE case_id = :case_id
           AND tenant_id = :tenant_id
           AND (:ot_id = '' OR object_type_id = :ot_id)
+          {_SYSTEM_EXCL}
         ORDER BY timestamp ASC
     """)
 
@@ -202,7 +212,7 @@ async def list_variants(
 ):
     tenant_id = x_tenant_id or "tenant-001"
 
-    sql = text("""
+    sql = text(f"""
         WITH case_sequences AS (
             SELECT
                 case_id,
@@ -214,6 +224,7 @@ async def list_variants(
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
               AND case_id != ''
+              {_SYSTEM_EXCL}
             GROUP BY case_id
         )
         SELECT
@@ -279,7 +290,7 @@ async def get_transitions(
 ):
     tenant_id = x_tenant_id or "tenant-001"
 
-    sql = text("""
+    sql = text(f"""
         WITH ordered AS (
             SELECT
                 case_id,
@@ -291,6 +302,7 @@ async def get_transitions(
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
               AND case_id != ''
+              {_SYSTEM_EXCL}
         )
         SELECT
             from_activity,
@@ -347,7 +359,7 @@ async def get_bottlenecks(
 ):
     tenant_id = x_tenant_id or "tenant-001"
 
-    sql = text("""
+    sql = text(f"""
         WITH ordered AS (
             SELECT
                 case_id,
@@ -359,6 +371,7 @@ async def get_bottlenecks(
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
               AND case_id != ''
+              {_SYSTEM_EXCL}
         ),
         transitions AS (
             SELECT
@@ -408,7 +421,7 @@ async def get_stats(
 ):
     tenant_id = x_tenant_id or "tenant-001"
 
-    sql = text("""
+    sql = text(f"""
         WITH case_agg AS (
             SELECT
                 case_id,
@@ -420,6 +433,7 @@ async def get_stats(
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
               AND case_id != ''
+              {_SYSTEM_EXCL}
             GROUP BY case_id
         )
         SELECT
@@ -437,11 +451,12 @@ async def get_stats(
         return {"total_cases": 0, "avg_duration_days": 0, "stuck_cases": 0, "variant_count": 0, "rework_rate": 0}
 
     # rework rate — cases with any repeated activity
-    rework_sql = text("""
+    rework_sql = text(f"""
         WITH case_sequences AS (
             SELECT case_id, array_agg(activity ORDER BY timestamp) AS activities
             FROM events
             WHERE object_type_id = :ot_id AND tenant_id = :tenant_id AND case_id != ''
+              {_SYSTEM_EXCL}
             GROUP BY case_id
         )
         SELECT count(*) AS rework_cases
