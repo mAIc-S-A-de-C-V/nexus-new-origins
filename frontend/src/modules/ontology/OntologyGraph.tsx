@@ -144,9 +144,9 @@ const nodeTypes = {
 
 // Column x positions
 const COL_CONNECTOR = 60;
-const COL_STEP_START = 240; // first step x
-const STEP_PITCH = 150;     // horizontal gap between steps
-const ROW_GAP = 120;        // vertical gap between pipeline rows
+const COL_STEP_START = 280; // first step x
+const STEP_PITCH = 160;     // horizontal gap between steps
+const ROW_GAP = 220;        // vertical gap between rows
 
 const CONNECTOR_API = (import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001');
 
@@ -315,10 +315,6 @@ export const OntologyGraph: React.FC = () => {
     ]);
     const relevantConnectors = connectors.filter((c) => usedConnectorIds.has(c.id));
 
-    // Build index: connectorId → row index
-    const connectorRowMap = new Map<string, number>();
-    relevantConnectors.forEach((c, i) => connectorRowMap.set(c.id, i));
-
     // Calculate max step count across all pipelines to know where to put object type nodes
     const maxSteps = Math.max(
       ...pipelines.map((p) => {
@@ -330,28 +326,52 @@ export const OntologyGraph: React.FC = () => {
       }),
       1
     );
-    const COL_OBJECT = COL_STEP_START + maxSteps * STEP_PITCH + 80;
+    const COL_OBJECT = COL_STEP_START + maxSteps * STEP_PITCH + 100;
+
+    // --- Object type Y positions (primary layout axis) ---
+    const otYMap = new Map<string, number>();
+    objectTypes.forEach((ot, i) => { otYMap.set(ot.id, i * ROW_GAP + 40); });
+
+    // --- Pipeline Y: align to target object type, or fall back to index ---
+    const pipelineYMap = new Map<string, number>();
+    // Track how many pipelines share the same OT row (offset them slightly)
+    const otPipelineCount = new Map<string, number>();
+    pipelines.forEach((p, pIdx) => {
+      const baseY = p.targetObjectTypeId && otYMap.has(p.targetObjectTypeId)
+        ? otYMap.get(p.targetObjectTypeId)!
+        : pIdx * ROW_GAP + 40;
+      const count = otPipelineCount.get(p.targetObjectTypeId || '') ?? 0;
+      // Offset multiple pipelines targeting the same OT
+      const offsetY = baseY + count * 70;
+      otPipelineCount.set(p.targetObjectTypeId || '', count + 1);
+      pipelineYMap.set(p.id, offsetY);
+    });
+
+    // --- Connector Y: average of the pipeline Ys they feed ---
+    const connectorYMap = new Map<string, number>();
+    relevantConnectors.forEach((c, i) => {
+      const myPipelines = pipelines.filter((p) => p.connectorIds.includes(c.id));
+      if (myPipelines.length > 0) {
+        const avgY = myPipelines.reduce((sum, p) => sum + (pipelineYMap.get(p.id) ?? 0), 0) / myPipelines.length;
+        connectorYMap.set(c.id, avgY);
+      } else {
+        connectorYMap.set(c.id, i * ROW_GAP + 40);
+      }
+    });
 
     // --- Connector nodes ---
-    relevantConnectors.forEach((c, i) => {
+    relevantConnectors.forEach((c) => {
       flowNodes.push({
         id: `con-${c.id}`,
         type: 'connectorNode',
-        position: { x: COL_CONNECTOR, y: i * ROW_GAP + 40 },
+        position: { x: COL_CONNECTOR, y: connectorYMap.get(c.id) ?? 40 },
         data: { connector: c },
       });
     });
 
     // --- Pipeline step chains ---
     pipelines.forEach((p, pIdx) => {
-      const connectorYs = p.connectorIds
-        .map((cId) => connectorRowMap.get(cId))
-        .filter((r): r is number => r !== undefined)
-        .map((r) => r * ROW_GAP + 40);
-
-      const pipelineY = connectorYs.length > 0
-        ? connectorYs.reduce((a, b) => a + b, 0) / connectorYs.length
-        : pIdx * ROW_GAP + 40;
+      const pipelineY = pipelineYMap.get(p.id) ?? pIdx * ROW_GAP + 40;
 
       // Build ordered list of step node IDs for this pipeline (for chaining edges)
       const stepNodeIds: string[] = [];
@@ -470,11 +490,11 @@ export const OntologyGraph: React.FC = () => {
       pipelines.filter((p) => p.status === 'RUNNING').map((p) => p.targetObjectTypeId).filter(Boolean)
     );
 
-    objectTypes.forEach((ot, i) => {
+    objectTypes.forEach((ot) => {
       flowNodes.push({
         id: ot.id,
         type: 'objectTypeNode',
-        position: { x: COL_OBJECT, y: i * ROW_GAP + 40 },
+        position: { x: COL_OBJECT, y: otYMap.get(ot.id) ?? 40 },
         data: { objectType: ot, isReceivingData: runningTargetIds.has(ot.id) },
       });
 
