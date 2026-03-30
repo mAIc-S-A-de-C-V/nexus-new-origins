@@ -8,6 +8,16 @@ import AppEditor from './AppEditor';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
 
+function genId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return genId();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface OntologyObjectType {
@@ -99,7 +109,7 @@ const NewAppModal: React.FC<{
       const layout: Record<string, unknown> = await resp.json();
       const now = new Date().toISOString();
       const app: NexusApp = {
-        id: crypto.randomUUID(),
+        id: genId(),
         name: String(layout.app_name || `${ot?.name} Dashboard`),
         description: String(layout.app_description || description),
         icon: '',
@@ -467,7 +477,7 @@ const AppsPage: React.FC = () => {
   const handleBlank = async () => {
     const now = new Date().toISOString();
     const blank: NexusApp = {
-      id: crypto.randomUUID(),
+      id: genId(),
       name: 'Untitled App',
       description: 'Blank app',
       icon: '',

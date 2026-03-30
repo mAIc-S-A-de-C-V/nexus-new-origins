@@ -20,6 +20,16 @@ import { useConnectorStore } from '../../store/connectorStore';
 import { usePipelineStore } from '../../store/pipelineStore';
 import { ObjectType } from '../../types/ontology';
 
+function genId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return genId();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
 // ── Pipeline expand modal ─────────────────────────────────────────────────
 
 const NODE_TYPE_COLOR: Record<string, string> = {
@@ -175,8 +185,8 @@ export const OntologyGraph: React.FC = () => {
       // Auto-create pipeline if a connector was selected
       if (createConnectorId) {
         const connector = connectors.find(c => c.id === createConnectorId);
-        const srcId = crypto.randomUUID();
-        const sinkId = crypto.randomUUID();
+        const srcId = genId();
+        const sinkId = genId();
         await addPipeline({
           id: '',
           name: `${createName.trim()} Pipeline`,
@@ -197,7 +207,7 @@ export const OntologyGraph: React.FC = () => {
               position: { x: 400, y: 200 },
             },
           ],
-          edges: [{ id: crypto.randomUUID(), source: srcId, target: sinkId }],
+          edges: [{ id: genId(), source: srcId, target: sinkId }],
           connectorIds: [createConnectorId],
           targetObjectTypeId: created.id,
           version: 1,
