@@ -210,6 +210,30 @@ async def delete_member(
 
 # ── Projects ─────────────────────────────────────────────────────────────────
 
+@router.get("/projects/all")
+async def list_all_projects(
+    db: AsyncSession = Depends(get_session),
+    x_tenant_id: Optional[str] = Header(None),
+):
+    tid = _tid(x_tenant_id)
+    rows = (await db.execute(
+        select(ProjectRow).where(ProjectRow.tenant_id == tid)
+    )).scalars().all()
+    return [r.data for r in rows]
+
+
+@router.get("/members/all")
+async def list_all_members(
+    db: AsyncSession = Depends(get_session),
+    x_tenant_id: Optional[str] = Header(None),
+):
+    tid = _tid(x_tenant_id)
+    rows = (await db.execute(
+        select(TeamMemberRow).where(TeamMemberRow.tenant_id == tid)
+    )).scalars().all()
+    return [r.data for r in rows]
+
+
 @router.get("/companies/{cid}/projects")
 async def list_projects(
     cid: str,
