@@ -12,8 +12,8 @@ export interface MaicUser {
   password: string;
   createdAt: string;
   active: boolean;
-  mustChangePassword?: boolean; // true = forced change on next login
-  createdBy?: string;           // id of admin who created them
+  mustChangePassword?: boolean;
+  createdBy?: string;
 }
 
 interface Tenant {
@@ -35,10 +35,12 @@ interface AuthContextValue {
   deleteUser: (id: string) => void;
 }
 
-// ── Storage helpers ────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────
 
-const USERS_KEY = 'maic_users';
 const SESSION_KEY = 'maic_session';
+const PM_API = (import.meta.env.VITE_PROJECT_MGMT_URL || 'http://localhost:9000');
+const TENANT_ID = 'tenant-001';
+const H = { 'Content-Type': 'application/json', 'x-tenant-id': TENANT_ID };
 
 const DEFAULT_ADMIN: MaicUser = {
   id: 'user-001',
@@ -51,26 +53,33 @@ const DEFAULT_ADMIN: MaicUser = {
   mustChangePassword: false,
 };
 
-function loadUsers(): MaicUser[] {
+// ── Backend sync helpers ──────────────────────────────────────────────────
+
+async function fetchUsersFromBackend(): Promise<MaicUser[]> {
   try {
-    const raw = localStorage.getItem(USERS_KEY);
-    if (raw) return JSON.parse(raw) as MaicUser[];
-  } catch { /* ignore */ }
-  const seed = [DEFAULT_ADMIN];
-  localStorage.setItem(USERS_KEY, JSON.stringify(seed));
-  return seed;
+    const res = await fetch(`${PM_API}/projects/users`, { headers: H });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data as MaicUser[] : [];
+  } catch {
+    return [];
+  }
 }
 
-function saveUsers(users: MaicUser[]) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users));
+async function saveUserToBackend(user: MaicUser): Promise<void> {
+  try {
+    await fetch(`${PM_API}/projects/users`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(user),
+    });
+  } catch { /* ignore */ }
 }
 
-function loadSession(users: MaicUser[]): MaicUser | null {
+async function deleteUserFromBackend(id: string): Promise<void> {
   try {
-    const id = localStorage.getItem(SESSION_KEY);
-    if (id) return users.find((u) => u.id === id && u.active) ?? null;
+    await fetch(`${PM_API}/projects/users/${id}`, { method: 'DELETE', headers: H });
   } catch { /* ignore */ }
-  return null;
 }
 
 // ── Context ────────────────────────────────────────────────────────────────
@@ -89,10 +98,35 @@ const AuthContext = createContext<AuthContextValue>({
 });
 
 export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [users, setUsers] = useState<MaicUser[]>(() => loadUsers());
-  const [currentUser, setCurrentUser] = useState<MaicUser | null>(() => loadSession(loadUsers()));
+  const [users, setUsers] = useState<MaicUser[]>([DEFAULT_ADMIN]);
+  const [currentUser, setCurrentUser] = useState<MaicUser | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => { saveUsers(users); }, [users]);
+  // On mount: load users from backend, fall back to default admin
+  useEffect(() => {
+    fetchUsersFromBackend().then(async (backendUsers) => {
+      let resolved: MaicUser[];
+      if (backendUsers.length === 0) {
+        // First boot — seed the admin into backend
+        await saveUserToBackend(DEFAULT_ADMIN);
+        resolved = [DEFAULT_ADMIN];
+      } else {
+        resolved = backendUsers;
+      }
+      setUsers(resolved);
+
+      // Restore session
+      try {
+        const id = localStorage.getItem(SESSION_KEY);
+        if (id) {
+          const user = resolved.find((u) => u.id === id && u.active);
+          if (user) setCurrentUser(user);
+        }
+      } catch { /* ignore */ }
+
+      setLoaded(true);
+    });
+  }, []);
 
   const login = useCallback((email: string, password: string): { success: boolean; error?: string } => {
     const user = users.find(
@@ -110,9 +144,14 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   const changePassword = useCallback((userId: string, newPassword: string) => {
-    setUsers((prev) => prev.map((u) =>
-      u.id === userId ? { ...u, password: newPassword, mustChangePassword: false } : u,
-    ));
+    setUsers((prev) => {
+      const next = prev.map((u) =>
+        u.id === userId ? { ...u, password: newPassword, mustChangePassword: false } : u,
+      );
+      const updated = next.find((u) => u.id === userId);
+      if (updated) saveUserToBackend(updated);
+      return next;
+    });
     setCurrentUser((prev) =>
       prev && prev.id === userId ? { ...prev, password: newPassword, mustChangePassword: false } : prev,
     );
@@ -125,11 +164,17 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       createdAt: new Date().toISOString(),
     };
     setUsers((prev) => [...prev, user]);
+    saveUserToBackend(user);
     return user;
   }, []);
 
   const updateUser = useCallback((id: string, patch: Partial<MaicUser>) => {
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+    setUsers((prev) => {
+      const next = prev.map((u) => (u.id === id ? { ...u, ...patch } : u));
+      const updated = next.find((u) => u.id === id);
+      if (updated) saveUserToBackend(updated);
+      return next;
+    });
     if (currentUser?.id === id) {
       setCurrentUser((prev) => (prev ? { ...prev, ...patch } : prev));
     }
@@ -137,7 +182,11 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const deleteUser = useCallback((id: string) => {
     setUsers((prev) => prev.filter((u) => u.id !== id));
+    deleteUserFromBackend(id);
   }, []);
+
+  // Don't render until users are loaded (avoids flash of login for valid sessions)
+  if (!loaded) return null;
 
   return (
     <AuthContext.Provider value={{

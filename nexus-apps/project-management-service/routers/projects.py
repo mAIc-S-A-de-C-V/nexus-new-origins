@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import httpx
 
-from database import get_session, CompanyRow, TeamMemberRow, ProjectRow, ProjectStageRow
+from database import get_session, CompanyRow, TeamMemberRow, ProjectRow, ProjectStageRow, UserRow
 
 EVENT_LOG_URL = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
 
@@ -469,6 +469,63 @@ async def delete_stage(
 ):
     tid = _tid(x_tenant_id)
     row = (await db.execute(select(ProjectStageRow).where(ProjectStageRow.id == sid, ProjectStageRow.tenant_id == tid))).scalar_one_or_none()
+    if row:
+        await db.delete(row)
+        await db.commit()
+
+# ── Platform Users ────────────────────────────────────────────────────────────
+
+class UserIn(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    password: str
+    active: bool = True
+    mustChangePassword: bool = False
+    createdBy: str = ""
+    createdAt: str = ""
+
+
+@router.get("/users")
+async def list_users(
+    db: AsyncSession = Depends(get_session),
+    x_tenant_id: Optional[str] = Header(None),
+):
+    tid = _tid(x_tenant_id)
+    rows = (await db.execute(select(UserRow).where(UserRow.tenant_id == tid))).scalars().all()
+    return [r.data for r in rows]
+
+
+@router.post("/users", status_code=201)
+async def upsert_user(
+    body: UserIn,
+    db: AsyncSession = Depends(get_session),
+    x_tenant_id: Optional[str] = Header(None),
+):
+    """Create or update a user (upsert by id)."""
+    tid = _tid(x_tenant_id)
+    data = body.model_dump()
+    if not data.get("createdAt"):
+        data["createdAt"] = _now()
+    row = (await db.execute(select(UserRow).where(UserRow.id == body.id, UserRow.tenant_id == tid))).scalar_one_or_none()
+    if row:
+        row.data = data
+        attributes.flag_modified(row, "data")
+    else:
+        db.add(UserRow(id=body.id, tenant_id=tid, data=data))
+    await db.commit()
+    return data
+
+
+@router.delete("/users/{uid}", status_code=204)
+async def delete_user(
+    uid: str,
+    db: AsyncSession = Depends(get_session),
+    x_tenant_id: Optional[str] = Header(None),
+):
+    tid = _tid(x_tenant_id)
+    row = (await db.execute(select(UserRow).where(UserRow.id == uid, UserRow.tenant_id == tid))).scalar_one_or_none()
     if row:
         await db.delete(row)
         await db.commit()

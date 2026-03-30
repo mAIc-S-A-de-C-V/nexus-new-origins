@@ -55,6 +55,15 @@ class ProjectStageRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class UserRow(Base):
+    __tablename__ = "platform_users"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    data = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
