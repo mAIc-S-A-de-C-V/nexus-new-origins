@@ -14,11 +14,13 @@ services:
         VITE_EVENT_LOG_SERVICE_URL: ${VITE_EVENT_LOG_SERVICE_URL:-http://localhost:8005}
         VITE_AUDIT_SERVICE_URL: ${VITE_AUDIT_SERVICE_URL:-http://localhost:8006}
         VITE_CORRELATION_ENGINE_URL: ${VITE_CORRELATION_ENGINE_URL:-http://localhost:8008}
+        VITE_PROJECT_MGMT_URL: ${VITE_PROJECT_MGMT_URL:-http://localhost:9000}
     ports:
       - "3000:3000"
     depends_on:
       - connector-service
       - ontology-service
+      - project-management-service
     networks:
       - nexus-net
 
@@ -145,6 +147,23 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8008 --reload
+
+  # ─── Nexus Apps ─────────────────────────────────────────────────────────────
+  project-management-service:
+    build:
+      context: ./nexus-apps/project-management-service
+      dockerfile: Dockerfile
+    ports:
+      - "9000:9000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 9000 --reload
 
   # ─── Infrastructure ──────────────────────────────────────────────────────────
   postgres:

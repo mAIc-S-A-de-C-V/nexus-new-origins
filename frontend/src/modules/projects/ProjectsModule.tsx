@@ -9,7 +9,7 @@ import {
 } from '../../types/project';
 import { GanttChart } from './GanttChart';
 
-const API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
+const API = import.meta.env.VITE_PROJECT_MGMT_URL || 'http://localhost:9000';
 const TENANT = 'tenant-001';
 const H = { 'Content-Type': 'application/json', 'x-tenant-id': TENANT };
 
