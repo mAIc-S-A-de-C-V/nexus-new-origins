@@ -226,13 +226,18 @@ async def list_all_projects(
         select(ProjectStageRow).where(ProjectStageRow.tenant_id == tid)
     )).scalars().all()
 
-    # Index stages by project_id
+    # Index stages by project_id, also track latest updated_at per project
     stages_by_project: dict = {}
+    stage_updated_at: dict = {}
     for sr in all_stage_rows:
         pid = sr.project_id
         if pid not in stages_by_project:
             stages_by_project[pid] = []
         stages_by_project[pid].append(sr.data)
+        if sr.updated_at:
+            ts = sr.updated_at.isoformat()
+            if pid not in stage_updated_at or ts > stage_updated_at[pid]:
+                stage_updated_at[pid] = ts
 
     # Fetch company names for context
     company_rows = (await db.execute(
@@ -255,6 +260,10 @@ async def list_all_projects(
             for s in stages
             for c in s.get("comments", [])
         ]
+        # last_modified = latest of project row or any of its stage rows
+        project_ts = pr.updated_at.isoformat() if pr.updated_at else p.get("createdAt", "")
+        stage_ts = stage_updated_at.get(pr.id, "")
+        p["last_modified"] = max(project_ts, stage_ts) if stage_ts else project_ts
         result.append(p)
     return result
 
