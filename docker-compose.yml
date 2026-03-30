@@ -18,12 +18,14 @@ services:
         VITE_ALERT_ENGINE_URL: ${VITE_ALERT_ENGINE_URL:-http://localhost:8010}
         VITE_AUTH_SERVICE_URL: ${VITE_AUTH_SERVICE_URL:-http://localhost:8011}
         VITE_PROJECT_MGMT_URL: ${VITE_PROJECT_MGMT_URL:-http://localhost:9000}
+        VITE_FINANCE_SERVICE_URL: ${VITE_FINANCE_SERVICE_URL:-http://localhost:9001}
     ports:
       - "3000:3000"
     depends_on:
       - connector-service
       - ontology-service
       - project-management-service
+      - finance-service
       - auth-service
     networks:
       - nexus-net
@@ -230,6 +232,21 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 9000 --reload
+
+  finance-service:
+    build:
+      context: ./nexus-apps/finance-service
+      dockerfile: Dockerfile
+    ports:
+      - "9001:9001"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 9001 --reload
 
   # ─── Infrastructure ──────────────────────────────────────────────────────────
   postgres:

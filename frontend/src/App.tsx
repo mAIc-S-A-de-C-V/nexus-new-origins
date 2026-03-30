@@ -13,6 +13,7 @@ const EventLog        = lazy(() => import('./modules/events/EventLog'));
 const ProcessMining   = lazy(() => import('./modules/process/ProcessMining'));
 const AppsPage        = lazy(() => import('./modules/apps/AppsPage'));
 const ProjectsModule  = lazy(() => import('./modules/projects/ProjectsModule'));
+const FinanceModule   = lazy(() => import('./modules/finance/FinanceModule'));
 const UsersPage       = lazy(() => import('./modules/users/UsersPage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
@@ -78,6 +79,8 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading apps..." />}><AppsPage /></Suspense>;
     case 'projects':
       return <Suspense fallback={<LoadingSpinner message="Loading projects..." />}><ProjectsModule /></Suspense>;
+    case 'finance':
+      return <Suspense fallback={<LoadingSpinner message="Loading finance..." />}><FinanceModule /></Suspense>;
     case 'users':
       return <Suspense fallback={<LoadingSpinner message="Loading users..." />}><UsersPage /></Suspense>;
     case 'process':

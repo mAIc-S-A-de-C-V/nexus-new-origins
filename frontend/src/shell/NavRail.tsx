@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
-  FolderKanban, Users, LogOut, ScanSearch,
+  FolderKanban, Users, LogOut, ScanSearch, DollarSign,
 } from 'lucide-react';
 import { useAuth } from './TenantContext';
 import { useAppStore } from '../store/appStore';
@@ -45,6 +45,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'process',    label: 'Process Mining', icon: <ScanSearch size={16} />, active: true,  path: 'process' },
   { id: 'pipelines',  label: 'Pipelines',   icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
   { id: 'projects',   label: 'maic',        icon: <FolderKanban size={16} />,  active: true,  path: 'projects' },
+  { id: 'finance',    label: 'Finance',     icon: <DollarSign size={16} />,    active: true,  path: 'finance' },
   { id: 'users',      label: 'Users',       icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
   { id: 'settings',   label: 'Settings',    icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },
 ];
