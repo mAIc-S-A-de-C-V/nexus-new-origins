@@ -534,7 +534,16 @@ const DBViewerModal: React.FC<{
   const [colFilter, setColFilter] = useState('');
   const [rowFilter, setRowFilter] = useState('');
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
-  const allCols = Object.keys((rows[0] as Record<string, unknown>) || {});
+  // Union keys across ALL rows (not just rows[0]) so sparse array columns always appear
+  const _colSet = new Set<string>();
+  rows.forEach((r) => Object.keys(r as Record<string, unknown>).forEach((k) => _colSet.add(k)));
+  // Also surface array property names defined on the type even if no row has data yet
+  properties.forEach((p) => {
+    if (p.dataType === 'array' || p.name.endsWith('[]')) {
+      _colSet.add(p.name.endsWith('[]') ? p.name : `${p.name}[]`);
+    }
+  });
+  const allCols = Array.from(_colSet);
   const colMap = buildColMap(allCols, properties);
   const cols = colFilter
     ? allCols.filter((c) => c.toLowerCase().includes(colFilter.toLowerCase()))
@@ -777,7 +786,13 @@ const DataTab: React.FC<{
     );
   }
 
-  const cols = Object.keys((rows[0] as Record<string, unknown>) || {});
+  // Union keys across all rows + always include defined array property names
+  const _previewColSet = new Set<string>();
+  rows.forEach((r) => Object.keys(r as Record<string, unknown>).forEach((k) => _previewColSet.add(k)));
+  arrayProperties.forEach((p) => {
+    _previewColSet.add(p.name.endsWith('[]') ? p.name : `${p.name}[]`);
+  });
+  const cols = Array.from(_previewColSet);
   const preview = rows.slice(0, 3);
 
   return (
