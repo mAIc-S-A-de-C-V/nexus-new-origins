@@ -4,13 +4,17 @@ import { useProcessStore } from '../../store/processStore';
 import { ProcessMap } from './ProcessMap';
 import { VariantExplorer } from './VariantExplorer';
 import { CaseBrowser } from './CaseBrowser';
+import { AlertRulesPanel } from './AlertRulesPanel';
+import { ConformanceTab } from './ConformanceTab';
 
-type TabId = 'map' | 'variants' | 'cases';
+type TabId = 'map' | 'variants' | 'cases' | 'conformance' | 'alerts';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'map', label: 'Process Map' },
   { id: 'variants', label: 'Variants' },
   { id: 'cases', label: 'Cases' },
+  { id: 'conformance', label: 'Conformance' },
+  { id: 'alerts', label: 'Alerts' },
 ];
 
 const StatCard: React.FC<{ label: string; value: string | number; sub?: string; alert?: boolean }> = ({ label, value, sub, alert }) => (
@@ -122,6 +126,12 @@ export const ProcessMining: React.FC = () => {
         )}
         {activeTab === 'cases' && (
           <CaseBrowser objectTypeId={selectedOtId} filterVariantId={selectedVariantId} />
+        )}
+        {activeTab === 'conformance' && (
+          <ConformanceTab objectTypeId={selectedOtId} />
+        )}
+        {activeTab === 'alerts' && (
+          <AlertRulesPanel objectTypeId={selectedOtId} />
         )}
       </div>
 

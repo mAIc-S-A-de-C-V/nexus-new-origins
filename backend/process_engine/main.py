@@ -2,7 +2,9 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
+from database_pg import init_pg_db
 from routers import process
+from routers import conformance
 
 app = FastAPI(title="Nexus Process Engine", version="1.0.0")
 
@@ -15,11 +17,13 @@ app.add_middleware(
 )
 
 app.include_router(process.router, prefix="/process", tags=["process"])
+app.include_router(conformance.router, prefix="/process/conformance", tags=["conformance"])
 
 
 @app.on_event("startup")
 async def startup():
     await init_db()
+    await init_pg_db()
 
 
 @app.get("/health")

@@ -1,8 +1,9 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { AppShell } from './shell/AppShell';
 import { TenantProvider, useAuth } from './shell/TenantContext';
 import LoginPage from './pages/LoginPage';
 import ChangePasswordPage from './pages/ChangePasswordPage';
+import SSOCallbackPage from './pages/SSOCallbackPage';
 
 const ConnectorGrid   = lazy(() => import('./modules/connectors/ConnectorGrid'));
 const OntologyGraph   = lazy(() => import('./modules/ontology/OntologyGraph'));
@@ -92,6 +93,11 @@ const renderPage = (page: string): React.ReactNode => {
 
 const AuthGate: React.FC = () => {
   const { isAuthenticated, currentUser } = useAuth();
+
+  // Handle SSO callback URL (/auth/callback?token=...)
+  if (window.location.pathname === '/auth/callback') {
+    return <SSOCallbackPage />;
+  }
 
   if (!isAuthenticated) return <LoginPage />;
   if (currentUser?.mustChangePassword) return <ChangePasswordPage />;

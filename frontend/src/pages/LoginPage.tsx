@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
 import { useAuth } from '../shell/TenantContext';
+import { useAuthStore } from '../store/authStore';
+
+const AUTH_API = import.meta.env.VITE_AUTH_SERVICE_URL || 'http://localhost:8011';
+const SSO_ENABLED = !!import.meta.env.VITE_AUTH_SERVICE_URL;
 
 // ── maic icon — muted for login screen ───────────────────────────────────
 
@@ -168,6 +172,41 @@ const LoginPage: React.FC = () => {
               Next
             </button>
           </form>
+        )}
+
+        {/* SSO buttons — shown only in email step when auth service is configured */}
+        {step === 'email' && SSO_ENABLED && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, marginTop: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: W, marginBottom: 2 }}>
+              <div style={{ flex: 1, height: 1, backgroundColor: '#2D3F55' }} />
+              <span style={{ fontSize: 10, color: '#4A5568' }}>or sign in with</span>
+              <div style={{ flex: 1, height: 1, backgroundColor: '#2D3F55' }} />
+            </div>
+            {(['google', 'okta', 'azure'] as const).map(provider => (
+              <button
+                key={provider}
+                type="button"
+                onClick={() => { window.location.href = `${AUTH_API}/auth/oidc/${provider}`; }}
+                style={{
+                  width: W, height: 32,
+                  backgroundColor: '#1F2D3D', border: '1px solid #2D3F55', borderRadius: 3,
+                  color: '#8A9BAE', fontSize: 12, fontFamily: 'inherit',
+                  cursor: 'pointer', textTransform: 'capitalize', letterSpacing: '0.02em',
+                  transition: 'border-color 120ms, color 120ms',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#4F6BC6';
+                  e.currentTarget.style.color = '#BCC8E0';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#2D3F55';
+                  e.currentTarget.style.color = '#8A9BAE';
+                }}
+              >
+                {provider === 'azure' ? 'Microsoft' : provider.charAt(0).toUpperCase() + provider.slice(1)}
+              </button>
+            ))}
+          </div>
         )}
 
         {/* Password step */}

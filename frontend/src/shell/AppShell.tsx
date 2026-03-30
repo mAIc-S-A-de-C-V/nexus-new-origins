@@ -1,5 +1,6 @@
 import React from 'react';
 import NavRail from './NavRail';
+import { NotificationBell } from './NotificationBell';
 import { useNavigationStore } from '../store/navigationStore';
 
 interface AppShellProps {
@@ -27,6 +28,15 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       }}>
         {children(currentPage)}
       </main>
+
+      {/* Global notification bell — fixed top-right */}
+      <div style={{
+        position: 'fixed',
+        top: 10, right: 14,
+        zIndex: 100,
+      }}>
+        <NotificationBell />
+      </div>
     </div>
   );
 };

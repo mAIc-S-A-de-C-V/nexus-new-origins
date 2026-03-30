@@ -659,6 +659,19 @@ Rules:
         return message.content[0].text
 
 
+def _safe_floats(values) -> list[float]:
+    """Convert an iterable of values to floats, silently skipping non-numeric ones (e.g. datetimes)."""
+    result = []
+    for v in values:
+        if v is None:
+            continue
+        try:
+            result.append(float(str(v)))
+        except (ValueError, TypeError):
+            pass
+    return result
+
+
 def _apply_query_plan(records: list[dict], plan: dict, fields: list[str]) -> object:
     """Apply a Claude-generated query plan to a list of records."""
     import re
@@ -744,7 +757,7 @@ def _apply_query_plan(records: list[dict], plan: dict, fields: list[str]) -> obj
             if agg == "count":
                 result[key] = len(rows)
             elif agg_field:
-                vals = [float(str(r.get(agg_field,0) or 0)) for r in rows if r.get(agg_field) is not None]
+                vals = _safe_floats(r.get(agg_field) for r in rows)
                 if agg == "sum": result[key] = sum(vals)
                 elif agg == "avg": result[key] = sum(vals)/len(vals) if vals else 0
                 elif agg == "max": result[key] = max(vals) if vals else 0
@@ -753,7 +766,7 @@ def _apply_query_plan(records: list[dict], plan: dict, fields: list[str]) -> obj
     elif agg and not group_by:
         if agg == "count": return {"count": len(filtered)}
         if agg_field:
-            vals = [float(str(r.get(agg_field,0) or 0)) for r in filtered if r.get(agg_field) is not None]
+            vals = _safe_floats(r.get(agg_field) for r in filtered)
             if agg == "sum": return {"sum": sum(vals), "field": agg_field}
             if agg == "avg": return {"avg": sum(vals)/len(vals) if vals else 0, "field": agg_field}
             if agg == "max": return {"max": max(vals) if vals else 0, "field": agg_field}

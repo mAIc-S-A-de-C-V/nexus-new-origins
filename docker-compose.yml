@@ -15,6 +15,8 @@ services:
         VITE_AUDIT_SERVICE_URL: ${VITE_AUDIT_SERVICE_URL:-http://localhost:8006}
         VITE_CORRELATION_ENGINE_URL: ${VITE_CORRELATION_ENGINE_URL:-http://localhost:8008}
         VITE_PROCESS_ENGINE_URL: ${VITE_PROCESS_ENGINE_URL:-http://localhost:8009}
+        VITE_ALERT_ENGINE_URL: ${VITE_ALERT_ENGINE_URL:-http://localhost:8010}
+        VITE_AUTH_SERVICE_URL: ${VITE_AUTH_SERVICE_URL:-http://localhost:8011}
         VITE_PROJECT_MGMT_URL: ${VITE_PROJECT_MGMT_URL:-http://localhost:9000}
     ports:
       - "3000:3000"
@@ -22,6 +24,7 @@ services:
       - connector-service
       - ontology-service
       - project-management-service
+      - auth-service
     networks:
       - nexus-net
 
@@ -157,12 +160,59 @@ services:
       - "8009:8009"
     environment:
       - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
     depends_on:
+      postgres:
+        condition: service_healthy
       timescaledb:
         condition: service_healthy
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8009 --reload
+
+  auth-service:
+    build:
+      context: ./backend/auth_service
+      dockerfile: Dockerfile
+    ports:
+      - "8011:8011"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - JWT_ISSUER=https://nexus.internal/auth
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
+      - SKIP_AUTH=true
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - OKTA_CLIENT_ID=${OKTA_CLIENT_ID:-}
+      - OKTA_CLIENT_SECRET=${OKTA_CLIENT_SECRET:-}
+      - OKTA_BASE_URL=${OKTA_BASE_URL:-}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-common}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8011 --reload
+
+  alert-engine-service:
+    build:
+      context: ./backend/alert_engine
+      dockerfile: Dockerfile
+    ports:
+      - "8010:8010"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
+    depends_on:
+      postgres:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8010 --reload
 
   # ─── Nexus Apps ─────────────────────────────────────────────────────────────
   project-management-service:
