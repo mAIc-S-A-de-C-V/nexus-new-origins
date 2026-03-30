@@ -81,6 +81,8 @@ class DagExecutor:
 
             # Each node produces a list of real records
             node_records: dict[str, list[dict]] = {}
+            # Per-node audit snapshots written into the run record
+            node_audits: dict[str, dict] = {}
             source_row_count = 0
             synced_rows = 0
 
@@ -97,7 +99,10 @@ class DagExecutor:
                     for e in incoming_edges:
                         records_in.extend(node_records.get(e.source, []))
 
+                t_start = datetime.now(timezone.utc)
                 records_out = await _execute_node(node, records_in, pipeline)
+                duration_ms = int((datetime.now(timezone.utc) - t_start).total_seconds() * 1000)
+
                 node_records[node_id] = records_out
 
                 if not incoming_edges and records_out:
@@ -105,6 +110,74 @@ class DagExecutor:
 
                 if node.type in (NodeType.SINK_OBJECT, NodeType.SINK_EVENT):
                     synced_rows = len(records_out)
+
+                # ── Build per-node audit snapshot ──
+                dropped = max(0, len(records_in) - len(records_out))
+
+                # Node-specific stats
+                stats: dict = {}
+                cfg = node.config or {}
+                if node.type == NodeType.FILTER:
+                    stats = {"expression": cfg.get("expression", ""), "dropped": dropped}
+                elif node.type == NodeType.MAP:
+                    mappings = cfg.get("mappings")
+                    if isinstance(mappings, str):
+                        import json as _json
+                        try: mappings = _json.loads(mappings)
+                        except: mappings = {}
+                    stats = {"mappings": mappings or {}}
+                elif node.type == NodeType.ENRICH:
+                    matched = len(records_out)
+                    total = len(records_in)
+                    stats = {
+                        "match_rate": round(matched / total, 3) if total else 0,
+                        "matched": matched,
+                        "unmatched": total - matched,
+                        "join_key": cfg.get("joinKey") or cfg.get("join_key", ""),
+                    }
+                elif node.type == NodeType.DEDUPE:
+                    stats = {"duplicates_removed": dropped, "keys": cfg.get("keys", "")}
+                elif node.type == NodeType.VALIDATE:
+                    stats = {"invalid_dropped": dropped, "required_fields": cfg.get("requiredFields", [])}
+                elif node.type == NodeType.CAST:
+                    stats = {"casts": cfg.get("casts", {})}
+                elif node.type == NodeType.FLATTEN:
+                    stats = {"path": cfg.get("path", ""), "expanded_to": len(records_out)}
+                elif node.type == NodeType.SINK_OBJECT:
+                    stats = {"object_type_id": cfg.get("objectTypeId") or node.object_type_id or pipeline.target_object_type_id, "write_mode": cfg.get("write_mode", "upsert")}
+                elif node.type == NodeType.SINK_EVENT:
+                    stats = {"activity_field": cfg.get("activityField", ""), "case_id_field": cfg.get("caseIdField", "id"), "events_emitted": len(records_out)}
+                elif node.type == NodeType.SOURCE:
+                    stats = {"connector_id": cfg.get("connectorId", ""), "endpoint": cfg.get("endpoint", "")}
+
+                # Flatten sample rows: strip large nested arrays to keep payload small
+                def _flatten_sample(rows: list[dict], n: int = 5) -> list[dict]:
+                    out = []
+                    for r in rows[:n]:
+                        flat = {}
+                        for k, v in r.items():
+                            if isinstance(v, list):
+                                flat[k] = f"[{len(v)} items]"
+                            elif isinstance(v, dict):
+                                flat[k] = "{...}"
+                            else:
+                                flat[k] = v
+                        out.append(flat)
+                    return out
+
+                node_audits[node_id] = {
+                    "node_id": node_id,
+                    "node_type": node.type.value,
+                    "node_label": node.label,
+                    "rows_in": len(records_in),
+                    "rows_out": len(records_out),
+                    "dropped": dropped,
+                    "duration_ms": duration_ms,
+                    "started_at": t_start.isoformat(),
+                    "sample_in": _flatten_sample(records_in),
+                    "sample_out": _flatten_sample(records_out),
+                    "stats": stats,
+                }
 
             total_out = synced_rows or max((len(r) for r in node_records.values()), default=0)
             finished_at = datetime.now(timezone.utc).isoformat()
@@ -114,6 +187,7 @@ class DagExecutor:
                 "finished_at": finished_at,
                 "rows_in": source_row_count,
                 "rows_out": total_out,
+                "node_audits": node_audits,
             })
 
             pipeline.status = PipelineStatus.IDLE

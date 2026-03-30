@@ -212,6 +212,7 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
             run_row.rows_in = run.get("rows_in", 0)
             run_row.rows_out = run.get("rows_out", 0)
             run_row.error_message = run.get("error")
+            run_row.node_audits = run.get("node_audits")
             run_row.finished_at = datetime.now(timezone.utc)
 
         # Update pipeline status too
@@ -297,6 +298,37 @@ async def get_runs(
         }
         for r in runs
     ]
+
+
+@router.get("/{pipeline_id}/runs/{run_id}/audit")
+async def get_run_audit(
+    pipeline_id: str,
+    run_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Return per-node audit data for a specific pipeline run."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(PipelineRunRow).where(
+            PipelineRunRow.id == run_id,
+            PipelineRunRow.pipeline_id == pipeline_id,
+            PipelineRunRow.tenant_id == tenant_id,
+        )
+    )
+    run_row = result.scalar_one_or_none()
+    if not run_row:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {
+        "run_id": run_id,
+        "pipeline_id": pipeline_id,
+        "status": run_row.status,
+        "rows_in": run_row.rows_in,
+        "rows_out": run_row.rows_out,
+        "started_at": run_row.started_at.isoformat() if run_row.started_at else None,
+        "finished_at": run_row.finished_at.isoformat() if run_row.finished_at else None,
+        "node_audits": run_row.node_audits or {},
+    }
 
 
 @router.get("/{pipeline_id}/quality", response_model=EventLogQualityScore)

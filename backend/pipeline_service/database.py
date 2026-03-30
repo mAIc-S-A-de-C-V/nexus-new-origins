@@ -38,6 +38,8 @@ class PipelineRunRow(Base):
     rows_in = Column(Integer, nullable=False, default=0)
     rows_out = Column(Integer, nullable=False, default=0)
     error_message = Column(String, nullable=True)
+    # Per-node audit data: {node_id: {rows_in, rows_out, sample_in, sample_out, stats, ...}}
+    node_audits = Column(JSON, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
 
