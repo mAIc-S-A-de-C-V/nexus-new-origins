@@ -19,7 +19,7 @@ import {
   Eye, Pencil, Code2, Save, Plus, Trash2,
   ChevronRight, RefreshCw,
   BarChart2, LineChart, Table, Hash, AlignLeft, Gauge, SlidersHorizontal,
-  Database, Tag, MessageSquare, Sparkles, Loader,
+  Database, Tag, MessageSquare, Sparkles, Loader, Braces,
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator } from '../../types/app';
 import { useAppStore } from '../../store/appStore';
@@ -75,6 +75,7 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'filter-bar',   label: 'Filter Bar',   icon: <SlidersHorizontal size={13} />,  defaultColSpan: 12, description: 'Interactive filter chips' },
   { type: 'text-block',   label: 'Text Block',   icon: <AlignLeft size={13} />,          defaultColSpan: 12, description: 'Rich text / notes' },
   { type: 'chat-widget',  label: 'Chat',         icon: <MessageSquare size={13} />,      defaultColSpan: 12, description: 'Ask questions about data with AI' },
+  { type: 'custom-code',  label: 'Custom Code',  icon: <Braces size={13} />,             defaultColSpan: 12, description: 'AI-generated custom visualization' },
 ];
 
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -90,7 +91,7 @@ const SEMANTIC_ICON: Record<string, string> = {
 const LeftSidebar: React.FC<{
   objectTypes: OntologyType[];
   onAddWidget: (type: ComponentType, otId?: string) => void;
-  onAddWidgetFromNL: (prompt: string, otId: string) => Promise<void>;
+  onAddWidgetFromNL: (prompt: string, otId: string, forceCode?: boolean) => Promise<void>;
   onClickField: (field: string) => void;
 }> = ({ objectTypes, onAddWidget, onAddWidgetFromNL, onClickField }) => {
   const [expandedOt, setExpandedOt] = useState<string | null>(null);
@@ -98,6 +99,7 @@ const LeftSidebar: React.FC<{
   const [nlOtId, setNlOtId] = useState('');
   const [nlLoading, setNlLoading] = useState(false);
   const [nlError, setNlError] = useState('');
+  const [forceCode, setForceCode] = useState(false);
   const nlRef = useRef<HTMLTextAreaElement>(null);
 
   const handleNlGenerate = async () => {
@@ -105,7 +107,7 @@ const LeftSidebar: React.FC<{
     setNlLoading(true);
     setNlError('');
     try {
-      await onAddWidgetFromNL(nlPrompt.trim(), nlOtId);
+      await onAddWidgetFromNL(nlPrompt.trim(), nlOtId, forceCode);
       setNlPrompt('');
     } catch (e: unknown) {
       setNlError(e instanceof Error ? e.message : 'Failed to generate widget');
@@ -162,6 +164,31 @@ const LeftSidebar: React.FC<{
         {nlError && (
           <div style={{ fontSize: 10, color: '#DC2626', marginTop: 4 }}>{nlError}</div>
         )}
+        {/* Code mode toggle */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, cursor: 'pointer', userSelect: 'none' }}>
+          <div
+            onClick={() => setForceCode((v) => !v)}
+            style={{
+              width: 28, height: 16, borderRadius: 8, position: 'relative', flexShrink: 0,
+              backgroundColor: forceCode ? '#7C3AED' : '#CBD5E1',
+              transition: 'background 0.2s',
+            }}
+          >
+            <div style={{
+              position: 'absolute', top: 2, left: forceCode ? 14 : 2,
+              width: 12, height: 12, borderRadius: '50%', backgroundColor: '#fff',
+              transition: 'left 0.2s',
+            }} />
+          </div>
+          <span style={{ fontSize: 10, color: forceCode ? '#7C3AED' : '#64748B', fontWeight: 600 }}>
+            {forceCode ? 'Custom Code' : 'Smart Widget'}
+          </span>
+        </label>
+        {forceCode && (
+          <div style={{ fontSize: 10, color: '#7C3AED', marginTop: 3, lineHeight: 1.4 }}>
+            AI writes code for anything you want — pie charts, rankings, custom tables, calculations.
+          </div>
+        )}
         <button
           onClick={handleNlGenerate}
           disabled={!nlPrompt.trim() || !nlOtId || nlLoading}
@@ -174,7 +201,11 @@ const LeftSidebar: React.FC<{
             fontSize: 11, fontWeight: 600,
           }}
         >
-          {nlLoading ? <><Loader size={10} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</> : <><Sparkles size={10} /> Generate Widget</>}
+          {nlLoading
+            ? <><Loader size={10} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</>
+            : forceCode
+              ? <><Sparkles size={10} /> Generate Custom Code</>
+              : <><Sparkles size={10} /> Generate Widget</>}
         </button>
       </div>
 
@@ -1379,7 +1410,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
     if (mode !== 'edit') setMode('edit');
   };
 
-  const addWidgetFromNL = async (prompt: string, otId: string) => {
+  const addWidgetFromNL = async (prompt: string, otId: string, forceCode = false) => {
     const ot = objectTypes.find((o) => o.id === otId);
     if (!ot) throw new Error('Object type not found');
     const fields = ot.properties.filter((p) => !p.name.endsWith('[]')).map((p) => p.name);
@@ -1394,7 +1425,8 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
       sampleRows = (d.records || []).slice(0, 10);
     } catch { /* ignore */ }
 
-    const res = await fetch(`${INFERENCE_API}/infer/generate-widget`, {
+    const endpoint = forceCode ? 'generate-code' : 'generate-widget';
+    const res = await fetch(`${INFERENCE_API}/infer/${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1403,6 +1435,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
         object_type_name: ot.displayName || ot.name,
         properties: fields,
         sample_rows: sampleRows,
+        force_code: forceCode,
       }),
     });
     if (!res.ok) {

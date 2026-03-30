@@ -116,15 +116,25 @@ class GenerateWidgetRequest(BaseModel):
     object_type_name: str
     properties: list[str] = []
     sample_rows: list[dict] = []
+    force_code: bool = False  # if True, always generate custom-code
 
 
 @router.post("/generate-widget")
 async def generate_widget(req: GenerateWidgetRequest):
     """
     Generate a single widget config from a natural language description.
-    Returns one AppComponent config.
+    Returns one AppComponent config. If force_code=True or the request is complex,
+    returns a custom-code widget with generated JavaScript.
     """
     try:
+        if req.force_code:
+            return client.generate_code_widget(
+                description=req.description,
+                object_type_id=req.object_type_id,
+                object_type_name=req.object_type_name,
+                properties=req.properties,
+                sample_rows=req.sample_rows,
+            )
         return client.generate_widget(
             description=req.description,
             object_type_id=req.object_type_id,
@@ -136,6 +146,26 @@ async def generate_widget(req: GenerateWidgetRequest):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Widget generation failed: {e}")
+
+
+@router.post("/generate-code")
+async def generate_code_widget(req: GenerateWidgetRequest):
+    """
+    Always generates a custom-code widget — Claude writes arbitrary JS/React code
+    to render exactly what the user asks for, with no preset widget type constraints.
+    """
+    try:
+        return client.generate_code_widget(
+            description=req.description,
+            object_type_id=req.object_type_id,
+            object_type_name=req.object_type_name,
+            properties=req.properties,
+            sample_rows=req.sample_rows,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Code widget generation failed: {e}")
 
 
 class ChatRequest(BaseModel):

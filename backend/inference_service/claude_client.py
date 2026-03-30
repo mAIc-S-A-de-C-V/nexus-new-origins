@@ -476,6 +476,82 @@ Only include keys relevant to the widget type. Omit null/empty keys entirely."""
         result = self._call(prompt)
         return result
 
+    def generate_code_widget(
+        self,
+        description: str,
+        object_type_id: str,
+        object_type_name: str,
+        properties: list[str],
+        sample_rows: list[dict] | None = None,
+    ) -> dict:
+        """
+        Generate a custom-code widget — Claude writes React.createElement code
+        that can render anything the user asks for, not limited to pre-built types.
+        Returns a component dict with type='custom-code' and a 'code' field.
+        """
+        sample_rows = sample_rows or []
+        today = datetime.now().strftime("%Y-%m-%d")
+        from datetime import timedelta
+        now = datetime.now()
+        week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%dT00:00:00")
+
+        sample_preview = ""
+        if sample_rows:
+            all_keys = list(dict.fromkeys(k for row in sample_rows for k in row))[:25]
+            header = "\t".join(all_keys)
+            rows_text = "\n".join(
+                "\t".join(str(row.get(k, ""))[:40] for k in all_keys)
+                for row in sample_rows[:5]
+            )
+            sample_preview = f"\nSample data ({len(sample_rows)} rows):\n{header}\n{rows_text}"
+
+        prompt = f"""You are a dashboard code generator. Generate a JavaScript function body for a custom widget.
+
+Today: {today}  |  Current week starts: {week_start}
+User request: "{description}"
+Object type: "{object_type_name}" (id: {object_type_id})
+Available fields: {json.dumps(properties[:60])}{sample_preview}
+
+TASK: Write JavaScript code (no JSX, no imports, no export) that:
+1. Receives these variables: React (the React object), records (array of data objects), fields (array of field names), title (string)
+2. Does whatever the user requested (filtering, grouping, calculations, custom visualization)
+3. Returns a React element tree using React.createElement()
+
+RULES:
+- Use ONLY React.createElement(), never JSX syntax (no < > tags)
+- Use only vanilla JS — no imports, no require(), no external libs
+- Field names must match exactly from the Available fields list
+- For date comparisons, parse with new Date()
+- For colors use: primary=#7C3AED, success=#16A34A, danger=#DC2626, muted=#94A3B8, border=#E2E8F0
+- Keep the UI clean and minimal — use padding 12-16px, font-size 12-13px
+- Always wrap in a div with style={{padding:'12px', height:'100%', overflow:'auto', boxSizing:'border-box'}}
+- Handle empty data gracefully (check records.length)
+
+EXAMPLE pattern for a ranked list:
+  var items = records.slice(0, 10);
+  return React.createElement('div', {{style:{{padding:'12px'}}}},
+    React.createElement('div', {{style:{{fontWeight:600,marginBottom:'8px',fontSize:'13px'}}}}, title),
+    items.map(function(r, i) {{
+      return React.createElement('div', {{key:i, style:{{...}}}}, r.fieldname);
+    }})
+  );
+
+Return ONLY valid JSON (no markdown):
+{{
+  "id": "w-auto",
+  "type": "custom-code",
+  "title": "descriptive title",
+  "objectTypeId": "{object_type_id}",
+  "colSpan": <6 or 12>,
+  "gridH": <4, 5, 6, or 8>,
+  "code": "...the full JavaScript function body as a single-line string with \\n for newlines..."
+}}
+
+The 'code' value must be a JSON string — escape all double quotes as \\", newlines as \\n."""
+
+        result = self._call(prompt)
+        return result
+
     def chat_with_data(
         self,
         question: str,

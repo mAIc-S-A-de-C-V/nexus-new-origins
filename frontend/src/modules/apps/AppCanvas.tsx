@@ -597,6 +597,31 @@ const TextBlock: React.FC<{ comp: AppComponent }> = ({ comp }) => (
   </div>
 );
 
+// ── Custom Code Widget ────────────────────────────────────────────────────
+// Claude-generated code executed safely with new Function.
+// The code receives: React, records, fields, title — and must return React elements.
+
+const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({ comp, records }) => {
+  const fields = records.length > 0 ? Object.keys(records[0]) : [];
+  if (!comp.code) {
+    return (
+      <div style={{ padding: 16, color: '#94A3B8', fontSize: 12 }}>No code provided.</div>
+    );
+  }
+  try {
+    // eslint-disable-next-line no-new-func
+    const fn = new Function('React', 'records', 'fields', 'title', comp.code);
+    const result = fn(React, records, fields, comp.title);
+    return result ?? null;
+  } catch (err) {
+    return (
+      <div style={{ padding: 12, backgroundColor: '#FFF1F2', borderRadius: 6, fontSize: 11, fontFamily: 'var(--font-mono)', color: '#BE123C' }}>
+        <strong>Code error:</strong> {String(err)}
+      </div>
+    );
+  }
+};
+
 // ── Inline widget (used inside chat messages) ──────────────────────────────
 
 const InlineWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({ comp, records }) => {
@@ -607,6 +632,7 @@ const InlineWidget: React.FC<{ comp: AppComponent; records: Record<string, unkno
     case 'data-table': return <DataTable comp={comp} records={filtered} />;
     case 'bar-chart': return <BarChart comp={comp} records={filtered} />;
     case 'line-chart': return <LineChart comp={comp} records={filtered} />;
+    case 'custom-code': return <CustomCodeWidget comp={comp} records={filtered} />;
     default: return null;
   }
 };
@@ -858,6 +884,7 @@ const ComponentRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
     case 'filter-bar': return <FilterBar comp={comp} records={records} />;
     case 'text-block': return <TextBlock comp={comp} />;
     case 'chat-widget': return <ChatWidget comp={comp} records={records} />;
+    case 'custom-code': return <CustomCodeWidget comp={comp} records={records} />;
     default: return null;
   }
 };

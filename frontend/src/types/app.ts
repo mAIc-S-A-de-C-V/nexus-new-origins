@@ -20,7 +20,8 @@ export type ComponentType =
   | 'kpi-banner'
   | 'text-block'
   | 'filter-bar'
-  | 'chat-widget';
+  | 'chat-widget'
+  | 'custom-code';
 
 export interface AppComponent {
   id: string;
@@ -41,6 +42,8 @@ export interface AppComponent {
   content?: string;
   // filter-bar
   filterField?: string;
+  // custom-code
+  code?: string;
   // filters applied before rendering
   filters?: AppFilter[];
   // layout (react-grid-layout)
