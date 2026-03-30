@@ -107,10 +107,11 @@ class DagExecutor:
                     synced_rows = len(records_out)
 
             total_out = synced_rows or max((len(r) for r in node_records.values()), default=0)
+            finished_at = datetime.now(timezone.utc).isoformat()
 
             run.update({
                 "status": "COMPLETED",
-                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": finished_at,
                 "rows_in": source_row_count,
                 "rows_out": total_out,
             })
@@ -119,13 +120,36 @@ class DagExecutor:
             pipeline.last_run_at = datetime.now(timezone.utc)
             pipeline.last_run_row_count = total_out
 
+            # Emit PIPELINE_COMPLETED event so it appears in the Event Log
+            asyncio.create_task(_emit_pipeline_event(
+                pipeline_id=pipeline.id,
+                pipeline_name=pipeline.name,
+                activity="PIPELINE_COMPLETED",
+                timestamp=finished_at,
+                rows_in=source_row_count,
+                rows_out=total_out,
+                status="COMPLETED",
+            ))
+
         except Exception as e:
+            finished_at = datetime.now(timezone.utc).isoformat()
             run.update({
                 "status": "FAILED",
-                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": finished_at,
                 "error": str(e),
             })
             pipeline.status = PipelineStatus.FAILED
+
+            asyncio.create_task(_emit_pipeline_event(
+                pipeline_id=pipeline.id,
+                pipeline_name=pipeline.name,
+                activity="PIPELINE_FAILED",
+                timestamp=finished_at,
+                rows_in=0,
+                rows_out=0,
+                status="FAILED",
+                error=str(e),
+            ))
 
 
 # ── Node Handlers ─────────────────────────────────────────────────────────────
@@ -388,16 +412,36 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     if not ot_id or not records_in:
         return records_in
 
-    # Legacy array_append write mode — keep existing behavior
+    # Array append write mode: attach records_in as a nested array on matching target records
     if cfg.get("write_mode") == "array_append":
         array_field = cfg.get("array_field", "meetings")
-        merge_key = cfg.get("merge_key", "deal_name")
-        await _execute_array_append(
-            pipeline=pipeline,
-            ot_id=ot_id,
-            array_field=array_field,
-            merge_key=merge_key,
-        )
+        merge_key = cfg.get("merge_key", "name")
+        join_key = cfg.get("join_key", "__join_key__")
+
+        # If records are flowing through the pipeline, use them (the correct path)
+        if records_in:
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(
+                        f"{ONTOLOGY_API}/object-types/{ot_id}/records/array-append",
+                        json={
+                            "array_field": array_field,
+                            "merge_key": merge_key,
+                            "join_key": join_key,
+                            "records": records_in,
+                        },
+                        headers={"x-tenant-id": "tenant-001"},
+                    )
+            except Exception:
+                pass
+        else:
+            # Fallback: re-fetch from connector schema (legacy path)
+            await _execute_array_append(
+                pipeline=pipeline,
+                ot_id=ot_id,
+                array_field=array_field,
+                merge_key=merge_key,
+            )
         return records_in
 
     pk_field = _guess_pk(records_in[0]) if records_in else "id"
@@ -750,3 +794,43 @@ async def _emit_events_from_records(
         pass
 
     return written
+
+
+# ── Pipeline execution event emission ────────────────────────────────────────
+
+async def _emit_pipeline_event(
+    pipeline_id: str,
+    pipeline_name: str,
+    activity: str,
+    timestamp: str,
+    rows_in: int,
+    rows_out: int,
+    status: str,
+    error: str = "",
+) -> None:
+    """Emit a pipeline-level event to the event log so run history is visible."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(
+                f"{EVENT_LOG_API}/events",
+                json={
+                    "id": str(uuid4()),
+                    "case_id": pipeline_id,
+                    "activity": activity,
+                    "timestamp": timestamp,
+                    "object_type_id": "",
+                    "object_id": pipeline_id,
+                    "pipeline_id": pipeline_id,
+                    "connector_id": "",
+                    "tenant_id": "tenant-001",
+                    "attributes": {
+                        "pipeline_name": pipeline_name,
+                        "rows_in": rows_in,
+                        "rows_out": rows_out,
+                        "status": status,
+                        "error": error,
+                    },
+                },
+            )
+    except Exception:
+        pass

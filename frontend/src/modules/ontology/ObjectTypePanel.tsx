@@ -563,8 +563,10 @@ const DBViewerModal: React.FC<{
               {filteredRows.length} rows · {cols.length}{cols.length !== allCols.length ? `/${allCols.length}` : ''} columns
             </span>
             {properties.length > 0 && (() => {
-              const mapped = allCols.filter((c) => colMap[c]).length;
-              const unmapped = allCols.length - mapped;
+              const SYSTEM_COLS = new Set(['_pipeline_id', '_pipeline_run_at', '_pipeline_name', '_synced_at']);
+              const userCols = allCols.filter((c) => !SYSTEM_COLS.has(c));
+              const mapped = userCols.filter((c) => colMap[c]).length;
+              const unmapped = userCols.length - mapped;
               return unmapped > 0 ? (
                 <span style={{ fontSize: '11px', backgroundColor: '#FFFBEB', color: '#B45309', border: '1px solid #FDE68A', padding: '2px 8px', borderRadius: '3px', fontWeight: 500 }}>
                   {unmapped} column{unmapped > 1 ? 's' : ''} unmapped · {mapped} mapped

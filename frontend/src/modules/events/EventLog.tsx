@@ -330,13 +330,21 @@ export const EventLog: React.FC = () => {
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
                 <tbody>
-                  {filtered.map((evt) => (
+                  {filtered.map((evt) => {
+                    const isPipelineRun = evt.activity === 'PIPELINE_COMPLETED' || evt.activity === 'PIPELINE_FAILED';
+                    const isCompleted = evt.activity === 'PIPELINE_COMPLETED';
+                    const isFailed = evt.activity === 'PIPELINE_FAILED';
+                    const rowBg = expandedRow === evt.id
+                      ? (isPipelineRun ? (isCompleted ? '#F0FDF4' : '#FEF2F2') : '#F5F3FF')
+                      : isPipelineRun ? (isCompleted ? '#F0FDF4' : '#FFF1F2') : 'transparent';
+                    return (
                     <React.Fragment key={evt.id}>
                       <tr
                         onClick={() => setExpandedRow(expandedRow === evt.id ? null : evt.id)}
                         style={{
-                          borderBottom: '1px solid #F1F5F9', cursor: 'pointer',
-                          backgroundColor: expandedRow === evt.id ? '#F5F3FF' : 'transparent',
+                          borderBottom: isPipelineRun ? `2px solid ${isCompleted ? '#BBF7D0' : '#FECDD3'}` : '1px solid #F1F5F9',
+                          cursor: 'pointer',
+                          backgroundColor: rowBg,
                         }}
                       >
                         <td style={{ padding: '7px 8px 7px 16px', width: '24px', color: '#94A3B8' }}>
@@ -345,49 +353,91 @@ export const EventLog: React.FC = () => {
                         <td style={{ padding: '7px 8px', color: '#64748B', fontFamily: 'var(--font-mono)', fontSize: '11px', whiteSpace: 'nowrap' }}>
                           {new Date(evt.timestamp).toLocaleString()}
                         </td>
-                        <td style={{ padding: '7px 8px', fontFamily: 'var(--font-mono)', fontWeight: 500, color: '#0D1117' }}>
-                          {evt.caseId}
+                        <td style={{ padding: '7px 8px', fontFamily: 'var(--font-mono)', fontWeight: 500, color: '#0D1117', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {isPipelineRun ? (evt.attributes.pipeline_name as string || currentPipeline?.name || evt.caseId) : evt.caseId}
                         </td>
                         <td style={{ padding: '7px 8px' }}>
-                          <span style={{ backgroundColor: '#EDE9FE', color: '#6D28D9', padding: '2px 7px', borderRadius: '2px', fontSize: '11px', fontWeight: 500 }}>
+                          <span style={{
+                            backgroundColor: isPipelineRun
+                              ? (isCompleted ? '#DCFCE7' : '#FFE4E6')
+                              : '#EDE9FE',
+                            color: isPipelineRun
+                              ? (isCompleted ? '#15803D' : '#BE123C')
+                              : '#6D28D9',
+                            padding: '2px 7px', borderRadius: '2px', fontSize: '11px', fontWeight: 600,
+                          }}>
                             {evt.activity}
                           </span>
                         </td>
                         <td style={{ padding: '7px 8px', color: '#64748B', fontSize: '11px' }}>
-                          {evt.resource}
+                          {isPipelineRun
+                            ? (evt.attributes.rows_out != null ? `${evt.attributes.rows_out} records` : '')
+                            : evt.resource}
                         </td>
                         <td style={{ padding: '7px 16px 7px 8px', textAlign: 'right', color: '#64748B', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
-                          {evt.cost != null ? `$${evt.cost.toFixed(2)}` : '—'}
+                          {isPipelineRun
+                            ? (evt.attributes.rows_in != null ? `${evt.attributes.rows_in} in` : '—')
+                            : (evt.cost != null ? `$${evt.cost.toFixed(2)}` : '—')}
                         </td>
                       </tr>
                       {expandedRow === evt.id && (
-                        <tr style={{ backgroundColor: '#F5F3FF' }}>
+                        <tr style={{ backgroundColor: isPipelineRun ? (isCompleted ? '#F0FDF4' : '#FFF1F2') : '#F5F3FF' }}>
                           <td colSpan={6} style={{ padding: '8px 16px 12px 40px' }}>
                             <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '11px' }}>
-                              <div>
-                                <span style={{ color: '#94A3B8', fontWeight: 600 }}>Event ID</span>
-                                <div style={{ fontFamily: 'var(--font-mono)', color: '#0D1117', marginTop: '2px' }}>{evt.id}</div>
-                              </div>
-                              <div>
-                                <span style={{ color: '#94A3B8', fontWeight: 600 }}>Pipeline</span>
-                                <div style={{ color: '#0D1117', marginTop: '2px' }}>{currentPipeline?.name}</div>
-                              </div>
-                              <div>
-                                <span style={{ color: '#94A3B8', fontWeight: 600 }}>Object Type</span>
-                                <div style={{ color: '#0D1117', marginTop: '2px' }}>{evt.objectTypeId ? objectTypeName(evt.objectTypeId) : '—'}</div>
-                              </div>
-                              <div>
-                                <span style={{ color: '#94A3B8', fontWeight: 600 }}>Attributes</span>
-                                <div style={{ fontFamily: 'var(--font-mono)', color: '#64748B', marginTop: '2px', fontSize: '10px' }}>
-                                  {JSON.stringify(evt.attributes, null, 0)}
-                                </div>
-                              </div>
+                              {isPipelineRun ? (
+                                <>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Pipeline</span>
+                                    <div style={{ color: '#0D1117', marginTop: '2px' }}>{evt.attributes.pipeline_name as string || currentPipeline?.name}</div>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Records In</span>
+                                    <div style={{ fontFamily: 'var(--font-mono)', color: '#0D1117', marginTop: '2px' }}>{String(evt.attributes.rows_in ?? '—')}</div>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Records Out</span>
+                                    <div style={{ fontFamily: 'var(--font-mono)', color: '#0D1117', marginTop: '2px' }}>{String(evt.attributes.rows_out ?? '—')}</div>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Status</span>
+                                    <div style={{ color: isCompleted ? '#15803D' : '#BE123C', fontWeight: 600, marginTop: '2px' }}>{evt.attributes.status as string}</div>
+                                  </div>
+                                  {isFailed && evt.attributes.error && (
+                                    <div style={{ flex: 1 }}>
+                                      <span style={{ color: '#94A3B8', fontWeight: 600 }}>Error</span>
+                                      <div style={{ fontFamily: 'var(--font-mono)', color: '#BE123C', marginTop: '2px', fontSize: '10px', wordBreak: 'break-all' }}>{evt.attributes.error as string}</div>
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                <>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Event ID</span>
+                                    <div style={{ fontFamily: 'var(--font-mono)', color: '#0D1117', marginTop: '2px' }}>{evt.id}</div>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Pipeline</span>
+                                    <div style={{ color: '#0D1117', marginTop: '2px' }}>{currentPipeline?.name}</div>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Object Type</span>
+                                    <div style={{ color: '#0D1117', marginTop: '2px' }}>{evt.objectTypeId ? objectTypeName(evt.objectTypeId) : '—'}</div>
+                                  </div>
+                                  <div>
+                                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>Attributes</span>
+                                    <div style={{ fontFamily: 'var(--font-mono)', color: '#64748B', marginTop: '2px', fontSize: '10px' }}>
+                                      {JSON.stringify(evt.attributes, null, 0)}
+                                    </div>
+                                  </div>
+                                </>
+                              )}
                             </div>
                           </td>
                         </tr>
                       )}
                     </React.Fragment>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             )}
