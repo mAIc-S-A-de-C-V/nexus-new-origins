@@ -36,16 +36,18 @@ export interface PipelineStepNodeData {
   pipelineName?: string;
   isFirst?: boolean;
   isLast?: boolean;
+  onStepClick?: () => void;
 }
 
 export const PipelineStepNode: React.FC<NodeProps> = ({ data, selected }) => {
-  const { stepType, label, subtitle } = data as unknown as PipelineStepNodeData;
+  const { stepType, label, subtitle, onStepClick } = data as unknown as PipelineStepNodeData;
   const color = STEP_COLOR[stepType] || '#374151';
   const bg = STEP_BG[stepType] || '#F8FAFC';
   const typeLabel = stepType === 'SINK_OBJECT' ? 'SINK OBJ' : stepType === 'SINK_EVENT' ? 'SINK EVT' : stepType;
 
   return (
     <div
+      onClick={(e) => { e.stopPropagation(); onStepClick?.(); }}
       style={{
         width: 120,
         backgroundColor: bg,
@@ -53,6 +55,7 @@ export const PipelineStepNode: React.FC<NodeProps> = ({ data, selected }) => {
         borderRadius: 6,
         overflow: 'hidden',
         fontFamily: 'var(--font-interface)',
+        cursor: 'pointer',
         boxShadow: selected
           ? `0 0 0 2px ${color}33`
           : '0 1px 3px rgba(0,0,0,0.07)',

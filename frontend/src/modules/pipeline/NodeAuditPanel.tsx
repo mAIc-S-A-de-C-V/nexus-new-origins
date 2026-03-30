@@ -106,7 +106,7 @@ const NodeStats: React.FC<{ nodeType: string; stats: Record<string, unknown>; dr
         <div style={{ fontSize: 10, fontWeight: 600, color: dropped > 0 ? '#C2410C' : '#15803D', marginBottom: 4 }}>
           {dropped > 0 ? `${dropped} rows dropped by filter` : 'No rows dropped'}
         </div>
-        {stats.expression && (
+        {!!stats.expression && (
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#64748B', wordBreak: 'break-all' }}>
             {String(stats.expression).slice(0, 120)}{String(stats.expression).length > 120 ? '…' : ''}
           </div>
@@ -131,7 +131,7 @@ const NodeStats: React.FC<{ nodeType: string; stats: Record<string, unknown>; dr
         <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 10, color: '#64748B' }}>
           <span><strong style={{ color: '#16A34A' }}>{String(stats.matched)}</strong> matched</span>
           <span><strong style={{ color: '#DC2626' }}>{String(stats.unmatched)}</strong> unmatched</span>
-          {stats.join_key && <span>join: <span style={{ fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{String(stats.join_key)}</span></span>}
+          {!!stats.join_key && <span>join: <span style={{ fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{String(stats.join_key)}</span></span>}
         </div>
       </div>
     );
@@ -160,7 +160,7 @@ const NodeStats: React.FC<{ nodeType: string; stats: Record<string, unknown>; dr
     return (
       <div style={{ padding: '8px 10px', backgroundColor: '#F5F3FF', borderRadius: 4, marginBottom: 10, border: '1px solid #DDD6FE', fontSize: 10 }}>
         <span style={{ fontWeight: 600, color: '#6D28D9' }}>{String(stats.duplicates_removed || 0)} duplicates removed</span>
-        {stats.keys && <div style={{ color: '#64748B', marginTop: 3, fontFamily: 'var(--font-mono)' }}>keys: {String(stats.keys)}</div>}
+        {!!stats.keys && <div style={{ color: '#64748B', marginTop: 3, fontFamily: 'var(--font-mono)' }}>keys: {String(stats.keys)}</div>}
       </div>
     );
   }
@@ -182,8 +182,8 @@ const NodeStats: React.FC<{ nodeType: string; stats: Record<string, unknown>; dr
     return (
       <div style={{ padding: '8px 10px', backgroundColor: '#EFF6FF', borderRadius: 4, marginBottom: 10, border: '1px solid #BFDBFE', fontSize: 10 }}>
         <div style={{ fontWeight: 600, color: '#1D4ED8' }}>Written to ontology</div>
-        {stats.object_type_id && <div style={{ color: '#64748B', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{String(stats.object_type_id)}</div>}
-        {stats.write_mode && <div style={{ color: '#64748B', marginTop: 1 }}>mode: {String(stats.write_mode)}</div>}
+        {!!stats.object_type_id && <div style={{ color: '#64748B', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{String(stats.object_type_id)}</div>}
+        {!!stats.write_mode && <div style={{ color: '#64748B', marginTop: 1 }}>mode: {String(stats.write_mode)}</div>}
       </div>
     );
   }
@@ -192,7 +192,7 @@ const NodeStats: React.FC<{ nodeType: string; stats: Record<string, unknown>; dr
     return (
       <div style={{ padding: '8px 10px', backgroundColor: '#ECFDF5', borderRadius: 4, marginBottom: 10, border: '1px solid #BBF7D0', fontSize: 10 }}>
         <span style={{ fontWeight: 600, color: '#065F46' }}>{String(stats.events_emitted || 0)} events emitted</span>
-        {stats.activity_field && <div style={{ color: '#64748B', marginTop: 2 }}>activity: <span style={{ fontFamily: 'var(--font-mono)' }}>{String(stats.activity_field)}</span></div>}
+        {!!stats.activity_field && <div style={{ color: '#64748B', marginTop: 2 }}>activity: <span style={{ fontFamily: 'var(--font-mono)' }}>{String(stats.activity_field)}</span></div>}
       </div>
     );
   }
@@ -200,8 +200,8 @@ const NodeStats: React.FC<{ nodeType: string; stats: Record<string, unknown>; dr
   if (type === 'SOURCE') {
     return (
       <div style={{ padding: '8px 10px', backgroundColor: '#F8FAFC', borderRadius: 4, marginBottom: 10, border: '1px solid #E2E8F0', fontSize: 10 }}>
-        {stats.connector_id && <div style={{ color: '#64748B' }}>connector: <span style={{ fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{String(stats.connector_id)}</span></div>}
-        {stats.endpoint && <div style={{ color: '#64748B', marginTop: 2 }}>endpoint: <span style={{ fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{String(stats.endpoint)}</span></div>}
+        {!!stats.connector_id && <div style={{ color: '#64748B' }}>connector: <span style={{ fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{String(stats.connector_id)}</span></div>}
+        {!!stats.endpoint && <div style={{ color: '#64748B', marginTop: 2 }}>endpoint: <span style={{ fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{String(stats.endpoint)}</span></div>}
       </div>
     );
   }

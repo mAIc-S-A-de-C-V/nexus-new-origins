@@ -149,6 +149,7 @@ const STEP_PITCH = 160;     // horizontal gap between steps
 const ROW_GAP = 220;        // vertical gap between rows
 
 const CONNECTOR_API = (import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001');
+const PIPELINE_API = (import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002');
 
 function inferSemanticType(name: string, value: unknown): import('../../types/ontology').SemanticType {
   const n = name.toLowerCase();
@@ -167,12 +168,184 @@ function inferSemanticType(name: string, value: unknown): import('../../types/on
 
 interface ConnectorField { name: string; sample: string; semanticType: import('../../types/ontology').SemanticType; }
 
+// ── Step audit panel ──────────────────────────────────────────────────────────
+
+interface SelectedStep {
+  pipelineId: string;
+  nodeId: string | null; // null for AUTH steps
+  stepType: string;
+  label: string;
+  pipelineName: string;
+}
+
+interface NodeAuditData {
+  node_id: string;
+  node_type: string;
+  node_label: string;
+  rows_in: number;
+  rows_out: number;
+  dropped: number;
+  duration_ms: number;
+  started_at: string;
+  sample_in: Record<string, unknown>[];
+  sample_out: Record<string, unknown>[];
+  stats: Record<string, unknown>;
+}
+
+const StepMiniTable: React.FC<{ rows: Record<string, unknown>[] }> = ({ rows }) => {
+  if (!rows || rows.length === 0) return <div style={{ fontSize: 11, color: '#94A3B8', padding: '6px 0' }}>No sample data</div>;
+  const cols = Array.from(new Set(rows.flatMap(r => Object.keys(r)))).slice(0, 6);
+  return (
+    <div style={{ overflowX: 'auto', marginTop: 4 }}>
+      <table style={{ fontSize: 10, borderCollapse: 'collapse', width: '100%', minWidth: 'max-content' }}>
+        <thead>
+          <tr>
+            {cols.map(c => (
+              <th key={c} style={{ padding: '3px 6px', textAlign: 'left', color: '#94A3B8', fontWeight: 500, borderBottom: '1px solid #E2E8F0', whiteSpace: 'nowrap' }}>{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 3).map((row, i) => (
+            <tr key={i} style={{ backgroundColor: i % 2 === 0 ? '#FFFFFF' : '#F8FAFC' }}>
+              {cols.map(c => (
+                <td key={c} style={{ padding: '3px 6px', color: '#374151', borderBottom: '1px solid #F1F5F9', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {String(row[c] ?? '')}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+const StepAuditPanel: React.FC<{ step: SelectedStep; onClose: () => void }> = ({ step, onClose }) => {
+  const [audit, setAudit] = useState<NodeAuditData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [noRun, setNoRun] = useState(false);
+  const [sampleTab, setSampleTab] = useState<'in' | 'out'>('out');
+
+  useEffect(() => {
+    setLoading(true);
+    setAudit(null);
+    setNoRun(false);
+
+    fetch(`${PIPELINE_API}/pipelines/${step.pipelineId}/runs`, { headers: { 'x-tenant-id': 'tenant-001' } })
+      .then(r => r.json())
+      .then(async (runs: { id: string; status: string }[]) => {
+        const latest = runs.find(r => r.status === 'COMPLETED' || r.status === 'FAILED' || r.status === 'RUNNING');
+        if (!latest) { setNoRun(true); setLoading(false); return; }
+        const auditRes = await fetch(`${PIPELINE_API}/pipelines/${step.pipelineId}/runs/${latest.id}/audit`, { headers: { 'x-tenant-id': 'tenant-001' } });
+        const data = await auditRes.json();
+        const nodeAudits: Record<string, NodeAuditData> = data.node_audits || {};
+        setAudit(step.nodeId ? (nodeAudits[step.nodeId] || null) : null);
+        setLoading(false);
+      })
+      .catch(() => { setLoading(false); });
+  }, [step.pipelineId, step.nodeId]);
+
+  const color = NODE_TYPE_COLOR[step.stepType] || '#374151';
+
+  return (
+    <div style={{ width: 300, backgroundColor: '#FFFFFF', borderLeft: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+      {/* Header */}
+      <div style={{ backgroundColor: color, padding: '12px 14px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.65)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            {step.stepType.replace('_', ' ')} · {step.pipelineName}
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#FFFFFF', marginTop: 2 }}>{step.label}</div>
+        </div>
+        <button onClick={onClose} style={{ color: 'rgba(255,255,255,0.7)', background: 'none', border: 'none', cursor: 'pointer', padding: 2, marginTop: 1 }}>
+          <X size={15} />
+        </button>
+      </div>
+
+      {/* Body */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px' }}>
+        {loading ? (
+          <div style={{ fontSize: 12, color: '#94A3B8', padding: '20px 0', textAlign: 'center' }}>Loading audit data...</div>
+        ) : noRun ? (
+          <div style={{ fontSize: 12, color: '#94A3B8', padding: '20px 0', textAlign: 'center' }}>No pipeline runs yet</div>
+        ) : !audit ? (
+          <div style={{ fontSize: 12, color: '#94A3B8', padding: '20px 0', textAlign: 'center' }}>
+            {step.nodeId === null ? 'Auth step — no row-level data' : 'No audit data for this step'}
+          </div>
+        ) : (
+          <>
+            {/* Row funnel */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#1E3A5F', fontFamily: 'var(--font-mono)' }}>{audit.rows_in.toLocaleString()}</div>
+                <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 1 }}>rows in</div>
+              </div>
+              <div style={{ flex: 1, height: 1, backgroundColor: '#E2E8F0' }} />
+              {audit.dropped > 0 && (
+                <>
+                  <div style={{ fontSize: 10, color: '#DC2626', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>−{audit.dropped}</div>
+                  <div style={{ flex: 1, height: 1, backgroundColor: '#E2E8F0' }} />
+                </>
+              )}
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#059669', fontFamily: 'var(--font-mono)' }}>{audit.rows_out.toLocaleString()}</div>
+                <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 1 }}>rows out</div>
+              </div>
+            </div>
+
+            {/* Duration */}
+            <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 14 }}>
+              <span style={{ color: '#64748B', fontFamily: 'var(--font-mono)' }}>{audit.duration_ms}ms</span>
+              {' · '}
+              {new Date(audit.started_at).toLocaleTimeString()}
+            </div>
+
+            {/* Stats */}
+            {audit.stats && Object.keys(audit.stats).length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Stats</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {Object.entries(audit.stats).map(([k, v]) => (
+                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                      <span style={{ color: '#94A3B8' }}>{k.replace(/_/g, ' ')}</span>
+                      <span style={{ color: '#374151', fontFamily: 'var(--font-mono)' }}>{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Sample data */}
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#64748B', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sample Data</div>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                {(['in', 'out'] as const).map(t => (
+                  <button key={t} onClick={() => setSampleTab(t)} style={{
+                    fontSize: 11, padding: '2px 10px', borderRadius: 3, cursor: 'pointer',
+                    border: `1px solid ${sampleTab === t ? color : '#E2E8F0'}`,
+                    backgroundColor: sampleTab === t ? color : '#F8FAFC',
+                    color: sampleTab === t ? '#FFFFFF' : '#64748B',
+                  }}>
+                    {t === 'in' ? 'Before' : 'After'}
+                  </button>
+                ))}
+              </div>
+              <StepMiniTable rows={sampleTab === 'in' ? audit.sample_in : audit.sample_out} />
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const OntologyGraph: React.FC = () => {
   const { objectTypes, links, fetchObjectTypes, fetchLinks, addObjectType, removeObjectType } = useOntologyStore();
   const { connectors, fetchConnectors } = useConnectorStore();
   const { pipelines, fetchPipelines, addPipeline } = usePipelineStore();
   const [selectedObjectType, setSelectedObjectType] = useState<ObjectType | null>(null);
-  const [expandedPipeline, setExpandedPipeline] = useState<import('../../types/pipeline').Pipeline | null>(null);
+  const [selectedStepNode, setSelectedStepNode] = useState<SelectedStep | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createName, setCreateName] = useState('');
   const [createDesc, setCreateDesc] = useState('');
@@ -393,6 +566,10 @@ export const OntologyGraph: React.FC = () => {
             stepType: 'AUTH',
             label: c.name,
             subtitle: loginUrl.replace(/^https?:\/\/[^/]+/, '') || loginUrl,
+            onStepClick: () => {
+              setSelectedStepNode({ pipelineId: p.id, nodeId: null, stepType: 'AUTH', label: c.name, pipelineName: p.name });
+              setSelectedObjectType(null);
+            },
           },
         });
       });
@@ -424,6 +601,10 @@ export const OntologyGraph: React.FC = () => {
             stepType: node.type,
             label,
             pipelineName: p.name,
+            onStepClick: () => {
+              setSelectedStepNode({ pipelineId: p.id, nodeId: node.id, stepType: node.type, label, pipelineName: p.name });
+              setSelectedObjectType(null);
+            },
           },
         });
       });
@@ -555,18 +736,26 @@ export const OntologyGraph: React.FC = () => {
     const ot = objectTypes.find((o) => o.id === node.id);
     if (ot) {
       setSelectedObjectType(ot);
+      setSelectedStepNode(null);
     }
   }, [objectTypes]);
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback((_event, node) => {
-    // Double-click on any pipeline step node expands that pipeline
     if (node.id.startsWith('step-')) {
-      // step-${pipelineId}-auth-... or step-${pipelineId}-node-...
-      const parts = node.id.split('-');
-      // parts: ['step', ...pipelineId parts..., 'auth'|'node', ...]
-      // Find the pipeline whose id is contained in the step node id
       const pipeline = pipelines.find((p) => node.id.startsWith(`step-${p.id}-`));
-      if (pipeline) setExpandedPipeline(pipeline);
+      if (!pipeline) return;
+      const suffix = node.id.slice(`step-${pipeline.id}-`.length);
+      const isAuth = suffix.startsWith('auth-');
+      const nodeId = isAuth ? null : suffix.slice('node-'.length);
+      const data = node.data as { stepType?: string; label?: string; pipelineName?: string };
+      setSelectedStepNode({
+        pipelineId: pipeline.id,
+        nodeId,
+        stepType: (data.stepType as string) || 'SOURCE',
+        label: (data.label as string) || '',
+        pipelineName: pipeline.name,
+      });
+      setSelectedObjectType(null);
     }
   }, [pipelines]);
 
@@ -639,15 +828,16 @@ export const OntologyGraph: React.FC = () => {
             onClose={() => setSelectedObjectType(null)}
           />
         )}
+
+        {/* Step audit panel */}
+        {selectedStepNode && (
+          <StepAuditPanel
+            step={selectedStepNode}
+            onClose={() => setSelectedStepNode(null)}
+          />
+        )}
       </div>
 
-      {/* Pipeline expand overlay */}
-      {expandedPipeline && (
-        <PipelineExpandModal
-          pipeline={expandedPipeline}
-          onClose={() => setExpandedPipeline(null)}
-        />
-      )}
 
       {/* Tab right-click context menu */}
       {ctxMenu && createPortal(

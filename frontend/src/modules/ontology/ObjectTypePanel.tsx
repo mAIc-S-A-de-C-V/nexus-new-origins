@@ -599,10 +599,10 @@ const PipelineAuditTab: React.FC<{
                           <div style={{ height: '100%', width: `${Math.round(Number(audit.stats.match_rate || 0) * 100)}%`, backgroundColor: Number(audit.stats.match_rate) >= 0.8 ? '#16A34A' : '#F59E0B', borderRadius: 3 }} />
                         </div>
                         <span style={{ fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{Math.round(Number(audit.stats.match_rate || 0) * 100)}% matched</span>
-                        <span style={{ fontSize: 10, color: '#94A3B8' }}>{String(audit.stats.matched)} / {String(audit.stats.matched + (audit.stats.unmatched as number || 0))}</span>
+                        <span style={{ fontSize: 10, color: '#94A3B8' }}>{String(Number(audit.stats.matched))} / {String(Number(audit.stats.matched) + Number(audit.stats.unmatched || 0))}</span>
                       </div>
                     )}
-                    {audit.node_type === 'MAP' && audit.stats.mappings && (
+                    {audit.node_type === 'MAP' && !!audit.stats.mappings && (
                       <div>
                         <div style={{ fontSize: 10, fontWeight: 600, color: '#94A3B8', marginBottom: 4, textTransform: 'uppercase' }}>Field Renames</div>
                         {Object.entries(audit.stats.mappings as Record<string, string>).slice(0, 5).map(([from, to]) => (

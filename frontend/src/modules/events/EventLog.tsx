@@ -431,7 +431,7 @@ export const EventLog: React.FC = () => {
                                   <span style={{ color: '#94A3B8', fontWeight: 600 }}>Status</span>
                                   <div style={{ color: isCompleted ? '#15803D' : '#BE123C', fontWeight: 600, marginTop: '2px' }}>{evt.attributes.status as string}</div>
                                 </div>
-                                {isFailed && evt.attributes.error && (
+                                {isFailed && !!evt.attributes.error && (
                                   <div style={{ flex: 1 }}>
                                     <span style={{ color: '#94A3B8', fontWeight: 600 }}>Error</span>
                                     <div style={{ fontFamily: 'var(--font-mono)', color: '#BE123C', marginTop: '2px', fontSize: '10px', wordBreak: 'break-all' }}>{evt.attributes.error as string}</div>
