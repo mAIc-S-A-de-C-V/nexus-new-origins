@@ -1,24 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search, GitBranch, Play } from 'lucide-react';
+import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search, GitBranch, Play, ArrowRight, Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { ObjectType, ObjectTypeVersion, SchemaDiff } from '../../types/ontology';
 import { PropertyList } from './PropertyList';
 import { SchemaDiffViewer } from './SchemaDiffViewer';
 import { Badge } from '../../design-system/components/Badge';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { usePipelineStore } from '../../store/pipelineStore';
+import { nodeColors } from '../../design-system/tokens';
 
 const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
+const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
 
-type TabId = 'properties' | 'data' | 'versions' | 'diff' | 'links';
+type TabId = 'properties' | 'data' | 'pipeline' | 'versions' | 'diff' | 'links';
 
 interface ObjectTypePanelProps {
   objectType: ObjectType;
   onClose: () => void;
 }
 
-const TABS: { id: TabId; label: string }[] = [
+const BASE_TABS: { id: TabId; label: string }[] = [
   { id: 'properties', label: 'Properties' },
   { id: 'data', label: 'Data' },
   { id: 'versions', label: 'Version History' },
@@ -351,18 +353,22 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
       )}
 
       {/* Tabs */}
-      <div style={{ display: 'flex', borderBottom: '1px solid #E2E8F0', padding: '0 16px', flexShrink: 0 }}>
-        {TABS.map((tab) => (
+      <div style={{ display: 'flex', borderBottom: '1px solid #E2E8F0', padding: '0 8px', flexShrink: 0, overflowX: 'auto' }}>
+        {[
+          ...BASE_TABS.slice(0, 2),
+          ...(objectType.sourcePipelineId ? [{ id: 'pipeline' as TabId, label: 'Pipeline' }] : []),
+          ...BASE_TABS.slice(2),
+        ].map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             style={{
               height: '36px', padding: '0 10px', fontSize: '12px',
               fontWeight: activeTab === tab.id ? 500 : 400,
-              color: activeTab === tab.id ? '#2563EB' : '#64748B',
-              borderBottom: activeTab === tab.id ? '2px solid #2563EB' : '2px solid transparent',
+              color: activeTab === tab.id ? (tab.id === 'pipeline' ? '#D97706' : '#2563EB') : '#64748B',
+              borderBottom: activeTab === tab.id ? `2px solid ${tab.id === 'pipeline' ? '#D97706' : '#2563EB'}` : '2px solid transparent',
               backgroundColor: 'transparent', cursor: 'pointer',
-              transition: 'color 80ms', whiteSpace: 'nowrap',
+              transition: 'color 80ms', whiteSpace: 'nowrap', flexShrink: 0,
             }}
           >
             {tab.label}
@@ -409,12 +415,289 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
           </div>
         )}
 
+        {activeTab === 'pipeline' && objectType.sourcePipelineId && (
+          <PipelineAuditTab
+            pipelineId={objectType.sourcePipelineId}
+            pipeline={sourcePipeline}
+          />
+        )}
+
         {activeTab === 'links' && (
           <div style={{ textAlign: 'center', padding: '40px 0', color: '#94A3B8', fontSize: '13px' }}>
             Open the Ontology Graph to view relationship links
           </div>
         )}
       </div>
+    </div>
+  );
+};
+
+// ── Pipeline Audit Tab ────────────────────────────────────────────────────────
+
+interface NodeAudit {
+  node_id: string;
+  node_type: string;
+  node_label: string;
+  rows_in: number;
+  rows_out: number;
+  dropped: number;
+  duration_ms: number;
+  started_at: string;
+  sample_in: Record<string, unknown>[];
+  sample_out: Record<string, unknown>[];
+  stats: Record<string, unknown>;
+}
+
+const PipelineAuditTab: React.FC<{
+  pipelineId: string;
+  pipeline: import('../../types/pipeline').Pipeline | undefined;
+}> = ({ pipelineId, pipeline }) => {
+  const [audits, setAudits] = useState<Record<string, NodeAudit>>({});
+  const [runMeta, setRunMeta] = useState<{ id: string; status: string; started_at: string; rows_in: number; rows_out: number } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [expandedNode, setExpandedNode] = useState<string | null>(null);
+  const [expandedSample, setExpandedSample] = useState<'in' | 'out' | null>(null);
+
+  useEffect(() => {
+    if (!pipelineId) return;
+    setLoading(true);
+    fetch(`${PIPELINE_API}/pipelines/${pipelineId}/runs`, { headers: { 'x-tenant-id': 'tenant-001' } })
+      .then((r) => r.ok ? r.json() : [])
+      .then(async (runs: { id: string; status: string; started_at: string; rows_in: number; rows_out: number }[]) => {
+        const latest = runs.find((r) => r.status === 'COMPLETED') || runs[0];
+        if (!latest) { setLoading(false); return; }
+        setRunMeta(latest);
+        const res = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/runs/${latest.id}/audit`, {
+          headers: { 'x-tenant-id': 'tenant-001' },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setAudits(data.node_audits || {});
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [pipelineId]);
+
+  // Topological order from the pipeline definition
+  const orderedNodes = React.useMemo(() => {
+    if (!pipeline?.nodes) return [];
+    const adj: Record<string, string[]> = {};
+    const inDeg: Record<string, number> = {};
+    pipeline.nodes.forEach((n) => { adj[n.id] = []; inDeg[n.id] = 0; });
+    pipeline.edges?.forEach((e) => {
+      adj[e.source]?.push(e.target);
+      inDeg[e.target] = (inDeg[e.target] || 0) + 1;
+    });
+    const queue = pipeline.nodes.filter((n) => !inDeg[n.id]).map((n) => n.id);
+    const result: string[] = [];
+    while (queue.length) {
+      const id = queue.shift()!;
+      result.push(id);
+      adj[id]?.forEach((nxt) => { inDeg[nxt]--; if (!inDeg[nxt]) queue.push(nxt); });
+    }
+    return result.map((id) => pipeline.nodes.find((n) => n.id === id)!).filter(Boolean);
+  }, [pipeline]);
+
+  if (loading) return <div style={{ padding: 20, color: '#94A3B8', fontSize: 12, textAlign: 'center' }}>Loading pipeline audit…</div>;
+
+  if (!runMeta) {
+    return (
+      <div style={{ textAlign: 'center', padding: '40px 0' }}>
+        <Clock size={28} color="#CBD5E1" style={{ marginBottom: 10 }} />
+        <div style={{ fontSize: 13, color: '#94A3B8' }}>No runs yet</div>
+        <div style={{ fontSize: 11, color: '#CBD5E1', marginTop: 4 }}>Run the pipeline from the Data tab to see step-by-step audit data</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      {/* Run summary bar */}
+      <div style={{ padding: '8px 0 12px', marginBottom: 8, borderBottom: '1px solid #F1F5F9', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: '#64748B' }}>
+          Last run: <strong style={{ color: '#0D1117' }}>{new Date(runMeta.started_at).toLocaleString()}</strong>
+        </span>
+        <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 3, backgroundColor: runMeta.status === 'COMPLETED' ? '#DCFCE7' : '#FFE4E6', color: runMeta.status === 'COMPLETED' ? '#15803D' : '#BE123C', fontWeight: 600 }}>
+          {runMeta.status}
+        </span>
+        <span style={{ fontSize: 11, color: '#64748B' }}>
+          {runMeta.rows_in} in → <strong style={{ color: '#0D1117' }}>{runMeta.rows_out}</strong> out
+        </span>
+      </div>
+
+      {/* Step list */}
+      {orderedNodes.map((node, idx) => {
+        const audit = audits[node.id];
+        const color = nodeColors[node.type] || '#64748B';
+        const isExpanded = expandedNode === node.id;
+        const isLast = idx === orderedNodes.length - 1;
+        const hasDropped = audit && audit.dropped > 0;
+
+        return (
+          <div key={node.id}>
+            {/* Step row */}
+            <div
+              onClick={() => {
+                setExpandedNode(isExpanded ? null : node.id);
+                setExpandedSample(null);
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0',
+                cursor: 'pointer', borderRadius: 4,
+                backgroundColor: isExpanded ? '#F8FAFC' : 'transparent',
+              }}
+            >
+              {/* Node type badge */}
+              <div style={{ width: 28, height: 28, borderRadius: 6, backgroundColor: color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <span style={{ fontSize: 8, fontWeight: 700, color: '#fff', letterSpacing: '0.03em' }}>
+                  {node.type.replace('_', ' ').split(' ').map((w: string) => w[0]).join('').slice(0, 3)}
+                </span>
+              </div>
+
+              {/* Label + type */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#0D1117', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.label}</div>
+                <div style={{ fontSize: 10, color: '#94A3B8' }}>{node.type}</div>
+              </div>
+
+              {/* Stats */}
+              {audit ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: '#64748B' }}>{audit.rows_in}</span>
+                  <ArrowRight size={10} color={hasDropped ? '#F59E0B' : '#94A3B8'} />
+                  <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', fontWeight: 600, color: hasDropped ? '#C2410C' : '#0D1117' }}>{audit.rows_out}</span>
+                  {hasDropped && (
+                    <span style={{ fontSize: 10, backgroundColor: '#FFF7ED', color: '#C2410C', padding: '1px 5px', borderRadius: 3, border: '1px solid #FED7AA' }}>
+                      -{audit.dropped}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 10, color: '#CBD5E1' }}>{audit.duration_ms}ms</span>
+                </div>
+              ) : (
+                <span style={{ fontSize: 10, color: '#CBD5E1' }}>no data</span>
+              )}
+
+              <ChevronDown size={12} color="#94A3B8" style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }} />
+            </div>
+
+            {/* Expanded audit detail */}
+            {isExpanded && audit && (
+              <div style={{ marginLeft: 38, marginBottom: 4, border: '1px solid #E2E8F0', borderRadius: 6, overflow: 'hidden', backgroundColor: '#FAFAFA' }}>
+                {/* Node-specific stats */}
+                {audit.stats && Object.keys(audit.stats).length > 0 && (
+                  <div style={{ padding: '8px 12px', borderBottom: '1px solid #F1F5F9' }}>
+                    {audit.node_type === 'FILTER' && (
+                      <div style={{ fontSize: 11, color: hasDropped ? '#C2410C' : '#16A34A', fontWeight: 500 }}>
+                        <AlertTriangle size={10} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                        {audit.dropped} rows dropped — <span style={{ fontFamily: 'var(--font-mono)', color: '#64748B', fontSize: 10 }}>{String(audit.stats.expression || '').slice(0, 80)}</span>
+                      </div>
+                    )}
+                    {audit.node_type === 'ENRICH' && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ flex: 1, height: 5, backgroundColor: '#E2E8F0', borderRadius: 3, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${Math.round(Number(audit.stats.match_rate || 0) * 100)}%`, backgroundColor: Number(audit.stats.match_rate) >= 0.8 ? '#16A34A' : '#F59E0B', borderRadius: 3 }} />
+                        </div>
+                        <span style={{ fontSize: 11, fontWeight: 600, fontFamily: 'var(--font-mono)', color: '#0D1117' }}>{Math.round(Number(audit.stats.match_rate || 0) * 100)}% matched</span>
+                        <span style={{ fontSize: 10, color: '#94A3B8' }}>{String(audit.stats.matched)} / {String(audit.stats.matched + (audit.stats.unmatched as number || 0))}</span>
+                      </div>
+                    )}
+                    {audit.node_type === 'MAP' && audit.stats.mappings && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: '#94A3B8', marginBottom: 4, textTransform: 'uppercase' }}>Field Renames</div>
+                        {Object.entries(audit.stats.mappings as Record<string, string>).slice(0, 5).map(([from, to]) => (
+                          <div key={from} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 10, fontFamily: 'var(--font-mono)', marginBottom: 2 }}>
+                            <span style={{ color: '#64748B' }}>{from}</span>
+                            <ArrowRight size={8} color="#94A3B8" />
+                            <span style={{ color: '#0D1117', fontWeight: 500 }}>{to}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(audit.node_type === 'DEDUPE') && (
+                      <div style={{ fontSize: 11, color: '#6D28D9', fontWeight: 500 }}>
+                        {String(audit.stats.duplicates_removed || 0)} duplicates removed
+                      </div>
+                    )}
+                    {(audit.node_type === 'SINK_OBJECT') && (
+                      <div style={{ fontSize: 11, color: '#1D4ED8' }}>
+                        Written to ontology — {String(audit.stats.write_mode || 'upsert')} mode
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Sample data toggle */}
+                <div style={{ display: 'flex', borderBottom: expandedSample ? '1px solid #F1F5F9' : 'none' }}>
+                  {(['in', 'out'] as const).map((side) => {
+                    const count = side === 'in' ? audit.sample_in.length : audit.sample_out.length;
+                    return (
+                      <button key={side} onClick={(e) => { e.stopPropagation(); setExpandedSample(expandedSample === side ? null : side); }}
+                        style={{
+                          flex: 1, padding: '7px 0', fontSize: 11, border: 'none', cursor: 'pointer',
+                          backgroundColor: expandedSample === side ? '#EFF6FF' : 'transparent',
+                          color: expandedSample === side ? '#2563EB' : '#64748B',
+                          fontWeight: expandedSample === side ? 600 : 400,
+                          borderRight: side === 'in' ? '1px solid #F1F5F9' : 'none',
+                        }}
+                      >
+                        Sample {side === 'in' ? 'In' : 'Out'} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {expandedSample && (
+                  <div style={{ overflowX: 'auto', maxHeight: 220, overflowY: 'auto' }}>
+                    {(() => {
+                      const rows = expandedSample === 'in' ? audit.sample_in : audit.sample_out;
+                      if (!rows.length) return <div style={{ padding: '12px', fontSize: 11, color: '#94A3B8', textAlign: 'center' }}>No records</div>;
+                      const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r)))).slice(0, 10);
+                      return (
+                        <table style={{ borderCollapse: 'collapse', fontSize: 10, width: '100%' }}>
+                          <thead>
+                            <tr style={{ backgroundColor: '#F8FAFC' }}>
+                              {cols.map((c) => (
+                                <th key={c} style={{ padding: '4px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B', borderBottom: '1px solid #E2E8F0', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)', fontSize: 9 }}>{c}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((row, i) => (
+                              <tr key={i} style={{ borderBottom: '1px solid #F8FAFC', backgroundColor: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
+                                {cols.map((c) => {
+                                  const v = row[c];
+                                  const s = v == null ? '' : String(v);
+                                  return (
+                                    <td key={c} style={{ padding: '4px 8px', fontFamily: 'var(--font-mono)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: s ? '#0D1117' : '#CBD5E1' }} title={s}>
+                                      {s || <span style={{ fontStyle: 'italic' }}>null</span>}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Connector line between steps */}
+            {!isLast && (
+              <div style={{ marginLeft: 13, width: 2, height: 8, backgroundColor: '#E2E8F0' }} />
+            )}
+          </div>
+        );
+      })}
+
+      {orderedNodes.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '20px 0', color: '#94A3B8', fontSize: 12 }}>
+          Pipeline definition not loaded — open Pipeline Builder to view steps
+        </div>
+      )}
     </div>
   );
 };

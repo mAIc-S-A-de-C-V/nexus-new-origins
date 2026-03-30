@@ -365,7 +365,6 @@ export const PipelineBuilder: React.FC = () => {
         {selectedNode && (
           <NodeConfigPanel
             node={selectedNode}
-            pipelineId={currentPipeline?.id ?? ''}
             onClose={() => setSelectedNode(null)}
             onUpdate={(nodeId, config) => {
               setNodes((nds) =>
