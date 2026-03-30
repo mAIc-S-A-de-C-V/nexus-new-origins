@@ -178,24 +178,21 @@ export const EventLog: React.FC = () => {
         <h1 style={{ fontSize: '16px', fontWeight: 500, color: '#0D1117' }}>Event Log</h1>
 
         {/* Pipeline selector */}
-        <div style={{ display: 'flex', gap: '4px', marginLeft: '8px' }}>
+        <select
+          value={selectedPipelineId ?? ''}
+          onChange={(e) => setSelectedPipelineId(e.target.value || null)}
+          style={{
+            height: '28px', padding: '0 8px', borderRadius: '4px', fontSize: '12px',
+            border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF',
+            color: '#64748B', cursor: 'pointer', outline: 'none',
+            marginLeft: '8px', maxWidth: '220px',
+          }}
+        >
+          <option value="">All pipelines</option>
           {eventPipelines.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => setSelectedPipelineId(p.id)}
-              style={{
-                height: '28px', padding: '0 12px', borderRadius: '2px', fontSize: '12px',
-                border: `1px solid ${selectedPipelineId === p.id ? '#7C3AED' : '#E2E8F0'}`,
-                backgroundColor: selectedPipelineId === p.id ? '#EDE9FE' : '#FFFFFF',
-                color: selectedPipelineId === p.id ? '#6D28D9' : '#64748B',
-                fontWeight: selectedPipelineId === p.id ? 500 : 400,
-                cursor: 'pointer',
-              }}
-            >
-              {p.name}
-            </button>
+            <option key={p.id} value={p.id}>{p.name}</option>
           ))}
-        </div>
+        </select>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
           <div style={{ position: 'relative' }}>
