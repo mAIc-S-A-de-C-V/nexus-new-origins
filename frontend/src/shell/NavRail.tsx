@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
-  FolderKanban, Users, LogOut, ScanSearch, DollarSign,
+  FolderKanban, Users, LogOut, ScanSearch, DollarSign, Briefcase,
 } from 'lucide-react';
 import { useAuth } from './TenantContext';
 import { useAppStore } from '../store/appStore';
@@ -38,16 +38,19 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'connectors', label: 'Connectors',  icon: <Plug size={16} />,         active: true,  path: 'connectors' },
-  { id: 'ontology',   label: 'Ontology',    icon: <Network size={16} />,       active: true,  path: 'ontology' },
-  { id: 'lineage',    label: 'Lineage',     icon: <GitBranch size={16} />,     active: false, comingSoon: true, path: 'lineage' },
-  { id: 'events',     label: 'Event Log',   icon: <Activity size={16} />,      active: true,  path: 'events' },
-  { id: 'process',    label: 'Process Mining', icon: <ScanSearch size={16} />, active: true,  path: 'process' },
-  { id: 'pipelines',  label: 'Pipelines',   icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
-  { id: 'projects',   label: 'maic',        icon: <FolderKanban size={16} />,  active: true,  path: 'projects' },
-  { id: 'finance',    label: 'Finance',     icon: <DollarSign size={16} />,    active: true,  path: 'finance' },
-  { id: 'users',      label: 'Users',       icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
-  { id: 'settings',   label: 'Settings',    icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },
+  { id: 'connectors', label: 'Connectors',     icon: <Plug size={16} />,         active: true,  path: 'connectors' },
+  { id: 'ontology',   label: 'Ontology',       icon: <Network size={16} />,       active: true,  path: 'ontology' },
+  { id: 'lineage',    label: 'Lineage',        icon: <GitBranch size={16} />,     active: false, comingSoon: true, path: 'lineage' },
+  { id: 'events',     label: 'Event Log',      icon: <Activity size={16} />,      active: true,  path: 'events' },
+  { id: 'process',    label: 'Process Mining', icon: <ScanSearch size={16} />,    active: true,  path: 'process' },
+  { id: 'pipelines',  label: 'Pipelines',      icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
+  { id: 'users',      label: 'Users',          icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
+  { id: 'settings',   label: 'Settings',       icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },
+];
+
+const MAIC_SUBITEMS: NavItem[] = [
+  { id: 'projects', label: 'Projects', icon: <Briefcase size={14} />, active: true, path: 'projects' },
+  { id: 'finance',  label: 'Finance',  icon: <DollarSign size={14} />, active: true, path: 'finance' },
 ];
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -60,6 +63,7 @@ interface NavRailProps {
 export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => {
   const [expanded, setExpanded] = useState(true);
   const [appsExpanded, setAppsExpanded] = useState(true);
+  const [maicExpanded, setMaicExpanded] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { currentUser, logout } = useAuth();
   const { apps } = useAppStore();
@@ -156,9 +160,63 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
       <div style={{ flex: 1, padding: '6px 0', overflowY: 'auto', overflowX: 'hidden' }}>
         {NAV_ITEMS
           .filter((item) => !item.adminOnly || isAdmin)
-          .map((item) =>
-            navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path)),
-          )}
+          .map((item) => (
+            <React.Fragment key={item.id}>
+              {navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path))}
+              {/* maic group injected after pipelines */}
+              {item.id === 'pipelines' && (
+                <>
+                  {/* maic group header */}
+                  <button
+                    onClick={() => { if (expanded) setMaicExpanded((v) => !v); else onNavigate('projects'); }}
+                    title={!expanded ? 'maic' : undefined}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      width: '100%', height: 38,
+                      padding: expanded ? '0 14px' : '0',
+                      justifyContent: expanded ? 'flex-start' : 'center',
+                      backgroundColor: (currentPage === 'projects' || currentPage === 'finance') ? '#161D2B' : 'transparent',
+                      color: (currentPage === 'projects' || currentPage === 'finance') ? '#E2E8F0' : '#64748B',
+                      cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
+                      borderLeft: (currentPage === 'projects' || currentPage === 'finance') ? '2px solid #7C3AED' : '2px solid transparent',
+                      borderTop: 'none', borderRight: 'none', borderBottom: 'none',
+                      flexShrink: 0,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (currentPage !== 'projects' && currentPage !== 'finance') {
+                        (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
+                        (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (currentPage !== 'projects' && currentPage !== 'finance') {
+                        (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+                        (e.currentTarget as HTMLElement).style.color = '#64748B';
+                      }
+                    }}
+                  >
+                    <span style={{ flexShrink: 0, lineHeight: 0 }}><FolderKanban size={16} /></span>
+                    {expanded && (
+                      <>
+                        <span style={{ fontSize: 13, fontWeight: (currentPage === 'projects' || currentPage === 'finance') ? 500 : 400 }}>maic</span>
+                        <span
+                          onClick={(e) => { e.stopPropagation(); setMaicExpanded((v) => !v); }}
+                          style={{ marginLeft: 'auto', lineHeight: 0, flexShrink: 0, color: '#475569' }}
+                        >
+                          {maicExpanded ? <ChevronDown size={11} /> : <ChevronUp size={11} />}
+                        </span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* maic sub-items */}
+                  {expanded && maicExpanded && MAIC_SUBITEMS.map((sub) =>
+                    navBtn(sub, currentPage === sub.path, () => onNavigate(sub.path), true, true),
+                  )}
+                </>
+              )}
+            </React.Fragment>
+          ))}
 
         {/* Apps section */}
         <div style={{ borderTop: '1px solid #131C2E', marginTop: 6, paddingTop: 4 }}>
