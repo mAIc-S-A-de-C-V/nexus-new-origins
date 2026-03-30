@@ -9,6 +9,7 @@ const OntologyGraph   = lazy(() => import('./modules/ontology/OntologyGraph'));
 const PipelineBuilder = lazy(() => import('./modules/pipeline/PipelineBuilder'));
 const LineageCanvas   = lazy(() => import('./modules/lineage/LineageCanvas'));
 const EventLog        = lazy(() => import('./modules/events/EventLog'));
+const ProcessMining   = lazy(() => import('./modules/process/ProcessMining'));
 const AppsPage        = lazy(() => import('./modules/apps/AppsPage'));
 const ProjectsModule  = lazy(() => import('./modules/projects/ProjectsModule'));
 const UsersPage       = lazy(() => import('./modules/users/UsersPage'));
@@ -78,6 +79,8 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading projects..." />}><ProjectsModule /></Suspense>;
     case 'users':
       return <Suspense fallback={<LoadingSpinner message="Loading users..." />}><UsersPage /></Suspense>;
+    case 'process':
+      return <Suspense fallback={<LoadingSpinner message="Loading process mining..." />}><ProcessMining /></Suspense>;
     case 'settings':
       return <ComingSoonPage title="Settings" />;
     default:

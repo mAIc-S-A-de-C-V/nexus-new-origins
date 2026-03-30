@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
-  FolderKanban, Users, LogOut,
+  FolderKanban, Users, LogOut, ScanSearch,
 } from 'lucide-react';
 import { useAuth } from './TenantContext';
 import { useAppStore } from '../store/appStore';
@@ -42,6 +42,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'ontology',   label: 'Ontology',    icon: <Network size={16} />,       active: true,  path: 'ontology' },
   { id: 'lineage',    label: 'Lineage',     icon: <GitBranch size={16} />,     active: false, comingSoon: true, path: 'lineage' },
   { id: 'events',     label: 'Event Log',   icon: <Activity size={16} />,      active: true,  path: 'events' },
+  { id: 'process',    label: 'Process Mining', icon: <ScanSearch size={16} />, active: true,  path: 'process' },
   { id: 'pipelines',  label: 'Pipelines',   icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
   { id: 'projects',   label: 'maic',        icon: <FolderKanban size={16} />,  active: true,  path: 'projects' },
   { id: 'users',      label: 'Users',       icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },

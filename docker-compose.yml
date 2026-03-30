@@ -14,6 +14,7 @@ services:
         VITE_EVENT_LOG_SERVICE_URL: ${VITE_EVENT_LOG_SERVICE_URL:-http://localhost:8005}
         VITE_AUDIT_SERVICE_URL: ${VITE_AUDIT_SERVICE_URL:-http://localhost:8006}
         VITE_CORRELATION_ENGINE_URL: ${VITE_CORRELATION_ENGINE_URL:-http://localhost:8008}
+        VITE_PROCESS_ENGINE_URL: ${VITE_PROCESS_ENGINE_URL:-http://localhost:8009}
         VITE_PROJECT_MGMT_URL: ${VITE_PROJECT_MGMT_URL:-http://localhost:9000}
     ports:
       - "3000:3000"
@@ -147,6 +148,21 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8008 --reload
+
+  process-engine-service:
+    build:
+      context: ./backend/process_engine
+      dockerfile: Dockerfile
+    ports:
+      - "8009:8009"
+    environment:
+      - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8009 --reload
 
   # ─── Nexus Apps ─────────────────────────────────────────────────────────────
   project-management-service:
