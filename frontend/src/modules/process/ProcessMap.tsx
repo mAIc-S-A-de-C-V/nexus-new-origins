@@ -157,8 +157,16 @@ export const ProcessMap: React.FC<Props> = ({ objectTypeId }) => {
 
   if (!transitions.length) {
     return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94A3B8', fontSize: 13 }}>
-        No transition data for this object type. Run a pipeline with a SINK EVENT node to generate process events.
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 40 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>No stage transitions recorded yet</div>
+        <div style={{ fontSize: 12, color: '#64748B', maxWidth: 440, textAlign: 'center', lineHeight: 1.6 }}>
+          Process transitions appear when the same entity moves through different stages across pipeline runs.
+          Check the <strong>Cases</strong> tab to see current stage distribution, or run the pipeline again after
+          entities have progressed through their workflow.
+        </div>
+        <div style={{ fontSize: 11, color: '#94A3B8', fontFamily: 'var(--font-mono)', marginTop: 4 }}>
+          Tip: ensure your pipeline SINK EVENT node is configured with a stage field (e.g. dealstage, lifecyclestage)
+        </div>
       </div>
     );
   }

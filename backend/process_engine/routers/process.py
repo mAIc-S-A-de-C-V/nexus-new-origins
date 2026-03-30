@@ -11,7 +11,8 @@ _SYSTEM_EXCL = (
     "AND activity NOT IN ("
     "'PIPELINE_RUN_STARTED','PIPELINE_RUN_COMPLETED','PIPELINE_RUN_FAILED',"
     "'PIPELINE_COMPLETED','PIPELINE_FAILED',"
-    "'CONNECTOR_SCHEMA_FETCHED','CONNECTOR_TEST_PASSED','CONNECTOR_TEST_FAILED'"
+    "'CONNECTOR_SCHEMA_FETCHED','CONNECTOR_TEST_PASSED','CONNECTOR_TEST_FAILED',"
+    "'RECORD_SYNCED'"
     ")"
 )
 
@@ -213,18 +214,26 @@ async def list_variants(
     tenant_id = x_tenant_id or "tenant-001"
 
     sql = text(f"""
-        WITH case_sequences AS (
-            SELECT
-                case_id,
-                array_agg(activity ORDER BY timestamp) AS activities,
-                min(timestamp) AS started_at,
-                max(timestamp) AS last_activity_at,
-                count(*) AS event_count
+        WITH raw AS (
+            SELECT case_id, activity, timestamp,
+                   lag(activity) OVER (PARTITION BY case_id ORDER BY timestamp) AS prev_activity,
+                   min(timestamp) OVER (PARTITION BY case_id) AS started_at,
+                   max(timestamp) OVER (PARTITION BY case_id) AS last_activity_at
             FROM events
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
               AND case_id != ''
               {_SYSTEM_EXCL}
+        ),
+        case_sequences AS (
+            SELECT
+                case_id,
+                array_agg(activity ORDER BY timestamp) AS activities,
+                min(started_at) AS started_at,
+                max(last_activity_at) AS last_activity_at,
+                count(*) AS event_count
+            FROM raw
+            WHERE prev_activity IS NULL OR prev_activity != activity
             GROUP BY case_id
         )
         SELECT
@@ -313,6 +322,7 @@ async def get_transitions(
             percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM (timestamp - from_timestamp)) / 3600.0) AS p95_hours
         FROM ordered
         WHERE from_activity IS NOT NULL
+          AND from_activity != activity
         GROUP BY from_activity, activity
         ORDER BY transition_count DESC
     """)
@@ -381,6 +391,7 @@ async def get_bottlenecks(
                 extract(epoch FROM (timestamp - from_timestamp)) / 3600.0 AS hours
             FROM ordered
             WHERE from_activity IS NOT NULL
+              AND from_activity != activity
         )
         SELECT
             from_activity,
@@ -450,13 +461,20 @@ async def get_stats(
     if not row or not row.total_cases:
         return {"total_cases": 0, "avg_duration_days": 0, "stuck_cases": 0, "variant_count": 0, "rework_rate": 0}
 
-    # rework rate — cases with any repeated activity
+    # rework rate — cases where an activity recurs non-consecutively (true rework, not same-stage repeats)
     rework_sql = text(f"""
-        WITH case_sequences AS (
-            SELECT case_id, array_agg(activity ORDER BY timestamp) AS activities
+        WITH deduped AS (
+            SELECT case_id, activity, timestamp,
+                   lag(activity) OVER (PARTITION BY case_id ORDER BY timestamp) AS prev_activity
             FROM events
             WHERE object_type_id = :ot_id AND tenant_id = :tenant_id AND case_id != ''
               {_SYSTEM_EXCL}
+        ),
+        case_sequences AS (
+            SELECT case_id,
+                   array_agg(activity ORDER BY timestamp) AS activities
+            FROM deduped
+            WHERE prev_activity IS NULL OR prev_activity != activity
             GROUP BY case_id
         )
         SELECT count(*) AS rework_cases
