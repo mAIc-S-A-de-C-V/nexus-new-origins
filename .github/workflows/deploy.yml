@@ -28,3 +28,9 @@ jobs:
 
             sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache
             sudo DOCKER_BUILDKIT=0 docker-compose up -d
+
+            # Wait and print status so failures are visible in Actions logs
+            sleep 15
+            sudo docker-compose ps
+            echo "--- project-management-service logs ---"
+            sudo docker-compose logs --tail=30 project-management-service
