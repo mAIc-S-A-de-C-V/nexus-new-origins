@@ -10,6 +10,7 @@ import {
 import { GanttChart } from './GanttChart';
 
 const API = import.meta.env.VITE_PROJECT_MGMT_URL || 'http://localhost:9000';
+const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const TENANT = 'tenant-001';
 const H = { 'Content-Type': 'application/json', 'x-tenant-id': TENANT };
 
@@ -35,8 +36,8 @@ const api = {
   updateStage: (sid: string, b: object) => fetch(`${API}/projects/stages/${sid}`, { method: 'PUT', headers: H, body: JSON.stringify(b) }).then(r => r.json()),
   deleteStage: (sid: string) => fetch(`${API}/projects/stages/${sid}`, { method: 'DELETE', headers: H }),
 
-  getOntologyRecords: (otId: string) => fetch(`${API}/object-types/${otId}/records`, { headers: H }).then(r => r.json()).then(d => Array.isArray(d) ? d : (d.records ?? [])),
-  getObjectTypes: () => fetch(`${API}/object-types`, { headers: H }).then(r => r.json()),
+  getOntologyRecords: (otId: string) => fetch(`${ONTOLOGY_API}/object-types/${otId}/records`, { headers: H }).then(r => r.json()).then(d => Array.isArray(d) ? d : (d.records ?? [])),
+  getObjectTypes: () => fetch(`${ONTOLOGY_API}/object-types`, { headers: H }).then(r => r.json()),
 };
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
