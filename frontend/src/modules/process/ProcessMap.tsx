@@ -5,7 +5,7 @@ import {
   Node, Edge, MarkerType, NodeProps, Handle, Position,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useProcessStore } from '../../store/processStore';
+import { useProcessStore, Transition } from '../../store/processStore';
 
 const speedStroke: Record<string, string> = {
   fast: '#15803D',
@@ -47,7 +47,7 @@ const ActivityNode: React.FC<NodeProps> = ({ data, selected }) => {
 
 const nodeTypes = { activityNode: ActivityNode };
 
-function buildGraph(transitions: ReturnType<typeof useProcessStore>['transitions'], activities: string[], medianHours: number) {
+function buildGraph(transitions: Transition[], activities: string[], medianHours: number) {
   if (!transitions.length) return { nodes: [], edges: [] };
 
   // Count cases per activity
@@ -142,8 +142,8 @@ interface Props { objectTypeId: string; }
 
 export const ProcessMap: React.FC<Props> = ({ objectTypeId }) => {
   const { transitions, activities, medianHours, fetchTransitions } = useProcessStore();
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   useEffect(() => {
     if (objectTypeId) fetchTransitions(objectTypeId);
