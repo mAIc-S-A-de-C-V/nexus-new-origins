@@ -27,7 +27,7 @@ jobs:
             printf 'VITE_CONNECTOR_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8001\nVITE_PIPELINE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8002\nVITE_INFERENCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8003\nVITE_ONTOLOGY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8004\nVITE_EVENT_LOG_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8005\nVITE_AUDIT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8006\nVITE_CORRELATION_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8008\nVITE_PROCESS_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8009\nVITE_ALERT_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8010\nVITE_AUTH_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8011\nVITE_PROJECT_MGMT_URL=http://${{ secrets.EC2_HOST }}:9000\nVITE_FINANCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:9001\n' > frontend/.env
 
             sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache
-            sudo DOCKER_BUILDKIT=0 docker-compose up -d
+            sudo DOCKER_BUILDKIT=0 docker-compose up -d --force-recreate
 
             # Wait and print status so failures are visible in Actions logs
             sleep 15
