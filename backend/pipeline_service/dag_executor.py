@@ -536,10 +536,57 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     except Exception:
         pass
 
+    # ── Skip diff-based events if a SINK_EVENT node already handles process events ──
+    has_sink_event_node = pipeline.nodes and any(
+        (getattr(_n, "type", None) or (_n.get("type") if isinstance(_n, dict) else None)) == "SINK_EVENT"
+        for _n in pipeline.nodes
+    )
+    if has_sink_event_node:
+        # SINK_EVENT node will emit proper stage-transition events — don't double-emit from SINK_OBJECT
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
+                    json={"records": records_in, "pk_field": pk_field, "pipeline_id": pipeline.id},
+                    headers={"x-tenant-id": "tenant-001"},
+                )
+        except Exception:
+            pass
+        return records_in
+
     # ── Build per-record events with field-level diffs ──
     connector_id = pipeline.connector_ids[0] if pipeline.connector_ids else ""
     record_events: list[dict] = []
-    now = datetime.now(timezone.utc).isoformat()
+    fallback_now = datetime.now(timezone.utc).isoformat()
+
+    # Fields that carry the record's own business timestamps (tried in order)
+    _RECORD_TS_FIELDS = [
+        "hs_lastmodifieddate", "lastmodifieddate", "updatedAt", "updated_at",
+        "createdate", "createdAt", "created_at", "timestamp", "date",
+    ]
+    _RECORD_CREATED_TS_FIELDS = [
+        "createdate", "createdAt", "created_at", "hs_createdate",
+        "hs_lastmodifieddate", "lastmodifieddate",
+    ]
+
+    # Which field's value should become the activity name (e.g. "dealstage")
+    # Check: (1) sink node config, (2) any SINK_EVENT node on the same pipeline
+    activity_field = cfg.get("activityField") or cfg.get("activity_field", "")
+    if not activity_field and pipeline.nodes:
+        for _n in pipeline.nodes:
+            _ncfg = (_n.config or {}) if not isinstance(_n, dict) else (_n.get("config") or {})
+            _af = _ncfg.get("activityField") or _ncfg.get("activity_field", "")
+            if _af:
+                activity_field = _af
+                break
+
+    def _record_timestamp(rec: dict, prefer_create: bool = False) -> str:
+        fields = _RECORD_CREATED_TS_FIELDS if prefer_create else _RECORD_TS_FIELDS
+        for f in fields:
+            v = rec.get(f)
+            if v and str(v).strip() not in ("", "None", "null"):
+                return str(v)
+        return fallback_now
 
     for rec in records_in:
         pk_val = str(rec.get(pk_field, ""))
@@ -548,12 +595,18 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
 
         existing = existing_by_pk.get(pk_val)
         if existing is None:
-            # Brand-new record
+            # Brand-new record — use createdate when available
+            ts = _record_timestamp(rec, prefer_create=True)
+            # If activityField is set and the field has a value, use it as the activity
+            if activity_field and rec.get(activity_field):
+                activity_name = str(rec[activity_field]).upper().replace(" ", "_")
+            else:
+                activity_name = "RECORD_CREATED"
             record_events.append({
                 "id": str(uuid4()),
                 "case_id": pk_val,
-                "activity": "RECORD_CREATED",
-                "timestamp": now,
+                "activity": activity_name,
+                "timestamp": ts,
                 "object_type_id": ot_id,
                 "object_id": pk_val,
                 "pipeline_id": pipeline.id,
@@ -574,12 +627,84 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 if str(old_val) != str(new_val):
                     changed_fields.append({"field": field, "from": old_val, "to": new_val})
 
-            if changed_fields:
+            if not changed_fields:
+                continue
+
+            ts = _record_timestamp(rec, prefer_create=False)
+
+            # Check if the activityField changed — if so, emit one event per stage transition
+            if activity_field:
+                activity_change = next(
+                    (cf for cf in changed_fields if cf["field"] == activity_field), None
+                )
+                if activity_change:
+                    # Emit the stage transition as the primary event
+                    new_stage = str(activity_change["to"]).upper().replace(" ", "_")
+                    record_events.append({
+                        "id": str(uuid4()),
+                        "case_id": pk_val,
+                        "activity": new_stage,
+                        "timestamp": ts,
+                        "object_type_id": ot_id,
+                        "object_id": pk_val,
+                        "pipeline_id": pipeline.id,
+                        "connector_id": connector_id,
+                        "tenant_id": "tenant-001",
+                        "attributes": {
+                            "pk_field": pk_field,
+                            "from_stage": activity_change["from"],
+                            "to_stage": activity_change["to"],
+                            "changed_fields": changed_fields,
+                        },
+                    })
+                    # Emit per-field events for everything else that changed (excluding the activityField)
+                    for cf in changed_fields:
+                        if cf["field"] == activity_field:
+                            continue
+                        record_events.append({
+                            "id": str(uuid4()),
+                            "case_id": pk_val,
+                            "activity": f"{cf['field'].upper()}_CHANGED",
+                            "timestamp": ts,
+                            "object_type_id": ot_id,
+                            "object_id": pk_val,
+                            "pipeline_id": pipeline.id,
+                            "connector_id": connector_id,
+                            "tenant_id": "tenant-001",
+                            "attributes": {
+                                "pk_field": pk_field,
+                                "field": cf["field"],
+                                "from": cf["from"],
+                                "to": cf["to"],
+                            },
+                        })
+                else:
+                    # activityField didn't change — emit per-field events
+                    for cf in changed_fields:
+                        record_events.append({
+                            "id": str(uuid4()),
+                            "case_id": pk_val,
+                            "activity": f"{cf['field'].upper()}_CHANGED",
+                            "timestamp": ts,
+                            "object_type_id": ot_id,
+                            "object_id": pk_val,
+                            "pipeline_id": pipeline.id,
+                            "connector_id": connector_id,
+                            "tenant_id": "tenant-001",
+                            "attributes": {
+                                "pk_field": pk_field,
+                                "field": cf["field"],
+                                "from": cf["from"],
+                                "to": cf["to"],
+                            },
+                        })
+            else:
+                # No activityField configured — emit one RECORD_UPDATED per record (original behavior)
                 record_events.append({
                     "id": str(uuid4()),
                     "case_id": pk_val,
                     "activity": "RECORD_UPDATED",
-                    "timestamp": now,
+                    "timestamp": ts,
                     "object_type_id": ot_id,
                     "object_id": pk_val,
                     "pipeline_id": pipeline.id,
