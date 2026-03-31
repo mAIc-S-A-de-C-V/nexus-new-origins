@@ -1,9 +1,11 @@
 import asyncio
+import json
 import os
 from typing import Optional
 from datetime import datetime, timezone
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Header, BackgroundTasks, Depends
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
@@ -329,6 +331,180 @@ async def get_run_audit(
         "finished_at": run_row.finished_at.isoformat() if run_row.finished_at else None,
         "node_audits": run_row.node_audits or {},
     }
+
+
+@router.get("/{pipeline_id}/event-profile")
+async def get_event_profile(
+    pipeline_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Fetch distinct activity values from the event log for this pipeline."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(PipelineRow).where(PipelineRow.id == pipeline_id, PipelineRow.tenant_id == tenant_id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    # Proxy to event log service
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{EVENT_LOG_URL}/events/profile",
+                params={"pipeline_id": pipeline_id},
+                headers={"x-tenant-id": tenant_id},
+            )
+            if r.is_success:
+                return r.json()
+    except Exception:
+        pass
+    return {"activities": []}
+
+
+class EventConfigSaveRequest(BaseModel):
+    excluded_activities: list[str] = []
+    activity_labels: dict[str, str] = {}
+
+
+@router.post("/{pipeline_id}/analyze-events")
+async def analyze_events(
+    pipeline_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Use AI to categorize the pipeline's event activities as stages vs noise."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(PipelineRow).where(PipelineRow.id == pipeline_id, PipelineRow.tenant_id == tenant_id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    pipeline = _row_to_pipeline(row)
+
+    # Fetch activity profile
+    activities = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{EVENT_LOG_URL}/events/profile",
+                params={"pipeline_id": pipeline_id},
+                headers={"x-tenant-id": tenant_id},
+            )
+            if r.is_success:
+                activities = r.json().get("activities", [])
+    except Exception:
+        pass
+
+    if not activities:
+        return {"stages": [], "noise": [], "labels": {}, "reasoning": "No events found for this pipeline."}
+
+    # Find activityField from SINK_EVENT node
+    activity_field = ""
+    for node in pipeline.nodes:
+        cfg = node.config or {}
+        af = cfg.get("activityField") or cfg.get("activity_field", "")
+        if af:
+            activity_field = af
+            break
+
+    # Build prompt for Claude
+    activity_list = "\n".join(
+        f"- {a['activity']} (count: {a['count']}, last seen: {a.get('last_seen', 'unknown')})"
+        for a in activities
+    )
+    prompt = f"""You are analyzing process mining event data for a business pipeline.
+
+The pipeline is named: "{pipeline.name}"
+The activity field tracked is: "{activity_field or 'unknown'}"
+
+Here are all distinct activity values found in the event log:
+{activity_list}
+
+Categorize each activity as either:
+- "stage": A meaningful business stage or state transition (e.g. deal stages, lifecycle states, status values)
+- "noise": A technical/system event that pollutes the process map (e.g. RECORD_UPDATED, RECORD_CREATED, field change events like AMOUNT_CHANGED, system pipeline events)
+
+Also suggest a human-readable label for each activity (e.g. "APPOINTMENTSCHEDULED" → "Appointment Scheduled", "CLOSEDWON" → "Closed Won").
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "results": [
+    {{"activity": "ACTIVITY_NAME", "category": "stage", "label": "Human Label", "reason": "brief reason"}},
+    ...
+  ]
+}}"""
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        results = parsed.get("results", [])
+    except Exception as e:
+        # Fallback: heuristic classification
+        _NOISE_KEYWORDS = {"record_created", "record_updated", "record_synced", "_changed", "pipeline_run", "connector_"}
+        results = []
+        for a in activities:
+            act_lower = a["activity"].lower()
+            is_noise = any(kw in act_lower for kw in _NOISE_KEYWORDS)
+            results.append({
+                "activity": a["activity"],
+                "category": "noise" if is_noise else "stage",
+                "label": a["activity"].replace("_", " ").title(),
+                "reason": "heuristic classification",
+            })
+
+    stages = [r for r in results if r.get("category") == "stage"]
+    noise = [r for r in results if r.get("category") == "noise"]
+    labels = {r["activity"]: r["label"] for r in results if r.get("label") and r["label"] != r["activity"]}
+
+    return {
+        "stages": stages,
+        "noise": noise,
+        "labels": labels,
+        "activity_count": len(activities),
+    }
+
+
+@router.patch("/{pipeline_id}/event-config")
+async def save_event_config(
+    pipeline_id: str,
+    body: EventConfigSaveRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Save process mining configuration (excluded activities, activity labels) to the pipeline."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(PipelineRow).where(PipelineRow.id == pipeline_id, PipelineRow.tenant_id == tenant_id)
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    pipeline = _row_to_pipeline(row)
+    pipeline.event_config = {
+        "excluded_activities": body.excluded_activities,
+        "activity_labels": body.activity_labels,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    row.data = pipeline.model_dump(mode="json")
+    await db.commit()
+    return {"status": "saved", "event_config": pipeline.event_config}
 
 
 @router.get("/{pipeline_id}/quality", response_model=EventLogQualityScore)

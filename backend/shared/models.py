@@ -83,6 +83,8 @@ class Pipeline(BaseModel):
     last_run_row_count: Optional[int] = None
     tenant_id: str
     version: int = 1
+    # Process mining configuration — set via the Settings tab in Process Mining
+    event_config: Optional[dict[str, Any]] = None
 
 
 class ObjectProperty(BaseModel):

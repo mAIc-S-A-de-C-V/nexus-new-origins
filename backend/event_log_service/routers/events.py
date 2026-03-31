@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Query, Header, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func, text
 from shared.models import Event, EventLogQualityScore
 from database import EventRow, get_session
 
@@ -109,6 +109,50 @@ async def query_events(
     )
     result = await db.execute(stmt)
     return [_row_to_event(r) for r in result.scalars().all()]
+
+
+@router.get("/profile")
+async def get_event_profile(
+    object_type_id: Optional[str] = Query(None),
+    pipeline_id: Optional[str] = Query(None),
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Return distinct activity values with counts and first/last seen — used by Process Mining Settings."""
+    tenant_id = x_tenant_id or "tenant-001"
+
+    # Build a grouped query: activity, count, first_seen, last_seen
+    filters = [EventRow.tenant_id == tenant_id]
+    if object_type_id:
+        filters.append(EventRow.object_type_id == object_type_id)
+    if pipeline_id:
+        filters.append(EventRow.pipeline_id == pipeline_id)
+
+    stmt = (
+        select(
+            EventRow.activity,
+            func.count(EventRow.id).label("count"),
+            func.min(EventRow.timestamp).label("first_seen"),
+            func.max(EventRow.timestamp).label("last_seen"),
+        )
+        .where(and_(*filters))
+        .group_by(EventRow.activity)
+        .order_by(func.count(EventRow.id).desc())
+    )
+    result = await db.execute(stmt)
+    rows = result.fetchall()
+
+    return {
+        "activities": [
+            {
+                "activity": r.activity,
+                "count": r.count,
+                "first_seen": r.first_seen.isoformat() if r.first_seen else None,
+                "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+            }
+            for r in rows
+        ]
+    }
 
 
 @router.get("/quality/{pipeline_id}", response_model=EventLogQualityScore)

@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 from fastapi import APIRouter, Query, Header, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,24 @@ _SYSTEM_EXCL = (
 )
 
 
+def _build_user_excl(excluded: list[str]) -> tuple[str, dict]:
+    """Build a parameterized SQL fragment for user-defined excluded activities."""
+    if not excluded:
+        return "", {}
+    placeholders = ", ".join(f":uexcl_{i}" for i in range(len(excluded)))
+    return f"AND activity NOT IN ({placeholders})", {f"uexcl_{i}": v for i, v in enumerate(excluded)}
+
+
+def _apply_labels(items: list[dict], labels: dict[str, str], key: str = "activity") -> list[dict]:
+    """Replace activity values with human-readable labels in-place."""
+    if not labels:
+        return items
+    for item in items:
+        if item.get(key) in labels:
+            item[key] = labels[item[key]]
+    return items
+
+
 def _variant_id(activities: list[str]) -> str:
     seq = "→".join(activities)
     return hashlib.md5(seq.encode()).hexdigest()[:12]
@@ -30,10 +49,15 @@ async def list_cases(
     stuck_days: int = Query(30),
     limit: int = Query(100, le=500),
     offset: int = Query(0),
+    excluded: Optional[str] = Query(None, description="Comma-separated activity names to exclude"),
+    labels: Optional[str] = Query(None, description="JSON object mapping activity→label"),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
+    label_map: dict[str, str] = json.loads(labels) if labels else {}
+    user_excl_sql, user_excl_params = _build_user_excl(excl_list)
 
     sql = text(f"""
         WITH case_agg AS (
@@ -49,6 +73,7 @@ async def list_cases(
               AND tenant_id = :tenant_id
               AND case_id != ''
               {_SYSTEM_EXCL}
+              {user_excl_sql}
             GROUP BY case_id
         ),
         case_computed AS (
@@ -94,12 +119,13 @@ async def list_cases(
         "stuck_days": stuck_days,
         "limit": limit,
         "offset": offset,
+        **user_excl_params,
     })
     rows = result.fetchall()
 
     cases = []
     for row in rows:
-        activities = list(row.activities or [])
+        activities = [label_map.get(a, a) for a in list(row.activities or [])]
         vid = _variant_id(activities)
         # detect rework: any activity appears after a "later" activity in the sequence
         seen = []
@@ -116,7 +142,7 @@ async def list_cases(
 
         cases.append({
             "case_id": row.case_id,
-            "current_activity": row.current_activity,
+            "current_activity": label_map.get(row.current_activity, row.current_activity),
             "last_resource": row.last_resource,
             "total_duration_days": round(float(row.total_duration_days or 0), 1),
             "days_since_last_activity": round(float(row.days_since_last_activity or 0), 1),
@@ -208,10 +234,15 @@ async def get_case_timeline(
 async def list_variants(
     object_type_id: str,
     limit: int = Query(50, le=200),
+    excluded: Optional[str] = Query(None),
+    labels: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
+    label_map: dict[str, str] = json.loads(labels) if labels else {}
+    user_excl_sql, user_excl_params = _build_user_excl(excl_list)
 
     sql = text(f"""
         WITH raw AS (
@@ -224,6 +255,7 @@ async def list_variants(
               AND tenant_id = :tenant_id
               AND case_id != ''
               {_SYSTEM_EXCL}
+              {user_excl_sql}
         ),
         case_sequences AS (
             SELECT
@@ -252,6 +284,7 @@ async def list_variants(
         "ot_id": object_type_id,
         "tenant_id": tenant_id,
         "limit": limit,
+        **user_excl_params,
     })
     rows = result.fetchall()
 
@@ -259,7 +292,7 @@ async def list_variants(
 
     variants = []
     for i, row in enumerate(rows):
-        activities = list(row.activities or [])
+        activities = [label_map.get(a, a) for a in list(row.activities or [])]
         vid = _variant_id(activities)
         case_count = int(row.case_count)
 
@@ -294,10 +327,15 @@ async def list_variants(
 @router.get("/transitions/{object_type_id}")
 async def get_transitions(
     object_type_id: str,
+    excluded: Optional[str] = Query(None),
+    labels: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
+    label_map: dict[str, str] = json.loads(labels) if labels else {}
+    user_excl_sql, user_excl_params = _build_user_excl(excl_list)
 
     sql = text(f"""
         WITH ordered AS (
@@ -312,6 +350,7 @@ async def get_transitions(
               AND tenant_id = :tenant_id
               AND case_id != ''
               {_SYSTEM_EXCL}
+              {user_excl_sql}
         )
         SELECT
             from_activity,
@@ -327,7 +366,7 @@ async def get_transitions(
         ORDER BY transition_count DESC
     """)
 
-    result = await db.execute(sql, {"ot_id": object_type_id, "tenant_id": tenant_id})
+    result = await db.execute(sql, {"ot_id": object_type_id, "tenant_id": tenant_id, **user_excl_params})
     rows = result.fetchall()
 
     # Compute overall median for coloring in frontend
@@ -339,8 +378,8 @@ async def get_transitions(
         avg_h = float(row.avg_hours or 0)
         speed = "fast" if avg_h <= median_hours * 0.5 else ("slow" if avg_h >= median_hours * 2 else "normal")
         transitions.append({
-            "from_activity": row.from_activity,
-            "to_activity": row.to_activity,
+            "from_activity": label_map.get(row.from_activity, row.from_activity),
+            "to_activity": label_map.get(row.to_activity, row.to_activity),
             "count": int(row.transition_count),
             "avg_hours": round(avg_h, 1),
             "p50_hours": round(float(row.p50_hours or 0), 1),
@@ -348,7 +387,7 @@ async def get_transitions(
             "speed": speed,
         })
 
-    # All unique activities
+    # All unique activities (already label-mapped above)
     activities = list(set(
         [t["from_activity"] for t in transitions] + [t["to_activity"] for t in transitions]
     ))
@@ -427,10 +466,13 @@ async def get_bottlenecks(
 @router.get("/stats/{object_type_id}")
 async def get_stats(
     object_type_id: str,
+    excluded: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
+    user_excl_sql, user_excl_params = _build_user_excl(excl_list)
 
     sql = text(f"""
         WITH case_agg AS (
@@ -445,6 +487,7 @@ async def get_stats(
               AND tenant_id = :tenant_id
               AND case_id != ''
               {_SYSTEM_EXCL}
+              {user_excl_sql}
             GROUP BY case_id
         )
         SELECT
@@ -455,7 +498,7 @@ async def get_stats(
         FROM case_agg
     """)
 
-    result = await db.execute(sql, {"ot_id": object_type_id, "tenant_id": tenant_id})
+    result = await db.execute(sql, {"ot_id": object_type_id, "tenant_id": tenant_id, **user_excl_params})
     row = result.fetchone()
 
     if not row or not row.total_cases:
@@ -469,6 +512,7 @@ async def get_stats(
             FROM events
             WHERE object_type_id = :ot_id AND tenant_id = :tenant_id AND case_id != ''
               {_SYSTEM_EXCL}
+              {user_excl_sql}
         ),
         case_sequences AS (
             SELECT case_id,
@@ -485,7 +529,7 @@ async def get_stats(
             ) AS unique_acts
         ) < array_length(activities, 1)
     """)
-    rework_result = await db.execute(rework_sql, {"ot_id": object_type_id, "tenant_id": tenant_id})
+    rework_result = await db.execute(rework_sql, {"ot_id": object_type_id, "tenant_id": tenant_id, **user_excl_params})
     rework_row = rework_result.fetchone()
     rework_cases = int(rework_row.rework_cases) if rework_row else 0
     total = int(row.total_cases)

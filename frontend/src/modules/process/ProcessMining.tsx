@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { useProcessStore } from '../../store/processStore';
+import { usePipelineStore } from '../../store/pipelineStore';
 import { ProcessMap } from './ProcessMap';
 import { VariantExplorer } from './VariantExplorer';
 import { CaseBrowser } from './CaseBrowser';
 import { AlertRulesPanel } from './AlertRulesPanel';
 import { ConformanceTab } from './ConformanceTab';
+import { EventConfigPanel } from './EventConfigPanel';
 
-type TabId = 'map' | 'variants' | 'cases' | 'conformance' | 'alerts';
+type TabId = 'map' | 'variants' | 'cases' | 'conformance' | 'alerts' | 'settings';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'map', label: 'Process Map' },
@@ -15,6 +17,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'cases', label: 'Cases' },
   { id: 'conformance', label: 'Conformance' },
   { id: 'alerts', label: 'Alerts' },
+  { id: 'settings', label: '⚙ Settings' },
 ];
 
 const StatCard: React.FC<{ label: string; value: string | number; sub?: string; alert?: boolean }> = ({ label, value, sub, alert }) => (
@@ -29,13 +32,15 @@ const StatCard: React.FC<{ label: string; value: string | number; sub?: string; 
 
 export const ProcessMining: React.FC = () => {
   const { objectTypes, fetchObjectTypes } = useOntologyStore();
-  const { stats, fetchStats, fetchCases, fetchVariants, fetchTransitions } = useProcessStore();
+  const { stats, fetchStats, fetchCases, fetchVariants, fetchTransitions, eventConfig } = useProcessStore();
+  const { pipelines, fetchPipelines } = usePipelineStore();
   const [activeTab, setActiveTab] = useState<TabId>('map');
   const [selectedOtId, setSelectedOtId] = useState('');
   const [selectedVariantId, setSelectedVariantId] = useState<string | undefined>();
 
   useEffect(() => {
     fetchObjectTypes();
+    fetchPipelines();
   }, []);
 
   useEffect(() => {
@@ -51,9 +56,19 @@ export const ProcessMining: React.FC = () => {
       fetchVariants(selectedOtId);
       fetchCases(selectedOtId);
     }
-  }, [selectedOtId]);
+  }, [selectedOtId, eventConfig]);
 
   const selectedOt = objectTypes.find(o => o.id === selectedOtId);
+
+  // Build pipeline list shape expected by EventConfigPanel
+  const pipelineList = pipelines.map(p => ({
+    id: p.id,
+    name: p.name,
+    nodes: (p.nodes || []).map(n => ({
+      type: n.type as string,
+      config: (n.config || {}) as Record<string, unknown>,
+    })),
+  }));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', backgroundColor: '#FFFFFF' }}>
@@ -100,7 +115,7 @@ export const ProcessMining: React.FC = () => {
         </div>
 
         {/* Stats row */}
-        {stats && (
+        {stats && activeTab !== 'settings' && (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 24, alignItems: 'center' }}>
             <StatCard label="Cases" value={stats.total_cases.toLocaleString()} />
             <div style={{ width: 1, height: 24, backgroundColor: '#E2E8F0' }} />
@@ -111,6 +126,22 @@ export const ProcessMining: React.FC = () => {
             <StatCard label="Rework Rate" value={`${stats.rework_rate}%`} alert={stats.rework_rate > 10} />
             <div style={{ width: 1, height: 24, backgroundColor: '#E2E8F0' }} />
             <StatCard label="Stuck" value={stats.stuck_cases} alert={stats.stuck_cases > 0} />
+          </div>
+        )}
+
+        {/* Settings hint: show exclusion count badge when active config exists */}
+        {activeTab !== 'settings' && eventConfig.excluded_activities.length > 0 && (
+          <div
+            style={{ marginLeft: stats ? 0 : 'auto', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+            onClick={() => setActiveTab('settings')}
+            title="Process Mining Settings active"
+          >
+            <span style={{
+              fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 10,
+              backgroundColor: '#EFF6FF', color: '#3B82F6', border: '1px solid #BFDBFE',
+            }}>
+              {eventConfig.excluded_activities.length} filtered
+            </span>
           </div>
         )}
       </div>
@@ -133,6 +164,9 @@ export const ProcessMining: React.FC = () => {
         {activeTab === 'alerts' && (
           <AlertRulesPanel objectTypeId={selectedOtId} />
         )}
+        {activeTab === 'settings' && (
+          <EventConfigPanel objectTypeId={selectedOtId} pipelines={pipelineList} />
+        )}
       </div>
 
       {/* Status bar */}
@@ -146,6 +180,11 @@ export const ProcessMining: React.FC = () => {
         {stats && (
           <span style={{ fontSize: 11, color: '#475569', fontFamily: 'var(--font-mono)' }}>
             {stats.total_cases} cases · {stats.variant_count} variants · {stats.rework_rate}% rework
+          </span>
+        )}
+        {eventConfig.excluded_activities.length > 0 && (
+          <span style={{ fontSize: 11, color: '#3B82F6', fontFamily: 'var(--font-mono)' }}>
+            · {eventConfig.excluded_activities.length} activities filtered
           </span>
         )}
       </div>
