@@ -71,6 +71,13 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
   const isAdmin = currentUser?.role === 'ADMIN';
   const width = expanded ? 220 : 56;
 
+  const canSee = (moduleId: string): boolean => {
+    if (isAdmin) return true;
+    const mods = currentUser?.allowed_modules;
+    if (!mods || mods.length === 0) return true;
+    return mods.includes(moduleId);
+  };
+
   const navBtn = (
     item: NavItem,
     isActive: boolean,
@@ -160,52 +167,56 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
       <div style={{ flex: 1, padding: '6px 0', overflowY: 'auto', overflowX: 'hidden' }}>
         {NAV_ITEMS
           .filter((item) => !item.adminOnly || isAdmin)
+          .filter((item) => canSee(item.path))
           .map((item) =>
             navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path)),
           )}
 
         {/* ── maic group ───────────────────────────────────────────────── */}
-        <button
-          onClick={() => expanded ? setMaicExpanded((v) => !v) : onNavigate('projects')}
-          title={!expanded ? 'maic' : undefined}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            width: '100%', height: 38,
-            padding: expanded ? '0 14px' : '0',
-            justifyContent: expanded ? 'flex-start' : 'center',
-            backgroundColor: (currentPage === 'projects' || currentPage === 'finance') ? '#161D2B' : 'transparent',
-            color: (currentPage === 'projects' || currentPage === 'finance') ? '#E2E8F0' : '#64748B',
-            cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
-            borderLeft: (currentPage === 'projects' || currentPage === 'finance') ? '2px solid #7C3AED' : '2px solid transparent',
-            borderTop: 'none', borderRight: 'none', borderBottom: 'none',
-            flexShrink: 0,
-          }}
-          onMouseEnter={(e) => {
-            if (currentPage !== 'projects' && currentPage !== 'finance') {
-              (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
-              (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (currentPage !== 'projects' && currentPage !== 'finance') {
-              (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-              (e.currentTarget as HTMLElement).style.color = '#64748B';
-            }
-          }}
-        >
-          <span style={{ flexShrink: 0, lineHeight: 0 }}><FolderKanban size={16} /></span>
-          {expanded && (
-            <>
-              <span style={{ fontSize: 13, fontWeight: (currentPage === 'projects' || currentPage === 'finance') ? 500 : 400 }}>maic</span>
-              <span style={{ marginLeft: 'auto', lineHeight: 0, flexShrink: 0, color: '#475569' }}>
-                {maicExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-              </span>
-            </>
-          )}
-        </button>
-
-        {expanded && maicExpanded && MAIC_SUBITEMS.map((sub) =>
-          navBtn(sub, currentPage === sub.path, () => onNavigate(sub.path), true, true),
+        {(canSee('projects') || canSee('finance')) && (
+          <>
+            <button
+              onClick={() => expanded ? setMaicExpanded((v) => !v) : onNavigate('projects')}
+              title={!expanded ? 'maic' : undefined}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                width: '100%', height: 38,
+                padding: expanded ? '0 14px' : '0',
+                justifyContent: expanded ? 'flex-start' : 'center',
+                backgroundColor: (currentPage === 'projects' || currentPage === 'finance') ? '#161D2B' : 'transparent',
+                color: (currentPage === 'projects' || currentPage === 'finance') ? '#E2E8F0' : '#64748B',
+                cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
+                borderLeft: (currentPage === 'projects' || currentPage === 'finance') ? '2px solid #7C3AED' : '2px solid transparent',
+                borderTop: 'none', borderRight: 'none', borderBottom: 'none',
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => {
+                if (currentPage !== 'projects' && currentPage !== 'finance') {
+                  (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
+                  (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (currentPage !== 'projects' && currentPage !== 'finance') {
+                  (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+                  (e.currentTarget as HTMLElement).style.color = '#64748B';
+                }
+              }}
+            >
+              <span style={{ flexShrink: 0, lineHeight: 0 }}><FolderKanban size={16} /></span>
+              {expanded && (
+                <>
+                  <span style={{ fontSize: 13, fontWeight: (currentPage === 'projects' || currentPage === 'finance') ? 500 : 400 }}>maic</span>
+                  <span style={{ marginLeft: 'auto', lineHeight: 0, flexShrink: 0, color: '#475569' }}>
+                    {maicExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                  </span>
+                </>
+              )}
+            </button>
+            {expanded && maicExpanded && MAIC_SUBITEMS.filter(s => canSee(s.path)).map((sub) =>
+              navBtn(sub, currentPage === sub.path, () => onNavigate(sub.path), true, true),
+            )}
+          </>
         )}
 
         {/* Apps section */}

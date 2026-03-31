@@ -14,6 +14,8 @@ export interface MaicUser {
   active: boolean;
   mustChangePassword?: boolean;
   createdBy?: string;
+  /** If set, user can only see these module IDs. Null/empty = all modules. ADMINs always see all. */
+  allowed_modules?: string[];
 }
 
 interface Tenant {

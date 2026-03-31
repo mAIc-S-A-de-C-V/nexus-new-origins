@@ -1,9 +1,22 @@
 import React, { useState } from 'react';
 import {
   Plus, X, Pencil, Trash2, ShieldCheck, BarChart2, Eye, Wrench,
-  Copy, Check, RefreshCw, ToggleLeft, ToggleRight, KeyRound,
+  Copy, Check, RefreshCw, ToggleLeft, ToggleRight, KeyRound, LayoutGrid,
 } from 'lucide-react';
 import { useAuth, MaicUser, UserRole } from '../../shell/TenantContext';
+
+// ── Module access config ────────────────────────────────────────────────────
+
+const ALL_MODULES = [
+  { id: 'connectors', label: 'Connectors' },
+  { id: 'ontology',   label: 'Ontology' },
+  { id: 'events',     label: 'Event Log' },
+  { id: 'process',    label: 'Process Mining' },
+  { id: 'pipelines',  label: 'Pipelines' },
+  { id: 'projects',   label: 'Projects' },
+  { id: 'finance',    label: 'Finance' },
+  { id: 'apps',       label: 'Apps' },
+];
 
 // ── Role metadata ──────────────────────────────────────────────────────────
 
@@ -171,7 +184,7 @@ const CredentialsCard: React.FC<{
 // ── Create user modal ──────────────────────────────────────────────────────
 
 const CreateUserModal: React.FC<{
-  onSave: (data: { name: string; email: string; role: UserRole; password: string }) => void;
+  onSave: (data: { name: string; email: string; role: UserRole; password: string; allowed_modules?: string[] }) => void;
   onClose: () => void;
 }> = ({ onSave, onClose }) => {
   const [name, setName] = useState('');
@@ -179,6 +192,8 @@ const CreateUserModal: React.FC<{
   const [role, setRole] = useState<UserRole>('ANALYST');
   const [tempPass, setTempPass] = useState(() => generateTempPassword());
   const [error, setError] = useState('');
+  const [restrictModules, setRestrictModules] = useState(false);
+  const [allowedMods, setAllowedMods] = useState<string[]>(ALL_MODULES.map(m => m.id));
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 34, backgroundColor: '#070B0F',
@@ -192,7 +207,7 @@ const CreateUserModal: React.FC<{
     if (!email.trim()) { setError('Email is required.'); return; }
     if (!email.includes('@')) { setError('Enter a valid email address.'); return; }
     if (!tempPass.trim()) { setError('Temporary password is required.'); return; }
-    onSave({ name: name.trim(), email: email.trim().toLowerCase(), role, password: tempPass });
+    onSave({ name: name.trim(), email: email.trim().toLowerCase(), role, password: tempPass, allowed_modules: restrictModules ? allowedMods : undefined });
   };
 
   return (
@@ -310,6 +325,36 @@ const CreateUserModal: React.FC<{
             </div>
           </div>
 
+          {/* Module access */}
+          {role !== 'ADMIN' && (
+            <div style={{ border: '1px solid #1E293B', backgroundColor: '#070B0F' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <LayoutGrid size={13} style={{ color: '#475569' }} />
+                  <span style={{ fontSize: 12, color: '#94A3B8', fontWeight: 500 }}>Restrict module access</span>
+                </div>
+                <button type="button" onClick={() => setRestrictModules(v => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', lineHeight: 0, color: restrictModules ? '#7C3AED' : '#334155' }}>
+                  {restrictModules ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
+                </button>
+              </div>
+              {restrictModules && (
+                <div style={{ borderTop: '1px solid #1E293B', padding: '10px 12px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {ALL_MODULES.map(m => (
+                    <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={allowedMods.includes(m.id)}
+                        onChange={e => setAllowedMods(prev => e.target.checked ? [...prev, m.id] : prev.filter(x => x !== m.id))}
+                        style={{ accentColor: '#7C3AED' }}
+                      />
+                      <span style={{ fontSize: 12, color: allowedMods.includes(m.id) ? '#E2E8F0' : '#475569' }}>{m.label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {error && (
             <div style={{ fontSize: 12, color: '#F87171', backgroundColor: '#1A0A0A', border: '1px solid #3F1010', padding: '8px 12px' }}>
               {error}
@@ -353,6 +398,8 @@ const EditUserModal: React.FC<{
   const [resetPass, setResetPass] = useState(false);
   const [newTempPass, setNewTempPass] = useState(() => generateTempPassword());
   const [error, setError] = useState('');
+  const [restrictModules, setRestrictModules] = useState(!!(user.allowed_modules && user.allowed_modules.length > 0));
+  const [allowedMods, setAllowedMods] = useState<string[]>(user.allowed_modules ?? ALL_MODULES.map(m => m.id));
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 34, backgroundColor: '#070B0F',
@@ -364,7 +411,10 @@ const EditUserModal: React.FC<{
   const handleSave = () => {
     if (!name.trim()) { setError('Name is required.'); return; }
     if (!email.trim()) { setError('Email is required.'); return; }
-    const patch: Partial<MaicUser> = { name: name.trim(), email: email.trim().toLowerCase(), role };
+    const patch: Partial<MaicUser> = {
+      name: name.trim(), email: email.trim().toLowerCase(), role,
+      allowed_modules: (role !== 'ADMIN' && restrictModules) ? allowedMods : undefined,
+    };
     if (resetPass) {
       patch.password = newTempPass;
       patch.mustChangePassword = true;
@@ -437,6 +487,36 @@ const EditUserModal: React.FC<{
             </div>
           </div>
 
+          {/* Module access */}
+          {role !== 'ADMIN' && (
+            <div style={{ border: '1px solid #1E293B', backgroundColor: '#070B0F' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <LayoutGrid size={13} style={{ color: '#475569' }} />
+                  <span style={{ fontSize: 12, color: '#94A3B8', fontWeight: 500 }}>Restrict module access</span>
+                </div>
+                <button type="button" onClick={() => setRestrictModules(v => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', lineHeight: 0, color: restrictModules ? '#7C3AED' : '#334155' }}>
+                  {restrictModules ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
+                </button>
+              </div>
+              {restrictModules && (
+                <div style={{ borderTop: '1px solid #1E293B', padding: '10px 12px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {ALL_MODULES.map(m => (
+                    <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={allowedMods.includes(m.id)}
+                        onChange={e => setAllowedMods(prev => e.target.checked ? [...prev, m.id] : prev.filter(x => x !== m.id))}
+                        style={{ accentColor: '#7C3AED' }}
+                      />
+                      <span style={{ fontSize: 12, color: allowedMods.includes(m.id) ? '#E2E8F0' : '#475569' }}>{m.label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {error && <div style={{ fontSize: 12, color: '#F87171', backgroundColor: '#1A0A0A', border: '1px solid #3F1010', padding: '8px 12px' }}>{error}</div>}
         </div>
 
@@ -460,8 +540,8 @@ const UsersPage: React.FC = () => {
 
   const isAdmin = currentUser?.role === 'ADMIN';
 
-  const handleCreate = ({ name, email, role, password }: { name: string; email: string; role: UserRole; password: string }) => {
-    const user = addUser({ name, email, role, password, active: true, mustChangePassword: true, createdBy: currentUser?.id });
+  const handleCreate = ({ name, email, role, password, allowed_modules }: { name: string; email: string; role: UserRole; password: string; allowed_modules?: string[] }) => {
+    const user = addUser({ name, email, role, password, active: true, mustChangePassword: true, createdBy: currentUser?.id, allowed_modules });
     setShowCreate(false);
     setCreatedCreds({ user, tempPassword: password });
   };
