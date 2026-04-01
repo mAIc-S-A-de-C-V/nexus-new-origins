@@ -75,7 +75,7 @@ export const ProcessMining: React.FC = () => {
       {/* Header */}
       <div style={{
         height: 52, backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0',
-        display: 'flex', alignItems: 'center', padding: '0 16px', gap: 16, flexShrink: 0,
+        display: 'flex', alignItems: 'center', padding: '0 52px 0 16px', gap: 16, flexShrink: 0,
       }}>
         <h1 style={{ fontSize: 16, fontWeight: 500, color: '#0D1117', margin: 0 }}>Process Mining</h1>
 

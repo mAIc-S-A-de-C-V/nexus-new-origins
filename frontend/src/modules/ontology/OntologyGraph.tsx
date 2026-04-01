@@ -764,7 +764,7 @@ export const OntologyGraph: React.FC = () => {
       {/* Header */}
       <div style={{
         height: 52, backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0',
-        display: 'flex', alignItems: 'center', padding: '0 16px', gap: '12px', flexShrink: 0,
+        display: 'flex', alignItems: 'center', padding: '0 52px 0 16px', gap: '12px', flexShrink: 0,
       }}>
         <h1 style={{ fontSize: '16px', fontWeight: 500, color: '#0D1117' }}>Ontology Graph</h1>
 

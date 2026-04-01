@@ -180,7 +180,7 @@ export const PipelineBuilder: React.FC = () => {
         borderBottom: '1px solid #E2E8F0',
         display: 'flex',
         alignItems: 'center',
-        padding: '0 16px',
+        padding: '0 52px 0 16px',
         gap: '12px',
         flexShrink: 0,
       }}>

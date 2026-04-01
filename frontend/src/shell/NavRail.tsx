@@ -3,9 +3,11 @@ import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
   FolderKanban, Users, LogOut, ScanSearch, DollarSign, Briefcase,
+  BrainCircuit, Bot, MessageSquare,
 } from 'lucide-react';
 import { useAuth } from './TenantContext';
 import { useAppStore } from '../store/appStore';
+import { useAssistantStore } from '../store/assistantStore';
 
 // ── maic icon SVG ──────────────────────────────────────────────────────────
 
@@ -44,6 +46,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'events',     label: 'Event Log',      icon: <Activity size={16} />,      active: true,  path: 'events' },
   { id: 'process',    label: 'Process Mining', icon: <ScanSearch size={16} />,    active: true,  path: 'process' },
   { id: 'pipelines',  label: 'Pipelines',      icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
+  { id: 'logic',      label: 'Logic Studio',   icon: <BrainCircuit size={16} />,  active: true,  path: 'logic' },
+  { id: 'agents',     label: 'Agent Studio',   icon: <Bot size={16} />,           active: true,  path: 'agents' },
   { id: 'users',      label: 'Users',          icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
   { id: 'settings',   label: 'Settings',       icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },
 ];
@@ -67,6 +71,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { currentUser, logout } = useAuth();
   const { apps } = useAppStore();
+  const { toggle: toggleAssistant, open: assistantOpen, conversations } = useAssistantStore();
 
   const isAdmin = currentUser?.role === 'ADMIN';
   const width = expanded ? 220 : 56;
@@ -359,6 +364,41 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
             </div>
           </>
         )}
+
+        {/* Nexus Assistant button */}
+        <button
+          onClick={toggleAssistant}
+          title={!expanded ? 'Nexus Assistant' : undefined}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            width: '100%', padding: expanded ? '6px 14px' : '6px',
+            justifyContent: expanded ? 'flex-start' : 'center',
+            backgroundColor: assistantOpen ? '#1E1040' : 'transparent',
+            border: 'none', cursor: 'pointer',
+            borderLeft: assistantOpen ? '2px solid #7C3AED' : '2px solid transparent',
+            transition: 'background-color 80ms',
+            marginBottom: 2,
+          }}
+          onMouseEnter={(e) => { if (!assistantOpen) (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620'; }}
+          onMouseLeave={(e) => { if (!assistantOpen) (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
+        >
+          <MessageSquare size={16} color={assistantOpen ? '#A78BFA' : '#475569'} style={{ flexShrink: 0 }} />
+          {expanded && (
+            <>
+              <span style={{ fontSize: 13, color: assistantOpen ? '#A78BFA' : '#64748B', fontWeight: assistantOpen ? 500 : 400 }}>
+                Assistant
+              </span>
+              {conversations.length > 0 && (
+                <span style={{
+                  marginLeft: 'auto', fontSize: 9, color: '#7C3AED',
+                  backgroundColor: '#1E1040', padding: '1px 6px', borderRadius: 10, flexShrink: 0,
+                }}>
+                  {conversations.length}
+                </span>
+              )}
+            </>
+          )}
+        </button>
 
         {/* User row — clickable, opens dropdown */}
         {currentUser && (

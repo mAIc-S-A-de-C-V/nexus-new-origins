@@ -1,6 +1,7 @@
 import React from 'react';
 import NavRail from './NavRail';
 import { NotificationBell } from './NotificationBell';
+import NexusAssistant from './NexusAssistant';
 import { useNavigationStore } from '../store/navigationStore';
 
 interface AppShellProps {
@@ -37,6 +38,9 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       }}>
         <NotificationBell />
       </div>
+
+      {/* Nexus Assistant — right-side panel */}
+      <NexusAssistant />
     </div>
   );
 };

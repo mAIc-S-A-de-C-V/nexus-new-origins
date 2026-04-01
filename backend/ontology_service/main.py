@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import ontology, records, apps
+from routers import ontology, records, apps, actions
 from database import init_db
 
 app = FastAPI(
@@ -20,6 +20,7 @@ app.add_middleware(
 app.include_router(ontology.router, prefix="/object-types", tags=["ontology"])
 app.include_router(records.router, prefix="/object-types", tags=["records"])
 app.include_router(apps.router, prefix="/apps", tags=["apps"])
+app.include_router(actions.router, prefix="/actions", tags=["actions"])
 
 
 @app.on_event("startup")

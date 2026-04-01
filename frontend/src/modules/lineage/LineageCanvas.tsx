@@ -7,7 +7,7 @@ export const LineageCanvas: React.FC = () => {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{
         height: 52, backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0',
-        display: 'flex', alignItems: 'center', padding: '0 16px',
+        display: 'flex', alignItems: 'center', padding: '0 52px 0 16px',
       }}>
         <h1 style={{ fontSize: '16px', fontWeight: 500, color: '#0D1117' }}>Data Lineage</h1>
         <span style={{

@@ -1,7 +1,7 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, func
+from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Boolean, func
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -71,6 +71,44 @@ class AppRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+
+
+class ActionDefinitionRow(Base):
+    """Typed, permissioned write operations that AI agents and Logic Functions can propose."""
+    __tablename__ = "action_definitions"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False, index=True)  # unique slug, e.g. "updateDealStage"
+    description = Column(Text, nullable=True)
+    input_schema = Column(JSON, nullable=False, default=dict)
+    requires_confirmation = Column(Boolean, nullable=False, default=True)
+    allowed_roles = Column(JSON, nullable=False, default=list)  # ["ADMIN", "DATA_ENGINEER"]
+    writes_to_object_type = Column(String, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ActionExecutionRow(Base):
+    """An individual execution (or pending proposal) of an Action."""
+    __tablename__ = "action_executions"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    action_name = Column(String, nullable=False, index=True)
+    inputs = Column(JSON, nullable=False, default=dict)
+    # pending_confirmation → confirmed/rejected → running → completed/failed
+    status = Column(String, nullable=False, default="pending_confirmation", index=True)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    executed_by = Column(String, nullable=True)   # user_id, "agent:{id}", or "logic:{id}"
+    confirmed_by = Column(String, nullable=True)
+    rejected_by = Column(String, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    source = Column(String, nullable=True)         # "agent:xxx", "logic_function:xxx", "manual"
+    source_id = Column(String, nullable=True)      # agent_id or function_id
+    reasoning = Column(Text, nullable=True)        # AI's justification for the action
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 async def init_db():

@@ -561,7 +561,7 @@ const UsersPage: React.FC = () => {
       <div style={{
         height: 52, backgroundColor: '#fff', borderBottom: '1px solid #E2E8F0',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 24px', flexShrink: 0,
+        padding: '0 52px 0 24px', flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <h1 style={{ fontSize: 15, fontWeight: 600, color: '#0D1117', margin: 0 }}>Users</h1>

@@ -332,7 +332,7 @@ const ProjectsListView: React.FC<{
       {/* Header */}
       <div style={{
         height: 52, backgroundColor: '#fff', borderBottom: '1px solid #E2E8F0',
-        display: 'flex', alignItems: 'center', padding: '0 24px', gap: 12, flexShrink: 0,
+        display: 'flex', alignItems: 'center', padding: '0 52px 0 24px', gap: 12, flexShrink: 0,
       }}>
         <div style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: company.color, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Folder size={14} color="#fff" />
@@ -1066,7 +1066,7 @@ const GanttView: React.FC<{
       {/* Header */}
       <div style={{
         height: 52, backgroundColor: '#fff', borderBottom: '1px solid #E2E8F0',
-        display: 'flex', alignItems: 'center', padding: '0 24px', gap: 12, flexShrink: 0,
+        display: 'flex', alignItems: 'center', padding: '0 52px 0 24px', gap: 12, flexShrink: 0,
       }}>
         <button onClick={onBack} style={{ color: '#64748B', display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
           <ArrowLeft size={16} /> {company.name}

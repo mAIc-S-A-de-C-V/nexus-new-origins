@@ -501,7 +501,7 @@ const AppsPage: React.FC = () => {
           borderBottom: '1px solid #E2E8F0',
           display: 'flex',
           alignItems: 'center',
-          padding: '0 20px',
+          padding: '0 52px 0 20px',
           gap: 10,
           flexShrink: 0,
         }}>
@@ -563,7 +563,7 @@ const AppsPage: React.FC = () => {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0 24px',
+        padding: '0 52px 0 24px',
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

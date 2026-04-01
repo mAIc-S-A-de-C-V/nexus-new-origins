@@ -19,6 +19,8 @@ services:
         VITE_AUTH_SERVICE_URL: ${VITE_AUTH_SERVICE_URL:-http://localhost:8011}
         VITE_PROJECT_MGMT_URL: ${VITE_PROJECT_MGMT_URL:-http://localhost:9000}
         VITE_FINANCE_SERVICE_URL: ${VITE_FINANCE_SERVICE_URL:-http://localhost:9001}
+        VITE_LOGIC_SERVICE_URL: ${VITE_LOGIC_SERVICE_URL:-http://localhost:8012}
+        VITE_AGENT_SERVICE_URL: ${VITE_AGENT_SERVICE_URL:-http://localhost:8013}
     ports:
       - "3000:3000"
     depends_on:
@@ -197,6 +199,48 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8011 --reload
+
+  logic-service:
+    build:
+      context: ./backend/logic_service
+      dockerfile: Dockerfile
+    ports:
+      - "8012:8012"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8012 --reload
+
+  agent-service:
+    build:
+      context: ./backend/agent_service
+      dockerfile: Dockerfile
+    ports:
+      - "8013:8013"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
+      - LOGIC_SERVICE_URL=http://logic-service:8012
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      logic-service:
+        condition: service_started
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8013 --reload
 
   alert-engine-service:
     build:

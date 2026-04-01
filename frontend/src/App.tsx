@@ -15,6 +15,8 @@ const AppsPage        = lazy(() => import('./modules/apps/AppsPage'));
 const ProjectsModule  = lazy(() => import('./modules/projects/ProjectsModule'));
 const FinanceModule   = lazy(() => import('./modules/finance/FinanceModule'));
 const UsersPage       = lazy(() => import('./modules/users/UsersPage'));
+const LogicStudio     = lazy(() => import('./modules/logic/LogicStudio'));
+const AgentStudio     = lazy(() => import('./modules/agents/AgentStudio'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -85,6 +87,10 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading users..." />}><UsersPage /></Suspense>;
     case 'process':
       return <Suspense fallback={<LoadingSpinner message="Loading process mining..." />}><ProcessMining /></Suspense>;
+    case 'logic':
+      return <Suspense fallback={<LoadingSpinner message="Loading Logic Studio..." />}><LogicStudio /></Suspense>;
+    case 'agents':
+      return <Suspense fallback={<LoadingSpinner message="Loading Agent Studio..." />}><AgentStudio /></Suspense>;
     case 'settings':
       return <ComingSoonPage title="Settings" />;
     default:
