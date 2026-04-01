@@ -37,6 +37,7 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
   // Local draft state before saving
   const [excluded, setExcluded] = useState<Set<string>>(new Set(eventConfig.excluded_activities));
   const [labels, setLabels] = useState<Record<string, string>>({ ...eventConfig.activity_labels });
+  const [actAttr, setActAttr] = useState<string>(eventConfig.activity_attribute || '');
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [dirty, setDirty] = useState(false);
 
@@ -82,10 +83,13 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
           setEventConfig({
             excluded_activities: cfg.excluded_activities || [],
             activity_labels: cfg.activity_labels || {},
+            activity_attribute: cfg.activity_attribute || '',
             saved_at: cfg.saved_at,
           });
+          setActAttr(cfg.activity_attribute || '');
         } else {
           setEventConfig({ excluded_activities: [], activity_labels: {} });
+          setActAttr('');
         }
       })
       .catch(() => {});
@@ -139,6 +143,7 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
     const config = {
       excluded_activities: Array.from(excluded),
       activity_labels: labels,
+      activity_attribute: actAttr.trim(),
     };
     await saveEventConfig(activePipelineId, config);
     // Re-fetch the process map with new config applied
@@ -186,6 +191,32 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
+        )}
+      </div>
+
+      {/* Activity Attribute Override */}
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+          Activity Field Override
+        </div>
+        <div style={{ fontSize: 12, color: '#64748B', marginBottom: 8, lineHeight: 1.5 }}>
+          If events show as <strong>RECORD CREATED</strong> / <strong>RECORD UPDATED</strong>, specify the record field whose value should be used as the activity name (e.g. <code style={{ fontSize: 11, backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: 3 }}>stage</code>, <code style={{ fontSize: 11, backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: 3 }}>status</code>).
+        </div>
+        <input
+          type="text"
+          value={actAttr}
+          onChange={e => { setActAttr(e.target.value); setDirty(true); }}
+          placeholder="e.g. stage, status, phase (leave blank to use raw event names)"
+          style={{
+            height: 32, padding: '0 10px', borderRadius: 6, border: '1px solid #E2E8F0',
+            backgroundColor: '#FFFFFF', color: '#0D1117', fontSize: 12, outline: 'none',
+            width: '100%', maxWidth: 420, boxSizing: 'border-box',
+          }}
+        />
+        {actAttr && (
+          <div style={{ fontSize: 11, color: '#059669', marginTop: 4 }}>
+            ✓ Process map will derive activity names from the <code style={{ fontSize: 10, backgroundColor: '#ECFDF5', padding: '0 3px', borderRadius: 2 }}>{actAttr}</code> field in record snapshots.
+          </div>
         )}
       </div>
 

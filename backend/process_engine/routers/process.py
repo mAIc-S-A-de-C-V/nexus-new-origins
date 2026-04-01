@@ -18,6 +18,30 @@ _SYSTEM_EXCL = (
 )
 
 
+def _resolved_activity_expr(act_attr: str) -> str:
+    """
+    SQL expression that resolves the logical activity name.
+    When act_attr is set, remaps generic RECORD_CREATED / RECORD_UPDATED events
+    to the field value stored in attributes.record_snapshot (JSONB).
+    """
+    if not act_attr:
+        return "activity"
+    return (
+        f"CASE "
+        f"  WHEN activity IN ('RECORD_CREATED','RECORD_UPDATED')"
+        f"    AND attributes IS NOT NULL"
+        f"    AND COALESCE(NULLIF(attributes->'record_snapshot'->>:act_attr,''),"
+        f"                 NULLIF(attributes->>:act_attr,'')) IS NOT NULL"
+        f"  THEN COALESCE("
+        f"    NULLIF(attributes->'record_snapshot'->>:act_attr,''),"
+        f"    NULLIF(attributes->>:act_attr,''),"
+        f"    activity"
+        f"  )"
+        f"  ELSE activity"
+        f" END"
+    )
+
+
 def _build_user_excl(excluded: list[str]) -> tuple[str, dict]:
     """Build a parameterized SQL fragment for user-defined excluded activities."""
     if not excluded:
@@ -51,19 +75,22 @@ async def list_cases(
     offset: int = Query(0),
     excluded: Optional[str] = Query(None, description="Comma-separated activity names to exclude"),
     labels: Optional[str] = Query(None, description="JSON object mapping activity→label"),
+    activity_attribute: Optional[str] = Query(None, description="JSON attribute key to use as activity name (remaps RECORD_CREATED/RECORD_UPDATED)"),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    act_attr = activity_attribute or ""
     excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
     label_map: dict[str, str] = json.loads(labels) if labels else {}
     user_excl_sql, user_excl_params = _build_user_excl(excl_list)
+    act_expr = _resolved_activity_expr(act_attr)
 
     sql = text(f"""
         WITH case_agg AS (
             SELECT
                 case_id,
-                array_agg(activity ORDER BY timestamp) AS activities,
+                array_agg({act_expr} ORDER BY timestamp) AS activities,
                 array_agg(resource ORDER BY timestamp) AS resources,
                 min(timestamp) AS started_at,
                 max(timestamp) AS last_activity_at,
@@ -119,6 +146,7 @@ async def list_cases(
         "stuck_days": stuck_days,
         "limit": limit,
         "offset": offset,
+        **({"act_attr": act_attr} if act_attr else {}),
         **user_excl_params,
     })
     rows = result.fetchall()
@@ -236,18 +264,21 @@ async def list_variants(
     limit: int = Query(50, le=200),
     excluded: Optional[str] = Query(None),
     labels: Optional[str] = Query(None),
+    activity_attribute: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    act_attr = activity_attribute or ""
     excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
     label_map: dict[str, str] = json.loads(labels) if labels else {}
     user_excl_sql, user_excl_params = _build_user_excl(excl_list)
+    act_expr = _resolved_activity_expr(act_attr)
 
     sql = text(f"""
         WITH raw AS (
-            SELECT case_id, activity, timestamp,
-                   lag(activity) OVER (PARTITION BY case_id ORDER BY timestamp) AS prev_activity,
+            SELECT case_id, {act_expr} AS activity, timestamp,
+                   lag({act_expr}) OVER (PARTITION BY case_id ORDER BY timestamp) AS prev_activity,
                    min(timestamp) OVER (PARTITION BY case_id) AS started_at,
                    max(timestamp) OVER (PARTITION BY case_id) AS last_activity_at
             FROM events
@@ -284,6 +315,7 @@ async def list_variants(
         "ot_id": object_type_id,
         "tenant_id": tenant_id,
         "limit": limit,
+        **({"act_attr": act_attr} if act_attr else {}),
         **user_excl_params,
     })
     rows = result.fetchall()
@@ -329,21 +361,24 @@ async def get_transitions(
     object_type_id: str,
     excluded: Optional[str] = Query(None),
     labels: Optional[str] = Query(None),
+    activity_attribute: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    act_attr = activity_attribute or ""
     excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
     label_map: dict[str, str] = json.loads(labels) if labels else {}
     user_excl_sql, user_excl_params = _build_user_excl(excl_list)
+    act_expr = _resolved_activity_expr(act_attr)
 
     sql = text(f"""
         WITH ordered AS (
             SELECT
                 case_id,
-                activity,
+                {act_expr} AS activity,
                 timestamp,
-                lag(activity) OVER (PARTITION BY case_id ORDER BY timestamp) AS from_activity,
+                lag({act_expr}) OVER (PARTITION BY case_id ORDER BY timestamp) AS from_activity,
                 lag(timestamp) OVER (PARTITION BY case_id ORDER BY timestamp) AS from_timestamp
             FROM events
             WHERE object_type_id = :ot_id
@@ -366,7 +401,11 @@ async def get_transitions(
         ORDER BY transition_count DESC
     """)
 
-    result = await db.execute(sql, {"ot_id": object_type_id, "tenant_id": tenant_id, **user_excl_params})
+    result = await db.execute(sql, {
+        "ot_id": object_type_id, "tenant_id": tenant_id,
+        **({"act_attr": act_attr} if act_attr else {}),
+        **user_excl_params,
+    })
     rows = result.fetchall()
 
     # Compute overall median for coloring in frontend

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useConformanceStore } from '../../store/conformanceStore';
+import { useProcessStore } from '../../store/processStore';
 import { HappyPathEditor } from './HappyPathEditor';
 import { ConformanceScoreCard } from './ConformanceScoreCard';
 import { DeviationBreakdown } from './DeviationBreakdown';
@@ -13,6 +14,7 @@ export const ConformanceTab: React.FC<Props> = ({ objectTypeId }) => {
     models, checkResult, hasModel, loading, checking,
     fetchModels, fetchSummary, checkConformance, deleteModel,
   } = useConformanceStore();
+  const { activities } = useProcessStore();
 
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
@@ -123,6 +125,7 @@ export const ConformanceTab: React.FC<Props> = ({ objectTypeId }) => {
         <HappyPathEditor
           objectTypeId={objectTypeId}
           modelId={editingModel}
+          observedActivities={activities}
           onClose={() => setShowEditor(false)}
           onSaved={(modelId) => {
             setShowEditor(false);

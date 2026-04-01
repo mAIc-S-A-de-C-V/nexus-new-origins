@@ -76,6 +76,7 @@ export interface AnalysisResult {
 export interface EventConfig {
   excluded_activities: string[];
   activity_labels: Record<string, string>;
+  activity_attribute?: string;  // JSON attribute key to extract activity from (e.g. "stage")
   saved_at?: string;
 }
 
@@ -119,6 +120,9 @@ function buildQueryParams(eventConfig: EventConfig): string {
   }
   if (Object.keys(eventConfig.activity_labels).length > 0) {
     params.set('labels', JSON.stringify(eventConfig.activity_labels));
+  }
+  if (eventConfig.activity_attribute) {
+    params.set('activity_attribute', eventConfig.activity_attribute);
   }
   const qs = params.toString();
   return qs ? `?${qs}` : '';

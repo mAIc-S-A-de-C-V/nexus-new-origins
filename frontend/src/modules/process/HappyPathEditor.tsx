@@ -5,11 +5,12 @@ import { useConformanceStore, ConformanceModel } from '../../store/conformanceSt
 interface Props {
   objectTypeId: string;
   modelId: string | null;       // null = create new
+  observedActivities?: string[]; // activities seen in process map — used for quick-add chips
   onClose: () => void;
   onSaved: (modelId: string) => void;
 }
 
-export const HappyPathEditor: React.FC<Props> = ({ objectTypeId, modelId, onClose, onSaved }) => {
+export const HappyPathEditor: React.FC<Props> = ({ objectTypeId, modelId, observedActivities = [], onClose, onSaved }) => {
   const { models, createModel, updateModel } = useConformanceStore();
   const existing = modelId ? models.find(m => m.id === modelId) : null;
 
@@ -102,6 +103,32 @@ export const HappyPathEditor: React.FC<Props> = ({ objectTypeId, modelId, onClos
       <div style={{ fontSize: 11, color: '#64748B', marginBottom: 8 }}>
         Expected stage sequence — drag to reorder
       </div>
+
+      {/* Observed activities from process map — click to add */}
+      {observedActivities.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 10, color: '#94A3B8', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Observed stages — click to add
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+            {observedActivities
+              .filter(a => !activities.includes(a))
+              .map(act => (
+                <button
+                  key={act}
+                  onClick={() => setActivities(prev => [...prev.filter(a => a !== ''), act])}
+                  style={{
+                    padding: '3px 10px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+                    backgroundColor: '#EFF6FF', color: '#2563EB',
+                    border: '1px solid #BFDBFE', fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  + {act}
+                </button>
+              ))}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
         {activities.map((act, idx) => (

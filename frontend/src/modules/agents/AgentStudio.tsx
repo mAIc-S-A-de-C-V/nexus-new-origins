@@ -1103,7 +1103,7 @@ const AgentStudio: React.FC = () => {
           {rightTab === 'test' && <TestPanel agent={selectedAgent} />}
           {rightTab === 'schedule' && <SchedulePanel agent={selectedAgent} />}
           {rightTab === 'history' && <HistoryPanel agent={selectedAgent} />}
-          {rightTab === 'analytics' && <AnalyticsPanel agent={selectedAgent} />
+          {rightTab === 'analytics' && <AnalyticsPanel agent={selectedAgent} />}
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, flexDirection: 'column', gap: 8 }}>

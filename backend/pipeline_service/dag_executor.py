@@ -570,13 +570,24 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     ]
 
     # Which field's value should become the activity name (e.g. "dealstage")
-    # Check: (1) sink node config, (2) any SINK_EVENT node on the same pipeline
+    # Check: (1) sink node config, (2) any SINK_EVENT node on the same pipeline,
+    #         (3) auto-detect common stage/status field names from the first record
+    _AUTO_ACTIVITY_FIELDS = [
+        "stage", "status", "dealstage", "deal_stage", "pipeline_stage",
+        "hs_dealstage", "phase", "state", "step", "substatus",
+    ]
     activity_field = cfg.get("activityField") or cfg.get("activity_field", "")
     if not activity_field and pipeline.nodes:
         for _n in pipeline.nodes:
             _ncfg = (_n.config or {}) if not isinstance(_n, dict) else (_n.get("config") or {})
             _af = _ncfg.get("activityField") or _ncfg.get("activity_field", "")
             if _af:
+                activity_field = _af
+                break
+    if not activity_field and records_in:
+        _sample = records_in[0]
+        for _af in _AUTO_ACTIVITY_FIELDS:
+            if _af in _sample and str(_sample.get(_af, "")).strip():
                 activity_field = _af
                 break
 
