@@ -1069,7 +1069,7 @@ const AgentStudio: React.FC = () => {
             <span style={{ fontSize: 15, fontWeight: 600, marginRight: 20 }}>{selectedAgent.name}</span>
             {([
               { id: 'config', label: 'Configure', icon: <Wrench size={12} /> },
-              { id: 'knowledge', label: 'Knowledge', icon: <Database size={12} />, badge: selectedAgent.knowledge_scope !== null ? selectedAgent.knowledge_scope.length : null },
+              { id: 'knowledge', label: 'Knowledge', icon: <Database size={12} />, badge: Array.isArray(selectedAgent.knowledge_scope) ? selectedAgent.knowledge_scope.length : null },
               { id: 'chat', label: 'Chat', icon: <MessageCircle size={12} /> },
               { id: 'test', label: 'Test', icon: <CheckCircle size={12} /> },
               { id: 'schedule', label: 'Schedule', icon: <Clock size={12} />, badge: schedules.filter((s) => s.agent_id === selectedAgent.id && s.enabled).length || null },
