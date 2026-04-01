@@ -110,9 +110,19 @@ async def execute_tool(
     tool_input: dict[str, Any],
     tenant_id: str,
     agent_id: str,
+    knowledge_scope: list[dict] | None = None,
 ) -> Any:
-    """Dispatch a tool call to the appropriate service and return the result."""
+    """Dispatch a tool call to the appropriate service and return the result.
+
+    knowledge_scope: None = unrestricted. List = restricted to those object_type_ids.
+    """
     headers = {"x-tenant-id": tenant_id, "Content-Type": "application/json"}
+
+    # Build a quick lookup: object_type_id -> scope entry (for filter enforcement)
+    scope_by_id: dict[str, dict] = {}
+    if knowledge_scope is not None:
+        for entry in knowledge_scope:
+            scope_by_id[entry["object_type_id"]] = entry
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -131,15 +141,31 @@ async def execute_tool(
                 if not ot:
                     return {"error": f"Object type '{object_type}' not found"}
 
+                # Enforce knowledge scope
+                if knowledge_scope is not None and ot["id"] not in scope_by_id:
+                    allowed = [e.get("label", e["object_type_id"]) for e in knowledge_scope]
+                    return {"error": f"Object type '{object_type}' is outside this agent's data scope. Allowed types: {', '.join(allowed)}"}
+
                 r2 = await client.get(
                     f"{ONTOLOGY_URL}/object-types/{ot['id']}/records",
-                    params={"limit": limit},
+                    params={"limit": max(limit * 5, 100)},
                     headers=headers,
                 )
                 data = r2.json() if r2.is_success else {}
                 records = data.get("records", [])
 
-                # Simple in-memory filter
+                # Apply scope-level filter if defined
+                scope_entry = scope_by_id.get(ot["id"], {})
+                scope_filter = scope_entry.get("filter")
+                if scope_filter:
+                    sf, sop, sv = scope_filter.get("field"), scope_filter.get("op"), str(scope_filter.get("value", ""))
+                    if sf and sop:
+                        if sop in ("==", "="):
+                            records = [rec for rec in records if str(rec.get(sf, "")) == sv]
+                        elif sop == "!=":
+                            records = [rec for rec in records if str(rec.get(sf, "")) != sv]
+
+                # Apply user-specified filter on top
                 if raw_filter:
                     import re
                     m = re.match(r'(\w+)\s*==\s*(.+)', raw_filter.strip())
@@ -151,8 +177,11 @@ async def execute_tool(
 
             elif tool_name == "list_object_types":
                 r = await client.get(f"{ONTOLOGY_URL}/object-types", headers=headers)
-                types = r.json() if r.is_success else []
-                return {"object_types": [{"id": t["id"], "name": t.get("name"), "displayName": t.get("displayName")} for t in types]}
+                all_types = r.json() if r.is_success else []
+                # Filter to scope if restricted
+                if knowledge_scope is not None:
+                    all_types = [t for t in all_types if t["id"] in scope_by_id]
+                return {"object_types": [{"id": t["id"], "name": t.get("name"), "displayName": t.get("displayName")} for t in all_types]}
 
             elif tool_name == "logic_function_run":
                 function_name = tool_input.get("function_name", "")

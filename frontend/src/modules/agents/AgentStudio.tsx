@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useAgentStore, AgentConfig } from '../../store/agentStore';
-import { Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, CheckCircle } from 'lucide-react';
+import { useAgentStore, AgentConfig, KnowledgeScopeEntry } from '../../store/agentStore';
+import { useOntologyStore } from '../../store/ontologyStore';
+import { Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, Database, Filter, X } from 'lucide-react';
 
 const C = {
   bg: '#F8FAFC', sidebar: '#F1F5F9', panel: '#FFFFFF', card: '#F8FAFC',
@@ -135,6 +136,190 @@ const AgentConfigPanel: React.FC<{
           }}
         >
           <Trash2 size={12} /> Delete
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ── Knowledge Scope Panel ─────────────────────────────────────────────────────
+
+const KnowledgePanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
+  const { objectTypes, fetchObjectTypes } = useOntologyStore();
+  const { setKnowledgeScope } = useAgentStore();
+  const [saving, setSaving] = useState(false);
+  // local copy so edits don't immediately call the API on every keystroke
+  const [scope, setScope] = useState<KnowledgeScopeEntry[] | null>(agent.knowledge_scope);
+  const isRestricted = scope !== null;
+
+  useEffect(() => { fetchObjectTypes(); }, []);
+  useEffect(() => { setScope(agent.knowledge_scope); }, [agent.id]);
+
+  const scopeIds = new Set((scope || []).map((e) => e.object_type_id));
+
+  const toggleType = (otId: string, label: string) => {
+    if (!isRestricted) return;
+    if (scopeIds.has(otId)) {
+      setScope((s) => (s || []).filter((e) => e.object_type_id !== otId));
+    } else {
+      setScope((s) => [...(s || []), { object_type_id: otId, label, filter: null }]);
+    }
+  };
+
+  const updateFilter = (otId: string, filter: KnowledgeScopeEntry['filter']) => {
+    setScope((s) => (s || []).map((e) => e.object_type_id === otId ? { ...e, filter } : e));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try { await setKnowledgeScope(agent.id, scope); }
+    finally { setSaving(false); }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    height: 28, padding: '0 8px', fontSize: 12, border: `1px solid ${C.border}`,
+    backgroundColor: C.bg, color: C.text, outline: 'none', borderRadius: 3,
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Restriction toggle */}
+      <div style={{
+        backgroundColor: isRestricted ? '#FFFBEB' : C.card,
+        border: `1px solid ${isRestricted ? '#FDE68A' : C.border}`,
+        borderRadius: 6, padding: '12px 16px',
+        display: 'flex', alignItems: 'flex-start', gap: 12,
+      }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: C.text, marginBottom: 4 }}>
+            {isRestricted ? 'Restricted scope' : 'Unrestricted — can query any object type'}
+          </div>
+          <div style={{ fontSize: 12, color: C.muted }}>
+            {isRestricted
+              ? 'Agent can only query the object types selected below. New object types will not be accessible until added.'
+              : 'Agent can query any object type in the ontology, including new types added in the future.'}
+          </div>
+        </div>
+        <button
+          onClick={() => setScope(isRestricted ? null : [])}
+          style={{
+            padding: '5px 12px', fontSize: 12, borderRadius: 4, cursor: 'pointer', fontWeight: 500,
+            backgroundColor: isRestricted ? C.accentDim : C.bg,
+            border: `1px solid ${isRestricted ? C.accent : C.border}`,
+            color: isRestricted ? C.accent : C.muted, flexShrink: 0,
+          }}
+        >
+          {isRestricted ? 'Make unrestricted' : 'Restrict scope'}
+        </button>
+      </div>
+
+      {/* Object type list */}
+      {isRestricted && (
+        <div>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, letterSpacing: '0.06em' }}>
+            OBJECT TYPES — toggle to include in agent scope
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {objectTypes.map((ot) => {
+              const enabled = scopeIds.has(ot.id);
+              const entry = (scope || []).find((e) => e.object_type_id === ot.id);
+              return (
+                <div key={ot.id} style={{
+                  border: `1px solid ${enabled ? C.accent + '55' : C.border}`,
+                  borderRadius: 5, overflow: 'hidden',
+                  backgroundColor: enabled ? C.accentDim + '55' : C.panel,
+                }}>
+                  <div
+                    style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
+                    onClick={() => toggleType(ot.id, ot.displayName || ot.name)}
+                  >
+                    <input type="checkbox" checked={enabled} readOnly style={{ accentColor: C.accent, flexShrink: 0 }} />
+                    <Database size={13} color={enabled ? C.accent : C.dim} />
+                    <span style={{ fontSize: 13, fontWeight: enabled ? 500 : 400, color: enabled ? C.text : C.muted, flex: 1 }}>
+                      {ot.displayName || ot.name}
+                    </span>
+                    <span style={{ fontSize: 10, color: C.dim, fontFamily: 'monospace' }}>{ot.id}</span>
+                    {enabled && entry?.filter && (
+                      <span style={{
+                        fontSize: 10, padding: '1px 6px', borderRadius: 10,
+                        backgroundColor: '#EFF6FF', color: '#2563EB', border: '1px solid #BFDBFE',
+                        display: 'flex', alignItems: 'center', gap: 3,
+                      }}>
+                        <Filter size={9} /> filtered
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Inline filter row when enabled */}
+                  {enabled && (
+                    <div style={{
+                      borderTop: `1px solid ${C.border}`, padding: '8px 14px 10px 38px',
+                      backgroundColor: C.bg, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                    }}>
+                      <span style={{ fontSize: 11, color: C.muted }}>Filter (optional):</span>
+                      <input
+                        style={{ ...inputStyle, width: 120 }}
+                        placeholder="field name"
+                        value={entry?.filter?.field || ''}
+                        onChange={(e) => updateFilter(ot.id, {
+                          field: e.target.value,
+                          op: entry?.filter?.op || '==',
+                          value: entry?.filter?.value || '',
+                        })}
+                      />
+                      <select
+                        style={{ ...inputStyle, width: 60 }}
+                        value={entry?.filter?.op || '=='}
+                        onChange={(e) => updateFilter(ot.id, {
+                          field: entry?.filter?.field || '',
+                          op: e.target.value,
+                          value: entry?.filter?.value || '',
+                        })}
+                      >
+                        <option value="==">==</option>
+                        <option value="!=">!=</option>
+                        <option value=">">{'>'}</option>
+                        <option value="<">{'<'}</option>
+                      </select>
+                      <input
+                        style={{ ...inputStyle, width: 140 }}
+                        placeholder="value"
+                        value={entry?.filter?.value || ''}
+                        onChange={(e) => updateFilter(ot.id, {
+                          field: entry?.filter?.field || '',
+                          op: entry?.filter?.op || '==',
+                          value: e.target.value,
+                        })}
+                      />
+                      {entry?.filter?.field && (
+                        <button
+                          onClick={() => updateFilter(ot.id, null)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.dim, lineHeight: 0 }}
+                          title="Clear filter"
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          style={{
+            padding: '7px 16px', fontSize: 12, cursor: saving ? 'default' : 'pointer',
+            backgroundColor: C.accentDim, border: `1px solid ${C.accent}`,
+            color: C.accent, borderRadius: 4, fontWeight: 500,
+          }}
+        >
+          {saving ? 'Saving...' : 'Save scope'}
         </button>
       </div>
     </div>
@@ -300,7 +485,7 @@ const AgentStudio: React.FC = () => {
     fetchAgents, selectAgent, createAgent, updateAgent, deleteAgent, fetchAvailableTools,
   } = useAgentStore();
 
-  const [rightTab, setRightTab] = useState<'config' | 'chat'>('config');
+  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat'>('config');
 
   useEffect(() => { fetchAgents(); fetchAvailableTools(); }, []);
 
@@ -383,7 +568,7 @@ const AgentStudio: React.FC = () => {
             borderBottom: `1px solid ${C.border}`, backgroundColor: C.panel, padding: '0 16px', flexShrink: 0,
           }}>
             <span style={{ fontSize: 15, fontWeight: 600, marginRight: 20 }}>{selectedAgent.name}</span>
-            {(['config', 'chat'] as const).map((tab) => (
+            {(['config', 'knowledge', 'chat'] as const).map((tab) => (
               <button key={tab} onClick={() => setRightTab(tab)} style={{
                 padding: '8px 14px', fontSize: 12, border: 'none', cursor: 'pointer',
                 backgroundColor: 'transparent',
@@ -393,6 +578,18 @@ const AgentStudio: React.FC = () => {
               }}>
                 {tab === 'config' ? (
                   <span style={{ display: 'flex', gap: 5, alignItems: 'center' }}><Wrench size={12} /> Configure</span>
+                ) : tab === 'knowledge' ? (
+                  <span style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+                    <Database size={12} /> Knowledge
+                    {selectedAgent.knowledge_scope !== null && (
+                      <span style={{
+                        fontSize: 9, backgroundColor: C.accentDim, color: C.accent,
+                        padding: '1px 5px', borderRadius: 8, marginLeft: 2,
+                      }}>
+                        {selectedAgent.knowledge_scope.length}
+                      </span>
+                    )}
+                  </span>
                 ) : (
                   <span style={{ display: 'flex', gap: 5, alignItems: 'center' }}><MessageCircle size={12} /> Chat</span>
                 )}
@@ -407,6 +604,8 @@ const AgentStudio: React.FC = () => {
               onSave={(data) => updateAgent(selectedAgent.id, data)}
               onDelete={() => deleteAgent(selectedAgent.id)}
             />
+          ) : rightTab === 'knowledge' ? (
+            <KnowledgePanel agent={selectedAgent} />
           ) : (
             <div style={{ flex: 1, overflow: 'hidden' }}>
               <ChatPanel agentId={selectedAgent.id} />

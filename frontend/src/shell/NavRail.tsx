@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
   FolderKanban, Users, LogOut, ScanSearch, DollarSign, Briefcase,
-  BrainCircuit, Bot, MessageSquare,
+  BrainCircuit, Bot, MessageSquare, ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from './TenantContext';
 import { useAppStore } from '../store/appStore';
 import { useAssistantStore } from '../store/assistantStore';
+import { useHumanActionsStore } from '../store/humanActionsStore';
 
 // ── maic icon SVG ──────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'pipelines',  label: 'Pipelines',      icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
   { id: 'logic',      label: 'Logic Studio',   icon: <BrainCircuit size={16} />,  active: true,  path: 'logic' },
   { id: 'agents',     label: 'Agent Studio',   icon: <Bot size={16} />,           active: true,  path: 'agents' },
+  { id: 'human-actions', label: 'Actions',     icon: <ShieldCheck size={16} />,   active: true,  path: 'human-actions' },
   { id: 'users',      label: 'Users',          icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
   { id: 'settings',   label: 'Settings',       icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },
 ];
@@ -72,6 +74,14 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
   const { currentUser, logout } = useAuth();
   const { apps } = useAppStore();
   const { toggle: toggleAssistant, open: assistantOpen, conversations } = useAssistantStore();
+  const { pendingCount, fetchPending } = useHumanActionsStore();
+
+  // Poll for pending actions every 30s
+  useEffect(() => {
+    fetchPending();
+    const interval = setInterval(fetchPending, 30_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const isAdmin = currentUser?.role === 'ADMIN';
   const width = expanded ? 220 : 56;
@@ -173,9 +183,25 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
         {NAV_ITEMS
           .filter((item) => !item.adminOnly || isAdmin)
           .filter((item) => canSee(item.path))
-          .map((item) =>
-            navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path)),
-          )}
+          .map((item) => {
+            const btn = navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path));
+            // Overlay badge for human-actions pending count
+            if (item.id === 'human-actions' && pendingCount > 0 && expanded) {
+              return (
+                <div key={item.id} style={{ position: 'relative' }}>
+                  {btn}
+                  <span style={{
+                    position: 'absolute', top: 8, right: 10,
+                    fontSize: 9, fontWeight: 700, minWidth: 16, height: 16,
+                    backgroundColor: '#D97706', color: '#FFF',
+                    borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    padding: '0 4px', pointerEvents: 'none',
+                  }}>{pendingCount}</span>
+                </div>
+              );
+            }
+            return btn;
+          })}
 
         {/* ── maic group ───────────────────────────────────────────────── */}
         {(canSee('projects') || canSee('finance')) && (

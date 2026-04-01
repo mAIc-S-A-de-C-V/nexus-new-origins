@@ -275,6 +275,27 @@ async def list_executions(
     return [_exec_to_dict(r) for r in result.scalars().all()]
 
 
+@router.get("/executions")
+async def list_all_executions(
+    status: Optional[str] = None,
+    limit: int = 100,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """All executions across all actions — for the history view."""
+    tenant_id = x_tenant_id or "tenant-001"
+    filters = [ActionExecutionRow.tenant_id == tenant_id]
+    if status:
+        filters.append(ActionExecutionRow.status == status)
+    result = await db.execute(
+        select(ActionExecutionRow)
+        .where(and_(*filters))
+        .order_by(ActionExecutionRow.created_at.desc())
+        .limit(limit)
+    )
+    return [_exec_to_dict(r) for r in result.scalars().all()]
+
+
 @router.get("/executions/pending")
 async def list_pending_executions(
     x_tenant_id: Optional[str] = Header(None),

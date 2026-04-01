@@ -20,6 +20,7 @@ async def run_agent(
     conversation_history: list[dict],
     new_user_message: str,
     tenant_id: str,
+    knowledge_scope: list[dict] | None = None,
 ) -> dict:
     """
     Run a full agentic loop (non-streaming).
@@ -81,7 +82,7 @@ async def run_agent(
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    result = await execute_tool(block.name, block.input, tenant_id, agent_id)
+                    result = await execute_tool(block.name, block.input, tenant_id, agent_id, knowledge_scope=knowledge_scope)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -113,6 +114,7 @@ async def stream_agent(
     conversation_history: list[dict],
     new_user_message: str,
     tenant_id: str,
+    knowledge_scope: list[dict] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     SSE streaming agentic loop.
@@ -200,7 +202,7 @@ async def stream_agent(
             for block in assistant_content:
                 if block.get("type") == "tool_use":
                     yield _sse({"type": "tool_calling", "tool": block["name"], "input": block["input"]})
-                    result = await execute_tool(block["name"], block["input"], tenant_id, agent_id)
+                    result = await execute_tool(block["name"], block["input"], tenant_id, agent_id, knowledge_scope=knowledge_scope)
                     yield _sse({"type": "tool_result", "tool": block["name"], "result": result})
                     tool_results.append({
                         "type": "tool_result",

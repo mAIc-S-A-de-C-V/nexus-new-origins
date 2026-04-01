@@ -20,6 +20,12 @@ AVAILABLE_TOOLS = [
 ]
 
 
+class KnowledgeScopeEntry(BaseModel):
+    object_type_id: str
+    label: str
+    filter: Optional[dict] = None  # { field, op, value } or None
+
+
 class AgentCreate(BaseModel):
     name: str
     description: Optional[str] = None
@@ -28,6 +34,7 @@ class AgentCreate(BaseModel):
     enabled_tools: list[str] = []
     tool_config: dict = {}
     max_iterations: int = 10
+    knowledge_scope: Optional[list[dict]] = None  # null = unrestricted
     enabled: bool = True
 
 
@@ -39,6 +46,7 @@ class AgentUpdate(BaseModel):
     enabled_tools: Optional[list[str]] = None
     tool_config: Optional[dict] = None
     max_iterations: Optional[int] = None
+    knowledge_scope: Optional[list[dict]] = None
     enabled: Optional[bool] = None
 
 
@@ -53,6 +61,7 @@ def _to_dict(row: AgentConfigRow) -> dict:
         "enabled_tools": row.enabled_tools or [],
         "tool_config": row.tool_config or {},
         "max_iterations": row.max_iterations,
+        "knowledge_scope": row.knowledge_scope,  # null = unrestricted
         "enabled": row.enabled,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -96,6 +105,7 @@ async def create_agent(
         enabled_tools=body.enabled_tools,
         tool_config=body.tool_config,
         max_iterations=body.max_iterations,
+        knowledge_scope=body.knowledge_scope,
         enabled=body.enabled,
     )
     db.add(row)
@@ -154,6 +164,8 @@ async def update_agent(
         row.tool_config = body.tool_config
     if body.max_iterations is not None:
         row.max_iterations = body.max_iterations
+    if body.knowledge_scope is not None:
+        row.knowledge_scope = body.knowledge_scope
     if body.enabled is not None:
         row.enabled = body.enabled
 
@@ -179,3 +191,31 @@ async def delete_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
     await db.delete(row)
     await db.commit()
+
+
+class KnowledgeScopeUpdate(BaseModel):
+    # null clears scope (agent becomes unrestricted again)
+    scope: Optional[list[dict]] = None
+
+
+@router.put("/{agent_id}/knowledge-scope")
+async def set_knowledge_scope(
+    agent_id: str,
+    body: KnowledgeScopeUpdate,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Replace the agent's knowledge scope. Pass scope=null to make the agent unrestricted."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(AgentConfigRow).where(
+            AgentConfigRow.id == agent_id,
+            AgentConfigRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    row.knowledge_scope = body.scope  # None = unrestricted
+    await db.commit()
+    return _to_dict(row)

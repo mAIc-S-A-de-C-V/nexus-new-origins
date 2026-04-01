@@ -30,6 +30,9 @@ class AgentConfigRow(Base):
     # optional config per tool (e.g. which logic functions it can call)
     tool_config = Column(JSON, nullable=False, default=dict)
     max_iterations = Column(Integer, nullable=False, default=10)
+    # knowledge_scope: null = unrestricted (sees all object types automatically)
+    # non-null = list of { object_type_id, label, filter? } entries
+    knowledge_scope = Column(JSON, nullable=True, default=None)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

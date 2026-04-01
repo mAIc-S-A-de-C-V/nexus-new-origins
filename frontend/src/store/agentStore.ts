@@ -2,6 +2,12 @@ import { create } from 'zustand';
 
 const AGENT_API = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
 
+export interface KnowledgeScopeEntry {
+  object_type_id: string;
+  label: string;
+  filter?: { field: string; op: string; value: string } | null;
+}
+
 export interface AgentConfig {
   id: string;
   tenant_id: string;
@@ -12,6 +18,7 @@ export interface AgentConfig {
   enabled_tools: string[];
   tool_config: Record<string, unknown>;
   max_iterations: number;
+  knowledge_scope: KnowledgeScopeEntry[] | null; // null = unrestricted
   enabled: boolean;
   created_at?: string;
   updated_at?: string;
@@ -54,6 +61,7 @@ interface AgentStore {
   createAgent: (data: Partial<AgentConfig>) => Promise<AgentConfig>;
   updateAgent: (id: string, data: Partial<AgentConfig>) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
+  setKnowledgeScope: (id: string, scope: KnowledgeScopeEntry[] | null) => Promise<void>;
   fetchAvailableTools: () => Promise<void>;
 
   fetchThreads: (agentId: string) => Promise<void>;
@@ -120,6 +128,19 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     set((s) => ({
       agents: s.agents.filter((a) => a.id !== id),
       selectedAgent: s.selectedAgent?.id === id ? null : s.selectedAgent,
+    }));
+  },
+
+  setKnowledgeScope: async (id, scope) => {
+    const r = await fetch(`${AGENT_API}/agents/${id}/knowledge-scope`, {
+      method: 'PUT',
+      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    });
+    const agent = await r.json();
+    set((s) => ({
+      agents: s.agents.map((a) => (a.id === id ? agent : a)),
+      selectedAgent: s.selectedAgent?.id === id ? agent : s.selectedAgent,
     }));
   },
 

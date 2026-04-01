@@ -234,17 +234,33 @@ async def send_message(
 
     history = await _load_history(thread_id, tenant_id, db)
 
+    # Build effective system prompt — append knowledge scope context if restricted
+    system_prompt = agent.system_prompt
+    knowledge_scope = agent.knowledge_scope  # None = unrestricted
+    if knowledge_scope:
+        scope_lines = "\n".join(
+            f"  - {entry.get('label', entry.get('object_type_id', '?'))}"
+            + (f" (filtered: {entry['filter']['field']} {entry['filter']['op']} {entry['filter']['value']})" if entry.get("filter") else "")
+            for entry in knowledge_scope
+        )
+        system_prompt = (
+            system_prompt.rstrip()
+            + f"\n\nDATA SCOPE: You may only query the following object types:\n{scope_lines}\n"
+            "Do not attempt to search or retrieve any object type not listed above."
+        )
+
     if body.stream:
         async def event_generator():
             async for chunk in stream_agent(
                 agent_id=agent.id,
-                system_prompt=agent.system_prompt,
+                system_prompt=system_prompt,
                 model=agent.model,
                 enabled_tools=agent.enabled_tools or [],
                 max_iterations=agent.max_iterations,
                 conversation_history=history,
                 new_user_message=body.content,
                 tenant_id=tenant_id,
+                knowledge_scope=knowledge_scope,
             ):
                 yield chunk
 
@@ -253,13 +269,14 @@ async def send_message(
     else:
         outcome = await run_agent(
             agent_id=agent.id,
-            system_prompt=agent.system_prompt,
+            system_prompt=system_prompt,
             model=agent.model,
             enabled_tools=agent.enabled_tools or [],
             max_iterations=agent.max_iterations,
             conversation_history=history,
             new_user_message=body.content,
             tenant_id=tenant_id,
+            knowledge_scope=knowledge_scope,
         )
         await _save_new_messages(outcome.get("new_messages", []), thread_id, tenant_id, db)
         return {
