@@ -724,11 +724,14 @@ const AnalyticsPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
   useEffect(() => {
     setLoading(true);
     fetch(`${AGENT_API_URL}/agents/${agent.id}/analytics`, { headers: { 'x-tenant-id': 'tenant-001' } })
-      .then(r => r.json()).then(setData).finally(() => setLoading(false));
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setData(d && typeof d.total_runs === 'number' ? d : null))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
   }, [agent.id]);
 
   if (loading) return <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>Loading analytics...</div>;
-  if (!data || data.total_runs === 0) return <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>No runs yet. Chat with the agent or run a test to generate analytics.</div>;
+  if (!data || !data.total_runs) return <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>No runs yet. Chat with the agent or run a test to generate analytics.</div>;
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 20 }}>
