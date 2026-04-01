@@ -1,23 +1,32 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useAgentStore, AgentConfig, KnowledgeScopeEntry } from '../../store/agentStore';
 import { useOntologyStore } from '../../store/ontologyStore';
-import { Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, Database, Filter, X } from 'lucide-react';
+import {
+  Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, Database, Filter, X,
+  Search, List, Zap, ShieldCheck, ListChecks, Network, CheckCircle,
+} from 'lucide-react';
 
 const C = {
   bg: '#F8FAFC', sidebar: '#F1F5F9', panel: '#FFFFFF', card: '#F8FAFC',
   border: '#E2E8F0', accent: '#7C3AED', accentDim: '#EDE9FE',
   text: '#0D1117', muted: '#64748B', dim: '#94A3B8',
-  success: '#059669', error: '#DC2626', warn: '#D97706',
+  success: '#059669', successDim: '#ECFDF5',
+  error: '#DC2626', errorDim: '#FEF2F2',
+  warn: '#D97706', warnDim: '#FFFBEB',
 };
 
-const TOOL_LABELS: Record<string, string> = {
-  ontology_search: 'Ontology Search',
-  list_object_types: 'List Object Types',
-  logic_function_run: 'Run Logic Function',
-  action_propose: 'Propose Action',
-  list_actions: 'List Actions',
-  agent_call: 'Call Sub-Agent',
+const TOOL_META: Record<string, { label: string; desc: string; icon: React.ReactNode; color: string }> = {
+  ontology_search:    { label: 'Ontology Search',    desc: 'Query records of any object type — Deals, Contacts, Companies…', icon: <Search size={14} />,     color: '#3B82F6' },
+  list_object_types:  { label: 'List Object Types',  desc: 'Discover what data exists in the ontology',                       icon: <List size={14} />,       color: '#8B5CF6' },
+  logic_function_run: { label: 'Run Logic Function', desc: 'Execute a pre-built Logic Function workflow with inputs',          icon: <Zap size={14} />,        color: '#F59E0B' },
+  action_propose:     { label: 'Propose Action',     desc: 'Propose a write operation — goes to Human Actions queue',         icon: <ShieldCheck size={14} />, color: '#EF4444' },
+  list_actions:       { label: 'List Actions',       desc: 'Discover available write actions and their input schemas',         icon: <ListChecks size={14} />, color: '#10B981' },
+  agent_call:         { label: 'Call Sub-Agent',     desc: 'Delegate a subtask to another configured agent by name',          icon: <Network size={14} />,    color: '#7C3AED' },
 };
+
+const TOOL_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(TOOL_META).map(([k, v]) => [k, v.label])
+);
 
 // ── Agent Config Panel ────────────────────────────────────────────────────────
 
@@ -91,25 +100,58 @@ const AgentConfigPanel: React.FC<{
         <label style={{ fontSize: 11, color: C.muted, display: 'block', marginBottom: 8, letterSpacing: '0.06em' }}>
           ENABLED TOOLS
         </label>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           {availableTools.map((tool) => {
             const enabled = form.enabled_tools.includes(tool);
+            const meta = TOOL_META[tool];
+            const color = meta?.color || '#6B7280';
             return (
-              <label key={tool} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={() => {
-                    const tools = enabled
-                      ? form.enabled_tools.filter((t) => t !== tool)
-                      : [...form.enabled_tools, tool];
-                    u({ enabled_tools: tools });
-                  }}
-                  style={{ accentColor: C.accent }}
-                />
-                <span style={{ fontSize: 12, color: C.text }}>{TOOL_LABELS[tool] || tool}</span>
-                <span style={{ fontSize: 10, color: C.dim, marginLeft: 'auto', fontFamily: 'monospace' }}>{tool}</span>
-              </label>
+              <div
+                key={tool}
+                onClick={() => {
+                  const tools = enabled
+                    ? form.enabled_tools.filter((t) => t !== tool)
+                    : [...form.enabled_tools, tool];
+                  u({ enabled_tools: tools });
+                }}
+                style={{
+                  cursor: 'pointer',
+                  borderRadius: 8,
+                  border: `1.5px solid ${enabled ? color : C.border}`,
+                  backgroundColor: enabled ? `${color}14` : C.surface,
+                  padding: '10px 12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  transition: 'border-color 0.15s, background-color 0.15s',
+                  userSelect: 'none',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 24, height: 24, borderRadius: 6,
+                    backgroundColor: enabled ? color : C.border,
+                    color: '#fff', flexShrink: 0, transition: 'background-color 0.15s',
+                  }}>
+                    {meta?.icon}
+                  </span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: enabled ? color : C.text, flex: 1 }}>
+                    {meta?.label || tool}
+                  </span>
+                  <span style={{
+                    width: 14, height: 14, borderRadius: '50%', flexShrink: 0,
+                    border: `2px solid ${enabled ? color : C.border}`,
+                    backgroundColor: enabled ? color : 'transparent',
+                    transition: 'all 0.15s',
+                  }} />
+                </div>
+                {meta?.desc && (
+                  <p style={{ margin: 0, fontSize: 10, color: C.dim, lineHeight: 1.4, paddingLeft: 31 }}>
+                    {meta.desc}
+                  </p>
+                )}
+              </div>
             );
           })}
         </div>
