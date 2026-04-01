@@ -53,6 +53,19 @@ export interface StreamingTool {
   result?: unknown;
 }
 
+export interface AgentSchedule {
+  id: string;
+  agent_id: string;
+  tenant_id: string;
+  name: string;
+  prompt: string;
+  cron_expression: string;
+  enabled: boolean;
+  last_run_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 interface AgentStore {
   agents: AgentConfig[];
   selectedAgent: AgentConfig | null;
@@ -62,9 +75,9 @@ interface AgentStore {
   availableTools: string[];
   loading: boolean;
   sending: boolean;
-  // Streaming state
   streamingText: string;
   streamingTools: StreamingTool[];
+  schedules: AgentSchedule[];
 
   fetchAgents: () => Promise<void>;
   selectAgent: (agent: AgentConfig | null) => void;
@@ -80,6 +93,12 @@ interface AgentStore {
   fetchMessages: (threadId: string) => Promise<void>;
   sendMessage: (threadId: string, content: string) => Promise<string>;
   clearStreaming: () => void;
+
+  fetchSchedules: (agentId: string) => Promise<void>;
+  createSchedule: (agentId: string, data: Omit<AgentSchedule, 'id' | 'agent_id' | 'tenant_id' | 'last_run_at' | 'created_at' | 'updated_at'>) => Promise<AgentSchedule>;
+  updateSchedule: (agentId: string, scheduleId: string, data: Partial<AgentSchedule>) => Promise<void>;
+  deleteSchedule: (agentId: string, scheduleId: string) => Promise<void>;
+  runScheduleNow: (agentId: string, scheduleId: string) => Promise<void>;
 }
 
 export const useAgentStore = create<AgentStore>((set, get) => ({
@@ -93,6 +112,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   sending: false,
   streamingText: '',
   streamingTools: [],
+  schedules: [],
 
   fetchAgents: async () => {
     set({ loading: true });
@@ -261,4 +281,48 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   },
 
   clearStreaming: () => set({ streamingText: '', streamingTools: [] }),
+
+  fetchSchedules: async (agentId) => {
+    const r = await fetch(`${AGENT_API}/agents/${agentId}/schedules`, {
+      headers: { 'x-tenant-id': 'tenant-001' },
+    });
+    const data = await r.json();
+    set({ schedules: Array.isArray(data) ? data : [] });
+  },
+
+  createSchedule: async (agentId, data) => {
+    const r = await fetch(`${AGENT_API}/agents/${agentId}/schedules`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const schedule = await r.json();
+    set((s) => ({ schedules: [schedule, ...s.schedules] }));
+    return schedule;
+  },
+
+  updateSchedule: async (agentId, scheduleId, data) => {
+    const r = await fetch(`${AGENT_API}/agents/${agentId}/schedules/${scheduleId}`, {
+      method: 'PUT',
+      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const schedule = await r.json();
+    set((s) => ({ schedules: s.schedules.map((sc) => (sc.id === scheduleId ? schedule : sc)) }));
+  },
+
+  deleteSchedule: async (agentId, scheduleId) => {
+    await fetch(`${AGENT_API}/agents/${agentId}/schedules/${scheduleId}`, {
+      method: 'DELETE',
+      headers: { 'x-tenant-id': 'tenant-001' },
+    });
+    set((s) => ({ schedules: s.schedules.filter((sc) => sc.id !== scheduleId) }));
+  },
+
+  runScheduleNow: async (agentId, scheduleId) => {
+    await fetch(`${AGENT_API}/agents/${agentId}/schedules/${scheduleId}/run-now`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': 'tenant-001' },
+    });
+  },
 }));

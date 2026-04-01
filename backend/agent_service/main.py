@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import agents, threads
+from routers import agents, threads, schedules
 from database import init_db
+from scheduler import start_scheduler, stop_scheduler
 
 app = FastAPI(
     title="Nexus Agent Service",
@@ -19,11 +20,18 @@ app.add_middleware(
 
 app.include_router(agents.router, prefix="/agents", tags=["agents"])
 app.include_router(threads.router, prefix="/threads", tags=["threads"])
+app.include_router(schedules.router, prefix="/agents", tags=["schedules"])
 
 
 @app.on_event("startup")
 async def startup():
     await init_db()
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    stop_scheduler()
 
 
 @app.get("/health")

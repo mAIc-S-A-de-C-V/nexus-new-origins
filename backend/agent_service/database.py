@@ -94,6 +94,21 @@ class AgentRunRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class AgentScheduleRow(Base):
+    """A recurring schedule that auto-runs an agent with a prompt."""
+    __tablename__ = "agent_schedules"
+    id = Column(String, primary_key=True)
+    agent_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)                    # friendly name
+    prompt = Column(Text, nullable=False)                    # the recurring prompt
+    cron_expression = Column(String, nullable=False)         # e.g. "0 9 * * 1" (Mon 9am)
+    enabled = Column(Boolean, nullable=False, default=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -114,6 +114,44 @@ TOOL_DEFINITIONS = {
             "required": ["agent_name", "message"],
         },
     },
+    "process_mining": {
+        "name": "process_mining",
+        "description": "Analyze event logs and process data to discover patterns, bottlenecks, anomalies, and deviations. Use this to understand how processes actually execute vs. how they should, find where cases get stuck, detect unusual sequences, or identify co-occurring events.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "object_type": {
+                    "type": "string",
+                    "description": "The object type containing event/activity records (e.g. 'Event', 'ActivityLog', 'Deal')",
+                },
+                "case_id_field": {
+                    "type": "string",
+                    "description": "Field name that groups events into cases/traces (e.g. 'deal_id', 'case_id', 'company')",
+                },
+                "activity_field": {
+                    "type": "string",
+                    "description": "Field name containing the activity/event name (e.g. 'status', 'activity', 'stage')",
+                },
+                "timestamp_field": {
+                    "type": "string",
+                    "description": "Field name with the event timestamp (e.g. 'created_at', 'timestamp')",
+                    "default": "created_at",
+                },
+                "analysis_type": {
+                    "type": "string",
+                    "enum": ["frequency", "bottleneck", "anomaly", "cooccurrence", "full"],
+                    "description": "Type of analysis: frequency=most common paths, bottleneck=slow transitions, anomaly=unusual sequences, cooccurrence=events that often happen together, full=all analyses",
+                    "default": "full",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max records to fetch for analysis (default 500)",
+                    "default": 500,
+                },
+            },
+            "required": ["object_type", "case_id_field", "activity_field"],
+        },
+    },
 }
 
 
@@ -287,6 +325,115 @@ async def execute_tool(
                 )
                 result = r2.json() if r2.is_success else {"error": r2.text}
                 return {"agent": agent_name, "response": result.get("final_text", ""), "iterations": result.get("iterations", 0)}
+
+            elif tool_name == "process_mining":
+                object_type = tool_input.get("object_type", "")
+                case_id_field = tool_input.get("case_id_field", "id")
+                activity_field = tool_input.get("activity_field", "status")
+                timestamp_field = tool_input.get("timestamp_field", "created_at")
+                analysis_type = tool_input.get("analysis_type", "full")
+                limit = tool_input.get("limit", 500)
+
+                # Resolve object type
+                r = await client.get(f"{ONTOLOGY_URL}/object-types", headers=headers)
+                ot_list = r.json() if r.is_success else []
+                ot = next(
+                    (o for o in ot_list if o.get("name") == object_type or o.get("displayName") == object_type),
+                    None,
+                )
+                if not ot:
+                    return {"error": f"Object type '{object_type}' not found"}
+
+                if knowledge_scope is not None and ot["id"] not in scope_by_id:
+                    return {"error": f"Object type '{object_type}' is outside this agent's data scope."}
+
+                r2 = await client.get(
+                    f"{ONTOLOGY_URL}/object-types/{ot['id']}/records",
+                    params={"limit": limit},
+                    headers=headers,
+                )
+                data = r2.json() if r2.is_success else {}
+                records = data.get("records", [])
+
+                if not records:
+                    return {"error": "No records found for process mining analysis."}
+
+                # Build traces: group by case_id_field, sort by timestamp
+                from collections import defaultdict, Counter
+                traces: dict[str, list] = defaultdict(list)
+                for rec in records:
+                    case_val = str(rec.get(case_id_field, "unknown"))
+                    activity_val = str(rec.get(activity_field, "unknown"))
+                    ts_val = rec.get(timestamp_field, "")
+                    traces[case_val].append({"activity": activity_val, "ts": ts_val, "record": rec})
+
+                # Sort events within each trace by timestamp
+                for case_val in traces:
+                    traces[case_val].sort(key=lambda x: x["ts"])
+
+                result: dict[str, Any] = {
+                    "total_cases": len(traces),
+                    "total_events": len(records),
+                    "object_type": object_type,
+                }
+
+                if analysis_type in ("frequency", "full"):
+                    # Most common activity sequences (paths)
+                    path_counter: Counter = Counter()
+                    activity_counter: Counter = Counter()
+                    for case_events in traces.values():
+                        path = " → ".join(e["activity"] for e in case_events)
+                        path_counter[path] += 1
+                        for e in case_events:
+                            activity_counter[e["activity"]] += 1
+                    result["top_paths"] = [{"path": p, "count": c} for p, c in path_counter.most_common(10)]
+                    result["activity_frequency"] = [{"activity": a, "count": c} for a, c in activity_counter.most_common(20)]
+
+                if analysis_type in ("anomaly", "full"):
+                    # Anomalies: cases with unusual number of events or rare paths
+                    event_counts = [len(v) for v in traces.values()]
+                    avg_events = sum(event_counts) / len(event_counts) if event_counts else 0
+                    std_dev = (sum((x - avg_events) ** 2 for x in event_counts) / len(event_counts)) ** 0.5 if event_counts else 0
+                    threshold = avg_events + 2 * std_dev
+                    anomalous_cases = [
+                        {"case_id": k, "event_count": len(v), "activities": [e["activity"] for e in v]}
+                        for k, v in traces.items()
+                        if len(v) > threshold
+                    ]
+                    result["anomalies"] = {
+                        "avg_events_per_case": round(avg_events, 1),
+                        "std_dev": round(std_dev, 1),
+                        "anomalous_threshold": round(threshold, 1),
+                        "anomalous_cases": anomalous_cases[:10],
+                    }
+
+                if analysis_type in ("cooccurrence", "full"):
+                    # Activity pairs that frequently occur together in same case
+                    pair_counter: Counter = Counter()
+                    for case_events in traces.values():
+                        activities_in_case = list({e["activity"] for e in case_events})
+                        for i in range(len(activities_in_case)):
+                            for j in range(i + 1, len(activities_in_case)):
+                                pair = tuple(sorted([activities_in_case[i], activities_in_case[j]]))
+                                pair_counter[pair] += 1
+                    result["cooccurrence"] = [
+                        {"pair": list(p), "count": c}
+                        for p, c in pair_counter.most_common(10)
+                    ]
+
+                if analysis_type in ("bottleneck", "full"):
+                    # Transitions that have many cases passing through (proxy for bottleneck)
+                    transition_counter: Counter = Counter()
+                    for case_events in traces.values():
+                        for i in range(len(case_events) - 1):
+                            transition = f"{case_events[i]['activity']} → {case_events[i+1]['activity']}"
+                            transition_counter[transition] += 1
+                    result["bottleneck_transitions"] = [
+                        {"transition": t, "count": c}
+                        for t, c in transition_counter.most_common(10)
+                    ]
+
+                return result
 
             else:
                 return {"error": f"Unknown tool: {tool_name}"}

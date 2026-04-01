@@ -19,6 +19,7 @@ AVAILABLE_TOOLS = [
     "action_propose",
     "list_actions",
     "agent_call",
+    "process_mining",
 ]
 
 

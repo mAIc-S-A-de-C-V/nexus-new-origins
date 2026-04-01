@@ -1,9 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useAgentStore, AgentConfig, KnowledgeScopeEntry } from '../../store/agentStore';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { useAgentStore, AgentConfig, AgentSchedule, KnowledgeScopeEntry } from '../../store/agentStore';
 import { useOntologyStore } from '../../store/ontologyStore';
 import {
   Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, Database, Filter, X,
-  Search, List, Zap, ShieldCheck, ListChecks, Network, CheckCircle,
+  Search, List, Zap, ShieldCheck, ListChecks, Network, CheckCircle, Clock, Play,
+  Activity,
 } from 'lucide-react';
 
 const C = {
@@ -22,6 +25,7 @@ const TOOL_META: Record<string, { label: string; desc: string; icon: React.React
   action_propose:     { label: 'Propose Action',     desc: 'Propose a write operation — goes to Human Actions queue',         icon: <ShieldCheck size={14} />, color: '#EF4444' },
   list_actions:       { label: 'List Actions',       desc: 'Discover available write actions and their input schemas',         icon: <ListChecks size={14} />, color: '#10B981' },
   agent_call:         { label: 'Call Sub-Agent',     desc: 'Delegate a subtask to another configured agent by name',          icon: <Network size={14} />,    color: '#7C3AED' },
+  process_mining:     { label: 'Process Mining',     desc: 'Analyze event logs for patterns, bottlenecks, anomalies & co-occurrences', icon: <Activity size={14} />,  color: '#0891B2' },
 };
 
 const TOOL_LABELS: Record<string, string> = Object.fromEntries(
@@ -398,13 +402,15 @@ const MsgBubble: React.FC<{ role: string; content: string; toolName?: string; to
       <div style={{
         backgroundColor: colors.bg, border: `1px solid ${colors.border}`,
         padding: '8px 12px', fontSize: 13, color: C.text,
-        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+        wordBreak: 'break-word',
       }}>
         {role === 'tool_use'
           ? <span style={{ fontSize: 12 }}>{open ? <pre style={{ margin: 0, fontSize: 11 }}>{JSON.stringify(toolInput, null, 2)}</pre> : `Calling ${TOOL_LABELS[toolName || ''] || toolName}…`}</span>
           : role === 'tool_result'
           ? open ? <pre style={{ margin: 0, fontSize: 11, overflowX: 'auto' }}>{JSON.stringify(toolResult, null, 2)}</pre> : <span style={{ fontSize: 12 }}>Done</span>
-          : content
+          : role === 'assistant'
+          ? <div className="md-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown></div>
+          : <span style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
         }
       </div>
     </div>
@@ -783,17 +789,189 @@ const AnalyticsPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
   );
 };
 
+// ── Schedule Panel ────────────────────────────────────────────────────────────
+
+const CRON_PRESETS = [
+  { label: 'Every hour',       value: '0 * * * *' },
+  { label: 'Every day 9am',   value: '0 9 * * *' },
+  { label: 'Every Monday',    value: '0 9 * * 1' },
+  { label: 'Every weekday',   value: '0 9 * * 1-5' },
+  { label: 'Every 6 hours',   value: '0 */6 * * *' },
+];
+
+const SchedulePanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
+  const { schedules, fetchSchedules, createSchedule, updateSchedule, deleteSchedule, runScheduleNow } = useAgentStore();
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ name: '', prompt: '', cron_expression: '0 9 * * *', enabled: true });
+  const [saving, setSaving] = useState(false);
+  const [runningId, setRunningId] = useState<string | null>(null);
+
+  useEffect(() => { fetchSchedules(agent.id); }, [agent.id]);
+
+  const agentSchedules = schedules.filter((s) => s.agent_id === agent.id);
+
+  const handleCreate = async () => {
+    if (!form.name || !form.prompt) return;
+    setSaving(true);
+    try {
+      await createSchedule(agent.id, form);
+      setCreating(false);
+      setForm({ name: '', prompt: '', cron_expression: '0 9 * * *', enabled: true });
+    } finally { setSaving(false); }
+  };
+
+  const handleRunNow = async (s: AgentSchedule) => {
+    setRunningId(s.id);
+    try { await runScheduleNow(agent.id, s.id); }
+    finally { setTimeout(() => setRunningId(null), 2000); }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '7px 10px', fontSize: 12, borderRadius: 4,
+    border: `1px solid ${C.border}`, backgroundColor: C.bg, color: C.text,
+    outline: 'none', boxSizing: 'border-box',
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Clock size={14} color={C.accent} />
+        <span style={{ fontSize: 13, fontWeight: 600 }}>Autonomous Schedules</span>
+        <span style={{ fontSize: 11, color: C.muted, flex: 1 }}>
+          Agent runs automatically on a cron schedule and pushes findings to Human Actions.
+        </span>
+        <button
+          onClick={() => setCreating(true)}
+          style={{
+            padding: '5px 12px', fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+            backgroundColor: C.accentDim, border: `1px solid ${C.accent}`, color: C.accent, borderRadius: 4,
+          }}
+        >
+          <Plus size={11} /> New Schedule
+        </button>
+      </div>
+
+      {creating && (
+        <div style={{
+          border: `1px solid ${C.accent}`, borderRadius: 8, padding: 16,
+          backgroundColor: C.accentDim + '44', display: 'flex', flexDirection: 'column', gap: 10,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.accent }}>New Schedule</div>
+          <div>
+            <label style={{ fontSize: 11, color: C.muted, display: 'block', marginBottom: 4 }}>Name</label>
+            <input style={inputStyle} placeholder="e.g. Daily anomaly check" value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: C.muted, display: 'block', marginBottom: 4 }}>Prompt (what the agent should do)</label>
+            <textarea style={{ ...inputStyle, resize: 'vertical', minHeight: 80, fontFamily: 'inherit' }}
+              placeholder="e.g. Analyze all Deal records for anomalies — flag any deals that have been in the same stage for more than 30 days, or any deals with unusual activity patterns."
+              value={form.prompt}
+              onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: C.muted, display: 'block', marginBottom: 4 }}>Schedule (cron expression)</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+              {CRON_PRESETS.map((p) => (
+                <button key={p.value} onClick={() => setForm((f) => ({ ...f, cron_expression: p.value }))}
+                  style={{
+                    fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer',
+                    backgroundColor: form.cron_expression === p.value ? C.accentDim : C.bg,
+                    border: `1px solid ${form.cron_expression === p.value ? C.accent : C.border}`,
+                    color: form.cron_expression === p.value ? C.accent : C.muted,
+                  }}>{p.label}</button>
+              ))}
+            </div>
+            <input style={inputStyle} value={form.cron_expression}
+              onChange={(e) => setForm((f) => ({ ...f, cron_expression: e.target.value }))}
+              placeholder="0 9 * * *" />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleCreate} disabled={saving || !form.name || !form.prompt}
+              style={{
+                padding: '7px 16px', fontSize: 12, borderRadius: 4, cursor: 'pointer', fontWeight: 500,
+                backgroundColor: C.accentDim, border: `1px solid ${C.accent}`, color: C.accent,
+              }}>{saving ? 'Saving…' : 'Create Schedule'}</button>
+            <button onClick={() => setCreating(false)}
+              style={{ padding: '7px 12px', fontSize: 12, borderRadius: 4, cursor: 'pointer', backgroundColor: 'transparent', border: `1px solid ${C.border}`, color: C.muted }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {agentSchedules.length === 0 && !creating && (
+        <div style={{ textAlign: 'center', padding: 40, color: C.dim, fontSize: 13 }}>
+          No schedules yet. Create one to run this agent automatically.
+        </div>
+      )}
+
+      {agentSchedules.map((s) => (
+        <div key={s.id} style={{
+          border: `1px solid ${s.enabled ? '#22C55E44' : C.border}`,
+          borderRadius: 8, padding: 14, backgroundColor: s.enabled ? '#F0FDF444' : C.panel,
+          display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {s.enabled && (
+              <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#22C55E', flexShrink: 0, animation: 'pulse-green 2s infinite' }} />
+            )}
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.text, flex: 1 }}>{s.name}</span>
+            <span style={{
+              fontSize: 10, fontFamily: 'monospace', padding: '2px 6px', borderRadius: 4,
+              backgroundColor: C.bg, border: `1px solid ${C.border}`, color: C.muted,
+            }}>{s.cron_expression}</span>
+            <button
+              onClick={() => updateSchedule(agent.id, s.id, { enabled: !s.enabled })}
+              style={{
+                fontSize: 10, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', fontWeight: 500,
+                backgroundColor: s.enabled ? '#DCFCE7' : C.bg,
+                border: `1px solid ${s.enabled ? '#22C55E' : C.border}`,
+                color: s.enabled ? '#16A34A' : C.muted,
+              }}
+            >{s.enabled ? 'Active' : 'Paused'}</button>
+            <button
+              onClick={() => handleRunNow(s)}
+              disabled={runningId === s.id}
+              title="Run now"
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', color: C.accent,
+                display: 'flex', alignItems: 'center', padding: 2,
+              }}
+            ><Play size={13} /></button>
+            <button
+              onClick={() => deleteSchedule(agent.id, s.id)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.dim, padding: 2 }}
+            ><Trash2 size={13} /></button>
+          </div>
+          <p style={{ margin: 0, fontSize: 12, color: C.muted, lineHeight: 1.5 }}>{s.prompt}</p>
+          {s.last_run_at && (
+            <div style={{ fontSize: 10, color: C.dim }}>
+              Last run: {new Date(s.last_run_at).toLocaleString()}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 // ── Main AgentStudio ──────────────────────────────────────────────────────────
 
 const AgentStudio: React.FC = () => {
   const {
-    agents, selectedAgent, availableTools, loading,
-    fetchAgents, selectAgent, createAgent, updateAgent, deleteAgent, fetchAvailableTools,
+    agents, selectedAgent, availableTools, loading, schedules,
+    fetchAgents, selectAgent, createAgent, updateAgent, deleteAgent, fetchAvailableTools, fetchSchedules,
   } = useAgentStore();
 
-  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat' | 'test' | 'history' | 'analytics'>('config');
+  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat' | 'test' | 'history' | 'analytics' | 'schedule'>('config');
 
   useEffect(() => { fetchAgents(); fetchAvailableTools(); }, []);
+
+  useEffect(() => {
+    if (selectedAgent) fetchSchedules(selectedAgent.id);
+  }, [selectedAgent?.id]);
 
   const panelStyle: React.CSSProperties = {
     backgroundColor: C.panel, borderRight: `1px solid ${C.border}`,
@@ -840,22 +1018,37 @@ const AgentStudio: React.FC = () => {
               onClick={() => { selectAgent(agent); setRightTab('config'); }}
               style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
-                width: '100%', padding: '8px 14px', gap: 2, border: 'none', cursor: 'pointer',
+                width: '100%', padding: '8px 14px', gap: 4, border: 'none', cursor: 'pointer',
                 backgroundColor: selectedAgent?.id === agent.id ? C.accentDim : 'transparent',
                 borderLeft: selectedAgent?.id === agent.id ? `2px solid ${C.accent}` : '2px solid transparent',
                 color: C.text,
               }}
             >
-              <span style={{ fontSize: 13, fontWeight: selectedAgent?.id === agent.id ? 500 : 400, textAlign: 'left' }}>
-                {agent.name}
-              </span>
-              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                {agent.enabled_tools.slice(0, 2).map((t) => (
-                  <span key={t} style={{
-                    fontSize: 9, padding: '1px 4px', backgroundColor: C.bg,
-                    color: C.dim, border: `1px solid ${C.border}`,
-                  }}>{t.replace('_', ' ')}</span>
-                ))}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+                <span style={{ fontSize: 13, fontWeight: selectedAgent?.id === agent.id ? 500 : 400, textAlign: 'left', flex: 1 }}>
+                  {agent.name}
+                </span>
+                {schedules.some((s) => s.agent_id === agent.id && s.enabled) && (
+                  <span title="Has active schedules" style={{
+                    width: 8, height: 8, borderRadius: '50%', backgroundColor: '#22C55E', flexShrink: 0,
+                    boxShadow: '0 0 0 0 rgba(34,197,94,0.7)',
+                    animation: 'pulse-green 2s infinite',
+                  }} />
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                {agent.enabled_tools.slice(0, 2).map((t) => {
+                  const meta = TOOL_META[t];
+                  return (
+                    <span key={t} style={{
+                      fontSize: 9, padding: '1px 5px', backgroundColor: C.bg,
+                      color: meta?.color || C.dim, border: `1px solid ${meta?.color ? meta.color + '44' : C.border}`,
+                      borderRadius: 3, display: 'flex', alignItems: 'center', gap: 2,
+                    }}>
+                      {meta?.label || t.replace(/_/g, ' ')}
+                    </span>
+                  );
+                })}
                 {agent.enabled_tools.length > 2 && (
                   <span style={{ fontSize: 9, color: C.dim }}>+{agent.enabled_tools.length - 2}</span>
                 )}
@@ -879,6 +1072,7 @@ const AgentStudio: React.FC = () => {
               { id: 'knowledge', label: 'Knowledge', icon: <Database size={12} />, badge: selectedAgent.knowledge_scope !== null ? selectedAgent.knowledge_scope.length : null },
               { id: 'chat', label: 'Chat', icon: <MessageCircle size={12} /> },
               { id: 'test', label: 'Test', icon: <CheckCircle size={12} /> },
+              { id: 'schedule', label: 'Schedule', icon: <Clock size={12} />, badge: schedules.filter((s) => s.agent_id === selectedAgent.id && s.enabled).length || null },
               { id: 'history', label: 'History', icon: <Loader size={12} /> },
               { id: 'analytics', label: 'Analytics', icon: <Bot size={12} /> },
             ] as const).map((tab) => (
@@ -890,8 +1084,8 @@ const AgentStudio: React.FC = () => {
                 height: '100%', display: 'flex', alignItems: 'center', gap: 5,
               }}>
                 {tab.icon} {tab.label}
-                {'badge' in tab && tab.badge !== null && (
-                  <span style={{ fontSize: 9, backgroundColor: C.accentDim, color: C.accent, padding: '1px 5px', borderRadius: 8 }}>
+                {'badge' in tab && tab.badge !== null && tab.badge > 0 && (
+                  <span style={{ fontSize: 9, backgroundColor: tab.id === 'schedule' ? '#DCFCE7' : C.accentDim, color: tab.id === 'schedule' ? '#16A34A' : C.accent, padding: '1px 5px', borderRadius: 8 }}>
                     {tab.badge}
                   </span>
                 )}
@@ -907,8 +1101,9 @@ const AgentStudio: React.FC = () => {
           {rightTab === 'knowledge' && <KnowledgePanel agent={selectedAgent} />}
           {rightTab === 'chat' && <div style={{ flex: 1, overflow: 'hidden' }}><ChatPanel agentId={selectedAgent.id} /></div>}
           {rightTab === 'test' && <TestPanel agent={selectedAgent} />}
+          {rightTab === 'schedule' && <SchedulePanel agent={selectedAgent} />}
           {rightTab === 'history' && <HistoryPanel agent={selectedAgent} />}
-          {rightTab === 'analytics' && <AnalyticsPanel agent={selectedAgent} />}
+          {rightTab === 'analytics' && <AnalyticsPanel agent={selectedAgent} />
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, flexDirection: 'column', gap: 8 }}>
@@ -917,7 +1112,29 @@ const AgentStudio: React.FC = () => {
         </div>
       )}
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse-green {
+          0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.7); }
+          70% { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+          100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+        }
+        .md-body { line-height: 1.6; font-size: 13px; color: #0D1117; }
+        .md-body h1,.md-body h2,.md-body h3 { font-size: 14px; font-weight: 600; margin: 8px 0 4px; }
+        .md-body p { margin: 4px 0; }
+        .md-body ul,.md-body ol { margin: 4px 0; padding-left: 18px; }
+        .md-body li { margin: 2px 0; }
+        .md-body strong { font-weight: 600; }
+        .md-body code { font-family: monospace; font-size: 11px; background: #F1F5F9; padding: 1px 4px; border-radius: 3px; }
+        .md-body pre { background: #F1F5F9; border-radius: 4px; padding: 8px; overflow-x: auto; margin: 6px 0; }
+        .md-body pre code { background: none; padding: 0; }
+        .md-body blockquote { border-left: 3px solid #E2E8F0; margin: 4px 0; padding-left: 10px; color: #64748B; }
+        .md-body table { border-collapse: collapse; width: 100%; font-size: 12px; margin: 6px 0; }
+        .md-body th,.md-body td { border: 1px solid #E2E8F0; padding: 4px 8px; text-align: left; }
+        .md-body th { background: #F8FAFC; font-weight: 600; }
+        .md-body a { color: #7C3AED; text-decoration: underline; }
+        .md-body hr { border: none; border-top: 1px solid #E2E8F0; margin: 8px 0; }
+      `}</style>
     </div>
   );
 };
