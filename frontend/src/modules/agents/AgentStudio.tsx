@@ -122,7 +122,7 @@ const AgentConfigPanel: React.FC<{
                   cursor: 'pointer',
                   borderRadius: 8,
                   border: `1.5px solid ${enabled ? color : C.border}`,
-                  backgroundColor: enabled ? `${color}14` : C.surface,
+                  backgroundColor: enabled ? `${color}14` : C.panel,
                   padding: '10px 12px',
                   display: 'flex',
                   flexDirection: 'column',

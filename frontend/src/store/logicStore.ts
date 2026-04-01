@@ -27,6 +27,7 @@ export interface Block {
   subject?: string;
   body?: string;
   from_name?: string;
+  bcc?: string;
   // llm_call
   prompt_template?: string;
   system_prompt?: string;
