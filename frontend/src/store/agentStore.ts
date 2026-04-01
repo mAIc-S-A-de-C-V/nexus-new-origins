@@ -46,6 +46,13 @@ export interface AgentMessage {
   created_at?: string;
 }
 
+export interface StreamingTool {
+  name: string;
+  status: 'calling' | 'done' | 'error';
+  input?: Record<string, unknown>;
+  result?: unknown;
+}
+
 interface AgentStore {
   agents: AgentConfig[];
   selectedAgent: AgentConfig | null;
@@ -55,6 +62,9 @@ interface AgentStore {
   availableTools: string[];
   loading: boolean;
   sending: boolean;
+  // Streaming state
+  streamingText: string;
+  streamingTools: StreamingTool[];
 
   fetchAgents: () => Promise<void>;
   selectAgent: (agent: AgentConfig | null) => void;
@@ -69,6 +79,7 @@ interface AgentStore {
   selectThread: (thread: AgentThread | null) => void;
   fetchMessages: (threadId: string) => Promise<void>;
   sendMessage: (threadId: string, content: string) => Promise<string>;
+  clearStreaming: () => void;
 }
 
 export const useAgentStore = create<AgentStore>((set, get) => ({
@@ -80,6 +91,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   availableTools: [],
   loading: false,
   sending: false,
+  streamingText: '',
+  streamingTools: [],
 
   fetchAgents: async () => {
     set({ loading: true });
@@ -189,8 +202,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   },
 
   sendMessage: async (threadId, content) => {
-    set({ sending: true });
-    // Optimistically add user message
+    set({ sending: true, streamingText: '', streamingTools: [] });
     const userMsg: AgentMessage = {
       id: `tmp-${Date.now()}`,
       thread_id: threadId,
@@ -200,18 +212,53 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     };
     set((s) => ({ messages: [...s.messages, userMsg] }));
 
+    let finalText = '';
     try {
-      const r = await fetch(`${AGENT_API}/threads/${threadId}/messages`, {
+      const response = await fetch(`${AGENT_API}/threads/${threadId}/messages`, {
         method: 'POST',
         headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, stream: false }),
+        body: JSON.stringify({ content, stream: true }),
       });
-      const data = await r.json();
-      // Re-fetch to get persisted messages including tool calls
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === 'text_delta') {
+              finalText += event.text;
+              set({ streamingText: finalText });
+            } else if (event.type === 'tool_start') {
+              set((s) => ({
+                streamingTools: [...s.streamingTools, { name: event.tool, status: 'calling' as const }],
+              }));
+            } else if (event.type === 'tool_result') {
+              set((s) => ({
+                streamingTools: s.streamingTools.map((t) =>
+                  t.name === event.tool && t.status === 'calling'
+                    ? { ...t, status: 'done' as const, result: event.result }
+                    : t
+                ),
+              }));
+            }
+          } catch { /* partial JSON */ }
+        }
+      }
       await get().fetchMessages(threadId);
-      return data.final_text || '';
+      return finalText;
     } finally {
-      set({ sending: false });
+      set({ sending: false, streamingText: '', streamingTools: [] });
     }
   },
+
+  clearStreaming: () => set({ streamingText: '', streamingTools: [] }),
 }));

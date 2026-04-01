@@ -6,8 +6,9 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Header, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from database import AgentConfigRow, get_session
+from sqlalchemy import select, func as sqlfunc
+from database import AgentConfigRow, AgentConfigVersionRow, AgentRunRow, get_session
+from runtime import run_agent
 
 router = APIRouter()
 
@@ -17,6 +18,7 @@ AVAILABLE_TOOLS = [
     "logic_function_run",
     "action_propose",
     "list_actions",
+    "agent_call",
 ]
 
 
@@ -169,6 +171,15 @@ async def update_agent(
     if body.enabled is not None:
         row.enabled = body.enabled
 
+    # Save version snapshot before committing
+    version_count_result = await db.execute(
+        select(sqlfunc.count()).select_from(AgentConfigVersionRow).where(AgentConfigVersionRow.agent_id == agent_id)
+    )
+    next_version = (version_count_result.scalar() or 0) + 1
+    db.add(AgentConfigVersionRow(
+        id=str(uuid4()), agent_id=agent_id, tenant_id=tenant_id,
+        version_number=next_version, config_snapshot=_to_dict(row),
+    ))
     await db.commit()
     return _to_dict(row)
 
@@ -219,3 +230,193 @@ async def set_knowledge_scope(
     row.knowledge_scope = body.scope  # None = unrestricted
     await db.commit()
     return _to_dict(row)
+
+
+# ── Phase 4: Test endpoint ────────────────────────────────────────────────────
+
+class TestRequest(BaseModel):
+    message: str
+    dry_run: bool = True
+
+
+@router.post("/{agent_id}/test")
+async def test_agent(
+    agent_id: str,
+    body: TestRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Run an agent against a test message without saving to a thread. Supports dry_run."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(AgentConfigRow).where(AgentConfigRow.id == agent_id, AgentConfigRow.tenant_id == tenant_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Build scoped system prompt
+    system_prompt = agent.system_prompt
+    knowledge_scope = agent.knowledge_scope
+    if knowledge_scope:
+        scope_lines = "\n".join(
+            f"  - {e.get('label', e.get('object_type_id', '?'))}" for e in knowledge_scope
+        )
+        system_prompt = system_prompt.rstrip() + f"\n\nDATA SCOPE (test run):\n{scope_lines}"
+
+    outcome = await run_agent(
+        agent_id=agent.id,
+        system_prompt=system_prompt,
+        model=agent.model,
+        enabled_tools=agent.enabled_tools or [],
+        max_iterations=agent.max_iterations,
+        conversation_history=[],
+        new_user_message=body.message,
+        tenant_id=tenant_id,
+        knowledge_scope=knowledge_scope,
+        dry_run=body.dry_run,
+    )
+
+    # Save run record for analytics
+    tool_calls = []
+    for msg in outcome.get("new_messages", []):
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool_calls.append({"tool": block.get("name")})
+    db.add(AgentRunRow(
+        id=str(uuid4()), agent_id=agent.id, thread_id=None, tenant_id=tenant_id,
+        iterations=outcome.get("iterations", 0), tool_calls=tool_calls,
+        final_text_len=len(outcome.get("final_text", "")),
+        is_test=True, error=outcome.get("error"),
+    ))
+    await db.commit()
+
+    return {
+        "final_text": outcome.get("final_text", ""),
+        "iterations": outcome.get("iterations", 0),
+        "trace": outcome.get("new_messages", []),
+        "error": outcome.get("error"),
+        "dry_run": body.dry_run,
+    }
+
+
+# ── Phase 6: Version history ──────────────────────────────────────────────────
+
+@router.get("/{agent_id}/versions")
+async def list_versions(
+    agent_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(AgentConfigVersionRow)
+        .where(AgentConfigVersionRow.agent_id == agent_id, AgentConfigVersionRow.tenant_id == tenant_id)
+        .order_by(AgentConfigVersionRow.version_number.desc())
+        .limit(50)
+    )
+    rows = result.scalars().all()
+    return [
+        {
+            "id": r.id, "version_number": r.version_number,
+            "config_snapshot": r.config_snapshot,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{agent_id}/versions/{version_id}/restore")
+async def restore_version(
+    agent_id: str,
+    version_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    tenant_id = x_tenant_id or "tenant-001"
+    ver_result = await db.execute(
+        select(AgentConfigVersionRow).where(
+            AgentConfigVersionRow.id == version_id, AgentConfigVersionRow.agent_id == agent_id
+        )
+    )
+    ver = ver_result.scalar_one_or_none()
+    if not ver:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    agent_result = await db.execute(
+        select(AgentConfigRow).where(AgentConfigRow.id == agent_id, AgentConfigRow.tenant_id == tenant_id)
+    )
+    row = agent_result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    snap = ver.config_snapshot
+    row.name = snap.get("name", row.name)
+    row.description = snap.get("description", row.description)
+    row.system_prompt = snap.get("system_prompt", row.system_prompt)
+    row.model = snap.get("model", row.model)
+    row.enabled_tools = snap.get("enabled_tools", row.enabled_tools)
+    row.tool_config = snap.get("tool_config", row.tool_config)
+    row.max_iterations = snap.get("max_iterations", row.max_iterations)
+    row.knowledge_scope = snap.get("knowledge_scope", row.knowledge_scope)
+    await db.commit()
+    return _to_dict(row)
+
+
+# ── Phase 6: Analytics ────────────────────────────────────────────────────────
+
+@router.get("/{agent_id}/analytics")
+async def get_analytics(
+    agent_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(AgentRunRow)
+        .where(AgentRunRow.agent_id == agent_id, AgentRunRow.tenant_id == tenant_id)
+        .order_by(AgentRunRow.created_at.desc())
+        .limit(500)
+    )
+    runs = result.scalars().all()
+
+    total = len(runs)
+    avg_iterations = round(sum(r.iterations for r in runs) / total, 1) if total else 0
+    error_count = sum(1 for r in runs if r.error)
+
+    # Tool usage frequency
+    tool_freq: dict[str, int] = {}
+    for r in runs:
+        for tc in (r.tool_calls or []):
+            name = tc.get("tool", "unknown")
+            tool_freq[name] = tool_freq.get(name, 0) + 1
+    top_tools = sorted(tool_freq.items(), key=lambda x: -x[1])[:10]
+
+    # Runs per day (last 14 days)
+    from collections import defaultdict
+    from datetime import datetime, timezone, timedelta
+    today = datetime.now(timezone.utc).date()
+    runs_per_day: dict[str, int] = defaultdict(int)
+    for r in runs:
+        if r.created_at:
+            day = r.created_at.date()
+            if (today - day).days <= 14:
+                runs_per_day[day.isoformat()] += 1
+
+    return {
+        "total_runs": total,
+        "avg_iterations": avg_iterations,
+        "error_rate": round(error_count / total * 100, 1) if total else 0,
+        "top_tools": [{"tool": t, "count": c} for t, c in top_tools],
+        "runs_per_day": [{"date": d, "count": c} for d, c in sorted(runs_per_day.items())],
+        "recent_runs": [
+            {
+                "id": r.id, "iterations": r.iterations, "is_test": r.is_test,
+                "tool_count": len(r.tool_calls or []),
+                "error": r.error, "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in runs[:20]
+        ],
+    }

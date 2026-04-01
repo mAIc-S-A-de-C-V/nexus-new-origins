@@ -4,12 +4,13 @@ Supports both sync (full response) and streaming (SSE) modes.
 """
 from typing import Optional
 from uuid import uuid4
+import json
 from fastapi import APIRouter, HTTPException, Header, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from database import AgentConfigRow, AgentThreadRow, AgentMessageRow, get_session
+from database import AgentConfigRow, AgentThreadRow, AgentMessageRow, AgentRunRow, get_session
 from runtime import run_agent, stream_agent
 
 router = APIRouter()
@@ -278,7 +279,25 @@ async def send_message(
             tenant_id=tenant_id,
             knowledge_scope=knowledge_scope,
         )
-        await _save_new_messages(outcome.get("new_messages", []), thread_id, tenant_id, db)
+        new_msgs = outcome.get("new_messages", [])
+        await _save_new_messages(new_msgs, thread_id, tenant_id, db)
+
+        # Record analytics run
+        tool_calls = []
+        for msg in new_msgs:
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_calls.append({"tool": block.get("name")})
+        db.add(AgentRunRow(
+            id=str(uuid4()), agent_id=agent.id, thread_id=thread_id, tenant_id=tenant_id,
+            iterations=outcome.get("iterations", 0), tool_calls=tool_calls,
+            final_text_len=len(outcome.get("final_text", "")),
+            is_test=False, error=outcome.get("error"),
+        ))
+        await db.commit()
+
         return {
             "final_text": outcome.get("final_text", ""),
             "iterations": outcome.get("iterations", 0),

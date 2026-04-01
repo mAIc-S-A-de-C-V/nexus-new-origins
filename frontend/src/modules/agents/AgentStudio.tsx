@@ -16,6 +16,7 @@ const TOOL_LABELS: Record<string, string> = {
   logic_function_run: 'Run Logic Function',
   action_propose: 'Propose Action',
   list_actions: 'List Actions',
+  agent_call: 'Call Sub-Agent',
 };
 
 // ── Agent Config Panel ────────────────────────────────────────────────────────
@@ -326,18 +327,60 @@ const KnowledgePanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
   );
 };
 
-// ── Chat Panel ────────────────────────────────────────────────────────────────
+// ── Shared message bubble ────────────────────────────────────────────────────
+
+const MsgBubble: React.FC<{ role: string; content: string; toolName?: string; toolInput?: unknown; toolResult?: unknown }> = ({ role, content, toolName, toolInput, toolResult }) => {
+  const [open, setOpen] = useState(false);
+  const isTool = role === 'tool_use' || role === 'tool_result';
+  const colors = {
+    user: { bg: C.accentDim, border: C.accent + '44', label: 'You', color: C.text },
+    assistant: { bg: C.card, border: C.border, label: 'Agent', color: C.accent },
+    tool_use: { bg: '#FFFBEB', border: '#FDE68A', label: TOOL_LABELS[toolName || ''] || toolName || 'Tool', color: C.warn },
+    tool_result: { bg: '#F0FDF4', border: '#86EFAC', label: 'Result', color: C.success },
+  }[role] || { bg: C.card, border: C.border, label: role, color: C.muted };
+
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 2,
+      alignSelf: role === 'user' ? 'flex-end' : 'flex-start',
+      maxWidth: isTool ? '90%' : '80%',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 10, color: colors.color, fontWeight: 500 }}>{colors.label}</span>
+        {isTool && (
+          <button onClick={() => setOpen(v => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.dim, fontSize: 10, padding: 0 }}>
+            {open ? '▲ hide' : '▼ details'}
+          </button>
+        )}
+      </div>
+      <div style={{
+        backgroundColor: colors.bg, border: `1px solid ${colors.border}`,
+        padding: '8px 12px', fontSize: 13, color: C.text,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      }}>
+        {role === 'tool_use'
+          ? <span style={{ fontSize: 12 }}>{open ? <pre style={{ margin: 0, fontSize: 11 }}>{JSON.stringify(toolInput, null, 2)}</pre> : `Calling ${TOOL_LABELS[toolName || ''] || toolName}…`}</span>
+          : role === 'tool_result'
+          ? open ? <pre style={{ margin: 0, fontSize: 11, overflowX: 'auto' }}>{JSON.stringify(toolResult, null, 2)}</pre> : <span style={{ fontSize: 12 }}>Done</span>
+          : content
+        }
+      </div>
+    </div>
+  );
+};
+
+// ── Chat Panel (streaming) ────────────────────────────────────────────────────
 
 const ChatPanel: React.FC<{ agentId: string }> = ({ agentId }) => {
   const {
-    threads, selectedThread, messages, sending,
+    threads, selectedThread, messages, sending, streamingText, streamingTools,
     fetchThreads, createThread, selectThread, sendMessage,
   } = useAgentStore();
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { fetchThreads(agentId); }, [agentId]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingText, streamingTools]);
 
   const handleSend = async () => {
     if (!input.trim() || !selectedThread) return;
@@ -346,93 +389,67 @@ const ChatPanel: React.FC<{ agentId: string }> = ({ agentId }) => {
     await sendMessage(selectedThread.id, msg);
   };
 
-  const roleColor = (role: string) => {
-    if (role === 'user') return C.text;
-    if (role === 'assistant') return C.accent;
-    if (role === 'tool_use') return C.warn;
-    if (role === 'tool_result') return C.success;
-    return C.muted;
-  };
-
-  const roleLabel = (role: string) => {
-    if (role === 'user') return 'You';
-    if (role === 'assistant') return 'Agent';
-    if (role === 'tool_use') return 'Tool Call';
-    if (role === 'tool_result') return 'Tool Result';
-    return role;
-  };
-
   return (
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
       {/* Thread list */}
-      <div style={{
-        width: 180, borderRight: `1px solid ${C.border}`, display: 'flex',
-        flexDirection: 'column', overflow: 'hidden',
-      }}>
-        <div style={{
-          padding: '8px 10px', borderBottom: `1px solid ${C.border}`,
-          display: 'flex', alignItems: 'center', gap: 6,
-        }}>
+      <div style={{ width: 180, borderRight: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ padding: '8px 10px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 11, color: C.muted, flex: 1 }}>THREADS</span>
-          <button
-            onClick={() => createThread(agentId)}
-            style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', padding: 0, lineHeight: 0 }}
-          >
+          <button onClick={() => createThread(agentId)} style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', padding: 0, lineHeight: 0 }}>
             <Plus size={14} />
           </button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {threads.filter((t) => t.agent_id === agentId).map((thread) => (
-            <button
-              key={thread.id}
-              onClick={() => selectThread(thread)}
-              style={{
-                width: '100%', padding: '8px 10px', border: 'none', cursor: 'pointer', textAlign: 'left',
-                backgroundColor: selectedThread?.id === thread.id ? C.accentDim : 'transparent',
-                borderLeft: selectedThread?.id === thread.id ? `2px solid ${C.accent}` : '2px solid transparent',
-                color: C.text,
-              }}
-            >
-              <div style={{ fontSize: 12, fontWeight: 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {thread.title || `Thread`}
-              </div>
-              <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>
-                {thread.created_at ? new Date(thread.created_at).toLocaleTimeString() : ''}
-              </div>
+            <button key={thread.id} onClick={() => selectThread(thread)} style={{
+              width: '100%', padding: '8px 10px', border: 'none', cursor: 'pointer', textAlign: 'left',
+              backgroundColor: selectedThread?.id === thread.id ? C.accentDim : 'transparent',
+              borderLeft: selectedThread?.id === thread.id ? `2px solid ${C.accent}` : '2px solid transparent',
+              color: C.text,
+            }}>
+              <div style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{thread.title || 'Thread'}</div>
+              <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>{thread.created_at ? new Date(thread.created_at).toLocaleTimeString() : ''}</div>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Messages */}
       {selectedThread ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
             {messages.map((msg) => (
-              <div key={msg.id} style={{
-                display: 'flex', flexDirection: 'column', gap: 2,
-                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                maxWidth: '80%',
+              <MsgBubble key={msg.id} role={msg.role} content={msg.content}
+                toolName={msg.tool_name} toolInput={msg.tool_input} toolResult={msg.tool_result} />
+            ))}
+
+            {/* Live streaming tool trace */}
+            {sending && streamingTools.map((t, i) => (
+              <div key={i} style={{
+                alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 8,
+                backgroundColor: t.status === 'done' ? '#F0FDF4' : '#FFFBEB',
+                border: `1px solid ${t.status === 'done' ? '#86EFAC' : '#FDE68A'}`,
+                padding: '6px 12px', fontSize: 12,
               }}>
-                <span style={{ fontSize: 10, color: roleColor(msg.role), fontWeight: 500 }}>
-                  {roleLabel(msg.role)}
+                {t.status === 'calling'
+                  ? <Loader size={11} style={{ animation: 'spin 0.6s linear infinite', color: C.warn }} />
+                  : <CheckCircle size={11} color={C.success} />}
+                <span style={{ color: t.status === 'done' ? C.success : C.warn }}>
+                  {TOOL_LABELS[t.name] || t.name}
                 </span>
-                <div style={{
-                  backgroundColor: msg.role === 'user' ? C.accentDim : C.card,
-                  border: `1px solid ${msg.role === 'user' ? C.accent + '44' : C.border}`,
-                  padding: '8px 12px', fontSize: 13, color: C.text,
-                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                }}>
-                  {msg.role === 'tool_use' && msg.tool_name
-                    ? `${TOOL_LABELS[msg.tool_name] || msg.tool_name}\n${JSON.stringify(msg.tool_input, null, 2)}`
-                    : msg.role === 'tool_result'
-                    ? <pre style={{ margin: 0, fontSize: 11, overflowX: 'auto' }}>{JSON.stringify(msg.tool_result, null, 2)}</pre>
-                    : msg.content
-                  }
-                </div>
               </div>
             ))}
-            {sending && (
+
+            {/* Live streaming text */}
+            {sending && streamingText && (
+              <div style={{ alignSelf: 'flex-start', maxWidth: '80%' }}>
+                <span style={{ fontSize: 10, color: C.accent, fontWeight: 500 }}>Agent</span>
+                <div style={{ backgroundColor: C.card, border: `1px solid ${C.border}`, padding: '8px 12px', fontSize: 13, color: C.text, whiteSpace: 'pre-wrap', marginTop: 2 }}>
+                  {streamingText}<span style={{ opacity: 0.4 }}>▌</span>
+                </div>
+              </div>
+            )}
+
+            {sending && !streamingText && streamingTools.length === 0 && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: C.muted }}>
                 <Loader size={12} style={{ animation: 'spin 0.6s linear infinite' }} />
                 <span style={{ fontSize: 12 }}>Agent thinking...</span>
@@ -441,28 +458,17 @@ const ChatPanel: React.FC<{ agentId: string }> = ({ agentId }) => {
             <div ref={bottomRef} />
           </div>
 
-          {/* Input */}
           <div style={{ borderTop: `1px solid ${C.border}`, padding: 12, display: 'flex', gap: 8 }}>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
+            <input value={input} onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              placeholder="Message the agent..."
-              disabled={sending}
-              style={{
-                flex: 1, backgroundColor: C.bg, border: `1px solid ${C.border}`,
-                color: C.text, padding: '8px 12px', fontSize: 13, outline: 'none',
-              }}
+              placeholder="Message the agent..." disabled={sending}
+              style={{ flex: 1, backgroundColor: C.bg, border: `1px solid ${C.border}`, color: C.text, padding: '8px 12px', fontSize: 13, outline: 'none' }}
             />
-            <button
-              onClick={handleSend}
-              disabled={sending || !input.trim()}
-              style={{
-                padding: '8px 14px', backgroundColor: C.accentDim, border: `1px solid ${C.accent}`,
-                color: C.accent, cursor: sending || !input.trim() ? 'default' : 'pointer',
-                display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
-              }}
-            >
+            <button onClick={handleSend} disabled={sending || !input.trim()} style={{
+              padding: '8px 14px', backgroundColor: C.accentDim, border: `1px solid ${C.accent}`,
+              color: C.accent, cursor: sending || !input.trim() ? 'default' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+            }}>
               <Send size={13} />
             </button>
           </div>
@@ -477,6 +483,264 @@ const ChatPanel: React.FC<{ agentId: string }> = ({ agentId }) => {
   );
 };
 
+// ── Test Playground Panel ─────────────────────────────────────────────────────
+
+const AGENT_API_URL = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
+
+const TestPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
+  const [input, setInput] = useState('');
+  const [dryRun, setDryRun] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [trace, setTrace] = useState<{ role: string; type?: string; text?: string; tool?: string; input?: unknown; result?: unknown }[]>([]);
+  const [finalText, setFinalText] = useState('');
+  const [iterations, setIterations] = useState(0);
+  const [error, setError] = useState('');
+
+  const run = async () => {
+    if (!input.trim()) return;
+    setRunning(true); setTrace([]); setFinalText(''); setError(''); setIterations(0);
+    try {
+      const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/test`, {
+        method: 'POST',
+        headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: input.trim(), dry_run: dryRun }),
+      });
+      const data = await r.json();
+      setFinalText(data.final_text || '');
+      setIterations(data.iterations || 0);
+      setError(data.error || '');
+      // Build a simplified trace
+      const msgs: typeof trace = [];
+      for (const msg of (data.trace || [])) {
+        const content = msg.content;
+        if (typeof content === 'string') {
+          msgs.push({ role: msg.role, text: content });
+        } else if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'text') msgs.push({ role: 'text', text: block.text });
+            if (block.type === 'tool_use') msgs.push({ role: 'tool_use', tool: block.name, input: block.input });
+          }
+        } else if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === 'tool_result') msgs.push({ role: 'tool_result', tool: '', result: block.content });
+          }
+        }
+      }
+      setTrace(msgs);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ backgroundColor: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 5, padding: '10px 14px', fontSize: 12, color: '#1E40AF' }}>
+        Test your agent without saving to a thread. <strong>Dry run</strong> mode prevents any write actions from executing.
+      </div>
+
+      <textarea
+        value={input} onChange={(e) => setInput(e.target.value)}
+        placeholder="Type a test message for the agent..."
+        style={{ width: '100%', minHeight: 80, padding: '8px 10px', fontSize: 13, border: `1px solid ${C.border}`, backgroundColor: C.bg, color: C.text, outline: 'none', resize: 'vertical', boxSizing: 'border-box' }}
+      />
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        <button onClick={run} disabled={running || !input.trim()} style={{
+          padding: '7px 20px', fontSize: 12, fontWeight: 500, borderRadius: 4,
+          backgroundColor: running ? C.bg : C.accentDim, border: `1px solid ${C.accent}`,
+          color: C.accent, cursor: running || !input.trim() ? 'default' : 'pointer',
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          {running ? <><Loader size={12} style={{ animation: 'spin 0.6s linear infinite' }} /> Running...</> : 'Run Test'}
+        </button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.muted, cursor: 'pointer' }}>
+          <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} style={{ accentColor: C.accent }} />
+          Dry run (no writes)
+        </label>
+        {iterations > 0 && <span style={{ fontSize: 11, color: C.dim }}>{iterations} iteration{iterations !== 1 ? 's' : ''}</span>}
+      </div>
+
+      {/* Trace */}
+      {trace.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em' }}>REASONING TRACE</div>
+          {trace.map((item, i) => (
+            <div key={i} style={{
+              padding: '8px 12px', fontSize: 12,
+              backgroundColor: item.role === 'tool_use' ? '#FFFBEB' : item.role === 'tool_result' ? '#F0FDF4' : C.card,
+              border: `1px solid ${item.role === 'tool_use' ? '#FDE68A' : item.role === 'tool_result' ? '#86EFAC' : C.border}`,
+              borderRadius: 4,
+            }}>
+              {item.role === 'tool_use' && <><span style={{ fontWeight: 600, color: C.warn }}>→ {TOOL_LABELS[item.tool || ''] || item.tool}</span><pre style={{ margin: '4px 0 0', fontSize: 11, color: C.muted }}>{JSON.stringify(item.input, null, 2)}</pre></>}
+              {item.role === 'tool_result' && <><span style={{ fontWeight: 600, color: C.success }}>← Result</span><pre style={{ margin: '4px 0 0', fontSize: 11, color: C.muted, maxHeight: 120, overflowY: 'auto' }}>{typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2)}</pre></>}
+              {item.role === 'text' && <span style={{ color: C.text, whiteSpace: 'pre-wrap' }}>{item.text}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {finalText && (
+        <div>
+          <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em', marginBottom: 6 }}>FINAL RESPONSE</div>
+          <div style={{ backgroundColor: C.accentDim, border: `1px solid ${C.accent}44`, padding: '12px 14px', fontSize: 13, color: C.text, whiteSpace: 'pre-wrap', borderRadius: 4 }}>{finalText}</div>
+        </div>
+      )}
+
+      {error && <div style={{ color: C.error, fontSize: 12, backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5', padding: '8px 12px', borderRadius: 4 }}>{error}</div>}
+    </div>
+  );
+};
+
+// ── History Panel ─────────────────────────────────────────────────────────────
+
+const HistoryPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
+  const { updateAgent, fetchAgents } = useAgentStore();
+  const [versions, setVersions] = useState<{ id: string; version_number: number; config_snapshot: Record<string, unknown>; created_at: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [restoring, setRestoring] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/versions`, { headers: { 'x-tenant-id': 'tenant-001' } });
+      const data = await r.json();
+      setVersions(Array.isArray(data) ? data : []);
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, [agent.id]);
+
+  const restore = async (versionId: string) => {
+    if (!confirm('Restore this version? Current config will be replaced.')) return;
+    setRestoring(versionId);
+    try {
+      const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/versions/${versionId}/restore`, {
+        method: 'POST', headers: { 'x-tenant-id': 'tenant-001' },
+      });
+      if (r.ok) { await fetchAgents(); await load(); }
+    } finally { setRestoring(null); }
+  };
+
+  if (loading) return <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>Loading versions...</div>;
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em', marginBottom: 4 }}>
+        VERSION HISTORY — saved on every config change
+      </div>
+      {versions.length === 0 && <div style={{ color: C.dim, fontSize: 13 }}>No versions saved yet. Edit and save the agent to create a version.</div>}
+      {versions.map((v) => {
+        const snap = v.config_snapshot as Record<string, unknown>;
+        return (
+          <div key={v.id} style={{ backgroundColor: C.panel, border: `1px solid ${C.border}`, borderRadius: 5, padding: '12px 14px', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>v{v.version_number}</span>
+                <span style={{ fontSize: 11, color: C.dim }}>{v.created_at ? new Date(v.created_at).toLocaleString() : ''}</span>
+              </div>
+              <div style={{ fontSize: 11, color: C.muted }}>
+                Model: <code style={{ fontSize: 11 }}>{String(snap.model || '').replace('claude-', '')}</code>
+                {' · '}
+                Tools: {((snap.enabled_tools as string[]) || []).length}
+                {' · '}
+                Prompt: {String(snap.system_prompt || '').slice(0, 50)}…
+              </div>
+            </div>
+            <button
+              onClick={() => restore(v.id)} disabled={restoring === v.id}
+              style={{
+                padding: '4px 12px', fontSize: 11, cursor: restoring === v.id ? 'default' : 'pointer',
+                backgroundColor: C.bg, border: `1px solid ${C.border}`, color: C.muted, borderRadius: 3, flexShrink: 0,
+              }}
+            >
+              {restoring === v.id ? 'Restoring...' : 'Restore'}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ── Analytics Panel ───────────────────────────────────────────────────────────
+
+const AnalyticsPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
+  const [data, setData] = useState<{
+    total_runs: number; avg_iterations: number; error_rate: number;
+    top_tools: { tool: string; count: number }[];
+    runs_per_day: { date: string; count: number }[];
+    recent_runs: { id: string; iterations: number; is_test: boolean; tool_count: number; error?: string; created_at: string }[];
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`${AGENT_API_URL}/agents/${agent.id}/analytics`, { headers: { 'x-tenant-id': 'tenant-001' } })
+      .then(r => r.json()).then(setData).finally(() => setLoading(false));
+  }, [agent.id]);
+
+  if (loading) return <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>Loading analytics...</div>;
+  if (!data || data.total_runs === 0) return <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>No runs yet. Chat with the agent or run a test to generate analytics.</div>;
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Summary cards */}
+      <div style={{ display: 'flex', gap: 12 }}>
+        {[
+          { label: 'Total runs', value: data.total_runs },
+          { label: 'Avg iterations', value: data.avg_iterations },
+          { label: 'Error rate', value: `${data.error_rate}%` },
+        ].map(({ label, value }) => (
+          <div key={label} style={{ flex: 1, backgroundColor: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: '14px 16px' }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, fontFamily: 'monospace' }}>{value}</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Top tools */}
+      {data.top_tools.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em', marginBottom: 8 }}>TOP TOOLS</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {data.top_tools.map(({ tool, count }) => {
+              const pct = Math.round(count / data.total_runs * 100);
+              return (
+                <div key={tool} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 12, color: C.text, width: 160, flexShrink: 0 }}>{TOOL_LABELS[tool] || tool}</span>
+                  <div style={{ flex: 1, height: 6, backgroundColor: C.border, borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.min(pct, 100)}%`, height: '100%', backgroundColor: C.accent }} />
+                  </div>
+                  <span style={{ fontSize: 11, color: C.dim, width: 40, textAlign: 'right' }}>{count}×</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Recent runs */}
+      <div>
+        <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em', marginBottom: 8 }}>RECENT RUNS</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {data.recent_runs.map((run) => (
+            <div key={run.id} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+              backgroundColor: run.error ? '#FEF2F2' : C.panel, border: `1px solid ${run.error ? '#FCA5A5' : C.border}`,
+              borderRadius: 4, fontSize: 12,
+            }}>
+              <span style={{ color: run.error ? C.error : C.success, flexShrink: 0 }}>{run.error ? '✗' : '✓'}</span>
+              <span style={{ color: C.muted, fontSize: 10, flexShrink: 0 }}>{run.is_test ? 'TEST' : 'CHAT'}</span>
+              <span style={{ color: C.text, flex: 1 }}>{run.iterations} iter · {run.tool_count} tool call{run.tool_count !== 1 ? 's' : ''}</span>
+              <span style={{ color: C.dim, fontSize: 11 }}>{run.created_at ? new Date(run.created_at).toLocaleString() : ''}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── Main AgentStudio ──────────────────────────────────────────────────────────
 
 const AgentStudio: React.FC = () => {
@@ -485,7 +749,7 @@ const AgentStudio: React.FC = () => {
     fetchAgents, selectAgent, createAgent, updateAgent, deleteAgent, fetchAvailableTools,
   } = useAgentStore();
 
-  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat'>('config');
+  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat' | 'test' | 'history' | 'analytics'>('config');
 
   useEffect(() => { fetchAgents(); fetchAvailableTools(); }, []);
 
@@ -568,49 +832,41 @@ const AgentStudio: React.FC = () => {
             borderBottom: `1px solid ${C.border}`, backgroundColor: C.panel, padding: '0 16px', flexShrink: 0,
           }}>
             <span style={{ fontSize: 15, fontWeight: 600, marginRight: 20 }}>{selectedAgent.name}</span>
-            {(['config', 'knowledge', 'chat'] as const).map((tab) => (
-              <button key={tab} onClick={() => setRightTab(tab)} style={{
-                padding: '8px 14px', fontSize: 12, border: 'none', cursor: 'pointer',
+            {([
+              { id: 'config', label: 'Configure', icon: <Wrench size={12} /> },
+              { id: 'knowledge', label: 'Knowledge', icon: <Database size={12} />, badge: selectedAgent.knowledge_scope !== null ? selectedAgent.knowledge_scope.length : null },
+              { id: 'chat', label: 'Chat', icon: <MessageCircle size={12} /> },
+              { id: 'test', label: 'Test', icon: <CheckCircle size={12} /> },
+              { id: 'history', label: 'History', icon: <Loader size={12} /> },
+              { id: 'analytics', label: 'Analytics', icon: <Bot size={12} /> },
+            ] as const).map((tab) => (
+              <button key={tab.id} onClick={() => setRightTab(tab.id as typeof rightTab)} style={{
+                padding: '8px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
                 backgroundColor: 'transparent',
-                color: rightTab === tab ? C.text : C.dim,
-                borderBottom: rightTab === tab ? `2px solid ${C.accent}` : '2px solid transparent',
-                height: '100%',
+                color: rightTab === tab.id ? C.text : C.dim,
+                borderBottom: rightTab === tab.id ? `2px solid ${C.accent}` : '2px solid transparent',
+                height: '100%', display: 'flex', alignItems: 'center', gap: 5,
               }}>
-                {tab === 'config' ? (
-                  <span style={{ display: 'flex', gap: 5, alignItems: 'center' }}><Wrench size={12} /> Configure</span>
-                ) : tab === 'knowledge' ? (
-                  <span style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
-                    <Database size={12} /> Knowledge
-                    {selectedAgent.knowledge_scope !== null && (
-                      <span style={{
-                        fontSize: 9, backgroundColor: C.accentDim, color: C.accent,
-                        padding: '1px 5px', borderRadius: 8, marginLeft: 2,
-                      }}>
-                        {selectedAgent.knowledge_scope.length}
-                      </span>
-                    )}
+                {tab.icon} {tab.label}
+                {'badge' in tab && tab.badge !== null && (
+                  <span style={{ fontSize: 9, backgroundColor: C.accentDim, color: C.accent, padding: '1px 5px', borderRadius: 8 }}>
+                    {tab.badge}
                   </span>
-                ) : (
-                  <span style={{ display: 'flex', gap: 5, alignItems: 'center' }}><MessageCircle size={12} /> Chat</span>
                 )}
               </button>
             ))}
           </div>
 
-          {rightTab === 'config' ? (
-            <AgentConfigPanel
-              agent={selectedAgent}
-              availableTools={availableTools}
+          {rightTab === 'config' && (
+            <AgentConfigPanel agent={selectedAgent} availableTools={availableTools}
               onSave={(data) => updateAgent(selectedAgent.id, data)}
-              onDelete={() => deleteAgent(selectedAgent.id)}
-            />
-          ) : rightTab === 'knowledge' ? (
-            <KnowledgePanel agent={selectedAgent} />
-          ) : (
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <ChatPanel agentId={selectedAgent.id} />
-            </div>
+              onDelete={() => deleteAgent(selectedAgent.id)} />
           )}
+          {rightTab === 'knowledge' && <KnowledgePanel agent={selectedAgent} />}
+          {rightTab === 'chat' && <div style={{ flex: 1, overflow: 'hidden' }}><ChatPanel agentId={selectedAgent.id} /></div>}
+          {rightTab === 'test' && <TestPanel agent={selectedAgent} />}
+          {rightTab === 'history' && <HistoryPanel agent={selectedAgent} />}
+          {rightTab === 'analytics' && <AnalyticsPanel agent={selectedAgent} />}
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, flexDirection: 'column', gap: 8 }}>

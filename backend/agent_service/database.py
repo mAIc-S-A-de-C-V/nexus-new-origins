@@ -68,6 +68,32 @@ class AgentMessageRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class AgentConfigVersionRow(Base):
+    """Snapshot of an agent config saved on every update — enables restore."""
+    __tablename__ = "agent_config_versions"
+    id = Column(String, primary_key=True)
+    agent_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    version_number = Column(Integer, nullable=False)
+    config_snapshot = Column(JSON, nullable=False)   # full _to_dict() output
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentRunRow(Base):
+    """One record per agent execution — powers analytics."""
+    __tablename__ = "agent_runs"
+    id = Column(String, primary_key=True)
+    agent_id = Column(String, nullable=False, index=True)
+    thread_id = Column(String, nullable=True, index=True)  # null for test runs
+    tenant_id = Column(String, nullable=False, index=True)
+    iterations = Column(Integer, nullable=False, default=0)
+    tool_calls = Column(JSON, nullable=False, default=list)   # [{"tool": name}]
+    final_text_len = Column(Integer, nullable=False, default=0)
+    is_test = Column(Boolean, nullable=False, default=False)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

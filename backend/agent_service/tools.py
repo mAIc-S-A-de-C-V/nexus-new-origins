@@ -9,6 +9,7 @@ import httpx
 
 ONTOLOGY_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
 LOGIC_URL = os.environ.get("LOGIC_SERVICE_URL", "http://logic-service:8012")
+AGENT_URL = os.environ.get("AGENT_SERVICE_URL", "http://agent-service:8013")
 
 
 # ── Tool definitions (sent to Claude as tools=[...]) ─────────────────────────
@@ -95,6 +96,24 @@ TOOL_DEFINITIONS = {
             "required": [],
         },
     },
+    "agent_call": {
+        "name": "agent_call",
+        "description": "Call another configured agent by name to handle a subtask. Use this when a specialized agent can better answer part of the request.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_name": {
+                    "type": "string",
+                    "description": "The exact name of the agent to call (as shown in Agent Studio)",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The message or task to send to the sub-agent",
+                },
+            },
+            "required": ["agent_name", "message"],
+        },
+    },
 }
 
 
@@ -111,10 +130,12 @@ async def execute_tool(
     tenant_id: str,
     agent_id: str,
     knowledge_scope: list[dict] | None = None,
+    dry_run: bool = False,
 ) -> Any:
     """Dispatch a tool call to the appropriate service and return the result.
 
     knowledge_scope: None = unrestricted. List = restricted to those object_type_ids.
+    dry_run: True = action_propose returns a simulated result without writing. agent_call is skipped.
     """
     headers = {"x-tenant-id": tenant_id, "Content-Type": "application/json"}
 
@@ -208,6 +229,13 @@ async def execute_tool(
                 inputs = tool_input.get("inputs", {})
                 reasoning = tool_input.get("reasoning", "")
 
+                if dry_run:
+                    return {
+                        "dry_run": True,
+                        "would_execute": {"action": action_name, "inputs": inputs, "reasoning": reasoning},
+                        "note": "Dry run — no changes written. In production this would create a pending_confirmation proposal.",
+                    }
+
                 r = await client.post(
                     f"{ONTOLOGY_URL}/actions/{action_name}/execute",
                     json={
@@ -236,6 +264,29 @@ async def execute_tool(
                         if a.get("enabled")
                     ]
                 }
+
+            elif tool_name == "agent_call":
+                if dry_run:
+                    return {"dry_run": True, "note": "agent_call skipped in dry run mode"}
+                agent_name = tool_input.get("agent_name", "")
+                message = tool_input.get("message", "")
+
+                # Look up the sub-agent by name
+                r = await client.get(f"{AGENT_URL}/agents", headers=headers)
+                agents = r.json() if r.is_success else []
+                sub_agent = next((a for a in agents if a.get("name") == agent_name), None)
+                if not sub_agent:
+                    return {"error": f"Agent '{agent_name}' not found. Available: {[a.get('name') for a in agents]}"}
+
+                # Run sub-agent (one-shot, no thread)
+                r2 = await client.post(
+                    f"{AGENT_URL}/agents/{sub_agent['id']}/test",
+                    json={"message": message, "dry_run": False},
+                    headers=headers,
+                    timeout=120,
+                )
+                result = r2.json() if r2.is_success else {"error": r2.text}
+                return {"agent": agent_name, "response": result.get("final_text", ""), "iterations": result.get("iterations", 0)}
 
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
