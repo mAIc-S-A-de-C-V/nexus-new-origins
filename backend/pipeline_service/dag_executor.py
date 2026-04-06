@@ -28,6 +28,46 @@ ONTOLOGY_API = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8
 EVENT_LOG_API = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
 CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
 
+
+def _resolve_date_templates(params: dict, last_sync=None) -> dict:
+    """Inline resolution of date templates in query params for pipeline executor."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+
+    def fmt(dt, f):
+        return (f.replace('YYYY', dt.strftime('%Y')).replace('MM', dt.strftime('%m'))
+                 .replace('DD', dt.strftime('%d')).replace('HH', dt.strftime('%H'))
+                 .replace('mm', dt.strftime('%M')).replace('ss', dt.strftime('%S')))
+
+    result = {}
+    for k, v in params.items():
+        s = str(v)
+        m = re.match(r'^\{\{\$today:(.+)\}\}$', s)
+        if m:
+            result[k] = fmt(now, m.group(1)); continue
+        m = re.match(r'^\{\{\$daysAgo:(\d+):(.+)\}\}$', s)
+        if m:
+            result[k] = fmt(now - timedelta(days=int(m.group(1))), m.group(2)); continue
+        m = re.match(r'^\{\{\$lastRun:(.+)\}\}$', s)
+        if m:
+            dt = last_sync if last_sync else (now - timedelta(days=7))
+            result[k] = fmt(dt, m.group(1)); continue
+        result[k] = s
+    return result
+
+
+async def _touch_connector_last_sync(connector_id: str, tenant_id: str):
+    """Fire-and-forget: mark the connector's last_sync = now after a successful pipeline run."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.patch(
+                f"{CONNECTOR_API}/connectors/{connector_id}/last-sync",
+                headers={"x-tenant-id": tenant_id},
+            )
+    except Exception:
+        pass
+
+
 # Max concurrent ENRICH calls per batch to avoid hammering the detail endpoint
 _ENRICH_CONCURRENCY = 10
 
@@ -304,12 +344,28 @@ async def _source(node, pipeline: Pipeline) -> list[dict]:
             conn = conn_r.json()
             base_url = (conn.get("base_url") or "").rstrip("/")
             credentials = conn.get("credentials") or {}
+            conn_config = conn.get("config") or {}
+
+            # Parse last_sync from connector details for template resolution
+            raw_last_sync = conn.get("last_sync")
+            last_sync_dt = None
+            if raw_last_sync:
+                try:
+                    from datetime import datetime as _dt
+                    last_sync_dt = _dt.fromisoformat(raw_last_sync.replace("Z", "+00:00"))
+                except Exception:
+                    pass
 
             if endpoint and base_url:
                 # Build the URL and auth headers from the connector's credentials
                 url = f"{base_url}{endpoint}"
                 headers: dict[str, str] = {"Accept": "application/json"}
-                params: dict = {}
+
+                # Resolve connector's configured queryParams (supports {{$lastRun}}, {{$today}}, etc.)
+                raw_qp = {}
+                if isinstance(conn_config.get("queryParams"), dict):
+                    raw_qp = conn_config["queryParams"]
+                params = _resolve_date_templates(raw_qp, last_sync=last_sync_dt)
 
                 auth_type = credentials.get("auth_type") or credentials.get("type", "none")
                 if auth_type == "api_key":
@@ -324,30 +380,45 @@ async def _source(node, pipeline: Pipeline) -> list[dict]:
                     ).decode()
                     headers["Authorization"] = f"Basic {encoded}"
 
+                # Support username/password basic auth stored directly in credentials
+                if not credentials.get("auth_type") and credentials.get("username") and credentials.get("password"):
+                    import base64 as _b64
+                    encoded = _b64.b64encode(
+                        f"{credentials['username']}:{credentials['password']}".encode()
+                    ).decode()
+                    headers["Authorization"] = f"Basic {encoded}"
+
                 # Add any custom headers from connector config
-                for extra_h in (conn.get("config") or {}).get("headers", []):
+                for extra_h in conn_config.get("headers", []):
                     if extra_h.get("key"):
                         headers[extra_h["key"]] = str(extra_h.get("value", ""))
 
                 r = await client.get(url, headers=headers, params=params, timeout=60)
                 if r.is_success:
                     data = r.json()
-                    # Handle common response shapes: array, {"data": [...]}, {"results": [...]}
+                    rows = None
                     if isinstance(data, list):
-                        return data[:batch_size]
-                    if isinstance(data, dict):
+                        rows = data[:batch_size]
+                    elif isinstance(data, dict):
                         for key in ("data", "results", "items", "records", "value", "rows"):
                             if isinstance(data.get(key), list):
-                                return data[key][:batch_size]
+                                rows = data[key][:batch_size]
+                                break
+                    if rows is not None:
+                        asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
+                        return rows
                 return []
 
-            # No endpoint configured — fall back to /schema sample rows
+            # No endpoint configured — use /schema which resolves templates via connector service
             r = await client.get(
                 f"{CONNECTOR_API}/connectors/{connector_id}/schema",
-                headers={"x-tenant-id": "tenant-001"},
+                headers={"x-tenant-id": pipeline.tenant_id},
             )
             if r.is_success:
-                return r.json().get("sample_rows", [])
+                rows = r.json().get("sample_rows", [])
+                if rows:
+                    asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
+                return rows
     except Exception:
         pass
     return []

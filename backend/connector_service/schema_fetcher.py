@@ -98,7 +98,7 @@ async def _resolve_headers(headers: dict, db=None) -> dict:
     return result
 
 
-async def fetch_schema(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None, db=None) -> tuple[dict, list, Optional[str]]:
+async def fetch_schema(connector_type: str, base_url: Optional[str], credentials: Optional[dict], config: Optional[dict] = None, db=None, last_sync=None) -> tuple[dict, list, Optional[str]]:
     creds = credentials or {}
     cfg = config or {}
     try:
@@ -109,7 +109,7 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
         if connector_type == "FIREFLIES":
             return await _fireflies(creds)
         if connector_type == "REST_API":
-            return await _rest_api(base_url, creds, cfg, db=db)
+            return await _rest_api(base_url, creds, cfg, db=db, last_sync=last_sync)
         if connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return {}, [], "Schema preview not supported for database connectors — connect directly via your DB client."
         return {}, [], f"Schema fetch not yet supported for {connector_type}."
@@ -238,7 +238,7 @@ def _infer_schema_from_response(data) -> tuple[dict, list]:
     }, rows
 
 
-async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None) -> tuple[dict, list, Optional[str]]:
+async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None, last_sync=None) -> tuple[dict, list, Optional[str]]:
     if not base_url:
         return {}, [], "No Base URL configured"
 
@@ -281,7 +281,7 @@ async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None) ->
     url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
     if raw_qp:
         import urllib.parse as _urlparse
-        resolved_qp = await _resolve_query_params(raw_qp, db=db)
+        resolved_qp = await _resolve_query_params(raw_qp, last_sync=last_sync, db=db)
         qs = _urlparse.urlencode(resolved_qp)
         url = url + ("&" if "?" in url else "?") + qs
 

@@ -241,6 +241,7 @@ async def get_schema(
         credentials=row.credentials,
         config=row.config,
         db=db,
+        last_sync=row.last_sync,
     )
 
     if not error:
@@ -313,6 +314,28 @@ async def fetch_row(
         "row": sample_rows[0] if sample_rows else {},
         "rows": sample_rows,
     }
+
+
+@router.patch("/{connector_id}/last-sync")
+async def update_last_sync(
+    connector_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Mark the connector as synced right now (called by pipeline executor after a successful run)."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    row.last_sync = datetime.now(timezone.utc)
+    await db.commit()
+    return {"ok": True, "last_sync": row.last_sync.isoformat()}
 
 
 @router.put("/{connector_id}/inference")
