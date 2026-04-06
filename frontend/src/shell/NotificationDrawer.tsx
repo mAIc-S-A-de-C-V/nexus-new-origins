@@ -113,8 +113,8 @@ const NodeRow: React.FC<{ audit: NodeAudit }> = ({ audit: a }) => {
           {a.duration_ms !== undefined && (
             <span style={{ color: '#475569', marginLeft: 6 }}>{a.duration_ms}ms</span>
           )}
-          {isSource && stats?.raw_row_count !== undefined && stats.raw_row_count !== a.rows_out && (
-            <span style={{ color: '#F59E0B', marginLeft: 6 }}>({stats.raw_row_count as number} from API)</span>
+          {isSource && typeof stats?.raw_row_count === 'number' && stats.raw_row_count !== a.rows_out && (
+            <span style={{ color: '#F59E0B', marginLeft: 6 }}>({stats.raw_row_count} from API)</span>
           )}
         </span>
         {a.error && (
@@ -132,24 +132,33 @@ const NodeRow: React.FC<{ audit: NodeAudit }> = ({ audit: a }) => {
       {/* SOURCE detail */}
       {expanded && hasDetail && (() => {
         const srcUrl = String(stats.url ?? '');
+        const configuredEndpoint = String(stats.configured_endpoint ?? stats.endpoint ?? '');
         const httpStatus = stats.http_status != null ? Number(stats.http_status) : null;
-        const rawCount = stats.raw_row_count != null ? Number(stats.raw_row_count) : null;
+        const rawCount = typeof stats.raw_row_count === 'number' ? stats.raw_row_count : null;
         const resolvedParams = stats.resolved_params as Record<string, string> | null | undefined;
         const responseError = stats.response_error ? String(stats.response_error) : null;
+        const sourceError = stats.error ? String(stats.error) : null;
         return (
         <div style={{
           marginTop: 6, marginLeft: 19, padding: '8px 10px',
           backgroundColor: '#0A1220', borderRadius: 4, border: '1px solid #1E2D42',
           display: 'flex', flexDirection: 'column', gap: 6,
         }}>
-          {/* URL */}
-          {srcUrl && (
+          {/* Source fetch error */}
+          {sourceError && (
+            <div style={{ fontSize: 11, color: '#FCA5A5', fontWeight: 500, wordBreak: 'break-word' }}>
+              {sourceError}
+            </div>
+          )}
+
+          {/* URL (live) or configured endpoint fallback */}
+          {(srcUrl || configuredEndpoint) && (
             <div>
               <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>
-                Endpoint
+                {srcUrl ? 'Endpoint (resolved)' : 'Endpoint (configured)'}
               </div>
               <div style={{ fontSize: 10, color: '#93C5FD', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
-                {srcUrl}
+                {srcUrl || configuredEndpoint}
               </div>
             </div>
           )}
@@ -189,10 +198,13 @@ const NodeRow: React.FC<{ audit: NodeAudit }> = ({ audit: a }) => {
             </div>
           )}
 
-          {/* Response error */}
+          {/* Response / HTTP error */}
           {responseError && (
-            <div style={{ fontSize: 10, color: '#FCA5A5', wordBreak: 'break-word' }}>
-              {responseError}
+            <div>
+              <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Response Error</div>
+              <div style={{ fontSize: 10, color: '#FCA5A5', wordBreak: 'break-word', fontFamily: 'var(--font-mono)' }}>
+                {responseError}
+              </div>
             </div>
           )}
 

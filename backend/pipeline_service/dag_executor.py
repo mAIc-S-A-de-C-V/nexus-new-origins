@@ -207,12 +207,13 @@ class DagExecutor:
                 elif node.type == NodeType.SOURCE:
                     stats = {
                         "connector_id": cfg.get("connectorId", ""),
-                        "endpoint": cfg.get("endpoint", ""),
+                        "configured_endpoint": cfg.get("endpoint", ""),
                         "url": audit_extras.get("url", ""),
                         "http_status": audit_extras.get("http_status"),
                         "resolved_params": audit_extras.get("resolved_params", {}),
                         "raw_row_count": audit_extras.get("raw_row_count"),
                         "response_error": audit_extras.get("response_error"),
+                        "error": audit_extras.get("error"),
                     }
 
                 # Flatten sample rows: strip large nested arrays to keep payload small
@@ -335,19 +336,28 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
         or (pipeline.connector_ids[0] if pipeline.connector_ids else None)
     )
     if not connector_id:
+        if audit_extras is not None:
+            audit_extras["error"] = "No connector_id configured on SOURCE node"
         return []
 
     endpoint = (cfg.get("endpoint") or "").strip()
     batch_size = int(cfg.get("batchSize") or 500)
+
+    # Always record the configured values so the audit panel shows something even on failure
+    if audit_extras is not None:
+        audit_extras["connector_id"] = connector_id
+        audit_extras["configured_endpoint"] = endpoint
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             # Fetch connector details (base_url + credentials)
             conn_r = await client.get(
                 f"{CONNECTOR_API}/connectors/{connector_id}",
-                headers={"x-tenant-id": "tenant-001"},
+                headers={"x-tenant-id": pipeline.tenant_id},
             )
             if not conn_r.is_success:
+                if audit_extras is not None:
+                    audit_extras["error"] = f"Connector lookup failed: HTTP {conn_r.status_code}"
                 return []
 
             conn = conn_r.json()
@@ -444,8 +454,9 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 if rows:
                     asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
                 return rows
-    except Exception:
-        pass
+    except Exception as _exc:
+        if audit_extras is not None:
+            audit_extras["error"] = str(_exc)
     return []
 
 
