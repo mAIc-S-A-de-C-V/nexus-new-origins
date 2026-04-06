@@ -2,19 +2,31 @@ import React, { useState, useRef, useEffect } from 'react';
 import { X, Plus, ArrowLeft, Send, Loader, Trash2, MessageSquare } from 'lucide-react';
 import { useAssistantStore, AssistantMessage } from '../store/assistantStore';
 import { useNavigationStore } from '../store/navigationStore';
+import { getTenantId } from '../store/authStore';
 
-const INFERENCE_URL = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
-const LOGIC_URL     = import.meta.env.VITE_LOGIC_SERVICE_URL     || 'http://localhost:8012';
-const ONTOLOGY_URL  = import.meta.env.VITE_ONTOLOGY_SERVICE_URL  || 'http://localhost:8004';
+const INFERENCE_URL  = import.meta.env.VITE_INFERENCE_SERVICE_URL  || 'http://localhost:8003';
+const LOGIC_URL      = import.meta.env.VITE_LOGIC_SERVICE_URL      || 'http://localhost:8012';
+const ONTOLOGY_URL   = import.meta.env.VITE_ONTOLOGY_SERVICE_URL   || 'http://localhost:8004';
+const CONNECTOR_URL  = import.meta.env.VITE_CONNECTOR_SERVICE_URL  || 'http://localhost:8001';
+const PIPELINE_URL   = import.meta.env.VITE_PIPELINE_SERVICE_URL   || 'http://localhost:8002';
 
 async function fetchLiveContext(currentPage: string) {
-  const h = { 'x-tenant-id': 'tenant-001' };
-  const [fnsRes, otsRes] = await Promise.allSettled([
-    fetch(`${LOGIC_URL}/logic/functions`, { headers: h }).then(r => r.json()),
+  const tenantId = getTenantId();
+  const h = { 'x-tenant-id': tenantId };
+
+  const [fnsRes, otsRes, connRes, pipRes] = await Promise.allSettled([
+    fetch(`${LOGIC_URL}/logic/functions`,  { headers: h }).then(r => r.json()),
     fetch(`${ONTOLOGY_URL}/object-types`,  { headers: h }).then(r => r.json()),
+    fetch(`${CONNECTOR_URL}/connectors`,   { headers: h }).then(r => r.json()),
+    fetch(`${PIPELINE_URL}/pipelines`,     { headers: h }).then(r => r.json()),
   ]);
-  const functions: any[]     = fnsRes.status === 'fulfilled' ? (fnsRes.value || []) : [];
-  const object_types: any[]  = otsRes.status === 'fulfilled' ? (otsRes.value || []) : [];
+
+  const functions: any[]    = fnsRes.status  === 'fulfilled' ? (fnsRes.value  || []) : [];
+  const object_types: any[] = otsRes.status  === 'fulfilled' ? (otsRes.value  || []) : [];
+  const connectors: any[]   = connRes.status === 'fulfilled' ? (connRes.value || []) : [];
+  const pipelines: any[]    = pipRes.status  === 'fulfilled' ? (pipRes.value  || []) : [];
+
+  // Fetch schedules for logic functions
   const functionsWithSchedules = await Promise.all(
     functions.map(async (fn: any) => {
       try {
@@ -23,7 +35,38 @@ async function fetchLiveContext(currentPage: string) {
       } catch { return { ...fn, schedules: [] }; }
     })
   );
-  return { current_page: currentPage, functions: functionsWithSchedules, object_types };
+
+  // Fetch schema/sample rows for each connector (cap at 5 connectors to avoid slowness)
+  const connectorsWithSchema = await Promise.all(
+    connectors.slice(0, 5).map(async (c: any) => {
+      try {
+        const s = await fetch(`${CONNECTOR_URL}/connectors/${c.id}/schema`, { headers: h }).then(r => r.json());
+        return {
+          ...c,
+          schema_fields: (s.schema || []).map((f: any) => f.name || f),
+          sample_row: s.sample_rows?.[0] ?? null,
+        };
+      } catch { return c; }
+    })
+  );
+
+  // Fetch sample records for each object type (first 2 records only)
+  const objectTypesWithRecords = await Promise.all(
+    object_types.slice(0, 8).map(async (ot: any) => {
+      try {
+        const r = await fetch(`${ONTOLOGY_URL}/object-types/${ot.id}/records`, { headers: h }).then(r => r.json());
+        return { ...ot, sample_records: (r.records || []).slice(0, 2) };
+      } catch { return ot; }
+    })
+  );
+
+  return {
+    current_page: currentPage,
+    functions: functionsWithSchedules,
+    object_types: objectTypesWithRecords,
+    connectors: connectorsWithSchema,
+    pipelines,
+  };
 }
 
 // ── Markdown-lite renderer ────────────────────────────────────────────────────

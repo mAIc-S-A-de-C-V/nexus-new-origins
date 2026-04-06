@@ -268,11 +268,39 @@ async def platform_help(req: HelpRequest):
                 ctx_lines.append(f"  - Schedule: `{s['cron']}` — {s.get('label','')} — inputs: `{_json.dumps(s.get('inputs',{}))}`")
             for b in fn.get("blocks", []):
                 ctx_lines.append(f"  - Block `{b['id']}` ({b['type']})")
+    if req.context.get("connectors"):
+        conns = req.context["connectors"]
+        ctx_lines.append(f"\n## Configured Connectors ({len(conns)} total)")
+        for c in conns:
+            status = c.get("status", "unknown")
+            last_sync = c.get("last_sync") or "never"
+            base_url = c.get("base_url") or ""
+            ctx_lines.append(f"- **{c['name']}** (type: {c.get('type','REST_API')}, status: {status}, base_url: `{base_url}`, last_sync: {last_sync})")
+            fields = c.get("schema_fields", [])
+            if fields:
+                ctx_lines.append(f"  - Fields: {', '.join(str(f) for f in fields[:20])}")
+            sample = c.get("sample_row")
+            if sample:
+                ctx_lines.append(f"  - Sample record: `{_json.dumps(sample)[:300]}`")
+    if req.context.get("pipelines"):
+        pipes = req.context["pipelines"]
+        ctx_lines.append(f"\n## Pipelines ({len(pipes)} total)")
+        for p in pipes:
+            nodes = p.get("nodes", [])
+            node_types = [n.get("type", "") for n in nodes]
+            last_run = p.get("lastRunAt") or p.get("last_run_at") or "never"
+            rows = p.get("lastRunRowCount") or p.get("last_run_row_count") or 0
+            ctx_lines.append(f"- **{p['name']}** (status: {p.get('status','unknown')}, steps: {' → '.join(node_types)}, last_run: {last_run}, rows: {rows})")
     if req.context.get("object_types"):
         ots = req.context["object_types"]
-        ctx_lines.append(f"\n## Ontology Object Types")
+        ctx_lines.append(f"\n## Ontology Object Types ({len(ots)} total)")
         for ot in ots:
-            ctx_lines.append(f"- **{ot.get('display_name') or ot.get('name')}** (id: `{ot['id']}`)")
+            props = ot.get("properties", [])
+            prop_names = [p.get("name", "") for p in props[:15]]
+            ctx_lines.append(f"- **{ot.get('display_name') or ot.get('name')}** (id: `{ot['id']}`, {len(props)} properties: {', '.join(prop_names)})")
+            samples = ot.get("sample_records", [])
+            if samples:
+                ctx_lines.append(f"  - Sample: `{_json.dumps(samples[0])[:300]}`")
     if req.context.get("selected_function"):
         sf = req.context["selected_function"]
         ctx_lines.append(f"\n## Currently Selected Function: {sf['name']}")
@@ -290,8 +318,8 @@ async def platform_help(req: HelpRequest):
     try:
         client_sdk = _anthropic.Anthropic(api_key=api_key)
         msg = client_sdk.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
             system=system,
             messages=req.messages,
         )
