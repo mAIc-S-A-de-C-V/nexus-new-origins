@@ -10,51 +10,64 @@ const ONTOLOGY_URL   = import.meta.env.VITE_ONTOLOGY_SERVICE_URL   || 'http://lo
 const CONNECTOR_URL  = import.meta.env.VITE_CONNECTOR_SERVICE_URL  || 'http://localhost:8001';
 const PIPELINE_URL   = import.meta.env.VITE_PIPELINE_SERVICE_URL   || 'http://localhost:8002';
 
+function fetchWithTimeout(url: string, opts: RequestInit, ms = 5000): Promise<any> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...opts, signal: controller.signal })
+    .then(r => r.json())
+    .finally(() => clearTimeout(timer));
+}
+
 async function fetchLiveContext(currentPage: string) {
   const tenantId = getTenantId();
   const h = { 'x-tenant-id': tenantId };
+  const opt = { headers: h };
 
   const [fnsRes, otsRes, connRes, pipRes] = await Promise.allSettled([
-    fetch(`${LOGIC_URL}/logic/functions`,  { headers: h }).then(r => r.json()),
-    fetch(`${ONTOLOGY_URL}/object-types`,  { headers: h }).then(r => r.json()),
-    fetch(`${CONNECTOR_URL}/connectors`,   { headers: h }).then(r => r.json()),
-    fetch(`${PIPELINE_URL}/pipelines`,     { headers: h }).then(r => r.json()),
+    fetchWithTimeout(`${LOGIC_URL}/logic/functions`, opt),
+    fetchWithTimeout(`${ONTOLOGY_URL}/object-types`, opt),
+    fetchWithTimeout(`${CONNECTOR_URL}/connectors`,  opt),
+    fetchWithTimeout(`${PIPELINE_URL}/pipelines`,    opt),
   ]);
 
   const functions: any[]    = fnsRes.status  === 'fulfilled' ? (fnsRes.value  || []) : [];
   const object_types: any[] = otsRes.status  === 'fulfilled' ? (otsRes.value  || []) : [];
-  const connectors: any[]   = connRes.status === 'fulfilled' ? (connRes.value || []) : [];
+  const rawConnectors: any[] = connRes.status === 'fulfilled' ? (connRes.value || []) : [];
   const pipelines: any[]    = pipRes.status  === 'fulfilled' ? (pipRes.value  || []) : [];
 
-  // Fetch schedules for logic functions
+  // Strip credentials from connectors (never send secrets to AI)
+  const connectors = rawConnectors.map((c: any) => ({
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    status: c.status,
+    base_url: c.base_url,
+    description: c.description,
+    last_sync: c.last_sync,
+    last_sync_row_count: c.last_sync_row_count,
+    active_pipeline_count: c.active_pipeline_count,
+    config: c.config ? {
+      endpoint: c.config.endpoint,
+      queryParams: c.config.queryParams,
+    } : undefined,
+    tags: c.tags,
+  }));
+
+  // Fetch schedules for logic functions (with timeout)
   const functionsWithSchedules = await Promise.all(
     functions.map(async (fn: any) => {
       try {
-        const s = await fetch(`${LOGIC_URL}/logic/functions/${fn.id}/schedules`, { headers: h }).then(r => r.json());
+        const s = await fetchWithTimeout(`${LOGIC_URL}/logic/functions/${fn.id}/schedules`, opt);
         return { ...fn, schedules: Array.isArray(s) ? s : [] };
       } catch { return { ...fn, schedules: [] }; }
     })
   );
 
-  // Fetch schema/sample rows for each connector (cap at 5 connectors to avoid slowness)
-  const connectorsWithSchema = await Promise.all(
-    connectors.slice(0, 5).map(async (c: any) => {
-      try {
-        const s = await fetch(`${CONNECTOR_URL}/connectors/${c.id}/schema`, { headers: h }).then(r => r.json());
-        return {
-          ...c,
-          schema_fields: (s.schema || []).map((f: any) => f.name || f),
-          sample_row: s.sample_rows?.[0] ?? null,
-        };
-      } catch { return c; }
-    })
-  );
-
-  // Fetch sample records for each object type (first 2 records only)
+  // Fetch sample records for each object type (with timeout, no external calls)
   const objectTypesWithRecords = await Promise.all(
     object_types.slice(0, 8).map(async (ot: any) => {
       try {
-        const r = await fetch(`${ONTOLOGY_URL}/object-types/${ot.id}/records`, { headers: h }).then(r => r.json());
+        const r = await fetchWithTimeout(`${ONTOLOGY_URL}/object-types/${ot.id}/records`, opt);
         return { ...ot, sample_records: (r.records || []).slice(0, 2) };
       } catch { return ot; }
     })
@@ -64,7 +77,7 @@ async function fetchLiveContext(currentPage: string) {
     current_page: currentPage,
     functions: functionsWithSchedules,
     object_types: objectTypesWithRecords,
-    connectors: connectorsWithSchema,
+    connectors,
     pipelines,
   };
 }
