@@ -728,7 +728,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                             "join_key": join_key,
                             "records": records_in,
                         },
-                        headers={"x-tenant-id": "tenant-001"},
+                        headers={"x-tenant-id": pipeline.tenant_id},
                     )
             except Exception:
                 pass
@@ -763,7 +763,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(
                 f"{ONTOLOGY_API}/object-types/{ot_id}/records",
-                headers={"x-tenant-id": "tenant-001"},
+                headers={"x-tenant-id": pipeline.tenant_id},
             )
             if r.is_success:
                 for rec in r.json().get("records", []):
@@ -785,7 +785,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 resp = await client.post(
                     f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
                     json={"records": records_in, "pk_field": pk_field, "pipeline_id": pipeline.id},
-                    headers={"x-tenant-id": "tenant-001"},
+                    headers={"x-tenant-id": pipeline.tenant_id},
                 )
         except Exception:
             pass
@@ -859,7 +859,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 "object_id": pk_val,
                 "pipeline_id": pipeline.id,
                 "connector_id": connector_id,
-                "tenant_id": "tenant-001",
+                "tenant_id": pipeline.tenant_id,
                 "attributes": {
                     "pk_field": pk_field,
                     "record_snapshot": {k: v for k, v in rec.items() if not isinstance(v, (list, dict))},
@@ -897,7 +897,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                         "object_id": pk_val,
                         "pipeline_id": pipeline.id,
                         "connector_id": connector_id,
-                        "tenant_id": "tenant-001",
+                        "tenant_id": pipeline.tenant_id,
                         "attributes": {
                             "pk_field": pk_field,
                             "from_stage": activity_change["from"],
@@ -918,7 +918,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                             "object_id": pk_val,
                             "pipeline_id": pipeline.id,
                             "connector_id": connector_id,
-                            "tenant_id": "tenant-001",
+                            "tenant_id": pipeline.tenant_id,
                             "attributes": {
                                 "pk_field": pk_field,
                                 "field": cf["field"],
@@ -938,7 +938,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                             "object_id": pk_val,
                             "pipeline_id": pipeline.id,
                             "connector_id": connector_id,
-                            "tenant_id": "tenant-001",
+                            "tenant_id": pipeline.tenant_id,
                             "attributes": {
                                 "pk_field": pk_field,
                                 "field": cf["field"],
@@ -957,7 +957,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                     "object_id": pk_val,
                     "pipeline_id": pipeline.id,
                     "connector_id": connector_id,
-                    "tenant_id": "tenant-001",
+                    "tenant_id": pipeline.tenant_id,
                     "attributes": {
                         "pk_field": pk_field,
                         "changed_fields": changed_fields,
@@ -973,7 +973,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                     await client.post(
                         f"{EVENT_LOG_API}/events/batch",
                         json={"events": record_events[i:i + 200]},
-                        headers={"x-tenant-id": "tenant-001"},
+                        headers={"x-tenant-id": pipeline.tenant_id},
                     )
         except Exception:
             pass
@@ -1008,7 +1008,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                     "pk_field": pk_field,
                     "pipeline_id": pipeline.id,
                 },
-                headers={"x-tenant-id": "tenant-001"},
+                headers={"x-tenant-id": pipeline.tenant_id},
             )
     except Exception:
         pass
@@ -1083,7 +1083,7 @@ async def _update_object_type_schema(
         # 1. Fetch current object type
         r = await client.get(
             f"{ONTOLOGY_API}/object-types/{ot_id}",
-            headers={"x-tenant-id": "tenant-001"},
+            headers={"x-tenant-id": pipeline.tenant_id},
         )
         if not r.is_success:
             return
@@ -1127,7 +1127,7 @@ async def _update_object_type_schema(
         await client.put(
             f"{ONTOLOGY_API}/object-types/{ot_id}",
             json=ot_data,
-            headers={"x-tenant-id": "tenant-001"},
+            headers={"x-tenant-id": pipeline.tenant_id},
         )
 
 
