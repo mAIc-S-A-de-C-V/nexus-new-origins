@@ -133,7 +133,7 @@ const NexusAssistant: React.FC = () => {
 
     try {
       const context = await fetchLiveContext(currentPage).catch(() => ({ current_page: currentPage }));
-      const res = await fetch(`${INFERENCE_URL}/inference/help`, {
+      const res = await fetch(`${INFERENCE_URL}/infer/help`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: history, context }),
