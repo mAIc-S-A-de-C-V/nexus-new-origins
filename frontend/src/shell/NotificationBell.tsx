@@ -1,12 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell } from 'lucide-react';
 import { useAlertStore } from '../store/alertStore';
+import { useRunLogStore } from '../store/runLogStore';
 import { NotificationDrawer } from './NotificationDrawer';
 
 const POLL_INTERVAL_MS = 30_000;
 
 export const NotificationBell: React.FC = () => {
-  const { unreadCount, pollUnreadCount } = useAlertStore();
+  const { unreadCount: alertUnread, pollUnreadCount } = useAlertStore();
+  const { unreadCount: logUnread } = useRunLogStore();
+  const unreadCount = alertUnread + logUnread;
   const [open, setOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 

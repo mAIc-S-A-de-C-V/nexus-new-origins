@@ -1,15 +1,14 @@
-import React, { useEffect } from 'react';
-import { X, CheckCheck, AlertTriangle, AlertCircle, Trash2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import {
+  X, CheckCheck, AlertTriangle, AlertCircle, Trash2,
+  CheckCircle2, XCircle, ChevronDown, ChevronRight, Activity,
+} from 'lucide-react';
 import { useAlertStore, AlertNotification } from '../store/alertStore';
+import { useRunLogStore, RunLog, NodeAudit } from '../store/runLogStore';
 
 interface Props {
   onClose: () => void;
 }
-
-const SeverityIcon: React.FC<{ severity: AlertNotification['severity'] }> = ({ severity }) =>
-  severity === 'critical'
-    ? <AlertCircle size={13} style={{ color: '#EF4444', flexShrink: 0 }} />
-    : <AlertTriangle size={13} style={{ color: '#F59E0B', flexShrink: 0 }} />;
 
 const timeAgo = (iso: string) => {
   const diff = Date.now() - new Date(iso).getTime();
@@ -21,29 +20,219 @@ const timeAgo = (iso: string) => {
   return `${Math.floor(h / 24)}d ago`;
 };
 
+// ─── Alert tab ───────────────────────────────────────────────────────────────
+
+const SeverityIcon: React.FC<{ severity: AlertNotification['severity'] }> = ({ severity }) =>
+  severity === 'critical'
+    ? <AlertCircle size={13} style={{ color: '#EF4444', flexShrink: 0 }} />
+    : <AlertTriangle size={13} style={{ color: '#F59E0B', flexShrink: 0 }} />;
+
+const AlertRow: React.FC<{
+  notification: AlertNotification;
+  onRead: () => void;
+  onDelete: () => void;
+}> = ({ notification: n, onRead, onDelete }) => {
+  const [hovered, setHovered] = React.useState(false);
+  return (
+    <div
+      onClick={onRead}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        padding: '10px 16px',
+        borderBottom: '1px solid #131C2E',
+        backgroundColor: n.read ? 'transparent' : '#111926',
+        cursor: n.read ? 'default' : 'pointer',
+        display: 'flex', gap: 10, alignItems: 'flex-start',
+      }}
+    >
+      <SeverityIcon severity={n.severity} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+          <span style={{
+            fontSize: 11, fontWeight: 600,
+            color: n.severity === 'critical' ? '#FCA5A5' : '#FCD34D',
+            textTransform: 'uppercase', letterSpacing: '0.05em',
+          }}>
+            {n.rule_name}
+          </span>
+          {!n.read && (
+            <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#EF4444', flexShrink: 0 }} />
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: '#CBD5E1', lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {n.message}
+        </div>
+        <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontFamily: 'var(--font-mono)' }}>
+          {timeAgo(n.fired_at)}
+        </div>
+      </div>
+      {hovered && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          style={{ backgroundColor: 'transparent', border: 'none', cursor: 'pointer', color: '#475569', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0 }}
+          title="Dismiss"
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
+    </div>
+  );
+};
+
+// ─── Logs tab ─────────────────────────────────────────────────────────────────
+
+const NodeRow: React.FC<{ audit: NodeAudit }> = ({ audit: a }) => (
+  <div style={{
+    display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0',
+    fontSize: 11, color: '#94A3B8',
+  }}>
+    {a.status === 'ok'
+      ? <CheckCircle2 size={11} style={{ color: '#22C55E', flexShrink: 0 }} />
+      : a.status === 'error'
+      ? <XCircle size={11} style={{ color: '#EF4444', flexShrink: 0 }} />
+      : <Activity size={11} style={{ color: '#64748B', flexShrink: 0 }} />}
+    <span style={{ flex: 1 }}>
+      <span style={{ color: '#CBD5E1', fontWeight: 500 }}>{a.label || a.node_type}</span>
+      {' '}
+      <span style={{ fontFamily: 'var(--font-mono)', color: '#64748B' }}>
+        {a.rows_in}→{a.rows_out}
+      </span>
+      {a.duration_ms !== undefined && (
+        <span style={{ color: '#475569', marginLeft: 6 }}>{a.duration_ms}ms</span>
+      )}
+    </span>
+    {a.error && (
+      <span style={{ color: '#FCA5A5', fontSize: 10, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.error}>
+        {a.error}
+      </span>
+    )}
+  </div>
+);
+
+const LogRow: React.FC<{
+  log: RunLog;
+  onRead: () => void;
+  onDelete: () => void;
+}> = ({ log, onRead, onDelete }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [hovered, setHovered] = React.useState(false);
+  const failed = log.status === 'FAILED';
+
+  return (
+    <div
+      style={{
+        borderBottom: '1px solid #131C2E',
+        backgroundColor: log.read ? 'transparent' : '#111926',
+      }}
+    >
+      <div
+        onClick={() => { onRead(); setExpanded((v) => !v); }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          padding: '10px 16px', cursor: 'pointer',
+          display: 'flex', gap: 10, alignItems: 'flex-start',
+        }}
+      >
+        {failed
+          ? <XCircle size={13} style={{ color: '#EF4444', flexShrink: 0, marginTop: 1 }} />
+          : <CheckCircle2 size={13} style={{ color: '#22C55E', flexShrink: 0, marginTop: 1 }} />}
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+            <span style={{
+              fontSize: 11, fontWeight: 600,
+              color: failed ? '#FCA5A5' : '#86EFAC',
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}>
+              {failed ? 'Failed' : 'Completed'}
+            </span>
+            {!log.read && (
+              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: failed ? '#EF4444' : '#22C55E', flexShrink: 0 }} />
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: '#CBD5E1', lineHeight: 1.4, marginBottom: 2 }}>
+            {log.pipeline_name}
+          </div>
+          {log.error && (
+            <div style={{
+              fontSize: 11, color: '#FCA5A5', lineHeight: 1.4,
+              marginBottom: 3, wordBreak: 'break-word',
+            }}>
+              {log.error}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 12, fontSize: 10, color: '#475569', fontFamily: 'var(--font-mono)' }}>
+            <span>{log.rows_in} in · {log.rows_out} out</span>
+            <span>{timeAgo(log.started_at)}</span>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+          {hovered && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              style={{ backgroundColor: 'transparent', border: 'none', cursor: 'pointer', color: '#475569', padding: 2, display: 'flex', alignItems: 'center' }}
+              title="Dismiss"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
+          {log.node_audits.length > 0 && (
+            expanded
+              ? <ChevronDown size={13} style={{ color: '#475569' }} />
+              : <ChevronRight size={13} style={{ color: '#475569' }} />
+          )}
+        </div>
+      </div>
+
+      {expanded && log.node_audits.length > 0 && (
+        <div style={{ padding: '0 16px 10px 38px', display: 'flex', flexDirection: 'column' }}>
+          {log.node_audits.map((a, i) => <NodeRow key={i} audit={a} />)}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Drawer ───────────────────────────────────────────────────────────────────
+
 export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
   const {
-    notifications, unreadCount,
-    fetchNotifications, markRead, markAllRead, deleteNotification,
+    notifications, unreadCount: alertUnread,
+    fetchNotifications, markRead: markAlertRead, markAllRead: markAllAlertRead,
+    deleteNotification,
   } = useAlertStore();
+
+  const {
+    logs, unreadCount: logUnread,
+    markRead: markLogRead, markAllRead: markAllLogRead,
+    deleteLog,
+  } = useRunLogStore();
+
+  const [tab, setTab] = useState<'alerts' | 'logs'>('logs');
 
   useEffect(() => {
     fetchNotifications();
   }, []);
 
+  const tabStyle = (active: boolean): React.CSSProperties => ({
+    flex: 1, textAlign: 'center', padding: '6px 0',
+    fontSize: 12, fontWeight: 500, cursor: 'pointer', border: 'none',
+    backgroundColor: 'transparent',
+    color: active ? '#E2E8F0' : '#475569',
+    borderBottom: active ? '2px solid #3B82F6' : '2px solid transparent',
+    transition: 'color 80ms, border-color 80ms',
+  });
+
   return (
     <>
-      {/* Backdrop */}
-      <div
-        style={{ position: 'fixed', inset: 0, zIndex: 200 }}
-        onClick={onClose}
-      />
+      <div style={{ position: 'fixed', inset: 0, zIndex: 200 }} onClick={onClose} />
 
-      {/* Drawer panel */}
       <div style={{
-        position: 'fixed',
-        top: 0, right: 0,
-        width: 360, height: '100vh',
+        position: 'fixed', top: 0, right: 0,
+        width: 380, height: '100vh',
         backgroundColor: '#0F1824',
         borderLeft: '1px solid #1E2D42',
         display: 'flex', flexDirection: 'column',
@@ -56,60 +245,77 @@ export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
           borderBottom: '1px solid #1E2D42', gap: 10, flexShrink: 0,
         }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: '#E2E8F0', flex: 1 }}>
-            Alerts
-            {unreadCount > 0 && (
-              <span style={{
-                marginLeft: 8, fontSize: 10, backgroundColor: '#EF4444',
-                color: '#FFFFFF', borderRadius: 10, padding: '1px 6px',
-              }}>
-                {unreadCount}
-              </span>
-            )}
+            Notifications
           </span>
-          {unreadCount > 0 && (
+          {tab === 'alerts' && alertUnread > 0 && (
             <button
-              onClick={() => markAllRead()}
-              title="Mark all read"
-              style={{
-                display: 'flex', alignItems: 'center', gap: 4,
-                fontSize: 11, color: '#64748B', backgroundColor: 'transparent',
-                border: 'none', cursor: 'pointer', padding: '4px 6px',
-              }}
+              onClick={() => markAllAlertRead()}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748B', backgroundColor: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 6px' }}
             >
-              <CheckCheck size={13} />
-              All read
+              <CheckCheck size={13} /> All read
+            </button>
+          )}
+          {tab === 'logs' && logUnread > 0 && (
+            <button
+              onClick={() => markAllLogRead()}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748B', backgroundColor: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 6px' }}
+            >
+              <CheckCheck size={13} /> All read
             </button>
           )}
           <button
             onClick={onClose}
-            style={{
-              backgroundColor: 'transparent', border: 'none', cursor: 'pointer',
-              color: '#475569', padding: 4, display: 'flex', alignItems: 'center',
-            }}
+            style={{ backgroundColor: 'transparent', border: 'none', cursor: 'pointer', color: '#475569', padding: 4, display: 'flex', alignItems: 'center' }}
           >
             <X size={16} />
           </button>
         </div>
 
-        {/* Notification list */}
+        {/* Tabs */}
+        <div style={{ display: 'flex', borderBottom: '1px solid #1E2D42', flexShrink: 0 }}>
+          <button style={tabStyle(tab === 'logs')} onClick={() => setTab('logs')}>
+            Pipeline Runs
+            {logUnread > 0 && (
+              <span style={{ marginLeft: 5, fontSize: 10, backgroundColor: '#EF4444', color: '#FFF', borderRadius: 10, padding: '1px 5px' }}>
+                {logUnread}
+              </span>
+            )}
+          </button>
+          <button style={tabStyle(tab === 'alerts')} onClick={() => setTab('alerts')}>
+            Alerts
+            {alertUnread > 0 && (
+              <span style={{ marginLeft: 5, fontSize: 10, backgroundColor: '#EF4444', color: '#FFF', borderRadius: 10, padding: '1px 5px' }}>
+                {alertUnread}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* Content */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {notifications.length === 0 ? (
-            <div style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center',
-              justifyContent: 'center', height: 200, gap: 8,
-            }}>
-              <span style={{ fontSize: 13, color: '#475569' }}>No alerts yet</span>
-              <span style={{ fontSize: 11, color: '#334155' }}>Configure alert rules in Process Mining → Alerts</span>
-            </div>
-          ) : (
-            notifications.map(n => (
-              <NotificationRow
-                key={n.id}
-                notification={n}
-                onRead={() => !n.read && markRead(n.id)}
-                onDelete={() => deleteNotification(n.id)}
-              />
-            ))
+          {tab === 'alerts' && (
+            notifications.length === 0
+              ? <EmptyState message="No alerts yet" hint="Configure alert rules in Process Mining → Alerts" />
+              : notifications.map((n) => (
+                <AlertRow
+                  key={n.id}
+                  notification={n}
+                  onRead={() => !n.read && markAlertRead(n.id)}
+                  onDelete={() => deleteNotification(n.id)}
+                />
+              ))
+          )}
+          {tab === 'logs' && (
+            logs.length === 0
+              ? <EmptyState message="No pipeline runs yet" hint="Run a pipeline to see execution logs here" />
+              : logs.map((log) => (
+                <LogRow
+                  key={log.id}
+                  log={log}
+                  onRead={() => !log.read && markLogRead(log.id)}
+                  onDelete={() => deleteLog(log.id)}
+                />
+              ))
           )}
         </div>
 
@@ -119,75 +325,21 @@ export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
           display: 'flex', alignItems: 'center',
           fontSize: 11, color: '#334155',
         }}>
-          {notifications.length} total · {unreadCount} unread
+          {tab === 'alerts'
+            ? `${notifications.length} total · ${alertUnread} unread`
+            : `${logs.length} runs · ${logUnread} unread`}
         </div>
       </div>
     </>
   );
 };
 
-const NotificationRow: React.FC<{
-  notification: AlertNotification;
-  onRead: () => void;
-  onDelete: () => void;
-}> = ({ notification: n, onRead, onDelete }) => {
-  const [hovered, setHovered] = React.useState(false);
-
-  return (
-    <div
-      onClick={onRead}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        padding: '10px 16px',
-        borderBottom: '1px solid #131C2E',
-        backgroundColor: n.read ? 'transparent' : '#111926',
-        cursor: n.read ? 'default' : 'pointer',
-        display: 'flex', gap: 10, alignItems: 'flex-start',
-        transition: 'background-color 80ms',
-      }}
-    >
-      <SeverityIcon severity={n.severity} />
-
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-          <span style={{
-            fontSize: 11, fontWeight: 600,
-            color: n.severity === 'critical' ? '#FCA5A5' : '#FCD34D',
-            textTransform: 'uppercase', letterSpacing: '0.05em',
-          }}>
-            {n.rule_name}
-          </span>
-          {!n.read && (
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%',
-              backgroundColor: '#EF4444', flexShrink: 0,
-            }} />
-          )}
-        </div>
-        <div style={{
-          fontSize: 12, color: '#CBD5E1', lineHeight: 1.4,
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-        }}>
-          {n.message}
-        </div>
-        <div style={{ fontSize: 10, color: '#475569', marginTop: 4, fontFamily: 'var(--font-mono)' }}>
-          {timeAgo(n.fired_at)}
-        </div>
-      </div>
-
-      {hovered && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          style={{
-            backgroundColor: 'transparent', border: 'none', cursor: 'pointer',
-            color: '#475569', padding: 2, display: 'flex', alignItems: 'center', flexShrink: 0,
-          }}
-          title="Dismiss"
-        >
-          <Trash2 size={12} />
-        </button>
-      )}
-    </div>
-  );
-};
+const EmptyState: React.FC<{ message: string; hint: string }> = ({ message, hint }) => (
+  <div style={{
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    justifyContent: 'center', height: 200, gap: 8,
+  }}>
+    <span style={{ fontSize: 13, color: '#475569' }}>{message}</span>
+    <span style={{ fontSize: 11, color: '#334155', textAlign: 'center', padding: '0 24px' }}>{hint}</span>
+  </div>
+);
