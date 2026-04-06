@@ -10,6 +10,8 @@ export interface NodeAudit {
   rows_out: number;
   error?: string;
   duration_ms?: number;
+  stats?: Record<string, unknown>;
+  sample_out?: Record<string, unknown>[];
 }
 
 export interface RunLog {

@@ -212,6 +212,8 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
           rows_out: a.rows_out ?? 0,
           error: a.error,
           duration_ms: a.duration_ms,
+          stats: a.stats,
+          sample_out: a.sample_out,
         }))
       : [];
 

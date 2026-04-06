@@ -82,33 +82,135 @@ const AlertRow: React.FC<{
 
 // ─── Logs tab ─────────────────────────────────────────────────────────────────
 
-const NodeRow: React.FC<{ audit: NodeAudit }> = ({ audit: a }) => (
-  <div style={{
-    display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0',
-    fontSize: 11, color: '#94A3B8',
-  }}>
-    {a.status === 'ok'
-      ? <CheckCircle2 size={11} style={{ color: '#22C55E', flexShrink: 0 }} />
-      : a.status === 'error'
-      ? <XCircle size={11} style={{ color: '#EF4444', flexShrink: 0 }} />
-      : <Activity size={11} style={{ color: '#64748B', flexShrink: 0 }} />}
-    <span style={{ flex: 1 }}>
-      <span style={{ color: '#CBD5E1', fontWeight: 500 }}>{a.label || a.node_type}</span>
-      {' '}
-      <span style={{ fontFamily: 'var(--font-mono)', color: '#64748B' }}>
-        {a.rows_in}→{a.rows_out}
-      </span>
-      {a.duration_ms !== undefined && (
-        <span style={{ color: '#475569', marginLeft: 6 }}>{a.duration_ms}ms</span>
+const NodeRow: React.FC<{ audit: NodeAudit }> = ({ audit: a }) => {
+  const [expanded, setExpanded] = useState(false);
+  const stats = a.stats as Record<string, unknown> | undefined;
+  const isSource = a.node_type === 'SOURCE';
+  const hasDetail = isSource && stats;
+
+  return (
+    <div style={{ padding: '4px 0' }}>
+      {/* Summary line */}
+      <div
+        onClick={() => hasDetail && setExpanded((v) => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          fontSize: 11, color: '#94A3B8',
+          cursor: hasDetail ? 'pointer' : 'default',
+        }}
+      >
+        {a.status === 'ok'
+          ? <CheckCircle2 size={11} style={{ color: '#22C55E', flexShrink: 0 }} />
+          : a.status === 'error'
+          ? <XCircle size={11} style={{ color: '#EF4444', flexShrink: 0 }} />
+          : <Activity size={11} style={{ color: '#64748B', flexShrink: 0 }} />}
+        <span style={{ flex: 1 }}>
+          <span style={{ color: '#CBD5E1', fontWeight: 500 }}>{a.label || a.node_type}</span>
+          {' '}
+          <span style={{ fontFamily: 'var(--font-mono)', color: '#64748B' }}>
+            {a.rows_in}→{a.rows_out}
+          </span>
+          {a.duration_ms !== undefined && (
+            <span style={{ color: '#475569', marginLeft: 6 }}>{a.duration_ms}ms</span>
+          )}
+          {isSource && stats?.raw_row_count !== undefined && stats.raw_row_count !== a.rows_out && (
+            <span style={{ color: '#F59E0B', marginLeft: 6 }}>({stats.raw_row_count as number} from API)</span>
+          )}
+        </span>
+        {a.error && (
+          <span style={{ color: '#FCA5A5', fontSize: 10, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.error}>
+            {a.error}
+          </span>
+        )}
+        {hasDetail && (
+          expanded
+            ? <ChevronDown size={11} style={{ color: '#475569', flexShrink: 0 }} />
+            : <ChevronRight size={11} style={{ color: '#475569', flexShrink: 0 }} />
+        )}
+      </div>
+
+      {/* SOURCE detail */}
+      {expanded && hasDetail && (
+        <div style={{
+          marginTop: 6, marginLeft: 19, padding: '8px 10px',
+          backgroundColor: '#0A1220', borderRadius: 4, border: '1px solid #1E2D42',
+          display: 'flex', flexDirection: 'column', gap: 6,
+        }}>
+          {/* URL */}
+          {stats.url && (
+            <div>
+              <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>
+                Endpoint
+              </div>
+              <div style={{ fontSize: 10, color: '#93C5FD', fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
+                {stats.url as string}
+              </div>
+            </div>
+          )}
+
+          {/* HTTP status */}
+          {stats.http_status !== undefined && (
+            <div style={{ display: 'flex', gap: 16, fontSize: 10 }}>
+              <span>
+                <span style={{ color: '#475569' }}>HTTP </span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontWeight: 600,
+                  color: (stats.http_status as number) < 300 ? '#22C55E' : '#EF4444',
+                }}>
+                  {stats.http_status as number}
+                </span>
+              </span>
+              {stats.raw_row_count !== undefined && (
+                <span>
+                  <span style={{ color: '#475569' }}>rows returned </span>
+                  <span style={{ fontFamily: 'var(--font-mono)', color: '#E2E8F0' }}>{stats.raw_row_count as number}</span>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Resolved params */}
+          {stats.resolved_params && Object.keys(stats.resolved_params as object).length > 0 && (
+            <div>
+              <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>
+                Query Params
+              </div>
+              {Object.entries(stats.resolved_params as Record<string, string>).map(([k, v]) => (
+                <div key={k} style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#94A3B8' }}>
+                  <span style={{ color: '#64748B' }}>{k}</span>=<span style={{ color: '#FCD34D' }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Response error */}
+          {stats.response_error && (
+            <div style={{ fontSize: 10, color: '#FCA5A5', wordBreak: 'break-word' }}>
+              {stats.response_error as string}
+            </div>
+          )}
+
+          {/* Sample output rows */}
+          {a.sample_out && a.sample_out.length > 0 && (
+            <div>
+              <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>
+                Sample ({a.sample_out.length} of {stats.raw_row_count ?? a.rows_out})
+              </div>
+              <pre style={{
+                fontSize: 9, color: '#94A3B8', margin: 0,
+                overflow: 'auto', maxHeight: 160,
+                backgroundColor: '#060D18', padding: 6, borderRadius: 3,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+              }}>
+                {JSON.stringify(a.sample_out[0], null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
       )}
-    </span>
-    {a.error && (
-      <span style={{ color: '#FCA5A5', fontSize: 10, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.error}>
-        {a.error}
-      </span>
-    )}
-  </div>
-);
+    </div>
+  );
+};
 
 const LogRow: React.FC<{
   log: RunLog;

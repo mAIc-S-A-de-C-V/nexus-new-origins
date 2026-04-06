@@ -155,7 +155,8 @@ class DagExecutor:
                             records_in.extend(node_records.get(e.source, []))
 
                 t_start = datetime.now(timezone.utc)
-                records_out = await _execute_node(node, records_in, pipeline)
+                audit_extras: dict = {}
+                records_out = await _execute_node(node, records_in, pipeline, audit_extras=audit_extras)
                 duration_ms = int((datetime.now(timezone.utc) - t_start).total_seconds() * 1000)
 
                 node_records[node_id] = records_out
@@ -204,7 +205,15 @@ class DagExecutor:
                 elif node.type == NodeType.SINK_EVENT:
                     stats = {"activity_field": cfg.get("activityField", ""), "case_id_field": cfg.get("caseIdField", "id"), "events_emitted": len(records_out)}
                 elif node.type == NodeType.SOURCE:
-                    stats = {"connector_id": cfg.get("connectorId", ""), "endpoint": cfg.get("endpoint", "")}
+                    stats = {
+                        "connector_id": cfg.get("connectorId", ""),
+                        "endpoint": cfg.get("endpoint", ""),
+                        "url": audit_extras.get("url", ""),
+                        "http_status": audit_extras.get("http_status"),
+                        "resolved_params": audit_extras.get("resolved_params", {}),
+                        "raw_row_count": audit_extras.get("raw_row_count"),
+                        "response_error": audit_extras.get("response_error"),
+                    }
 
                 # Flatten sample rows: strip large nested arrays to keep payload small
                 def _flatten_sample(rows: list[dict], n: int = 5) -> list[dict]:
@@ -284,9 +293,9 @@ class DagExecutor:
 
 # ── Node Handlers ─────────────────────────────────────────────────────────────
 
-async def _execute_node(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_extras: dict | None = None) -> list[dict]:
     if node.type == NodeType.SOURCE:
-        return await _source(node, pipeline)
+        return await _source(node, pipeline, audit_extras=audit_extras)
     if node.type == NodeType.ENRICH:
         return await _enrich(node, records_in)
     if node.type == NodeType.MAP:
@@ -308,7 +317,7 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline) -> lis
     return records_in
 
 
-async def _source(node, pipeline: Pipeline) -> list[dict]:
+async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) -> list[dict]:
     """
     Fetch real records from the configured connector.
 
@@ -394,28 +403,44 @@ async def _source(node, pipeline: Pipeline) -> list[dict]:
                         headers[extra_h["key"]] = str(extra_h.get("value", ""))
 
                 r = await client.get(url, headers=headers, params=params, timeout=60)
+                if audit_extras is not None:
+                    audit_extras["url"] = str(r.url)
+                    audit_extras["http_status"] = r.status_code
+                    audit_extras["resolved_params"] = dict(params)
                 if r.is_success:
                     data = r.json()
                     rows = None
+                    raw_count = None
                     if isinstance(data, list):
+                        raw_count = len(data)
                         rows = data[:batch_size]
                     elif isinstance(data, dict):
                         for key in ("data", "results", "items", "records", "value", "rows"):
                             if isinstance(data.get(key), list):
+                                raw_count = len(data[key])
                                 rows = data[key][:batch_size]
                                 break
+                    if audit_extras is not None and raw_count is not None:
+                        audit_extras["raw_row_count"] = raw_count
                     if rows is not None:
                         asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
                         return rows
+                elif audit_extras is not None:
+                    audit_extras["response_error"] = r.text[:500]
                 return []
 
             # No endpoint configured — use /schema which resolves templates via connector service
-            r = await client.get(
-                f"{CONNECTOR_API}/connectors/{connector_id}/schema",
-                headers={"x-tenant-id": pipeline.tenant_id},
-            )
+            schema_url = f"{CONNECTOR_API}/connectors/{connector_id}/schema"
+            if audit_extras is not None:
+                audit_extras["url"] = schema_url
+                audit_extras["http_status"] = None
+            r = await client.get(schema_url, headers={"x-tenant-id": pipeline.tenant_id})
+            if audit_extras is not None:
+                audit_extras["http_status"] = r.status_code
             if r.is_success:
                 rows = r.json().get("sample_rows", [])
+                if audit_extras is not None:
+                    audit_extras["raw_row_count"] = len(rows)
                 if rows:
                     asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
                 return rows
