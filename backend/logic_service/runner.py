@@ -22,6 +22,7 @@ import httpx
 import anthropic
 
 ONTOLOGY_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
+UTILITY_URL = os.environ.get("UTILITY_SERVICE_URL", "http://utility-service:8014")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
@@ -32,19 +33,37 @@ SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
 
 
 def _resolve(template: Any, context: dict) -> Any:
-    """Recursively resolve {path.to.value} references in strings, dicts, and lists."""
+    """Recursively resolve {path.to.value} references in strings, dicts, and lists.
+
+    Supports array indexing: records[0].field resolves the 0th element of a list.
+    """
     if isinstance(template, str):
         # Replace all {x.y.z} patterns
         def replacer(m: re.Match) -> str:
-            path = m.group(1).split(".")
-            val = context
-            for key in path:
+            # Split by "." but keep array indices attached to their key: "records[0]"
+            raw_path = m.group(1)
+            # Tokenise: split on "." first, then each token may have "[N]" suffix
+            parts: list[tuple[str, int | None]] = []
+            for segment in raw_path.split("."):
+                idx_match = re.match(r'^(\w+)\[(\d+)\]$', segment)
+                if idx_match:
+                    parts.append((idx_match.group(1), int(idx_match.group(2))))
+                else:
+                    parts.append((segment, None))
+
+            val: Any = context
+            for key, idx in parts:
                 if isinstance(val, dict):
                     val = val.get(key)
                 else:
                     return m.group(0)  # can't resolve, leave as-is
                 if val is None:
                     return ""
+                if idx is not None:
+                    if isinstance(val, list) and idx < len(val):
+                        val = val[idx]
+                    else:
+                        return ""
             return str(val) if not isinstance(val, (dict, list)) else json.dumps(val)
         return re.sub(r'\{([^}]+)\}', replacer, template)
     elif isinstance(template, dict):
@@ -309,6 +328,29 @@ async def _run_send_email(block: dict, context: dict) -> Any:
     return result
 
 
+async def _run_utility_call(block: dict, context: dict, tenant_id: str) -> Any:
+    """Call a utility from the Utility Service."""
+    utility_id = _resolve(block.get("utility_id", ""), context)
+    raw_params = block.get("utility_params", {})
+    params = _resolve(raw_params, context)
+
+    if not utility_id:
+        return {"error": "utility_id is required"}
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            r = await client.post(
+                f"{UTILITY_URL}/utilities/{utility_id}/run",
+                json={"inputs": params},
+                headers={"x-tenant-id": tenant_id},
+            )
+            data = r.json() if r.is_success else {"error": f"Utility service error: {r.text}"}
+            # Unwrap the result field if present
+            return data.get("result", data) if isinstance(data, dict) else data
+        except Exception as e:
+            return {"error": str(e)}
+
+
 def _run_transform(block: dict, context: dict) -> Any:
     """Simple in-memory data transformation."""
     operation = block.get("operation", "pass")
@@ -333,6 +375,62 @@ def _run_transform(block: dict, context: dict) -> Any:
         return source_data
     else:
         return source_data
+
+
+async def _run_ontology_update(block: dict, context: dict, tenant_id: str) -> Any:
+    """
+    Write one or more field values back to an ontology object type record.
+
+    Config fields (all support template references):
+      object_type_id  — the object type to update
+      match_field     — field used to identify which record to update (e.g. "borrower_id")
+      match_value     — value of match_field to find the target record
+      fields          — dict of field_name → new_value to set on the record
+
+    Example block config:
+      {
+        "object_type_id": "abc-123",
+        "match_field": "borrower_id",
+        "match_value": "{bidi1q6d.result.records[0].borrower_id}",
+        "fields": {
+          "risk_score": "{btayt8l5.result.risk_score}",
+          "risk_category": "{btayt8l5.result.risk_category}"
+        }
+      }
+    """
+    cfg = _resolve(block.get("config", {}), context)
+    ot_id = cfg.get("object_type_id") or cfg.get("objectTypeId")
+    match_field = cfg.get("match_field") or cfg.get("matchField")
+    match_value = cfg.get("match_value") or cfg.get("matchValue")
+    fields = cfg.get("fields", {})
+
+    if not ot_id:
+        return {"error": "object_type_id is required"}
+    if not fields:
+        return {"error": "fields dict is required"}
+
+    # Build a single record that merges match key + new fields
+    record = dict(fields)
+    if match_field and match_value is not None:
+        record[match_field] = match_value
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            r = await client.post(
+                f"{ONTOLOGY_URL}/object-types/{ot_id}/records/ingest",
+                json={
+                    "records": [record],
+                    "merge_key": match_field,
+                    "write_mode": "upsert",
+                    "on_conflict": "overwrite",
+                },
+                headers={"x-tenant-id": tenant_id, "Content-Type": "application/json"},
+            )
+            if r.is_success:
+                return {"updated": 1, "record": record}
+            return {"error": r.text}
+        except Exception as e:
+            return {"error": str(e)}
 
 
 async def execute_function(
@@ -377,6 +475,10 @@ async def execute_function(
                 result = await _run_send_email(block, context)
             elif block_type == "transform":
                 result = _run_transform(block, context)
+            elif block_type == "utility_call":
+                result = await _run_utility_call(block, context, tenant_id)
+            elif block_type == "ontology_update":
+                result = await _run_ontology_update(block, context, tenant_id)
             else:
                 result = {"error": f"Unknown block type: {block_type}"}
 

@@ -18,7 +18,7 @@ export interface FilterRow {
 
 export interface Block {
   id: string;
-  type: 'ontology_query' | 'llm_call' | 'action' | 'transform' | 'send_email';
+  type: 'ontology_query' | 'llm_call' | 'action' | 'ontology_update' | 'transform' | 'send_email' | 'utility_call';
   label?: string;
   // ontology_query
   config?: Record<string, unknown>; // includes object_type, filters: FilterRow[], limit
@@ -44,6 +44,9 @@ export interface Block {
   field?: string;
   value?: string;
   template?: string;
+  // utility_call
+  utility_id?: string;
+  utility_params?: Record<string, string>;
 }
 
 export interface LogicFunction {

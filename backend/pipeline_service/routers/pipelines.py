@@ -366,6 +366,7 @@ async def get_event_profile(
 class EventConfigSaveRequest(BaseModel):
     excluded_activities: list[str] = []
     activity_labels: dict[str, str] = {}
+    activity_attribute: str = ""
 
 
 @router.post("/{pipeline_id}/analyze-events")
@@ -500,6 +501,7 @@ async def save_event_config(
     pipeline.event_config = {
         "excluded_activities": body.excluded_activities,
         "activity_labels": body.activity_labels,
+        "activity_attribute": body.activity_attribute,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     row.data = pipeline.model_dump(mode="json")

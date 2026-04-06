@@ -37,12 +37,13 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
   {
     type: 'FILTER',
     label: 'Filter',
-    description: 'Filter rows based on conditions',
+    description: 'Keep only rows that match a condition',
     color: '#7C3AED',
     iconName: 'Filter',
     configFields: [
-      { key: 'expression', label: 'Filter Expression', type: 'code', placeholder: 'row.status == "active"' },
-      { key: 'dropOnFail', label: 'Drop on Fail', type: 'boolean', default: true },
+      { key: 'field', label: 'Field', type: 'text', placeholder: 'status', required: true },
+      { key: 'operator', label: 'Operator', type: 'select', required: true, options: ['exists', 'not_null', 'eq', 'neq', 'contains', 'not_contains', 'gt', 'lt', 'gte', 'lte', 'is_null'] },
+      { key: 'value', label: 'Value', type: 'text', placeholder: 'active' },
     ],
   },
   {
@@ -116,13 +117,14 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
   {
     type: 'SINK_OBJECT',
     label: 'Sink: Object Type',
-    description: 'Write to an Object Type in the ontology',
+    description: 'Write transformed records to an Object Type in the ontology. Schema is inferred and properties are added automatically on first run.',
     color: '#1A3C6E',
     iconName: 'Database',
     configFields: [
       { key: 'objectTypeId', label: 'Target Object Type', type: 'select', options: [], required: true },
-      { key: 'writeMode', label: 'Write Mode', type: 'select', options: ['upsert', 'insert', 'replace'] },
-      { key: 'mergeKey', label: 'Merge Key', type: 'text' },
+      { key: 'writeMode', label: 'Write Mode', type: 'select', options: ['upsert', 'insert', 'replace'], default: 'upsert' },
+      { key: 'mergeKey', label: 'Merge / Match Key', type: 'text', placeholder: 'e.g. borrower_id — field used to match existing records' },
+      { key: 'onConflict', label: 'On Conflict', type: 'select', options: ['overwrite', 'preserve', 'skip'], default: 'overwrite' },
     ],
   },
   {

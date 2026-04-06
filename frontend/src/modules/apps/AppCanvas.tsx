@@ -851,6 +851,156 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
   );
 };
 
+// ── Map Widget ─────────────────────────────────────────────────────────────
+
+const MapWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({ comp, records }) => {
+  const latField = comp.latField || 'lat';
+  const lngField = comp.lngField || 'lng';
+  const labelField = comp.labelField || 'name';
+
+  const pins = records
+    .map((r) => ({
+      lat: parseFloat(String(r[latField] ?? '')),
+      lng: parseFloat(String(r[lngField] ?? '')),
+      label: String(r[labelField] ?? ''),
+    }))
+    .filter((p) => !isNaN(p.lat) && !isNaN(p.lng));
+
+  if (!pins.length) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', flexDirection: 'column', gap: 8, color: '#94A3B8' }}>
+        <span style={{ fontSize: 24 }}>🗺</span>
+        <span style={{ fontSize: 12 }}>No lat/lng data found</span>
+        <span style={{ fontSize: 11, color: '#CBD5E1' }}>Set latField and lngField in config</span>
+      </div>
+    );
+  }
+
+  const lats = pins.map(p => p.lat);
+  const lngs = pins.map(p => p.lng);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  const pad = 0.02;
+  const bbox = `${minLng - pad},${minLat - pad},${maxLng + pad},${maxLat + pad}`;
+  const centerLat = (minLat + maxLat) / 2;
+  const centerLng = (minLng + maxLng) / 2;
+
+  const src = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${centerLat},${centerLng}`;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 0 }}>
+      <div style={{ flex: 1, position: 'relative', minHeight: 180 }}>
+        <iframe
+          src={src}
+          style={{ width: '100%', height: '100%', border: 'none' }}
+          title="Map"
+          loading="lazy"
+        />
+        <div style={{
+          position: 'absolute', bottom: 4, right: 4,
+          backgroundColor: 'rgba(255,255,255,0.9)', borderRadius: 3,
+          padding: '2px 6px', fontSize: 10, color: '#475569',
+        }}>
+          {pins.length} location{pins.length !== 1 ? 's' : ''}
+        </div>
+      </div>
+      {pins.length <= 10 && (
+        <div style={{ borderTop: '1px solid #E2E8F0', maxHeight: 120, overflowY: 'auto' }}>
+          {pins.map((p, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, padding: '4px 8px', fontSize: 11, borderBottom: '1px solid #F1F5F9', alignItems: 'center' }}>
+              <span style={{ color: '#3B82F6', flexShrink: 0 }}>📍</span>
+              <span style={{ flex: 1, color: '#0D1117', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label}</span>
+              <span style={{ color: '#94A3B8', fontFamily: 'monospace', fontSize: 10 }}>{p.lat.toFixed(4)}, {p.lng.toFixed(4)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Utility Output Widget ──────────────────────────────────────────────────
+
+const UtilityWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const UTILITY_API = import.meta.env.VITE_UTILITY_SERVICE_URL || 'http://localhost:8014';
+  const [result, setResult] = useState<unknown>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const runUtility = async () => {
+    const utilityId = comp.utility_id;
+    if (!utilityId) return;
+    let inputs: Record<string, unknown> = {};
+    try { inputs = JSON.parse(comp.utility_inputs || '{}'); } catch { inputs = {}; }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch(`${UTILITY_API}/utilities/${utilityId}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs }),
+      });
+      const data = await r.json();
+      setResult(data.result ?? data);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { runUtility(); }, [comp.utility_id, comp.utility_inputs]);
+
+  if (!comp.utility_id) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94A3B8', fontSize: 12 }}>
+        Configure utility_id in widget settings
+      </div>
+    );
+  }
+
+  const displayValue = comp.display_field && result && typeof result === 'object'
+    ? (result as Record<string, unknown>)[comp.display_field]
+    : result;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', gap: 6, padding: '6px 8px', borderBottom: '1px solid #F1F5F9', alignItems: 'center', flexShrink: 0 }}>
+        <span style={{ fontSize: 11, color: '#64748B', fontFamily: 'monospace', flex: 1 }}>{comp.utility_id}</span>
+        <button
+          onClick={runUtility}
+          disabled={loading}
+          style={{ fontSize: 10, padding: '2px 8px', backgroundColor: '#F1F5F9', border: '1px solid #E2E8F0', borderRadius: 3, cursor: loading ? 'wait' : 'pointer', color: '#475569' }}
+        >
+          {loading ? '…' : '↻ Refresh'}
+        </button>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: 8 }}>
+        {error && <div style={{ color: '#DC2626', fontSize: 11 }}>{error}</div>}
+        {loading && !result && <div style={{ color: '#94A3B8', fontSize: 11 }}>Running…</div>}
+        {displayValue !== null && displayValue !== undefined && (
+          typeof displayValue === 'object'
+            ? (
+              Array.isArray(displayValue)
+                ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {(displayValue as unknown[]).map((item, i) => (
+                      <div key={i} style={{ padding: '4px 6px', backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 3, fontSize: 11, color: '#0D1117' }}>
+                        {typeof item === 'object' ? JSON.stringify(item) : String(item)}
+                      </div>
+                    ))}
+                  </div>
+                )
+                : <pre style={{ margin: 0, fontSize: 10, color: '#0D1117', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(displayValue, null, 2)}</pre>
+            )
+            : <div style={{ fontSize: 13, color: '#0D1117', lineHeight: 1.5 }}>{String(displayValue)}</div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ── Component wrapper with per-type data loading ───────────────────────────
 
 const ComponentRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
@@ -885,6 +1035,8 @@ const ComponentRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
     case 'text-block': return <TextBlock comp={comp} />;
     case 'chat-widget': return <ChatWidget comp={comp} records={records} />;
     case 'custom-code': return <CustomCodeWidget comp={comp} records={records} />;
+    case 'map': return <MapWidget comp={comp} records={records} />;
+    case 'utility-output': return <UtilityWidget comp={comp} />;
     default: return null;
   }
 };

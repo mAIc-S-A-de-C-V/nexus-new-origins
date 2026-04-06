@@ -21,7 +21,9 @@ export type ComponentType =
   | 'text-block'
   | 'filter-bar'
   | 'chat-widget'
-  | 'custom-code';
+  | 'custom-code'
+  | 'map'
+  | 'utility-output';
 
 export interface AppComponent {
   id: string;
@@ -38,6 +40,13 @@ export interface AppComponent {
   labelField?: string;
   valueField?: string;
   xField?: string; // line-chart x-axis (date/time field)
+  // map
+  latField?: string;
+  lngField?: string;
+  // utility-output
+  utility_id?: string;
+  utility_inputs?: string;
+  display_field?: string;
   // text-block
   content?: string;
   // filter-bar

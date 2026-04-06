@@ -1,0 +1,142 @@
+"""
+Utility Registry — defines all available utilities with their metadata.
+Each entry has: id, name, category, description, icon, color, input_schema, output_schema
+"""
+
+UTILITY_REGISTRY: dict = {
+    "http_request": {
+        "id": "http_request",
+        "name": "HTTP Request",
+        "category": "Web",
+        "description": "Make an HTTP request (GET, POST, PUT, DELETE) to any URL with custom headers and body.",
+        "icon": "Globe",
+        "color": "#0891B2",
+        "input_schema": [
+            {"name": "method",  "type": "string", "required": True,  "description": "HTTP method: GET, POST, PUT, DELETE"},
+            {"name": "url",     "type": "string", "required": True,  "description": "The URL to call"},
+            {"name": "headers", "type": "object", "required": False, "description": "Request headers as JSON object"},
+            {"name": "body",    "type": "string", "required": False, "description": "Request body for POST/PUT"},
+            {"name": "timeout", "type": "number", "required": False, "description": "Timeout in seconds (default: 30)"},
+        ],
+        "output_schema": {"status_code": "integer", "body": "string", "json": "object"},
+    },
+    "webhook_post": {
+        "id": "webhook_post",
+        "name": "Webhook Post",
+        "category": "Web",
+        "description": "POST a JSON payload to a webhook URL (Slack, Zapier, Make, etc.).",
+        "icon": "Send",
+        "color": "#0891B2",
+        "input_schema": [
+            {"name": "url",           "type": "string", "required": True,  "description": "Webhook URL"},
+            {"name": "payload",       "type": "object", "required": True,  "description": "JSON payload to send"},
+            {"name": "auth_header",   "type": "string", "required": False, "description": "Authorization header value"},
+        ],
+        "output_schema": {"status_code": "integer", "response": "string"},
+    },
+    "ocr_extract": {
+        "id": "ocr_extract",
+        "name": "OCR Extract",
+        "category": "Document",
+        "description": "Extract text from an image (PNG, JPG, TIFF) using OCR.",
+        "icon": "ScanText",
+        "color": "#7C3AED",
+        "input_schema": [
+            {"name": "image_url", "type": "string", "required": True,  "description": "URL of the image to process"},
+            {"name": "language",  "type": "string", "required": False, "description": "Language hint (default: eng). Examples: eng, spa, fra"},
+        ],
+        "output_schema": {"text": "string", "confidence": "number", "word_count": "integer"},
+    },
+    "pdf_extract": {
+        "id": "pdf_extract",
+        "name": "PDF Extract",
+        "category": "Document",
+        "description": "Extract text content from a PDF file at a URL.",
+        "icon": "FileText",
+        "color": "#7C3AED",
+        "input_schema": [
+            {"name": "pdf_url", "type": "string", "required": True,  "description": "URL of the PDF file"},
+            {"name": "pages",   "type": "string", "required": False, "description": "Page range like '1-5' (default: all)"},
+        ],
+        "output_schema": {"full_text": "string", "pages": "array", "page_count": "integer"},
+    },
+    "excel_parse": {
+        "id": "excel_parse",
+        "name": "Excel / CSV Parse",
+        "category": "Document",
+        "description": "Parse an Excel (.xlsx) or CSV file from a URL into structured rows.",
+        "icon": "Table",
+        "color": "#059669",
+        "input_schema": [
+            {"name": "file_url",   "type": "string", "required": True,  "description": "URL of the Excel or CSV file"},
+            {"name": "sheet",      "type": "string", "required": False, "description": "Sheet name (default: first sheet)"},
+            {"name": "header_row", "type": "number", "required": False, "description": "Row index of header (default: 0)"},
+        ],
+        "output_schema": {"sheets": "array of {name, headers, rows}", "row_count": "integer"},
+    },
+    "web_scrape": {
+        "id": "web_scrape",
+        "name": "Web Scrape",
+        "category": "Web",
+        "description": "Fetch a webpage and extract its text content.",
+        "icon": "Globe2",
+        "color": "#0891B2",
+        "input_schema": [
+            {"name": "url",      "type": "string", "required": True,  "description": "URL of the page to scrape"},
+            {"name": "selector", "type": "string", "required": False, "description": "CSS selector to narrow content (optional)"},
+        ],
+        "output_schema": {"text": "string", "title": "string", "links": "array"},
+    },
+    "rss_fetch": {
+        "id": "rss_fetch",
+        "name": "RSS Feed",
+        "category": "Web",
+        "description": "Fetch and parse an RSS or Atom feed into structured items.",
+        "icon": "Rss",
+        "color": "#F59E0B",
+        "input_schema": [
+            {"name": "feed_url", "type": "string", "required": True,  "description": "URL of the RSS/Atom feed"},
+            {"name": "limit",    "type": "number", "required": False, "description": "Max items to return (default: 20)"},
+        ],
+        "output_schema": {"feed_title": "string", "items": "array of {title, link, published, summary}"},
+    },
+    "geocode": {
+        "id": "geocode",
+        "name": "Geocode Address",
+        "category": "Geo",
+        "description": "Convert a street address to latitude and longitude using OpenStreetMap Nominatim (free, no API key).",
+        "icon": "MapPin",
+        "color": "#10B981",
+        "input_schema": [
+            {"name": "address", "type": "string", "required": True, "description": "Street address or place name to geocode"},
+        ],
+        "output_schema": {"lat": "number", "lng": "number", "formatted_address": "string"},
+    },
+    "qr_read": {
+        "id": "qr_read",
+        "name": "QR / Barcode Read",
+        "category": "Vision",
+        "description": "Decode a QR code or barcode from an image URL.",
+        "icon": "QrCode",
+        "color": "#6366F1",
+        "input_schema": [
+            {"name": "image_url", "type": "string", "required": True, "description": "URL of the image containing the QR/barcode"},
+        ],
+        "output_schema": {"decoded": "string", "type": "string", "all_codes": "array"},
+    },
+    "slack_notify": {
+        "id": "slack_notify",
+        "name": "Slack Notify",
+        "category": "Notify",
+        "description": "Send a message to a Slack channel via an incoming webhook URL.",
+        "icon": "MessageSquare",
+        "color": "#EC4899",
+        "input_schema": [
+            {"name": "webhook_url", "type": "string", "required": True,  "description": "Slack incoming webhook URL"},
+            {"name": "text",        "type": "string", "required": True,  "description": "Message text (supports Slack markdown)"},
+            {"name": "username",    "type": "string", "required": False, "description": "Display name for the bot"},
+            {"name": "icon_emoji",  "type": "string", "required": False, "description": "Emoji icon like :rocket:"},
+        ],
+        "output_schema": {"ok": "boolean", "error": "string"},
+    },
+}

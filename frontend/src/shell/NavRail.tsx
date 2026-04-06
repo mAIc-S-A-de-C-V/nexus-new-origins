@@ -3,7 +3,7 @@ import {
   Plug, Network, GitBranch, Activity, Workflow, Settings,
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
   FolderKanban, Users, LogOut, ScanSearch, DollarSign, Briefcase,
-  BrainCircuit, Bot, MessageSquare, ShieldCheck,
+  BrainCircuit, Bot, MessageSquare, ShieldCheck, Wrench,
 } from 'lucide-react';
 import { useAuth } from './TenantContext';
 import { useAppStore } from '../store/appStore';
@@ -49,6 +49,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'pipelines',  label: 'Pipelines',      icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
   { id: 'logic',      label: 'Logic Studio',   icon: <BrainCircuit size={16} />,  active: true,  path: 'logic' },
   { id: 'agents',     label: 'Agent Studio',   icon: <Bot size={16} />,           active: true,  path: 'agents' },
+  { id: 'utilities',  label: 'Utilities',      icon: <Wrench size={16} />,        active: true,  path: 'utilities' },
   { id: 'human-actions', label: 'Actions',     icon: <ShieldCheck size={16} />,   active: true,  path: 'human-actions' },
   { id: 'users',      label: 'Users',          icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
   { id: 'settings',   label: 'Settings',       icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },

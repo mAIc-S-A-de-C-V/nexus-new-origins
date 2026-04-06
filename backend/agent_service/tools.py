@@ -10,6 +10,7 @@ import httpx
 ONTOLOGY_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
 LOGIC_URL = os.environ.get("LOGIC_SERVICE_URL", "http://logic-service:8012")
 AGENT_URL = os.environ.get("AGENT_SERVICE_URL", "http://agent-service:8013")
+UTILITY_URL = os.environ.get("UTILITY_SERVICE_URL", "http://utility-service:8014")
 
 
 # ── Tool definitions (sent to Claude as tools=[...]) ─────────────────────────
@@ -150,6 +151,38 @@ TOOL_DEFINITIONS = {
                 },
             },
             "required": ["object_type", "case_id_field", "activity_field"],
+        },
+    },
+    "utility_run": {
+        "name": "utility_run",
+        "description": "Run a pre-built utility from the Nexus Utility Library. Available utilities include: ocr_extract (image→text), pdf_extract (PDF→text), excel_parse (spreadsheet→rows), web_scrape (webpage→text), rss_fetch (RSS feed→items), http_request (HTTP call), webhook_post (POST to webhook), geocode (address→lat/lng), qr_read (QR/barcode→text), slack_notify (send Slack message). Call utility_list first if unsure which utility to use.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "utility_id": {
+                    "type": "string",
+                    "description": "ID of the utility to run. Examples: ocr_extract, pdf_extract, excel_parse, web_scrape, rss_fetch, http_request, webhook_post, geocode, qr_read, slack_notify",
+                },
+                "inputs": {
+                    "type": "object",
+                    "description": "Input parameters for the utility. Each utility has different required/optional params. Check utility_list for details.",
+                },
+            },
+            "required": ["utility_id", "inputs"],
+        },
+    },
+    "utility_list": {
+        "name": "utility_list",
+        "description": "List all available utilities in the Nexus Utility Library with their input/output schemas. Call this to discover what utilities are available before calling utility_run.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Optional filter by category: Document, Web, Vision, Geo, Notify",
+                },
+            },
+            "required": [],
         },
     },
 }
@@ -434,6 +467,27 @@ async def execute_tool(
                     ]
 
                 return result
+
+            elif tool_name == "utility_list":
+                category = tool_input.get("category")
+                r = await client.get(f"{UTILITY_URL}/utilities", timeout=10)
+                utilities = r.json() if r.is_success else []
+                if category:
+                    utilities = [u for u in utilities if u.get("category", "").lower() == category.lower()]
+                return {"utilities": utilities, "count": len(utilities)}
+
+            elif tool_name == "utility_run":
+                utility_id = tool_input.get("utility_id", "")
+                inputs = tool_input.get("inputs", {})
+                if not utility_id:
+                    return {"error": "utility_id is required"}
+                r = await client.post(
+                    f"{UTILITY_URL}/utilities/{utility_id}/run",
+                    json={"inputs": inputs},
+                    timeout=60,
+                )
+                data = r.json() if r.is_success else {"error": r.text}
+                return data.get("result", data) if isinstance(data, dict) else data
 
             else:
                 return {"error": f"Unknown tool: {tool_name}"}

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useLogicStore, LogicFunction, Block } from '../../store/logicStore';
-import { Plus, Play, Save, Trash2, ChevronRight, CheckCircle, XCircle, Loader, BookOpen, Clock } from 'lucide-react';
+import { useUtilityStore } from '../../store/utilityStore';
+import { Plus, Play, Save, Trash2, ChevronRight, CheckCircle, XCircle, Loader, BookOpen, Clock, Wrench } from 'lucide-react';
 
 // ── Colour palette (light) ────────────────────────────────────────────────────
 const C = {
@@ -14,8 +15,10 @@ const BLOCK_TYPES = [
   { type: 'ontology_query', label: 'Ontology Query', color: '#3B82F6', desc: 'Fetch records from ontology' },
   { type: 'llm_call',       label: 'LLM Call',       color: '#7C3AED', desc: 'Call Claude with a prompt' },
   { type: 'send_email',     label: 'Send Email',     color: '#EC4899', desc: 'Send emails via SMTP' },
-  { type: 'action',         label: 'Action',          color: '#F59E0B', desc: 'Propose a write action' },
-  { type: 'transform',      label: 'Transform',       color: '#10B981', desc: 'Transform data in memory' },
+  { type: 'action',           label: 'Action',           color: '#F59E0B', desc: 'Propose a write action' },
+  { type: 'ontology_update',  label: 'Ontology Update',  color: '#059669', desc: 'Write fields back to an ontology record' },
+  { type: 'transform',        label: 'Transform',        color: '#10B981', desc: 'Transform data in memory' },
+  { type: 'utility_call',     label: 'Utility Call',     color: '#0891B2', desc: 'Run a utility (OCR, scrape, geocode…)' },
 ];
 
 const blockColor = (type: string) => BLOCK_TYPES.find((b) => b.type === type)?.color ?? C.dim;
@@ -215,6 +218,11 @@ const BlockEditor: React.FC<{
 }> = ({ block, onChange, onRemove, isOutput, onSetOutput, objectTypes, inputSchema }) => {
   const u = (patch: Partial<Block>) => onChange({ ...block, ...patch });
   const [otProperties, setOtProperties] = useState<any[]>([]);
+  const { utilities, fetchUtilities } = useUtilityStore();
+
+  useEffect(() => {
+    if (block.type === 'utility_call' && utilities.length === 0) fetchUtilities();
+  }, [block.type]);
 
   // When object_type changes, load its properties
   useEffect(() => {
@@ -427,6 +435,48 @@ const BlockEditor: React.FC<{
           </>
         )}
 
+        {block.type === 'ontology_update' && (
+          <>
+            <div>
+              <label style={labelStyle}>Object Type</label>
+              <select style={inputStyle}
+                value={(block.config as Record<string,string>)?.object_type_id || ''}
+                onChange={(e) => u({ config: { ...(block.config as object || {}), object_type_id: e.target.value } })}>
+                <option value="">— select object type —</option>
+                {objectTypes.map((ot) => (
+                  <option key={ot.id} value={ot.id}>
+                    {ot.display_name || ot.displayName || ot.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>match_field — field used to find the record</label>
+              <input style={inputStyle} value={(block.config as Record<string,string>)?.match_field || ''}
+                placeholder="e.g. borrower_id"
+                onChange={(e) => u({ config: { ...(block.config as object || {}), match_field: e.target.value } })} />
+            </div>
+            <div>
+              <label style={labelStyle}>match_value — use {'{'}{'{'}b1.result.records[0].borrower_id{'}'}{'}'}</label>
+              <input style={inputStyle} value={(block.config as Record<string,string>)?.match_value || ''}
+                placeholder="{b1.result.records[0].borrower_id}"
+                onChange={(e) => u({ config: { ...(block.config as object || {}), match_value: e.target.value } })} />
+            </div>
+            <div>
+              <label style={labelStyle}>fields (JSON) — field → value to write</label>
+              <textarea style={{ ...inputStyle, resize: 'vertical', minHeight: 80, fontSize: 11 }}
+                value={typeof (block.config as Record<string,unknown>)?.fields === 'object'
+                  ? JSON.stringify((block.config as Record<string,unknown>).fields, null, 2)
+                  : ((block.config as Record<string,string>)?.fields || '')}
+                placeholder={'{\n  "risk_score": "{b4.result.risk_score}",\n  "risk_category": "{b4.result.risk_category}"\n}'}
+                onChange={(e) => {
+                  try { u({ config: { ...(block.config as object || {}), fields: JSON.parse(e.target.value) } }); }
+                  catch { /* keep typing */ }
+                }} />
+            </div>
+          </>
+        )}
+
         {block.type === 'transform' && (
           <>
             <div>
@@ -462,6 +512,89 @@ const BlockEditor: React.FC<{
             )}
           </>
         )}
+
+        {block.type === 'utility_call' && (() => {
+          const selectedUtil = utilities.find((u2) => u2.id === block.utility_id);
+          const paramsStr = block.utility_params ? JSON.stringify(block.utility_params, null, 2) : '{}';
+          return (
+            <>
+              <div style={{
+                backgroundColor: '#F0F9FF', border: '1px solid #BAE6FD',
+                padding: '8px 10px', fontSize: 11, color: '#0369A1', marginBottom: 4, borderRadius: 2,
+              }}>
+                <Wrench size={11} style={{ display: 'inline', marginRight: 5 }} />
+                Call a pre-built utility. Use <code>{'{'}{'{'}b1.result.field{'}'}{'}'}</code> references in params values.
+              </div>
+              <div>
+                <label style={labelStyle}>Utility</label>
+                <select
+                  style={{ ...inputStyle, fontFamily: 'system-ui' }}
+                  value={block.utility_id || ''}
+                  onChange={(e) => u({ utility_id: e.target.value, utility_params: {} })}
+                >
+                  <option value="">— select a utility —</option>
+                  {['Document', 'Web', 'Vision', 'Geo', 'Notify'].map((cat) => {
+                    const items = utilities.filter((ut) => ut.category === cat);
+                    if (!items.length) return null;
+                    return (
+                      <optgroup key={cat} label={cat}>
+                        {items.map((ut) => (
+                          <option key={ut.id} value={ut.id}>{ut.name}</option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {selectedUtil && (
+                <div style={{ fontSize: 11, color: C.muted, padding: '4px 0' }}>
+                  {selectedUtil.description}
+                </div>
+              )}
+
+              {selectedUtil && (
+                <div>
+                  <label style={labelStyle}>
+                    Params (JSON) — use {'{'}inputs.x{'}'} or {'{'}b1.result.field{'}'}
+                  </label>
+                  {selectedUtil.input_schema.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+                      {selectedUtil.input_schema.map((f) => (
+                        <span key={f.name} style={{
+                          fontSize: 10, padding: '1px 6px', borderRadius: 3,
+                          backgroundColor: f.required ? '#FEF3C7' : C.bg,
+                          border: `1px solid ${f.required ? '#FCD34D' : C.border}`,
+                          color: f.required ? '#92400E' : C.muted,
+                          cursor: 'pointer',
+                        }} title={f.description}
+                        onClick={() => {
+                          try {
+                            const current = JSON.parse(paramsStr) || {};
+                            if (!(f.name in current)) {
+                              current[f.name] = '';
+                              u({ utility_params: current });
+                            }
+                          } catch { /* ignore */ }
+                        }}>
+                          {f.required ? '* ' : ''}{f.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <textarea
+                    style={{ ...inputStyle, resize: 'vertical', minHeight: 80, fontSize: 11 }}
+                    value={paramsStr}
+                    onChange={(e) => {
+                      try { u({ utility_params: JSON.parse(e.target.value) }); }
+                      catch { /* keep typing */ }
+                    }}
+                  />
+                </div>
+              )}
+            </>
+          );
+        })()}
       </div>
     </div>
   );
@@ -518,6 +651,7 @@ const LogicStudio: React.FC = () => {
     fetchFunctions, selectFunction, createFunction, updateFunction,
     deleteFunction, publishFunction, runSync,
   } = useLogicStore();
+  const { fetchUtilities } = useUtilityStore();
 
   const [localFn, setLocalFn] = useState<LogicFunction | null>(null);
   const [testInputs, setTestInputs] = useState('{}');
@@ -581,6 +715,7 @@ const LogicStudio: React.FC = () => {
 
   useEffect(() => {
     fetchFunctions();
+    fetchUtilities();
     const ontologyUrl = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
     fetch(`${ontologyUrl}/object-types`, { headers: { 'x-tenant-id': 'tenant-001' } })
       .then((r) => r.json())

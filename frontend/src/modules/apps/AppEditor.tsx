@@ -19,7 +19,7 @@ import {
   Eye, Pencil, Code2, Save, Plus, Trash2,
   ChevronRight, RefreshCw,
   BarChart2, LineChart, Table, Hash, AlignLeft, Gauge, SlidersHorizontal,
-  Database, Tag, MessageSquare, Sparkles, Loader, Braces,
+  Database, Tag, MessageSquare, Sparkles, Loader, Braces, MapPin, Wrench,
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator } from '../../types/app';
 import { useAppStore } from '../../store/appStore';
@@ -76,6 +76,8 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'text-block',   label: 'Text Block',   icon: <AlignLeft size={13} />,          defaultColSpan: 12, description: 'Rich text / notes' },
   { type: 'chat-widget',  label: 'Chat',         icon: <MessageSquare size={13} />,      defaultColSpan: 12, description: 'Ask questions about data with AI' },
   { type: 'custom-code',  label: 'Custom Code',  icon: <Braces size={13} />,             defaultColSpan: 12, description: 'AI-generated custom visualization' },
+  { type: 'map',           label: 'Map',           icon: <MapPin size={13} />,             defaultColSpan: 6,  description: 'Pin locations on a map using lat/lng fields' },
+  { type: 'utility-output', label: 'Utility Output', icon: <Wrench size={13} />,          defaultColSpan: 6,  description: 'Run a utility and display its result' },
 ];
 
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -938,7 +940,7 @@ const ConfigPanel: React.FC<{
           </div>
         </Row>
 
-        {comp.type !== 'text-block' && (
+        {comp.type !== 'text-block' && comp.type !== 'utility-output' && (
           <Row label="DATA SOURCE">
             <select
               value={comp.objectTypeId ?? ''}
@@ -1067,8 +1069,49 @@ const ConfigPanel: React.FC<{
           </Row>
         )}
 
+        {/* map */}
+        {comp.type === 'map' && (
+          <>
+            <Row label="LAT FIELD">
+              {inp(comp.latField, (v) => set({ latField: v }), 'e.g. lat')}
+            </Row>
+            <Row label="LNG FIELD">
+              {inp(comp.lngField, (v) => set({ lngField: v }), 'e.g. lng')}
+            </Row>
+            <Row label="LABEL FIELD">
+              {inp(comp.labelField, (v) => set({ labelField: v }), 'e.g. name')}
+            </Row>
+          </>
+        )}
+
+        {/* utility-output */}
+        {comp.type === 'utility-output' && (
+          <>
+            <Row label="UTILITY ID">
+              {inp(comp.utility_id, (v) => set({ utility_id: v }), 'Utility UUID or slug')}
+            </Row>
+            <Row label="INPUTS (JSON)">
+              <textarea
+                value={comp.utility_inputs ?? ''}
+                onChange={(e) => set({ utility_inputs: e.target.value })}
+                rows={4}
+                placeholder={'{\n  "key": "value"\n}'}
+                style={{
+                  width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
+                  borderRadius: 4, fontSize: 11, color: '#0D1117',
+                  resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5,
+                  fontFamily: 'var(--font-mono)', outline: 'none',
+                }}
+              />
+            </Row>
+            <Row label="DISPLAY FIELD (OPTIONAL)">
+              {inp(comp.display_field, (v) => set({ display_field: v }), 'e.g. result (leave blank for full output)')}
+            </Row>
+          </>
+        )}
+
         {/* ── Filters ── */}
-        {comp.type !== 'text-block' && (
+        {comp.type !== 'text-block' && comp.type !== 'utility-output' && (
           <FilterBuilder
             filters={comp.filters || []}
             fields={fields}

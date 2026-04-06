@@ -505,18 +505,27 @@ export const OntologyGraph: React.FC = () => {
     const otYMap = new Map<string, number>();
     objectTypes.forEach((ot, i) => { otYMap.set(ot.id, i * ROW_GAP + 40); });
 
+    // Helper: resolve the effective target OT id for a pipeline —
+    // uses targetObjectTypeId first, then falls back to the SINK node's config.objectTypeId
+    const resolveSinkOtId = (p: Pipeline): string | undefined =>
+      p.targetObjectTypeId ||
+      (p.nodes.find((n) => n.type === 'SINK_OBJECT' || n.type === 'SINK_EVENT')
+        ?.config as Record<string, unknown>
+      )?.objectTypeId as string | undefined;
+
     // --- Pipeline Y: align to target object type, or fall back to index ---
     const pipelineYMap = new Map<string, number>();
     // Track how many pipelines share the same OT row (offset them slightly)
     const otPipelineCount = new Map<string, number>();
     pipelines.forEach((p, pIdx) => {
-      const baseY = p.targetObjectTypeId && otYMap.has(p.targetObjectTypeId)
-        ? otYMap.get(p.targetObjectTypeId)!
+      const effectiveOtId = resolveSinkOtId(p);
+      const baseY = effectiveOtId && otYMap.has(effectiveOtId)
+        ? otYMap.get(effectiveOtId)!
         : pIdx * ROW_GAP + 40;
-      const count = otPipelineCount.get(p.targetObjectTypeId || '') ?? 0;
+      const count = otPipelineCount.get(effectiveOtId || '') ?? 0;
       // Offset multiple pipelines targeting the same OT
       const offsetY = baseY + count * 70;
-      otPipelineCount.set(p.targetObjectTypeId || '', count + 1);
+      otPipelineCount.set(effectiveOtId || '', count + 1);
       pipelineYMap.set(p.id, offsetY);
     });
 
@@ -652,13 +661,14 @@ export const OntologyGraph: React.FC = () => {
         });
       }
 
-      // Last step → ObjectType edge
-      if (p.targetObjectTypeId && stepNodeIds.length > 0) {
+      // Last step → ObjectType edge (use targetObjectTypeId OR SINK node config fallback)
+      const effectiveSinkOtId = resolveSinkOtId(p);
+      if (effectiveSinkOtId && stepNodeIds.length > 0) {
         const isLive = p.status === 'RUNNING';
         flowEdges.push({
-          id: `e-pipe-${p.id}-ot-${p.targetObjectTypeId}`,
+          id: `e-pipe-${p.id}-ot-${effectiveSinkOtId}`,
           source: stepNodeIds[stepNodeIds.length - 1],
-          target: p.targetObjectTypeId,
+          target: effectiveSinkOtId,
           animated: isLive,
           markerEnd: { type: MarkerType.ArrowClosed, color: isLive ? '#6366F1' : '#A5B4FC' },
           style: { stroke: isLive ? '#6366F1' : '#A5B4FC', strokeWidth: isLive ? 2 : 1.5 },
@@ -668,7 +678,10 @@ export const OntologyGraph: React.FC = () => {
 
     // --- ObjectType nodes ---
     const runningTargetIds = new Set(
-      pipelines.filter((p) => p.status === 'RUNNING').map((p) => p.targetObjectTypeId).filter(Boolean)
+      pipelines
+        .filter((p) => p.status === 'RUNNING')
+        .map((p) => resolveSinkOtId(p))
+        .filter(Boolean) as string[]
     );
 
     objectTypes.forEach((ot) => {
@@ -682,7 +695,7 @@ export const OntologyGraph: React.FC = () => {
       // Direct connector → objectType edges (for connectors not covered by a pipeline)
       const pipelineConnectorIds = new Set(
         pipelines
-          .filter((p) => p.targetObjectTypeId === ot.id)
+          .filter((p) => resolveSinkOtId(p) === ot.id)
           .flatMap((p) => p.connectorIds)
       );
       ot.sourceConnectorIds.forEach((cId) => {

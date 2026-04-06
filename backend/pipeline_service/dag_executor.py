@@ -79,6 +79,10 @@ class DagExecutor:
             order = self._topological_sort(pipeline)
             node_map = {n.id: n for n in pipeline.nodes}
 
+            # When the pipeline has no explicit edges (step-list builder), synthesise
+            # sequential edges so records flow from one step to the next in order.
+            linear_mode = not pipeline.edges
+
             # Each node produces a list of real records
             node_records: dict[str, list[dict]] = {}
             # Per-node audit snapshots written into the run record
@@ -86,18 +90,29 @@ class DagExecutor:
             source_row_count = 0
             synced_rows = 0
 
-            for node_id in order:
+            for idx, node_id in enumerate(order):
                 node = node_map.get(node_id)
                 if not node:
                     continue
 
-                incoming_edges = [e for e in pipeline.edges if e.target == node_id]
-                if not incoming_edges:
-                    records_in: list[dict] = []
+                if linear_mode:
+                    # First node is always the source; every subsequent node gets
+                    # the output of the previous node.
+                    if idx == 0:
+                        records_in: list[dict] = []
+                        incoming_edges = []
+                    else:
+                        prev_id = order[idx - 1]
+                        records_in = list(node_records.get(prev_id, []))
+                        incoming_edges = [prev_id]  # truthy — not an empty list
                 else:
-                    records_in = []
-                    for e in incoming_edges:
-                        records_in.extend(node_records.get(e.source, []))
+                    incoming_edges = [e for e in pipeline.edges if e.target == node_id]
+                    if not incoming_edges:
+                        records_in = []
+                    else:
+                        records_in = []
+                        for e in incoming_edges:
+                            records_in.extend(node_records.get(e.source, []))
 
                 t_start = datetime.now(timezone.utc)
                 records_out = await _execute_node(node, records_in, pipeline)
@@ -105,7 +120,8 @@ class DagExecutor:
 
                 node_records[node_id] = records_out
 
-                if not incoming_edges and records_out:
+                is_source_node = (linear_mode and idx == 0) or (not linear_mode and not incoming_edges)
+                if is_source_node and records_out:
                     source_row_count = len(records_out)
 
                 if node.type in (NodeType.SINK_OBJECT, NodeType.SINK_EVENT):
@@ -253,7 +269,15 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline) -> lis
 
 
 async def _source(node, pipeline: Pipeline) -> list[dict]:
-    """Fetch real records from the configured connector."""
+    """
+    Fetch real records from the configured connector.
+
+    If the SOURCE node has an 'endpoint' config (e.g. '/users'), the pipeline
+    makes a direct HTTP GET to {base_url}{endpoint} using the connector's
+    credentials and returns all rows from the response.
+
+    Falls back to the connector's /schema sample_rows when no endpoint is set.
+    """
     cfg = node.config or {}
     connector_id = (
         cfg.get("connectorId")
@@ -263,8 +287,61 @@ async def _source(node, pipeline: Pipeline) -> list[dict]:
     )
     if not connector_id:
         return []
+
+    endpoint = (cfg.get("endpoint") or "").strip()
+    batch_size = int(cfg.get("batchSize") or 500)
+
     try:
         async with httpx.AsyncClient(timeout=60) as client:
+            # Fetch connector details (base_url + credentials)
+            conn_r = await client.get(
+                f"{CONNECTOR_API}/connectors/{connector_id}",
+                headers={"x-tenant-id": "tenant-001"},
+            )
+            if not conn_r.is_success:
+                return []
+
+            conn = conn_r.json()
+            base_url = (conn.get("base_url") or "").rstrip("/")
+            credentials = conn.get("credentials") or {}
+
+            if endpoint and base_url:
+                # Build the URL and auth headers from the connector's credentials
+                url = f"{base_url}{endpoint}"
+                headers: dict[str, str] = {"Accept": "application/json"}
+                params: dict = {}
+
+                auth_type = credentials.get("auth_type") or credentials.get("type", "none")
+                if auth_type == "api_key":
+                    key_name = credentials.get("header_name", "X-API-Key")
+                    headers[key_name] = credentials.get("api_key", "")
+                elif auth_type == "bearer_token":
+                    headers["Authorization"] = f"Bearer {credentials.get('token', '')}"
+                elif auth_type == "basic":
+                    import base64 as _b64
+                    encoded = _b64.b64encode(
+                        f"{credentials.get('username','')}:{credentials.get('password','')}".encode()
+                    ).decode()
+                    headers["Authorization"] = f"Basic {encoded}"
+
+                # Add any custom headers from connector config
+                for extra_h in (conn.get("config") or {}).get("headers", []):
+                    if extra_h.get("key"):
+                        headers[extra_h["key"]] = str(extra_h.get("value", ""))
+
+                r = await client.get(url, headers=headers, params=params, timeout=60)
+                if r.is_success:
+                    data = r.json()
+                    # Handle common response shapes: array, {"data": [...]}, {"results": [...]}
+                    if isinstance(data, list):
+                        return data[:batch_size]
+                    if isinstance(data, dict):
+                        for key in ("data", "results", "items", "records", "value", "rows"):
+                            if isinstance(data.get(key), list):
+                                return data[key][:batch_size]
+                return []
+
+            # No endpoint configured — fall back to /schema sample rows
             r = await client.get(
                 f"{CONNECTOR_API}/connectors/{connector_id}/schema",
                 headers={"x-tenant-id": "tenant-001"},
@@ -328,11 +405,50 @@ async def _enrich(node, records_in: list[dict]) -> list[dict]:
     return enriched
 
 
+def _get_nested(record: dict, path: str) -> Any:
+    """Resolve a dot-notation path against a nested dict (e.g. 'address.city')."""
+    parts = path.split(".")
+    val: Any = record
+    for part in parts:
+        if not isinstance(val, dict):
+            return None
+        val = val.get(part)
+    return val
+
+
 def _map(node, records_in: list[dict]) -> list[dict]:
-    """Apply field renaming and transforms to each record."""
+    """Apply field renaming and transforms to each record.
+
+    Supports two config shapes:
+      1. mappings: {"source_field": "target_field", ...}   ← new Pipeline Builder format
+         Dotted source paths (e.g. "address.city") are resolved against nested dicts.
+         Only the mapped fields are kept in the output record.
+      2. transforms: [{source_field, target_field, transform_type}]  ← legacy format
+         All existing fields are kept; transforms add/rename specific fields.
+    """
+    import json as _json
+
     cfg = node.config or {}
 
-    # Collect all transforms — support both list format and legacy single-transform keys
+    # ── New format: mappings dict ─────────────────────────────────────────────
+    mappings_raw = cfg.get("mappings")
+    if isinstance(mappings_raw, str):
+        try:
+            mappings_raw = _json.loads(mappings_raw)
+        except Exception:
+            mappings_raw = None
+    if isinstance(mappings_raw, dict) and mappings_raw:
+        result = []
+        for rec in records_in:
+            new_rec: dict = {}
+            for src_path, tgt_field in mappings_raw.items():
+                val = _get_nested(rec, src_path)
+                if val is not None:
+                    new_rec[str(tgt_field)] = val
+            result.append(new_rec)
+        return result
+
+    # ── Legacy format: transforms array ───────────────────────────────────────
     transforms: list[dict] = list(cfg.get("transforms") or [])
 
     if not transforms:
@@ -481,7 +597,8 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     Uses /records/ingest instead of /records/sync — the pipeline owns the data, not the connector.
     """
     cfg = node.config or {}
-    ot_id = cfg.get("objectTypeId") or node.object_type_id or pipeline.target_object_type_id
+    ot_id = (cfg.get("objectTypeId") or cfg.get("object_type_id")
+             or node.object_type_id or pipeline.target_object_type_id)
 
     if not ot_id or not records_in:
         return records_in
@@ -517,6 +634,19 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 merge_key=merge_key,
             )
         return records_in
+
+    # ── Apply pre-write filter conditions ────────────────────────────────────
+    raw_conditions = cfg.get("filterConditions")
+    if isinstance(raw_conditions, str) and raw_conditions.strip():
+        import json as _json
+        try:
+            raw_conditions = _json.loads(raw_conditions)
+        except Exception:
+            raw_conditions = []
+    if isinstance(raw_conditions, list) and raw_conditions:
+        records_in = [r for r in records_in if _apply_conditions(r, raw_conditions)]
+    if not records_in:
+        return []
 
     pk_field = _guess_pk(records_in[0]) if records_in else "id"
 
@@ -741,6 +871,26 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
         except Exception:
             pass
 
+    # ── Apply onConflict: skip records that already exist ────────────────────
+    on_conflict = cfg.get("onConflict", "overwrite")
+    if on_conflict == "skip" and existing_by_pk:
+        records_in = [r for r in records_in if str(r.get(pk_field, "")) not in existing_by_pk]
+    elif on_conflict == "preserve" and existing_by_pk:
+        # Keep existing field values — only write fields not already present
+        preserved = []
+        for rec in records_in:
+            pk_val = str(rec.get(pk_field, ""))
+            existing = existing_by_pk.get(pk_val)
+            if existing:
+                merged = {**rec}
+                for k, v in existing.items():
+                    if v is not None and v != "":
+                        merged[k] = v  # existing value wins
+                preserved.append(merged)
+            else:
+                preserved.append(rec)
+        records_in = preserved
+
     # ── Ingest records into ontology ──
     try:
         async with httpx.AsyncClient(timeout=120) as client:
@@ -753,12 +903,125 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 },
                 headers={"x-tenant-id": "tenant-001"},
             )
-            if resp.is_success:
-                return records_in
     except Exception:
         pass
 
+    # ── Update object type schema + link source ───────────────────────────────
+    # Infer properties from the first record and add them to the object type,
+    # then register this pipeline and connector as the authoritative source.
+    if records_in:
+        try:
+            await _update_object_type_schema(
+                ot_id=ot_id,
+                sample=records_in[0],
+                pipeline=pipeline,
+                connector_id=connector_id or "",
+            )
+        except Exception:
+            pass
+
     return records_in
+
+
+async def _update_object_type_schema(
+    ot_id: str,
+    sample: dict,
+    pipeline: "Pipeline",
+    connector_id: str,
+) -> None:
+    """
+    After a SINK_OBJECT ingest, update the object type's properties (schema)
+    from the first mapped record and register the pipeline + connector as sources.
+    This makes the object type card show the correct field count and source links.
+    """
+    import json as _json
+    from uuid import uuid4 as _uuid4
+
+    def _infer_semantic(name: str, val: Any) -> str:
+        n = name.lower()
+        if n.endswith("_id") or n == "id":
+            return "IDENTIFIER"
+        if "email" in n:
+            return "EMAIL"
+        if "phone" in n or "tel" in n:
+            return "PHONE"
+        if "url" in n or "website" in n or "link" in n:
+            return "URL"
+        if "date" in n or n.endswith("_at") or n.startswith("dt"):
+            return "DATETIME"
+        if "status" in n or "stage" in n or "state" in n:
+            return "STATUS"
+        if "name" in n:
+            return "PERSON_NAME"
+        if "address" in n or "street" in n or "city" in n or "zip" in n:
+            return "ADDRESS"
+        if isinstance(val, bool):
+            return "BOOLEAN"
+        if isinstance(val, (int, float)):
+            return "QUANTITY"
+        return "TEXT"
+
+    def _infer_dtype(val: Any) -> str:
+        if isinstance(val, bool):
+            return "BOOLEAN"
+        if isinstance(val, int):
+            return "INTEGER"
+        if isinstance(val, float):
+            return "FLOAT"
+        if isinstance(val, (dict, list)):
+            return "JSON"
+        return "TEXT"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 1. Fetch current object type
+        r = await client.get(
+            f"{ONTOLOGY_API}/object-types/{ot_id}",
+            headers={"x-tenant-id": "tenant-001"},
+        )
+        if not r.is_success:
+            return
+
+        ot_data: dict = r.json()
+        existing_prop_names: set[str] = {p["name"] for p in ot_data.get("properties", [])}
+
+        # 2. Infer new properties from sample record (skip nested dicts/lists)
+        new_props: list[dict] = []
+        for field_name, field_val in sample.items():
+            if field_name in existing_prop_names:
+                continue
+            if isinstance(field_val, (dict, list)):
+                continue  # skip complex nested structures
+            new_props.append({
+                "id": str(_uuid4()),
+                "name": field_name,
+                "display_name": field_name.replace("_", " ").title(),
+                "semantic_type": _infer_semantic(field_name, field_val),
+                "data_type": _infer_dtype(field_val),
+                "pii_level": "NONE",
+                "required": False,
+                "source_connector_id": connector_id or None,
+                "sample_values": [str(field_val)[:64]] if field_val is not None else [],
+            })
+
+        # 3. Merge new properties and update source links
+        updated_props = ot_data.get("properties", []) + new_props
+
+        # Add connector to source_connector_ids if not already there
+        src_ids: list[str] = list(ot_data.get("source_connector_ids", []))
+        if connector_id and connector_id not in src_ids:
+            src_ids.append(connector_id)
+
+        ot_data["properties"] = updated_props
+        ot_data["source_connector_ids"] = src_ids
+        ot_data["source_pipeline_id"] = pipeline.id
+        ot_data["version"] = ot_data.get("version", 1) + 1
+
+        # 4. PUT the updated object type back
+        await client.put(
+            f"{ONTOLOGY_API}/object-types/{ot_id}",
+            json=ot_data,
+            headers={"x-tenant-id": "tenant-001"},
+        )
 
 
 async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
@@ -864,6 +1127,56 @@ def _guess_pk(record: dict) -> str:
         if record.get(candidate):
             return candidate
     return next(iter(record), "id")
+
+
+def _apply_conditions(record: dict, conditions: list[dict]) -> bool:
+    """
+    Return True if all conditions are satisfied by the record.
+    Each condition: {field, operator, value}
+    Operators: eq, neq, contains, not_contains, gt, lt, gte, lte, is_null, not_null, exists
+    """
+    for cond in conditions:
+        field = cond.get("field", "")
+        operator = cond.get("operator", "exists")
+        expected = cond.get("value", "")
+        actual = record.get(field)
+
+        if operator == "exists":
+            if actual is None or actual == "" or actual == []:
+                return False
+        elif operator == "not_null" or operator == "is_not_null":
+            if actual is None:
+                return False
+        elif operator == "is_null":
+            if actual is not None:
+                return False
+        elif operator == "eq":
+            if str(actual) != str(expected):
+                return False
+        elif operator == "neq":
+            if str(actual) == str(expected):
+                return False
+        elif operator == "contains":
+            if expected not in str(actual or ""):
+                return False
+        elif operator == "not_contains":
+            if expected in str(actual or ""):
+                return False
+        elif operator in ("gt", "lt", "gte", "lte"):
+            try:
+                a_val = float(str(actual or 0))
+                e_val = float(str(expected or 0))
+                if operator == "gt" and not (a_val > e_val):
+                    return False
+                if operator == "lt" and not (a_val < e_val):
+                    return False
+                if operator == "gte" and not (a_val >= e_val):
+                    return False
+                if operator == "lte" and not (a_val <= e_val):
+                    return False
+            except (ValueError, TypeError):
+                return False
+    return True
 
 
 def _apply_extract_company(title: str) -> str:

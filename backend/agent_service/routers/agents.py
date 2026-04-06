@@ -20,6 +20,8 @@ AVAILABLE_TOOLS = [
     "list_actions",
     "agent_call",
     "process_mining",
+    "utility_list",
+    "utility_run",
 ]
 
 
@@ -172,7 +174,11 @@ async def update_agent(
     if body.enabled is not None:
         row.enabled = body.enabled
 
-    # Save version snapshot before committing
+    # Commit the row changes first so updated_at is set by the DB
+    await db.commit()
+    await db.refresh(row)
+
+    # Save version snapshot after commit so all fields (including updated_at) are correct
     version_count_result = await db.execute(
         select(sqlfunc.count()).select_from(AgentConfigVersionRow).where(AgentConfigVersionRow.agent_id == agent_id)
     )

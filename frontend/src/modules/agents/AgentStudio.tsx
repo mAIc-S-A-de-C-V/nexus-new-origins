@@ -26,6 +26,8 @@ const TOOL_META: Record<string, { label: string; desc: string; icon: React.React
   list_actions:       { label: 'List Actions',       desc: 'Discover available write actions and their input schemas',         icon: <ListChecks size={14} />, color: '#10B981' },
   agent_call:         { label: 'Call Sub-Agent',     desc: 'Delegate a subtask to another configured agent by name',          icon: <Network size={14} />,    color: '#7C3AED' },
   process_mining:     { label: 'Process Mining',     desc: 'Analyze event logs for patterns, bottlenecks, anomalies & co-occurrences', icon: <Activity size={14} />,  color: '#0891B2' },
+  utility_list:       { label: 'List Utilities',     desc: 'Discover available utilities (OCR, scrape, geocode, etc.)',                icon: <Wrench size={14} />,    color: '#0891B2' },
+  utility_run:        { label: 'Run Utility',        desc: 'Execute a pre-built utility — OCR, PDF extract, web scrape, geocode…',    icon: <Wrench size={14} />,    color: '#0891B2' },
 };
 
 const TOOL_LABELS: Record<string, string> = Object.fromEntries(
@@ -630,7 +632,9 @@ const TestPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
       {finalText && (
         <div>
           <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em', marginBottom: 6 }}>FINAL RESPONSE</div>
-          <div style={{ backgroundColor: C.accentDim, border: `1px solid ${C.accent}44`, padding: '12px 14px', fontSize: 13, color: C.text, whiteSpace: 'pre-wrap', borderRadius: 4 }}>{finalText}</div>
+          <div style={{ backgroundColor: C.accentDim, border: `1px solid ${C.accent}44`, padding: '12px 14px', fontSize: 13, color: C.text, borderRadius: 4 }}>
+            <div className="md-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{finalText}</ReactMarkdown></div>
+          </div>
         </div>
       )}
 
