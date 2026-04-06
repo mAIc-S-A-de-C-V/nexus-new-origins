@@ -207,7 +207,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
           node_id: a.node_id,
           node_type: a.node_type,
           label: a.node_label,
-          status: a.error ? 'error' : 'ok',
+          status: (a.error ? 'error' : 'ok') as 'ok' | 'error' | 'skipped',
           rows_in: a.rows_in ?? 0,
           rows_out: a.rows_out ?? 0,
           error: a.error,
