@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_db
+from database import get_db, get_or_create_tenant_for_domain
 from password_utils import hash_password
 
 router = APIRouter()
@@ -63,7 +63,15 @@ async def create_user(
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant_id = x_tenant_id or body.tenant_id
+    # Derive tenant_id from email domain so users always land in the right tenant
+    email_lower = body.email.lower().strip()
+    if "@" in email_lower:
+        domain = email_lower.split("@")[1]
+        tenant_id = await get_or_create_tenant_for_domain(db, domain)
+        await db.commit()
+    else:
+        tenant_id = x_tenant_id or body.tenant_id
+
     if body.role not in VALID_ROLES:
         raise HTTPException(400, f"role must be one of {VALID_ROLES}")
 
@@ -77,7 +85,7 @@ async def create_user(
         ),
         {
             "tid": tenant_id,
-            "email": body.email.lower().strip(),
+            "email": email_lower,
             "name": body.name,
             "role": body.role,
             "pw": pw_hash,

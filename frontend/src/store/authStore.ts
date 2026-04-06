@@ -26,8 +26,9 @@ interface AuthState {
   clearError: () => void;
 }
 
-// Access token lives in memory only (never localStorage)
+// Access token and tenant_id live in memory only (never localStorage)
 let _inMemoryToken: string | null = null;
+let _tenantId: string = 'tenant-001';
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -52,6 +53,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const data = await res.json();
       _inMemoryToken = data.access_token;
+      _tenantId = data.user?.tenant_id || 'tenant-001';
       set({ user: data.user, accessToken: data.access_token, loading: false });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Login failed';
@@ -65,17 +67,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   handleOIDCCallback: async (token: string) => {
-    // Token comes from URL param after OIDC redirect
     _inMemoryToken = token;
-    // Decode user info from JWT payload (no signature verify needed client-side)
     try {
       const payload = JSON.parse(atob(token.split('.')[1]));
+      _tenantId = payload.tenant_id || 'tenant-001';
       set({
         accessToken: token,
         user: {
           id: payload.sub,
           email: payload.email,
-          name: payload.email,
+          name: payload.name || payload.email,
           role: payload.role as UserRole,
           tenant_id: payload.tenant_id,
         },
@@ -96,11 +97,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (!res.ok) {
         set({ user: null, accessToken: null });
         _inMemoryToken = null;
+        _tenantId = 'tenant-001';
         return false;
       }
       const data = await res.json();
       _inMemoryToken = data.access_token;
-      set({ accessToken: data.access_token });
+
+      // Decode user info from the new JWT
+      try {
+        const payload = JSON.parse(atob(data.access_token.split('.')[1]));
+        _tenantId = payload.tenant_id || 'tenant-001';
+        set({
+          accessToken: data.access_token,
+          user: {
+            id: payload.sub,
+            email: payload.email,
+            name: payload.name || payload.email,
+            role: payload.role as UserRole,
+            tenant_id: payload.tenant_id,
+          },
+        });
+      } catch {
+        set({ accessToken: data.access_token });
+      }
       return true;
     } catch {
       return false;
@@ -110,6 +129,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: async () => {
     const token = _inMemoryToken;
     _inMemoryToken = null;
+    _tenantId = 'tenant-001';
     set({ user: null, accessToken: null });
     try {
       await fetch(`${AUTH_API}/auth/logout`, {
@@ -128,3 +148,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
 /** Get the current in-memory access token for API calls. */
 export const getAccessToken = () => _inMemoryToken;
+
+/** Get the current tenant_id for the logged-in user. */
+export const getTenantId = () => _tenantId;

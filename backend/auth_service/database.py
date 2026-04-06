@@ -45,6 +45,13 @@ DDL = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON auth_refresh_tokens (user_id)",
+    """
+    CREATE TABLE IF NOT EXISTS auth_tenant_domains (
+        domain     TEXT PRIMARY KEY,
+        tenant_id  TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
 ]
 
 
@@ -52,3 +59,24 @@ async def init_db():
     async with engine.begin() as conn:
         for stmt in DDL:
             await conn.execute(text(stmt))
+
+
+async def get_or_create_tenant_for_domain(db: AsyncSession, domain: str) -> str:
+    """Look up or auto-provision a tenant_id for an email domain."""
+    row = await db.execute(
+        text("SELECT tenant_id FROM auth_tenant_domains WHERE domain = :domain"),
+        {"domain": domain},
+    )
+    mapping = row.fetchone()
+    if mapping:
+        return str(mapping._mapping["tenant_id"])
+    tenant_id = f"tenant-{domain.replace('.', '-')}"
+    await db.execute(
+        text(
+            "INSERT INTO auth_tenant_domains (domain, tenant_id) "
+            "VALUES (:d, :t) ON CONFLICT (domain) DO NOTHING"
+        ),
+        {"d": domain, "t": tenant_id},
+    )
+    # Commit happens in the caller
+    return tenant_id

@@ -65,11 +65,12 @@ JWKS = {
 }
 
 
-def create_access_token(user_id: str, email: str, role: str, tenant_id: str) -> str:
+def create_access_token(user_id: str, email: str, role: str, tenant_id: str, name: str = "") -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
         "email": email,
+        "name": name or email,
         "role": role,
         "tenant_id": tenant_id,
         "iss": ISSUER,

@@ -80,18 +80,16 @@ const LoginPage: React.FC = () => {
     }, 50);
   };
 
-  const handleSignIn = (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!password) { setError('Enter your password.'); return; }
     setLoading(true);
     setError('');
-    setTimeout(() => {
-      const result = login(email.trim(), password);
-      if (!result.success) {
-        setError('Incorrect email or password.');
-        setLoading(false);
-      }
-    }, 180);
+    const result = await login(email.trim(), password);
+    if (!result.success) {
+      setError(result.error || 'Incorrect email or password.');
+      setLoading(false);
+    }
   };
 
   return (

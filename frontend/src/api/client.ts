@@ -1,4 +1,5 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosInstance, AxiosResponse } from 'axios';
+import { getAccessToken, getTenantId } from '../store/authStore';
 
 const SERVICE_URLS = {
   connector: import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001',
@@ -18,14 +19,13 @@ const createClient = (baseURL: string): AxiosInstance => {
     },
   });
 
-  // Request interceptor - add auth token
+  // Request interceptor - add auth token and tenant id
   instance.interceptors.request.use((config) => {
-    const token = localStorage.getItem('nexus_token');
+    const token = getAccessToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
-    const tenantId = localStorage.getItem('nexus_tenant_id') || 'tenant-001';
-    config.headers['X-Tenant-ID'] = tenantId;
+    config.headers['X-Tenant-ID'] = getTenantId();
     return config;
   });
 
