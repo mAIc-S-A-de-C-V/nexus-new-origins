@@ -14,10 +14,39 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.orm.attributes import flag_modified
 from database import get_session, ObjectTypeRow, ObjectRecordRow
+from shared.auth_middleware import require_auth, AuthUser
 
 CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
 
 router = APIRouter()
+
+
+# ── PII masking ──────────────────────────────────────────────────────────────
+
+def _mask_pii(records: list[dict], properties: list[dict], user_role: str) -> list[dict]:
+    """Mask HIGH PII fields for viewer-role users."""
+    if user_role in ("admin", "analyst"):
+        return records
+
+    high_pii_fields = {
+        p.get("name") or p.get("canonical_name", "")
+        for p in properties
+        if p.get("pii_level") in ("HIGH", "PiiLevel.HIGH")
+    }
+
+    if not high_pii_fields:
+        return records
+
+    masked = []
+    for record in records:
+        masked_record = {}
+        for key, value in record.items():
+            if key in high_pii_fields:
+                masked_record[key] = "***REDACTED***"
+            else:
+                masked_record[key] = value
+        masked.append(masked_record)
+    return masked
 
 
 # ── GET records ─────────────────────────────────────────────────────────────
@@ -27,8 +56,22 @@ async def list_records(
     ot_id: str,
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+
+    # Fetch the object type to get its properties for PII checks
+    ot_result = await db.execute(
+        select(ObjectTypeRow).where(
+            ObjectTypeRow.id == ot_id,
+            ObjectTypeRow.tenant_id == tenant_id,
+        )
+    )
+    ot_row = ot_result.scalar_one_or_none()
+    properties: list[dict] = []
+    if ot_row and ot_row.data:
+        properties = ot_row.data.get("properties", [])
+
     result = await db.execute(
         select(ObjectRecordRow)
         .where(
@@ -38,8 +81,10 @@ async def list_records(
         .order_by(ObjectRecordRow.updated_at.desc())
     )
     rows = result.scalars().all()
+    raw_records = [r.data for r in rows]
+    masked_records = _mask_pii(raw_records, properties, user.role)
     return {
-        "records": [r.data for r in rows],
+        "records": masked_records,
         "total": len(rows),
         "synced_at": rows[0].updated_at.isoformat() if rows else None,
     }
@@ -216,6 +261,7 @@ async def ingest_records(
 
     run_at = datetime.now(timezone.utc).isoformat()
     ingested = 0
+    new_source_ids: list[str] = []
 
     for record in records:
         record = dict(record)
@@ -243,13 +289,16 @@ async def ingest_records(
                 source_id=source_id,
                 data=record,
             ))
+            new_source_ids.append(source_id)
         ingested += 1
 
     await db.commit()
     return {
         "ingested": ingested,
+        "new_count": len(new_source_ids),
+        "new_source_ids": new_source_ids,
         "pipeline_id": pipeline_id,
-        "message": f"Ingested {ingested} records from pipeline {pipeline_id}",
+        "message": f"Ingested {ingested} records from pipeline {pipeline_id} ({len(new_source_ids)} new)",
     }
 
 

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getTenantId } from './authStore';
 
 const LOGIC_API = import.meta.env.VITE_LOGIC_SERVICE_URL || 'http://localhost:8012';
 
@@ -18,7 +19,7 @@ export interface FilterRow {
 
 export interface Block {
   id: string;
-  type: 'ontology_query' | 'llm_call' | 'action' | 'ontology_update' | 'transform' | 'send_email' | 'utility_call';
+  type: 'ontology_query' | 'llm_call' | 'action' | 'ontology_update' | 'transform' | 'send_email' | 'utility_call' | 'conditional' | 'foreach';
   label?: string;
   // ontology_query
   config?: Record<string, unknown>; // includes object_type, filters: FilterRow[], limit
@@ -47,6 +48,14 @@ export interface Block {
   // utility_call
   utility_id?: string;
   utility_params?: Record<string, string>;
+  // conditional
+  condition_expression?: string;
+  true_branch?: string[];   // block ids to run when true
+  false_branch?: string[];  // block ids to run when false
+  // foreach
+  array_input?: string;
+  iteration_variable?: string;
+  loop_blocks?: string[];   // block ids inside the loop
 }
 
 export interface LogicFunction {
@@ -116,7 +125,7 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
     set({ loading: true });
     try {
       const r = await fetch(`${LOGIC_API}/logic/functions`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       const data = await r.json();
       set({ functions: Array.isArray(data) ? data : [] });
@@ -130,7 +139,7 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
   createFunction: async (data) => {
     const r = await fetch(`${LOGIC_API}/logic/functions`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     const fn = await r.json();
@@ -141,7 +150,7 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
   updateFunction: async (id, data) => {
     const r = await fetch(`${LOGIC_API}/logic/functions/${id}`, {
       method: 'PUT',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     const fn = await r.json();
@@ -154,7 +163,7 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
   deleteFunction: async (id) => {
     await fetch(`${LOGIC_API}/logic/functions/${id}`, {
       method: 'DELETE',
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     set((s) => ({
       functions: s.functions.filter((f) => f.id !== id),
@@ -165,7 +174,7 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
   publishFunction: async (id) => {
     const r = await fetch(`${LOGIC_API}/logic/functions/${id}/publish`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     const fn = await r.json();
     set((s) => ({
@@ -179,7 +188,7 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
     try {
       const r = await fetch(`${LOGIC_API}/logic/functions/${id}/run/sync`, {
         method: 'POST',
-        headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+        headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ inputs, triggered_by: 'studio' }),
       });
       const run = await r.json();
@@ -192,7 +201,7 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
 
   fetchRuns: async (functionId) => {
     const r = await fetch(`${LOGIC_API}/logic/runs?function_id=${functionId}&limit=20`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     const data = await r.json();
     set({ runs: Array.isArray(data) ? data : [] });

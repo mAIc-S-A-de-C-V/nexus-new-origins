@@ -10,3 +10,5 @@ pandas==2.2.3
 beautifulsoup4==4.12.3
 feedparser==6.0.11
 pyzbar==0.1.1
+python-jose[cryptography]>=3.3.0
+cryptography>=42.0.0

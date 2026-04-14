@@ -87,8 +87,11 @@ class AgentRunRow(Base):
     thread_id = Column(String, nullable=True, index=True)  # null for test runs
     tenant_id = Column(String, nullable=False, index=True)
     iterations = Column(Integer, nullable=False, default=0)
-    tool_calls = Column(JSON, nullable=False, default=list)   # [{"tool": name}]
+    tool_calls = Column(JSON, nullable=False, default=list)   # [{"tool": name, "input": {}, "result": "..."}]
     final_text_len = Column(Integer, nullable=False, default=0)
+    final_text = Column(Text, nullable=True)
+    pipeline_id = Column(String, nullable=True)
+    pipeline_run_id = Column(String, nullable=True)
     is_test = Column(Boolean, nullable=False, default=False)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

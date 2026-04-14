@@ -1,5 +1,13 @@
 version: "3.9"
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+    labels: "service"
+    tag: "{{.Name}}"
+
 services:
   # ─── Frontend ───────────────────────────────────────────────────────────────
   frontend:
@@ -22,6 +30,14 @@ services:
         VITE_LOGIC_SERVICE_URL: ${VITE_LOGIC_SERVICE_URL:-http://localhost:8012}
         VITE_AGENT_SERVICE_URL: ${VITE_AGENT_SERVICE_URL:-http://localhost:8013}
         VITE_UTILITY_SERVICE_URL: ${VITE_UTILITY_SERVICE_URL:-http://localhost:8014}
+        VITE_ANALYTICS_SERVICE_URL: ${VITE_ANALYTICS_SERVICE_URL:-http://localhost:8015}
+        VITE_EVAL_SERVICE_URL: ${VITE_EVAL_SERVICE_URL:-http://localhost:8016}
+        VITE_LINEAGE_SERVICE_URL: ${VITE_LINEAGE_SERVICE_URL:-http://localhost:8017}
+        VITE_SEARCH_SERVICE_URL: ${VITE_SEARCH_SERVICE_URL:-http://localhost:8018}
+        VITE_DATA_QUALITY_SERVICE_URL: ${VITE_DATA_QUALITY_SERVICE_URL:-http://localhost:8019}
+        VITE_COLLABORATION_SERVICE_URL: ${VITE_COLLABORATION_SERVICE_URL:-http://localhost:8020}
+        VITE_API_GATEWAY_URL: ${VITE_API_GATEWAY_URL:-http://localhost:8021}
+        VITE_ADMIN_SERVICE_URL: ${VITE_ADMIN_SERVICE_URL:-http://localhost:8022}
     ports:
       - "3000:3000"
     depends_on:
@@ -45,6 +61,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - TENANT_ID=tenant-001
       - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
+      - AUTH_SERVICE_URL=http://auth-service:8011
+      - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +71,7 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    logging: *default-logging
 
   pipeline-service:
     build:
@@ -65,6 +84,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
       - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,6 +93,7 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+    logging: *default-logging
 
   inference-service:
     build:
@@ -101,6 +122,7 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
+    logging: *default-logging
 
   event-log-service:
     build:
@@ -131,6 +153,7 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8006 --reload
+    logging: *default-logging
 
   schema-registry:
     build:
@@ -166,6 +189,7 @@ services:
     environment:
       - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,12 +218,19 @@ services:
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID:-common}
+      - AUDIT_SERVICE_URL=http://audit-service:8006
+      - AUTH_SERVICE_URL=http://auth-service:8011
+      - COOKIE_SECURE=false
+      - JWT_PRIVATE_KEY_PEM=${JWT_PRIVATE_KEY_PEM:-}
+      - ADMIN_SEED_PASSWORD=${ADMIN_SEED_PASSWORD:-}
+      - MJSP_ADMIN_PASSWORD=${MJSP_ADMIN_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8011 --reload
+    logging: *default-logging
 
   logic-service:
     build:
@@ -223,6 +254,7 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8012 --reload
+    logging: *default-logging
 
   agent-service:
     build:
@@ -244,6 +276,7 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8013 --reload
+    logging: *default-logging
 
   utility-service:
     build:
@@ -251,6 +284,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8014:8014"
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:8011
+      - SKIP_AUTH=${SKIP_AUTH:-true}
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8014 --reload
@@ -264,6 +300,8 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
+      - AUTH_SERVICE_URL=http://auth-service:8011
+      - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -272,6 +310,165 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8010 --reload
+
+  analytics-service:
+    build:
+      context: ./backend
+      dockerfile: analytics_service/Dockerfile
+    ports:
+      - "8015:8015"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8015 --reload
+
+  eval-service:
+    build:
+      context: ./backend
+      dockerfile: eval_service/Dockerfile
+    ports:
+      - "8016:8016"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+      - AGENT_SERVICE_URL=http://agent-service:8013
+      - LOGIC_SERVICE_URL=http://logic-service:8012
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8016 --reload
+
+  search-service:
+    build:
+      context: ./backend
+      dockerfile: search_service/Dockerfile
+    ports:
+      - "8018:8018"
+    environment:
+      - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8018 --reload
+
+  data-quality-service:
+    build:
+      context: ./backend
+      dockerfile: data_quality_service/Dockerfile
+    ports:
+      - "8019:8019"
+    environment:
+      - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8019 --reload
+
+  collaboration-service:
+    build:
+      context: ./backend
+      dockerfile: collaboration_service/Dockerfile
+    ports:
+      - "8020:8020"
+    environment:
+      - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8020 --reload
+
+  api-gateway-service:
+    build:
+      context: ./backend
+      dockerfile: api_gateway_service/Dockerfile
+    ports:
+      - "8021:8021"
+    environment:
+      - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8021 --reload
+
+  admin-service:
+    build:
+      context: ./backend
+      dockerfile: admin_service/Dockerfile
+    ports:
+      - "8022:8022"
+    environment:
+      - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8022 --reload
+
+  # ─── Sepsis Test Dataset Service (isolated, no DB) ──────────────────────────
+  sepsis-service:
+    build:
+      context: ./backend/sepsis_service
+      dockerfile: Dockerfile
+    ports:
+      - "8023:8023"
+    environment:
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+    volumes:
+      - sepsis-data:/app/data
+    networks:
+      - nexus-net
+
+  lineage-service:
+    build:
+      context: ./backend
+      dockerfile: lineage_service/Dockerfile
+    ports:
+      - "8017:8017"
+    environment:
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+      - CONNECTOR_SERVICE_URL=http://connector-service:8001
+      - PIPELINE_SERVICE_URL=http://pipeline-service:8002
+      - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
+      - LOGIC_SERVICE_URL=http://logic-service:8012
+      - AGENT_SERVICE_URL=http://agent-service:8013
+    depends_on:
+      - connector-service
+      - ontology-service
+      - agent-service
+    networks:
+      - nexus-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8017 --reload
 
   # ─── Nexus Apps ─────────────────────────────────────────────────────────────
   project-management-service:
@@ -356,10 +553,40 @@ services:
     networks:
       - nexus-net
 
+  # ─── Backup ─────────────────────────────────────────────────────────────────
+  backup-service:
+    image: postgres:16-alpine
+    volumes:
+      - ./scripts/backup.sh:/backup.sh:ro
+      - nexus_backups:/var/backups/nexus
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-nexus}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-nexus_pass}
+      - POSTGRES_HOST=postgres
+      - TIMESCALE_HOST=timescaledb
+      - BACKUP_DIR=/var/backups/nexus
+      - RETENTION_DAYS=30
+      - BACKUP_ENCRYPTION_KEY=${BACKUP_ENCRYPTION_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    entrypoint: >
+      sh -c "
+        echo '0 2 * * * /backup.sh >> /var/log/backup.log 2>&1' | crontab - &&
+        crond -f -l 8
+      "
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   timescale_data:
   redis_data:
+  nexus_backups:
+  sepsis-data:
 
 networks:
   nexus-net:

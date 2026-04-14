@@ -1,8 +1,23 @@
 import { create } from 'zustand';
 import { Pipeline, PipelineNode, PipelineEdge } from '../types/pipeline';
 import { useRunLogStore } from './runLogStore';
+import { getTenantId } from './authStore';
 
 const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
+
+// ─── Schedule Interface ──────────────────────────────────────────────────────
+
+export interface PipelineSchedule {
+  id: string;
+  pipeline_id: string;
+  tenant_id: string;
+  name: string;
+  cron_expression: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -47,6 +62,7 @@ interface PipelineStoreState {
   selectedPipelineId: string | null;
   loading: boolean;
   error: string | null;
+  schedules: PipelineSchedule[];
 
   fetchPipelines: () => Promise<void>;
   selectPipeline: (id: string) => void;
@@ -56,6 +72,11 @@ interface PipelineStoreState {
   removePipeline: (id: string) => Promise<void>;
   runPipeline: (id: string) => Promise<{ run_id: string; status: string }>;
   setPipelines: (pipelines: Pipeline[]) => void;
+  fetchSchedules: (pipelineId: string) => Promise<void>;
+  createSchedule: (pipelineId: string, data: { name: string; cron_expression: string; enabled?: boolean }) => Promise<void>;
+  updateSchedule: (pipelineId: string, scheduleId: string, data: Partial<{ name: string; cron_expression: string; enabled: boolean }>) => Promise<void>;
+  deleteSchedule: (pipelineId: string, scheduleId: string) => Promise<void>;
+  runScheduleNow: (pipelineId: string, scheduleId: string) => Promise<void>;
 }
 
 export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
@@ -63,11 +84,12 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   selectedPipelineId: null,
   loading: false,
   error: null,
+  schedules: [],
 
   fetchPipelines: async () => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${PIPELINE_API}/pipelines`);
+      const res = await fetch(`${PIPELINE_API}/pipelines`, { headers: { 'x-tenant-id': getTenantId() } });
       if (!res.ok) throw new Error(`Failed to fetch pipelines: ${res.status}`);
       const data = await res.json();
       const pipelines = data.map((item: Record<string, unknown>) => snakeToCamel(item) as unknown as Pipeline);
@@ -83,7 +105,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     const body = camelToSnake(pipeline as unknown as Record<string, unknown>);
     const res = await fetch(`${PIPELINE_API}/pipelines`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Failed to create pipeline: ${res.status}`);
@@ -100,7 +122,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     const body = camelToSnake(merged as unknown as Record<string, unknown>);
     const res = await fetch(`${PIPELINE_API}/pipelines/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Failed to update pipeline: ${res.status}`);
@@ -118,7 +140,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     const body = camelToSnake(merged as unknown as Record<string, unknown>);
     const res = await fetch(`${PIPELINE_API}/pipelines/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Failed to update pipeline nodes: ${res.status}`);
@@ -130,7 +152,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   },
 
   removePipeline: async (id: string) => {
-    const res = await fetch(`${PIPELINE_API}/pipelines/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${PIPELINE_API}/pipelines/${id}`, { method: 'DELETE', headers: { 'x-tenant-id': getTenantId() } });
     if (!res.ok && res.status !== 204) throw new Error(`Failed to delete pipeline: ${res.status}`);
     set((state) => ({ pipelines: state.pipelines.filter((p) => p.id !== id) }));
   },
@@ -149,7 +171,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     let runId: string | undefined;
     let kickError: string | undefined;
     try {
-      const res = await fetch(`${PIPELINE_API}/pipelines/${id}/run`, { method: 'POST' });
+      const res = await fetch(`${PIPELINE_API}/pipelines/${id}/run`, { method: 'POST', headers: { 'x-tenant-id': getTenantId() } });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
       runId = data.run_id;
@@ -183,7 +205,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
-        const r = await fetch(`${PIPELINE_API}/pipelines/${id}/runs/${runId}/audit`);
+        const r = await fetch(`${PIPELINE_API}/pipelines/${id}/runs/${runId}/audit`, { headers: { 'x-tenant-id': getTenantId() } });
         if (r.ok) {
           audit = await r.json();
           if ((audit.status as string) !== 'RUNNING') break;
@@ -235,4 +257,54 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
   },
 
   setPipelines: (pipelines) => set({ pipelines }),
+
+  fetchSchedules: async (pipelineId) => {
+    const r = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    const data = await r.json();
+    const fetched: PipelineSchedule[] = Array.isArray(data) ? data : [];
+    // Merge: replace schedules for this pipeline, keep others
+    set((s) => ({
+      schedules: [
+        ...s.schedules.filter((sc) => sc.pipeline_id !== pipelineId),
+        ...fetched,
+      ],
+    }));
+  },
+
+  createSchedule: async (pipelineId, data) => {
+    const r = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) throw new Error(`Failed to create schedule: ${r.status}`);
+    await get().fetchSchedules(pipelineId);
+  },
+
+  updateSchedule: async (pipelineId, scheduleId, data) => {
+    const r = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules/${scheduleId}`, {
+      method: 'PUT',
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) throw new Error(`Failed to update schedule: ${r.status}`);
+    await get().fetchSchedules(pipelineId);
+  },
+
+  deleteSchedule: async (pipelineId, scheduleId) => {
+    await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules/${scheduleId}`, {
+      method: 'DELETE',
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    await get().fetchSchedules(pipelineId);
+  },
+
+  runScheduleNow: async (pipelineId, scheduleId) => {
+    await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules/${scheduleId}/run-now`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+  },
 }));

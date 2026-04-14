@@ -140,4 +140,17 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'objectTypeId', label: 'Object Type', type: 'select', options: [] },
     ],
   },
+  {
+    type: 'AGENT_RUN',
+    label: 'Agent Run',
+    description: 'Fire an AI agent with the records just written. The agent analyzes them and can propose actions (urgency alerts, escalations, etc.) that appear in the Human Actions queue — no polling, no cron.',
+    color: '#7C3AED',
+    iconName: 'Bot',
+    configFields: [
+      { key: 'agentId', label: 'Agent', type: 'select', options: [], required: true },
+      { key: 'prompt', label: 'Instructions', type: 'textarea', placeholder: 'e.g. Analyze these records and flag any that are urgent, fraudulent, or require escalation.' },
+      { key: 'batchSize', label: 'Max Records per Run', type: 'number', default: 50 },
+      { key: 'runAlways', label: 'Run even when no new records', type: 'boolean', default: false },
+    ],
+  },
 ];

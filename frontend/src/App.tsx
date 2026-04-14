@@ -4,21 +4,25 @@ import { TenantProvider, useAuth } from './shell/TenantContext';
 import LoginPage from './pages/LoginPage';
 import ChangePasswordPage from './pages/ChangePasswordPage';
 import SSOCallbackPage from './pages/SSOCallbackPage';
+import { useUiStore } from './store/uiStore';
+import { SearchModal } from './shell/SearchModal';
 
 const ConnectorGrid   = lazy(() => import('./modules/connectors/ConnectorGrid'));
 const OntologyGraph   = lazy(() => import('./modules/ontology/OntologyGraph'));
 const PipelineBuilder = lazy(() => import('./modules/pipeline/PipelineBuilder'));
-const LineageCanvas   = lazy(() => import('./modules/lineage/LineageCanvas'));
-const EventLog        = lazy(() => import('./modules/events/EventLog'));
-const ProcessMining   = lazy(() => import('./modules/process/ProcessMining'));
 const AppsPage        = lazy(() => import('./modules/apps/AppsPage'));
 const ProjectsModule  = lazy(() => import('./modules/projects/ProjectsModule'));
 const FinanceModule   = lazy(() => import('./modules/finance/FinanceModule'));
-const UsersPage       = lazy(() => import('./modules/users/UsersPage'));
 const LogicStudio     = lazy(() => import('./modules/logic/LogicStudio'));
 const AgentStudio     = lazy(() => import('./modules/agents/AgentStudio'));
 const HumanActions    = lazy(() => import('./modules/agents/HumanActions'));
 const UtilitiesPage   = lazy(() => import('./modules/utilities/UtilitiesPage'));
+const SettingsPage    = lazy(() => import('./modules/settings/SettingsPage'));
+const EvalsPage       = lazy(() => import('./modules/evals/EvalsPage'));
+const ActivityPage    = lazy(() => import('./modules/activity/ActivityPage'));
+const DataHubPage     = lazy(() => import('./modules/data/DataHubPage'));
+const AdminHubPage    = lazy(() => import('./modules/admin/AdminHubPage'));
+const ValuePage       = lazy(() => import('./modules/value/ValuePage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -72,23 +76,16 @@ const renderPage = (page: string): React.ReactNode => {
     case 'connectors':
       return <Suspense fallback={<LoadingSpinner message="Loading connectors..." />}><ConnectorGrid /></Suspense>;
     case 'ontology':
+    case 'graph':
       return <Suspense fallback={<LoadingSpinner message="Loading ontology..." />}><OntologyGraph /></Suspense>;
     case 'pipelines':
       return <Suspense fallback={<LoadingSpinner message="Loading pipelines..." />}><PipelineBuilder /></Suspense>;
-    case 'lineage':
-      return <Suspense fallback={<LoadingSpinner message="Loading lineage..." />}><LineageCanvas /></Suspense>;
-    case 'events':
-      return <Suspense fallback={<LoadingSpinner message="Loading event log..." />}><EventLog /></Suspense>;
     case 'apps':
       return <Suspense fallback={<LoadingSpinner message="Loading apps..." />}><AppsPage /></Suspense>;
     case 'projects':
       return <Suspense fallback={<LoadingSpinner message="Loading projects..." />}><ProjectsModule /></Suspense>;
     case 'finance':
       return <Suspense fallback={<LoadingSpinner message="Loading finance..." />}><FinanceModule /></Suspense>;
-    case 'users':
-      return <Suspense fallback={<LoadingSpinner message="Loading users..." />}><UsersPage /></Suspense>;
-    case 'process':
-      return <Suspense fallback={<LoadingSpinner message="Loading process mining..." />}><ProcessMining /></Suspense>;
     case 'logic':
       return <Suspense fallback={<LoadingSpinner message="Loading Logic Studio..." />}><LogicStudio /></Suspense>;
     case 'agents':
@@ -98,10 +95,33 @@ const renderPage = (page: string): React.ReactNode => {
     case 'utilities':
       return <Suspense fallback={<LoadingSpinner message="Loading utilities..." />}><UtilitiesPage /></Suspense>;
     case 'settings':
-      return <ComingSoonPage title="Settings" />;
+      return <Suspense fallback={<LoadingSpinner message="Loading settings..." />}><SettingsPage /></Suspense>;
+    case 'evals':
+      return <Suspense fallback={<LoadingSpinner message="Loading Evals..." />}><EvalsPage /></Suspense>;
+    case 'value':
+      return <Suspense fallback={<LoadingSpinner message="Loading Value Monitor..." />}><ValuePage /></Suspense>;
+    case 'activity':
+      return <Suspense fallback={<LoadingSpinner message="Loading Activity..." />}><ActivityPage /></Suspense>;
+    case 'data':
+      return <Suspense fallback={<LoadingSpinner message="Loading Data..." />}><DataHubPage /></Suspense>;
+    case 'admin':
+      return <Suspense fallback={<LoadingSpinner message="Loading Admin..." />}><AdminHubPage /></Suspense>;
     default:
       return <Suspense fallback={<LoadingSpinner />}><ConnectorGrid /></Suspense>;
   }
+};
+
+// ── Theme + density sync ───────────────────────────────────────────────────
+
+const ThemeSync: React.FC = () => {
+  const { theme, density } = useUiStore();
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+  useEffect(() => {
+    document.documentElement.setAttribute('data-density', density);
+  }, [density]);
+  return null;
 };
 
 // ── Auth gate ──────────────────────────────────────────────────────────────
@@ -118,9 +138,12 @@ const AuthGate: React.FC = () => {
   if (currentUser?.mustChangePassword) return <ChangePasswordPage />;
 
   return (
-    <AppShell>
-      {(page) => renderPage(page)}
-    </AppShell>
+    <>
+      <SearchModal />
+      <AppShell>
+        {(page) => renderPage(page)}
+      </AppShell>
+    </>
   );
 };
 
@@ -129,6 +152,7 @@ const AuthGate: React.FC = () => {
 function App() {
   return (
     <TenantProvider>
+      <ThemeSync />
       <AuthGate />
     </TenantProvider>
   );

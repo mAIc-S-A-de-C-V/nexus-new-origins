@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator } from '../../types/app';
 import { useAppStore } from '../../store/appStore';
+import { getTenantId } from '../../store/authStore';
 import AppCanvas from './AppCanvas';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
@@ -39,7 +40,7 @@ function useRecordsForFilter(objectTypeId?: string) {
   useEffect(() => {
     if (!objectTypeId) { setRecords([]); return; }
     fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/records`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     })
       .then((r) => r.json())
       .then((d) => setRecords(d.records || []))
@@ -51,7 +52,7 @@ function useRecordsForFilter(objectTypeId?: string) {
 function useObjectTypes() {
   const [ots, setOts] = useState<OntologyType[]>([]);
   useEffect(() => {
-    fetch(`${ONTOLOGY_API}/object-types`, { headers: { 'x-tenant-id': 'tenant-001' } })
+    fetch(`${ONTOLOGY_API}/object-types`, { headers: { 'x-tenant-id': getTenantId() } })
       .then((r) => r.json())
       .then((d) => setOts((d.object_types || d || []).map((o: Record<string, unknown>) => ({
         id: o.id,
@@ -359,7 +360,7 @@ function useRecords(objectTypeId?: string) {
   useEffect(() => {
     if (!objectTypeId) return;
     fetch(`${ONTOLOGY_API2}/object-types/${objectTypeId}/records`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     }).then((r) => r.json()).then((d) => setRecords(d.records || [])).catch(() => {});
   }, [objectTypeId]);
   return records;
@@ -1316,7 +1317,7 @@ const SyncPanel: React.FC<{ app: NexusApp; components: AppComponent[]; objectTyp
       // Trigger a sync by calling the ontology service to refresh records
       await fetch(`${ONTOLOGY_API}/object-types/${otId}/records/refresh`, {
         method: 'POST',
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       }).catch(() => {});
       setLastSync(p => ({ ...p, [otId]: new Date().toISOString() }));
     } finally {
@@ -1462,7 +1463,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
     let sampleRows: Record<string, unknown>[] = [];
     try {
       const r = await fetch(`${ONTOLOGY_API2}/object-types/${otId}/records`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       const d = await r.json();
       sampleRows = (d.records || []).slice(0, 10);

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 from database import PgSession, TsSession
+from webhooks import deliver_to_webhooks
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,15 @@ async def _record_fired(pg, rule_id: str, rule_name: str, rule_type: str,
     )
     await pg.commit()
     log.info("Alert fired: rule=%s type=%s message=%s", rule_name, rule_type, message)
+
+    await deliver_to_webhooks(tenant_id, {
+        "rule_id": rule_id,
+        "rule_name": rule_name,
+        "rule_type": rule_type,
+        "severity": severity,
+        "message": message,
+        "details": details,
+    })
 
 
 # ── Rule evaluators ────────────────────────────────────────────────────────────

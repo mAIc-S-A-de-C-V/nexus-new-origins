@@ -41,6 +41,7 @@ class NodeType(str, Enum):
     VALIDATE = "VALIDATE"
     SINK_OBJECT = "SINK_OBJECT"
     SINK_EVENT = "SINK_EVENT"
+    AGENT_RUN = "AGENT_RUN"
 
 
 class PipelineStatus(str, Enum):

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { useProcessStore } from '../../store/processStore';
 import { usePipelineStore } from '../../store/pipelineStore';

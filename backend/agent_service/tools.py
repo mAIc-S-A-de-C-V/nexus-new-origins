@@ -7,45 +7,137 @@ import json
 from typing import Any
 import httpx
 
-ONTOLOGY_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
-LOGIC_URL = os.environ.get("LOGIC_SERVICE_URL", "http://logic-service:8012")
-AGENT_URL = os.environ.get("AGENT_SERVICE_URL", "http://agent-service:8013")
-UTILITY_URL = os.environ.get("UTILITY_SERVICE_URL", "http://utility-service:8014")
+ONTOLOGY_URL   = os.environ.get("ONTOLOGY_SERVICE_URL",   "http://ontology-service:8004")
+ANALYTICS_URL  = os.environ.get("ANALYTICS_SERVICE_URL",  "http://analytics-service:8015")
+LOGIC_URL      = os.environ.get("LOGIC_SERVICE_URL",      "http://logic-service:8012")
+AGENT_URL      = os.environ.get("AGENT_SERVICE_URL",      "http://agent-service:8013")
+UTILITY_URL    = os.environ.get("UTILITY_SERVICE_URL",    "http://utility-service:8014")
 
 
 # ── Tool definitions (sent to Claude as tools=[...]) ─────────────────────────
 
 TOOL_DEFINITIONS = {
-    "ontology_search": {
-        "name": "ontology_search",
-        "description": "Search for records of a specific object type in the ontology. Use this to look up entities like Deals, Contacts, Companies, etc.",
+    "list_object_types": {
+        "name": "list_object_types",
+        "description": "List all available object types in the ontology. Use this to discover what data exists before querying.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "get_object_schema": {
+        "name": "get_object_schema",
+        "description": (
+            "Get the field schema and a tiny sample (3–5 rows) for one object type. "
+            "Call this BEFORE query_records or count_records so you know the exact field names. "
+            "Never pass raw record data back in your reasoning — use it only to understand the schema."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "object_type": {
                     "type": "string",
-                    "description": "The name or displayName of the object type to search (e.g. 'Deal', 'Contact')",
-                },
-                "filter": {
-                    "type": "string",
-                    "description": "Optional simple filter expression like 'status == Closed Won' or 'owner == Alice'",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of records to return (default 10)",
-                    "default": 10,
+                    "description": "Name or displayName of the object type (e.g. 'Patient', 'SepsisEvent')",
                 },
             },
             "required": ["object_type"],
         },
     },
-    "list_object_types": {
-        "name": "list_object_types",
-        "description": "List all available object types in the ontology. Use this to discover what data exists.",
+    "query_records": {
+        "name": "query_records",
+        "description": (
+            "Execute a structured query against an object type. "
+            "You specify filters, optional aggregation, and optional group-by; "
+            "the system runs the query server-side and returns only the result. "
+            "Use count_records for totals. Use this for filtered lists or aggregated breakdowns. "
+            "NEVER use this to dump all records — always filter or aggregate."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "object_type": {
+                    "type": "string",
+                    "description": "Name or displayName of the object type to query",
+                },
+                "filters": {
+                    "type": "array",
+                    "description": "List of filter conditions. Each item: {field, op, value}. op options: eq, neq, gt, gte, lt, lte, contains, starts_with",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field": {"type": "string"},
+                            "op": {"type": "string", "enum": ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "starts_with"]},
+                            "value": {"type": "string"},
+                        },
+                        "required": ["field", "op", "value"],
+                    },
+                    "default": [],
+                },
+                "aggregate": {
+                    "type": "object",
+                    "description": "Optional aggregation: {function: COUNT|SUM|AVG|MIN|MAX, field: fieldName or *}",
+                    "properties": {
+                        "function": {"type": "string", "enum": ["COUNT", "SUM", "AVG", "MIN", "MAX"]},
+                        "field": {"type": "string"},
+                    },
+                },
+                "group_by": {
+                    "type": "string",
+                    "description": "Optional field name to group results by (use with aggregate)",
+                },
+                "order_by": {
+                    "type": "object",
+                    "description": "Optional sort: {field, direction: asc|desc}",
+                    "properties": {
+                        "field": {"type": "string"},
+                        "direction": {"type": "string", "enum": ["asc", "desc"]},
+                    },
+                },
+                "select_fields": {
+                    "type": "array",
+                    "description": "Optional list of field names to return. Omit to return all fields.",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 50, max 200)",
+                    "default": 50,
+                },
+            },
+            "required": ["object_type"],
+        },
+    },
+    "count_records": {
+        "name": "count_records",
+        "description": (
+            "Count records for an object type, with optional filters. "
+            "Use this whenever you need a total — do NOT use query_records just to count."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "object_type": {
+                    "type": "string",
+                    "description": "Name or displayName of the object type",
+                },
+                "filters": {
+                    "type": "array",
+                    "description": "Optional filter conditions (same format as query_records filters)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field": {"type": "string"},
+                            "op": {"type": "string"},
+                            "value": {"type": "string"},
+                        },
+                        "required": ["field", "op", "value"],
+                    },
+                    "default": [],
+                },
+            },
+            "required": ["object_type"],
         },
     },
     "logic_function_run": {
@@ -218,62 +310,173 @@ async def execute_tool(
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
-            if tool_name == "ontology_search":
-                object_type = tool_input.get("object_type", "")
-                limit = tool_input.get("limit", 10)
-                raw_filter = tool_input.get("filter", "")
-
-                # Resolve object type ID
+            # ── Shared helper: resolve object type name → {id, name, displayName} ──
+            async def _resolve_ot(object_type: str) -> dict | None:
                 r = await client.get(f"{ONTOLOGY_URL}/object-types", headers=headers)
                 ot_list = r.json() if r.is_success else []
-                ot = next(
+                return next(
                     (o for o in ot_list if o.get("name") == object_type or o.get("displayName") == object_type),
                     None,
                 )
-                if not ot:
-                    return {"error": f"Object type '{object_type}' not found"}
 
-                # Enforce knowledge scope
-                if knowledge_scope is not None and ot["id"] not in scope_by_id:
-                    allowed = [e.get("label", e["object_type_id"]) for e in knowledge_scope]
-                    return {"error": f"Object type '{object_type}' is outside this agent's data scope. Allowed types: {', '.join(allowed)}"}
-
-                r2 = await client.get(
-                    f"{ONTOLOGY_URL}/object-types/{ot['id']}/records",
-                    params={"limit": max(limit * 5, 100)},
-                    headers=headers,
-                )
-                data = r2.json() if r2.is_success else {}
-                records = data.get("records", [])
-
-                # Apply scope-level filter if defined
-                scope_entry = scope_by_id.get(ot["id"], {})
-                scope_filter = scope_entry.get("filter")
-                if scope_filter:
-                    sf, sop, sv = scope_filter.get("field"), scope_filter.get("op"), str(scope_filter.get("value", ""))
-                    if sf and sop:
-                        if sop in ("==", "="):
-                            records = [rec for rec in records if str(rec.get(sf, "")) == sv]
-                        elif sop == "!=":
-                            records = [rec for rec in records if str(rec.get(sf, "")) != sv]
-
-                # Apply user-specified filter on top
-                if raw_filter:
-                    import re
-                    m = re.match(r'(\w+)\s*==\s*(.+)', raw_filter.strip())
-                    if m:
-                        field, value = m.group(1), m.group(2).strip().strip('"\'')
-                        records = [rec for rec in records if str(rec.get(field, "")) == value]
-
-                return {"records": records[:limit], "count": len(records), "object_type": object_type}
-
-            elif tool_name == "list_object_types":
+            if tool_name == "list_object_types":
                 r = await client.get(f"{ONTOLOGY_URL}/object-types", headers=headers)
                 all_types = r.json() if r.is_success else []
-                # Filter to scope if restricted
                 if knowledge_scope is not None:
                     all_types = [t for t in all_types if t["id"] in scope_by_id]
-                return {"object_types": [{"id": t["id"], "name": t.get("name"), "displayName": t.get("displayName")} for t in all_types]}
+                # Include record_count from analytics so Claude can prioritize which types to inspect
+                result_types = []
+                for t in all_types:
+                    entry: dict[str, Any] = {"id": t["id"], "name": t.get("name"), "displayName": t.get("displayName")}
+                    try:
+                        rf = await client.get(
+                            f"{ANALYTICS_URL}/explore/object-types/{t['id']}/fields",
+                            headers=headers,
+                            timeout=5,
+                        )
+                        if rf.is_success:
+                            entry["record_count"] = rf.json().get("record_count", 0)
+                    except Exception:
+                        pass
+                    result_types.append(entry)
+                return {"object_types": result_types}
+
+            elif tool_name == "get_object_schema":
+                object_type = tool_input.get("object_type", "")
+                ot = await _resolve_ot(object_type)
+                if not ot:
+                    return {"error": f"Object type '{object_type}' not found. Call list_object_types first."}
+
+                if knowledge_scope is not None and ot["id"] not in scope_by_id:
+                    allowed = [e.get("label", e["object_type_id"]) for e in knowledge_scope]
+                    return {"error": f"Object type '{object_type}' is outside this agent's data scope. Allowed: {', '.join(allowed)}"}
+
+                # Get fields from analytics service
+                ana_headers = {**headers}
+                r_fields = await client.get(
+                    f"{ANALYTICS_URL}/explore/object-types/{ot['id']}/fields",
+                    headers=ana_headers,
+                )
+                fields_data = r_fields.json() if r_fields.is_success else {}
+                fields = fields_data.get("fields", [])
+                record_count = fields_data.get("record_count", 0)
+
+                # Get 3 sample rows
+                r_sample = await client.get(
+                    f"{ANALYTICS_URL}/explore/object-types/{ot['id']}/sample",
+                    params={"limit": 3},
+                    headers=ana_headers,
+                )
+                sample_rows = r_sample.json() if r_sample.is_success else []
+
+                return {
+                    "object_type": ot.get("displayName") or ot.get("name"),
+                    "object_type_id": ot["id"],
+                    "fields": fields,
+                    "record_count": record_count,
+                    "sample_rows": sample_rows,
+                    "note": "Use query_records or count_records to fetch actual data. Do NOT ask for more samples.",
+                }
+
+            elif tool_name == "query_records":
+                object_type = tool_input.get("object_type", "")
+                ot = await _resolve_ot(object_type)
+                if not ot:
+                    return {"error": f"Object type '{object_type}' not found. Call list_object_types first."}
+
+                if knowledge_scope is not None and ot["id"] not in scope_by_id:
+                    allowed = [e.get("label", e["object_type_id"]) for e in knowledge_scope]
+                    return {"error": f"Object type '{object_type}' is outside this agent's data scope. Allowed: {', '.join(allowed)}"}
+
+                filters = tool_input.get("filters", [])
+
+                # Inject scope-level filter if defined
+                scope_entry = scope_by_id.get(ot["id"], {})
+                scope_filter = scope_entry.get("filter")
+                if scope_filter and scope_filter.get("field"):
+                    op_map = {"==": "eq", "=": "eq", "!=": "neq"}
+                    scope_op = op_map.get(scope_filter.get("op", "eq"), scope_filter.get("op", "eq"))
+                    filters = [{"field": scope_filter["field"], "op": scope_op, "value": str(scope_filter.get("value", ""))}] + filters
+
+                limit = min(tool_input.get("limit", 50), 200)
+
+                body: dict[str, Any] = {
+                    "object_type_id": ot["id"],
+                    "filters": filters,
+                    "limit": limit,
+                    "offset": tool_input.get("offset", 0),
+                    "select_fields": tool_input.get("select_fields", []),
+                }
+                if tool_input.get("aggregate"):
+                    body["aggregate"] = tool_input["aggregate"]
+                if tool_input.get("group_by"):
+                    body["group_by"] = tool_input["group_by"]
+                if tool_input.get("order_by"):
+                    body["order_by"] = tool_input["order_by"]
+
+                r = await client.post(
+                    f"{ANALYTICS_URL}/explore/query",
+                    json=body,
+                    headers=headers,
+                    timeout=30,
+                )
+                if not r.is_success:
+                    return {"error": f"Query failed: {r.text}"}
+
+                result = r.json()
+                # result shape: {rows: [...], total: N, ...}
+                rows = result.get("rows", result if isinstance(result, list) else [])
+                total = result.get("total", len(rows))
+                return {
+                    "rows": rows,
+                    "returned": len(rows),
+                    "total_matched": total,
+                    "object_type": object_type,
+                }
+
+            elif tool_name == "count_records":
+                object_type = tool_input.get("object_type", "")
+                ot = await _resolve_ot(object_type)
+                if not ot:
+                    return {"error": f"Object type '{object_type}' not found. Call list_object_types first."}
+
+                if knowledge_scope is not None and ot["id"] not in scope_by_id:
+                    allowed = [e.get("label", e["object_type_id"]) for e in knowledge_scope]
+                    return {"error": f"Object type '{object_type}' is outside this agent's data scope. Allowed: {', '.join(allowed)}"}
+
+                filters = tool_input.get("filters", [])
+
+                scope_entry = scope_by_id.get(ot["id"], {})
+                scope_filter = scope_entry.get("filter")
+                if scope_filter and scope_filter.get("field"):
+                    op_map = {"==": "eq", "=": "eq", "!=": "neq"}
+                    scope_op = op_map.get(scope_filter.get("op", "eq"), scope_filter.get("op", "eq"))
+                    filters = [{"field": scope_filter["field"], "op": scope_op, "value": str(scope_filter.get("value", ""))}] + filters
+
+                body = {
+                    "object_type_id": ot["id"],
+                    "filters": filters,
+                    "aggregate": {"function": "COUNT", "field": "*"},
+                    "limit": 1,
+                }
+                r = await client.post(
+                    f"{ANALYTICS_URL}/explore/query",
+                    json=body,
+                    headers=headers,
+                    timeout=30,
+                )
+                if not r.is_success:
+                    return {"error": f"Count query failed: {r.text}"}
+
+                result = r.json()
+                # analytics /explore/query with aggregate returns {rows:[{agg_value:N}], total:N}
+                rows = result.get("rows", result if isinstance(result, list) else [])
+                if rows and isinstance(rows[0], dict):
+                    count = rows[0].get("agg_value", rows[0].get("count", result.get("total", 0)))
+                else:
+                    count = result.get("total", 0)
+
+                return {"total": int(count), "object_type": object_type}
 
             elif tool_name == "logic_function_run":
                 function_name = tool_input.get("function_name", "")
@@ -382,7 +585,7 @@ async def execute_tool(
 
                 r2 = await client.get(
                     f"{ONTOLOGY_URL}/object-types/{ot['id']}/records",
-                    params={"limit": limit},
+                    params={"limit": min(limit, 500)},
                     headers=headers,
                 )
                 data = r2.json() if r2.is_success else {}

@@ -1,0 +1,124 @@
+# Production overrides — use with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+version: "3.9"
+
+services:
+  auth-service:
+    environment:
+      - SKIP_AUTH=false
+      - JWT_ISSUER=${JWT_ISSUER:-https://nexus.internal/auth}
+      - COOKIE_SECURE=true
+      - JWT_PRIVATE_KEY_PEM=${JWT_PRIVATE_KEY_PEM}
+
+  connector-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  pipeline-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  ontology-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  logic-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  agent-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  audit-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  inference-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  alert-engine-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  project-management-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  finance-service:
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+
+  # Internal-only services — remove external port bindings in production.
+  # These are only reachable within the nexus-net Docker network.
+  schema-registry:
+    ports: []
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  correlation-engine:
+    ports: []
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  process-engine-service:
+    ports: []
+
+  utility-service:
+    ports: []
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
+
+  # Databases — remove external port bindings in production (internal only)
+  postgres:
+    ports: []
+
+  timescaledb:
+    ports: []
+
+  redis:
+    ports: []
+
+  backup-service:
+    environment:
+      - BACKUP_ENCRYPTION_KEY=${BACKUP_ENCRYPTION_KEY}
+      - RETENTION_DAYS=30
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - frontend
+      - auth-service
+    networks:
+      - nexus-net
+    restart: unless-stopped

@@ -74,6 +74,7 @@ async def write_audit_event(
     event: AuditEvent,
     x_tenant_id: Optional[str] = Header(None),
     x_internal: Optional[str] = Header(None),
+    x_service_name: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_session),
 ):
     if not x_internal:
@@ -83,6 +84,9 @@ async def write_audit_event(
         )
     tenant_id = x_tenant_id or "tenant-001"
     event.tenant_id = tenant_id
+
+    # Track which service wrote the audit event for traceability (ISO 27001 A.8.15)
+    source_service = x_service_name or "unknown"
 
     row = AuditEventRow(
         id=event.id,
@@ -102,6 +106,21 @@ async def write_audit_event(
     )
     db.add(row)
     await db.commit()
+
+    import logging as _logging
+    _log = _logging.getLogger("audit.write")
+    _log.info(
+        "audit_event_written",
+        extra={
+            "source_service": source_service,
+            "event_id": event.id,
+            "action": event.action,
+            "actor_id": event.actor_id,
+            "resource_type": event.resource_type,
+            "tenant_id": tenant_id,
+        }
+    )
+
     return event
 
 

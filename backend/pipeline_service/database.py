@@ -1,7 +1,7 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, String, Integer, DateTime, JSON, func
+from sqlalchemy import Column, String, Integer, DateTime, JSON, Boolean, Text, func
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -42,6 +42,19 @@ class PipelineRunRow(Base):
     node_audits = Column(JSON, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class PipelineScheduleRow(Base):
+    __tablename__ = "pipeline_schedules"
+    id = Column(String, primary_key=True)
+    pipeline_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    cron_expression = Column(String, nullable=False)   # e.g. "0 */6 * * *"
+    enabled = Column(Boolean, nullable=False, default=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 async def init_db():

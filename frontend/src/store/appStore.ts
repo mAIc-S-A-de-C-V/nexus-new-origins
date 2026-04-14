@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { NexusApp } from '../types/app';
+import { getTenantId } from './authStore';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
@@ -34,7 +35,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ loading: true });
     try {
       const resp = await fetch(`${ONTOLOGY_API}/apps`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -53,7 +54,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-tenant-id': 'tenant-001',
+        'x-tenant-id': getTenantId(),
       },
       body: JSON.stringify({
         name: app.name,
@@ -74,7 +75,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'x-tenant-id': 'tenant-001',
+        'x-tenant-id': getTenantId(),
       },
       body: JSON.stringify({
         name: updates.name,
@@ -91,7 +92,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   deleteApp: async (id: string) => {
     const resp = await fetch(`${ONTOLOGY_API}/apps/${id}`, {
       method: 'DELETE',
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     if (!resp.ok && resp.status !== 404) throw new Error(`Failed to delete app: ${resp.status}`);
     set((s) => ({ apps: s.apps.filter((a) => a.id !== id) }));

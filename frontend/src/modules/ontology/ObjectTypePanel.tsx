@@ -1,19 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search, GitBranch, Play, ArrowRight, Clock, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { ObjectType, ObjectTypeVersion, SchemaDiff } from '../../types/ontology';
+import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search, GitBranch, Play, ArrowRight, Clock, AlertTriangle, CheckCircle2, Zap, Share2, Plus, Link2 } from 'lucide-react';
+import { useGraphStore } from '../../store/graphStore';
+import { useNavigationStore } from '../../store/navigationStore';
+import { ObjectType, ObjectTypeVersion, SchemaDiff, OntologyLink, SemanticType } from '../../types/ontology';
 import { PropertyList } from './PropertyList';
 import { SchemaDiffViewer } from './SchemaDiffViewer';
 import { Badge } from '../../design-system/components/Badge';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { usePipelineStore } from '../../store/pipelineStore';
 import { nodeColors } from '../../design-system/tokens';
+import { getTenantId } from '../../store/authStore';
+import { CommentsPanel } from '../../components/CommentsPanel';
+import { CheckpointGate } from '../audit/CheckpointGate';
 
 const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
+const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
 
-type TabId = 'properties' | 'data' | 'pipeline' | 'versions' | 'diff' | 'links';
+type TabId = 'properties' | 'data' | 'pipeline' | 'versions' | 'diff' | 'links' | 'correlate' | 'pii' | 'quality' | 'comments';
 
 interface ObjectTypePanelProps {
   objectType: ObjectType;
@@ -26,6 +32,10 @@ const BASE_TABS: { id: TabId; label: string }[] = [
   { id: 'versions', label: 'Version History' },
   { id: 'diff', label: 'Schema Diff' },
   { id: 'links', label: 'Links' },
+  { id: 'correlate', label: 'Correlate' },
+  { id: 'pii', label: 'PII Scan' },
+  { id: 'quality', label: 'Quality' },
+  { id: 'comments', label: 'Comments' },
 ];
 
 const healthConfig: Record<string, { label: string; bg: string; text: string }> = {
@@ -34,7 +44,868 @@ const healthConfig: Record<string, { label: string; bg: string; text: string }> 
   degraded: { label: 'Degraded', bg: '#FEF2F2', text: '#991B1B' },
 };
 
+// ── Correlate Tab ──────────────────────────────────────────────────────────
+
+const CORRELATION_API = import.meta.env.VITE_CORRELATION_ENGINE_URL || 'http://localhost:8008';
+
+interface CorrMatch {
+  object_type_id: string;
+  object_type_name: string;
+  composite_score: number;
+  field_name_overlap: number;
+  semantic_type_overlap: number;
+  action: string;
+  suggested_join_key?: { incoming: string; existing: string } | null;
+  pipeline_hint?: string | null;
+}
+
+const CorrelateTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
+  const [running, setRunning] = useState(false);
+  const [matches, setMatches] = useState<CorrMatch[]>([]);
+  const [ran, setRan] = useState(false);
+  const [expandedHint, setExpandedHint] = useState<string | null>(null);
+
+  const run = async () => {
+    setRunning(true);
+    setMatches([]);
+    try {
+      // 1. Fetch all other object types from ontology
+      const otRes = await fetch(`${ONTOLOGY_API}/object-types`, { headers: { 'x-tenant-id': getTenantId() } });
+      if (!otRes.ok) return;
+      const otData = await otRes.json();
+      const allTypes: ObjectType[] = (Array.isArray(otData) ? otData : otData.objectTypes || [])
+        .filter((ot: ObjectType) => ot.id !== objectType.id);
+
+      if (allTypes.length === 0) return;
+
+      // 2. Build a fake InferenceResult from this objectType's properties
+      //    so the engine can compare them semantically
+      const schemaA = {
+        id: objectType.id,
+        connector_id: objectType.id,
+        suggested_object_type_name: objectType.name,
+        overall_confidence: 0.9,
+        inferred_at: new Date().toISOString(),
+        model_version: 'manual',
+        raw_schema_hash: objectType.id,
+        warnings: [],
+        fields: (objectType.properties || []).map((p) => ({
+          source_field: p.name,
+          suggested_name: p.name,
+          semantic_type: p.semanticType || 'TEXT',
+          data_type: p.dataType || 'string',
+          pii_level: p.piiLevel || 'NONE',
+          confidence: p.inferenceConfidence ?? 0.8,
+          reasoning: '',
+          sample_values: p.sampleValues || [],
+          nullable: !p.required,
+        })),
+      };
+
+      // 3. Call /score-all
+      const corrRes = await fetch(`${CORRELATION_API}/score-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+        body: JSON.stringify({ schema_a: schemaA, object_types: allTypes }),
+      });
+      if (!corrRes.ok) return;
+
+      const corrData = await corrRes.json();
+      // Show all types — sort by score, filter trivially low ones (< 5%)
+      const all: CorrMatch[] = (corrData.matches || []).filter((m: CorrMatch) => m.composite_score >= 0.05);
+      setMatches(all);
+      setRan(true);
+    } catch {
+      setRan(true);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const actionStyle = (action: string) => {
+    if (action === 'enrich') return { bg: '#DBEAFE', color: '#1D4ED8', label: 'ENRICH' };
+    if (action === 'link') return { bg: '#EDE9FE', color: '#6D28D9', label: 'LINK' };
+    return { bg: '#DCFCE7', color: '#15803D', label: 'NEW TYPE' };
+  };
+
+  const scoreColor = (s: number) => s >= 0.65 ? '#059669' : s >= 0.35 ? '#D97706' : '#94A3B8';
+
+  return (
+    <div style={{ padding: '16px 0', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ fontSize: '12px', color: '#64748B', lineHeight: 1.5 }}>
+        Find related object types in your ontology — types that share semantic overlap with <strong style={{ color: '#0D1117' }}>{objectType.displayName}</strong> and could be enriched, linked, or merged.
+      </div>
+      <button
+        onClick={run}
+        disabled={running}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, width: 'fit-content',
+          padding: '8px 16px', backgroundColor: running ? '#F1F5F9' : '#7C3AED',
+          color: running ? '#94A3B8' : '#FFF', border: 'none', borderRadius: 4,
+          fontSize: 13, fontWeight: 500, cursor: running ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {running
+          ? <><div style={{ width: 12, height: 12, border: '2px solid #CBD5E1', borderTopColor: '#7C3AED', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} /> Scanning ontology…</>
+          : <><Zap size={13} /> Run Correlation Scan</>}
+      </button>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      {ran && matches.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '24px 0', color: '#94A3B8', fontSize: 13 }}>
+          No related object types found in the ontology.
+        </div>
+      )}
+
+      {matches.map((m) => {
+        const as = actionStyle(m.action);
+        const sc = scoreColor(m.composite_score);
+        const isExpanded = expandedHint === m.object_type_id;
+        return (
+          <div key={m.object_type_id} style={{ border: '1px solid #E2E8F0', borderRadius: 6, overflow: 'hidden' }}>
+            <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
+              {/* Score bar */}
+              <div style={{ width: 44, height: 44, borderRadius: '50%', border: `3px solid ${sc}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: sc, fontFamily: 'var(--font-mono)' }}>
+                  {Math.round(m.composite_score * 100)}
+                </span>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.object_type_name}</span>
+                  <span style={{ fontSize: 10, padding: '1px 7px', borderRadius: 8, backgroundColor: as.bg, color: as.color, fontWeight: 700, flexShrink: 0 }}>{as.label}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 14, fontSize: 11, color: '#64748B' }}>
+                  <span>Field overlap: <strong style={{ color: '#0D1117' }}>{Math.round(m.field_name_overlap * 100)}%</strong></span>
+                  <span>Semantic: <strong style={{ color: '#0D1117' }}>{Math.round(m.semantic_type_overlap * 100)}%</strong></span>
+                  {m.suggested_join_key && (
+                    <span>Join: <code style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#7C3AED' }}>{m.suggested_join_key.incoming} → {m.suggested_join_key.existing}</code></span>
+                  )}
+                </div>
+              </div>
+              {m.pipeline_hint && (
+                <button
+                  onClick={() => setExpandedHint(isExpanded ? null : m.object_type_id)}
+                  style={{ flexShrink: 0, padding: '3px 8px', border: '1px solid #E2E8F0', borderRadius: 4, backgroundColor: isExpanded ? '#EDE9FE' : '#F8FAFC', cursor: 'pointer', fontSize: 11, color: isExpanded ? '#7C3AED' : '#64748B' }}
+                >
+                  Hint
+                </button>
+              )}
+            </div>
+            {isExpanded && m.pipeline_hint && (
+              <div style={{ padding: '8px 14px 12px 72px', backgroundColor: '#F8FAFC', borderTop: '1px solid #F1F5F9', fontSize: 11, color: '#475569', lineHeight: 1.6 }}>
+                {m.pipeline_hint}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ── PII Scan Tab ──────────────────────────────────────────────────────────────
+
+interface PiiField {
+  field: string;
+  pii_types: string[];
+  confidence: number;
+  sample_count: number;
+  detection_method: string;
+}
+
+interface PiiScanResult {
+  object_type_id: string;
+  scanned_at: string;
+  fields: PiiField[];
+  risk_score: number;
+  high_risk_fields: string[];
+  total_records_sampled: number;
+}
+
+const PiiScanTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
+  const [result, setResult] = useState<PiiScanResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const run = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`${INFERENCE_API}/infer/scan-pii`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tenant-id': getTenantId(),
+        },
+        body: JSON.stringify({ object_type_id: objectType.id, sample_size: 50 }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setResult(data);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Scan failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const riskColor = (score: number) =>
+    score > 0.6 ? '#EF4444' : score > 0.3 ? '#F59E0B' : '#22C55E';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>PII Scanner</div>
+          <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+            Detects personally identifiable information in this object type's records
+          </div>
+        </div>
+        <button
+          onClick={run}
+          disabled={loading}
+          style={{
+            height: 30, padding: '0 14px', fontSize: 12, fontWeight: 600,
+            cursor: loading ? 'not-allowed' : 'pointer', borderRadius: 4,
+            border: 'none', backgroundColor: loading ? '#E2E8F0' : '#7C3AED', color: loading ? '#94A3B8' : '#FFFFFF',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}
+        >
+          {loading ? 'Scanning...' : result ? 'Re-scan' : 'Scan Now'}
+        </button>
+      </div>
+
+      {error && (
+        <div style={{ padding: '8px 12px', backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5', borderRadius: 4, fontSize: 12, color: '#991B1B' }}>
+          {error}
+        </div>
+      )}
+
+      {!result && !loading && (
+        <div style={{ textAlign: 'center', padding: '32px 0', color: '#94A3B8', fontSize: 12 }}>
+          Click "Scan Now" to analyze records for PII
+        </div>
+      )}
+
+      {result && (
+        <>
+          {/* Summary */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{
+              flex: 1, padding: '10px 12px', borderRadius: 6,
+              border: `1px solid ${riskColor(result.risk_score)}33`,
+              backgroundColor: `${riskColor(result.risk_score)}08`,
+            }}>
+              <div style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Risk Score</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: riskColor(result.risk_score) }}>
+                {Math.round(result.risk_score * 100)}%
+              </div>
+            </div>
+            <div style={{ flex: 1, padding: '10px 12px', borderRadius: 6, border: '1px solid #E2E8F0', backgroundColor: '#F8FAFC' }}>
+              <div style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>PII Fields</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: '#0D1117' }}>
+                {result.fields.filter(f => f.pii_types.length > 0).length}
+                <span style={{ fontSize: 12, color: '#94A3B8', marginLeft: 4 }}>/ {result.fields.length}</span>
+              </div>
+            </div>
+            <div style={{ flex: 1, padding: '10px 12px', borderRadius: 6, border: '1px solid #E2E8F0', backgroundColor: '#F8FAFC' }}>
+              <div style={{ fontSize: 10, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Records Sampled</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: '#0D1117' }}>{result.total_records_sampled}</div>
+            </div>
+          </div>
+
+          {/* High-risk fields */}
+          {result.high_risk_fields.length > 0 && (
+            <div style={{ padding: '10px 12px', borderRadius: 6, backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5' }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#991B1B', marginBottom: 6 }}>
+                High-Risk Fields
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {result.high_risk_fields.map((f) => (
+                  <span key={f} style={{
+                    fontSize: 11, fontFamily: 'var(--font-mono)',
+                    padding: '2px 8px', borderRadius: 3,
+                    backgroundColor: '#FEE2E2', color: '#991B1B',
+                  }}>
+                    {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Field detail table */}
+          {result.fields.length > 0 && (
+            <div style={{ border: '1px solid #E2E8F0', borderRadius: 6, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#F8FAFC' }}>
+                    <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: '#475569', fontSize: 11, borderBottom: '1px solid #E2E8F0' }}>Field</th>
+                    <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: '#475569', fontSize: 11, borderBottom: '1px solid #E2E8F0' }}>PII Types</th>
+                    <th style={{ padding: '6px 10px', textAlign: 'center', fontWeight: 600, color: '#475569', fontSize: 11, borderBottom: '1px solid #E2E8F0' }}>Confidence</th>
+                    <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: '#475569', fontSize: 11, borderBottom: '1px solid #E2E8F0' }}>Method</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.fields.map((f, i) => (
+                    <tr key={f.field} style={{ backgroundColor: i % 2 === 0 ? '#FFFFFF' : '#FAFAFA', borderBottom: '1px solid #F1F5F9' }}>
+                      <td style={{ padding: '6px 10px', fontFamily: 'var(--font-mono)', color: '#0D1117', fontSize: 11 }}>{f.field}</td>
+                      <td style={{ padding: '6px 10px' }}>
+                        {f.pii_types.length > 0
+                          ? f.pii_types.map((t) => (
+                              <span key={t} style={{
+                                display: 'inline-block', marginRight: 4,
+                                fontSize: 10, padding: '1px 5px', borderRadius: 2,
+                                backgroundColor: '#FEF9C3', color: '#713F12',
+                              }}>{t}</span>
+                            ))
+                          : <span style={{ color: '#94A3B8', fontSize: 11 }}>—</span>
+                        }
+                      </td>
+                      <td style={{ padding: '6px 10px', textAlign: 'center' }}>
+                        <span style={{
+                          fontSize: 11, fontWeight: 600,
+                          color: f.confidence > 0.6 ? '#DC2626' : f.confidence > 0.3 ? '#D97706' : '#94A3B8',
+                        }}>
+                          {f.pii_types.length > 0 ? `${Math.round(f.confidence * 100)}%` : '—'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '6px 10px', color: '#64748B', fontSize: 11 }}>{f.detection_method || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div style={{ fontSize: 10, color: '#94A3B8', textAlign: 'right' }}>
+            Scanned {new Date(result.scanned_at).toLocaleString()}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ── Quality Tab ───────────────────────────────────────────────────────────────
+
+const QUALITY_API_URL = import.meta.env.VITE_DATA_QUALITY_SERVICE_URL || 'http://localhost:8019';
+
+interface PropProfile {
+  name: string;
+  null_rate: number;
+  unique_rate: number;
+  distinct_count: number;
+  top_values: { value: string; count: number }[];
+}
+
+interface QualityData {
+  score: number;
+  total_records: number;
+  properties: PropProfile[];
+  computed_at: string;
+}
+
+const QualityTab: React.FC<{ objectTypeId: string }> = ({ objectTypeId }) => {
+  const [data, setData] = React.useState<QualityData | null>(null);
+  const [loading, setLoading] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${QUALITY_API_URL}/quality/${objectTypeId}`, {
+        headers: { 'x-tenant-id': getTenantId() },
+      });
+      if (res.ok) setData(await res.json());
+    } finally { setLoading(false); }
+  }, [objectTypeId]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>Profiling...</div>;
+  if (!data) return <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>Failed to load quality data</div>;
+
+  const scoreColor = data.score >= 80 ? '#16A34A' : data.score >= 60 ? '#D97706' : '#DC2626';
+  const scoreBg = data.score >= 80 ? '#DCFCE7' : data.score >= 60 ? '#FEF3C7' : '#FEE2E2';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Score header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', backgroundColor: scoreBg, borderRadius: 6 }}>
+        <div>
+          <div style={{ fontSize: 11, color: scoreColor, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Quality Score</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: scoreColor, lineHeight: 1.1 }}>{data.score.toFixed(0)}<span style={{ fontSize: 14, fontWeight: 400 }}>/100</span></div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 11, color: '#64748B' }}>{data.total_records.toLocaleString()} records</div>
+          <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 2 }}>Profiled {new Date(data.computed_at).toLocaleTimeString()}</div>
+          <button onClick={load} style={{ marginTop: 4, fontSize: 10, padding: '2px 8px', border: '1px solid #E2E8F0', borderRadius: 3, background: '#fff', cursor: 'pointer', color: '#64748B' }}>Re-run</button>
+        </div>
+      </div>
+
+      {/* Property list */}
+      {data.properties.length === 0 && (
+        <div style={{ textAlign: 'center', color: '#94A3B8', fontSize: 12, padding: '16px 0' }}>
+          {data.total_records === 0 ? 'No records to profile' : 'No properties defined'}
+        </div>
+      )}
+      {data.properties.map(prop => {
+        const nullPct = Math.round(prop.null_rate * 100);
+        const barColor = nullPct === 0 ? '#16A34A' : nullPct < 20 ? '#D97706' : '#DC2626';
+        return (
+          <div key={prop.name} style={{ border: '1px solid #E2E8F0', borderRadius: 6, padding: '8px 10px', backgroundColor: '#FAFAFA' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <code style={{ fontSize: 11, fontFamily: 'monospace', color: '#374151', fontWeight: 600 }}>{prop.name}</code>
+              <span style={{ fontSize: 10, color: '#64748B' }}>{prop.distinct_count} distinct</span>
+            </div>
+            {/* Null rate bar */}
+            <div style={{ marginBottom: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#94A3B8', marginBottom: 2 }}>
+                <span>Null rate</span><span style={{ color: barColor }}>{nullPct}%</span>
+              </div>
+              <div style={{ height: 4, backgroundColor: '#F1F5F9', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{ width: `${nullPct}%`, height: '100%', backgroundColor: barColor, borderRadius: 2 }} />
+              </div>
+            </div>
+            {/* Top values */}
+            {prop.top_values.length > 0 && (
+              <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginTop: 4 }}>
+                {prop.top_values.slice(0, 3).map(tv => (
+                  <span key={tv.value} style={{ fontSize: 9, padding: '1px 5px', backgroundColor: '#F1F5F9', borderRadius: 2, color: '#64748B', whiteSpace: 'nowrap' }}>
+                    {String(tv.value).slice(0, 16)}{String(tv.value).length > 16 ? '…' : ''} ×{tv.count}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ── Properties Tab (with Add Property) ────────────────────────────────────
+
+type SimpleType = 'Text' | 'Integer' | 'Decimal' | 'Boolean' | 'DateTime';
+
+const SIMPLE_TYPE_MAP: Record<SimpleType, { dataType: string; semanticType: SemanticType }> = {
+  Text:     { dataType: 'string',  semanticType: 'TEXT' },
+  Integer:  { dataType: 'integer', semanticType: 'QUANTITY' },
+  Decimal:  { dataType: 'number',  semanticType: 'QUANTITY' },
+  Boolean:  { dataType: 'boolean', semanticType: 'BOOLEAN' },
+  DateTime: { dataType: 'string',  semanticType: 'DATETIME' },
+};
+
+const PropertiesTab: React.FC<{
+  objectType: ObjectType;
+  updateObjectType: (id: string, updates: Partial<ObjectType>) => Promise<void>;
+}> = ({ objectType: objectTypeProp, updateObjectType }) => {
+  // Always read live from store so the list refreshes immediately after save
+  const liveObjectType = useOntologyStore(
+    (s) => s.objectTypes.find((o) => o.id === objectTypeProp.id) ?? objectTypeProp
+  );
+  const objectType = liveObjectType;
+  const [showForm, setShowForm] = useState(false);
+  const [propName, setPropName] = useState('');
+  const [propType, setPropType] = useState<SimpleType>('Text');
+  const [propDesc, setPropDesc] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const handleAdd = async () => {
+    const name = propName.trim();
+    if (!name) return;
+    setSaving(true);
+    try {
+      const { dataType, semanticType } = SIMPLE_TYPE_MAP[propType];
+      const newProp: import('../../types/ontology').ObjectProperty = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name,
+        displayName: name,
+        semanticType,
+        dataType,
+        piiLevel: 'NONE',
+        required: false,
+        description: propDesc.trim() || undefined,
+      };
+      await updateObjectType(objectType.id, {
+        properties: [...objectType.properties, newProp],
+      });
+      setPropName('');
+      setPropType('Text');
+      setPropDesc('');
+      setShowForm(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (propId: string) => {
+    setDeleting(propId);
+    try {
+      await updateObjectType(objectType.id, {
+        properties: objectType.properties.filter((p) => p.id !== propId),
+      });
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const TYPE_BADGE: Record<string, { bg: string; text: string }> = {
+    string:  { bg: '#F1F5F9', text: '#475569' },
+    integer: { bg: '#ECFDF5', text: '#065F46' },
+    number:  { bg: '#FFF7ED', text: '#92400E' },
+    boolean: { bg: '#EDE9FE', text: '#5B21B6' },
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {/* Property rows */}
+      {objectType.properties.length === 0 && !showForm && (
+        <div style={{ padding: '32px 16px', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>
+          No properties defined yet
+        </div>
+      )}
+
+      {objectType.properties.map((prop) => {
+        const badge = TYPE_BADGE[prop.dataType] || { bg: '#F1F5F9', text: '#475569' };
+        return (
+          <div key={prop.id} style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '7px 16px', borderBottom: '1px solid #F1F5F9',
+          }}>
+            <span style={{ flex: 1, fontSize: 12, fontFamily: 'var(--font-mono)', color: '#0D1117', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {prop.name}
+            </span>
+            <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 3, backgroundColor: badge.bg, color: badge.text, flexShrink: 0, letterSpacing: '0.03em' }}>
+              {prop.dataType === 'string' && prop.semanticType === 'DATETIME' ? 'DateTime' : prop.dataType}
+            </span>
+            <span style={{ fontSize: 10, color: '#94A3B8', flexShrink: 0 }}>{prop.semanticType}</span>
+            <button
+              onClick={() => handleDelete(prop.id)}
+              disabled={deleting === prop.id}
+              title="Remove property"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#E2E8F0', padding: 2, flexShrink: 0 }}
+              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = '#DC2626')}
+              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = '#E2E8F0')}
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        );
+      })}
+
+      {/* Add form */}
+      {showForm ? (
+        <div style={{ margin: '10px 16px', border: '1px solid #DDD6FE', borderRadius: 6, padding: '12px', backgroundColor: '#FAFAFE', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#7C3AED' }}>New Property</div>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Name</label>
+              <input
+                value={propName}
+                onChange={(e) => setPropName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); if (e.key === 'Escape') setShowForm(false); }}
+                placeholder="e.g. case_id"
+                autoFocus
+                style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff', fontFamily: 'var(--font-mono)' }}
+              />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Type</label>
+              <select
+                value={propType}
+                onChange={(e) => setPropType(e.target.value as SimpleType)}
+                style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+              >
+                {(Object.keys(SIMPLE_TYPE_MAP) as SimpleType[]).map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Description <span style={{ color: '#CBD5E1' }}>(optional)</span></label>
+            <input
+              value={propDesc}
+              onChange={(e) => setPropDesc(e.target.value)}
+              placeholder="What does this property represent?"
+              style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
+            <button
+              onClick={() => { setShowForm(false); setPropName(''); setPropDesc(''); }}
+              style={{ fontSize: 12, padding: '5px 12px', border: '1px solid #E2E8F0', borderRadius: 4, backgroundColor: '#fff', color: '#64748B', cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleAdd}
+              disabled={!propName.trim() || saving}
+              style={{ fontSize: 12, padding: '5px 12px', border: 'none', borderRadius: 4, backgroundColor: '#7C3AED', color: '#fff', cursor: propName.trim() ? 'pointer' : 'not-allowed', opacity: propName.trim() ? 1 : 0.5 }}
+            >
+              {saving ? 'Saving…' : 'Add Property'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setShowForm(true)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            margin: '10px 16px', padding: '7px 12px',
+            border: '1px dashed #DDD6FE', borderRadius: 6,
+            backgroundColor: '#FAFAFE', color: '#7C3AED',
+            fontSize: 12, fontWeight: 500, cursor: 'pointer', justifyContent: 'center',
+          }}
+        >
+          <Plus size={13} />
+          Add Property
+        </button>
+      )}
+    </div>
+  );
+};
+
+// ── Links Tab ──────────────────────────────────────────────────────────────
+
+const REL_TYPES: { value: OntologyLink['relationshipType']; label: string }[] = [
+  { value: 'has_many', label: 'Has Many' },
+  { value: 'has_one', label: 'Has One' },
+  { value: 'belongs_to', label: 'Belongs To' },
+  { value: 'many_to_many', label: 'Many-to-Many' },
+];
+
+// Raw snake_case shape returned by the API
+interface RawLink {
+  id: string;
+  source_object_type_id: string;
+  target_object_type_id: string;
+  relationship_type: string;
+  join_keys: { source: string; target: string }[];
+  is_inferred: boolean;
+  confidence?: number;
+  label?: string;
+}
+
+const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectTypeProp }) => {
+  const { objectTypes, fetchObjectTypes } = useOntologyStore();
+  const objectType = useOntologyStore(
+    (s) => s.objectTypes.find((o) => o.id === objectTypeProp.id) ?? objectTypeProp
+  );
+  const [links, setLinks] = useState<RawLink[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // Form state
+  const [targetId, setTargetId] = useState('');
+  const [relType, setRelType] = useState<OntologyLink['relationshipType']>('has_many');
+  const [label, setLabel] = useState('');
+
+  const tenantId = getTenantId() || 'tenant-001';
+
+  const loadLinks = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${ONTOLOGY_API}/object-types/links/all`, { headers: { 'x-tenant-id': tenantId } });
+      if (res.ok) {
+        const all: RawLink[] = await res.json();
+        setLinks(all.filter((l) => l.source_object_type_id === objectType.id || l.target_object_type_id === objectType.id));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadLinks();
+    if (objectTypes.length === 0) fetchObjectTypes();
+  }, [objectType.id]);
+
+  const handleCreate = async () => {
+    if (!targetId) return;
+    setSaving(true);
+    try {
+      const body = {
+        id: '',
+        source_object_type_id: objectType.id,
+        target_object_type_id: targetId,
+        relationship_type: relType,
+        join_keys: [],
+        is_inferred: false,
+        label: label.trim() || null,
+      };
+      const res = await fetch(`${ONTOLOGY_API}/object-types/links`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenantId },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        setShowForm(false);
+        setTargetId('');
+        setRelType('has_many');
+        setLabel('');
+        await loadLinks();
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeleteId(id);
+    try {
+      await fetch(`${ONTOLOGY_API}/object-types/links/${id}`, { method: 'DELETE', headers: { 'x-tenant-id': tenantId } });
+      await loadLinks();
+    } finally {
+      setDeleteId(null);
+    }
+  };
+
+  const otherTypes = objectTypes.filter((o) => o.id !== objectType.id);
+
+  const getTypeName = (id: string) => objectTypes.find((o) => o.id === id)?.displayName || id;
+
+  if (loading) {
+    return <div style={{ padding: '40px 0', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>Loading links…</div>;
+  }
+
+  return (
+    <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* Existing links */}
+      {links.length === 0 && !showForm && (
+        <div style={{ textAlign: 'center', padding: '24px 0', color: '#94A3B8', fontSize: 13 }}>
+          No relationship links defined yet
+        </div>
+      )}
+
+      {links.map((link) => {
+        const isSource = link.source_object_type_id === objectType.id;
+        const otherName = getTypeName(isSource ? link.target_object_type_id : link.source_object_type_id);
+        const relLabel = link.label || REL_TYPES.find((r) => r.value === link.relationship_type)?.label || link.relationship_type;
+        return (
+          <div key={link.id} style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '8px 10px', borderRadius: 6,
+            border: '1px solid #E2E8F0', backgroundColor: '#F8FAFC',
+          }}>
+            <Link2 size={13} style={{ color: '#7C3AED', flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#0D1117', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {isSource ? objectType.displayName : otherName}
+                </span>
+                <ArrowRight size={11} style={{ color: '#94A3B8', flexShrink: 0 }} />
+                <span style={{ maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {isSource ? otherName : objectType.displayName}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: '#64748B', marginTop: 1 }}>
+                {relLabel}
+                {link.is_inferred && <span style={{ marginLeft: 6, fontSize: 10, color: '#7C3AED' }}>inferred</span>}
+              </div>
+            </div>
+            <button
+              onClick={() => handleDelete(link.id)}
+              disabled={deleteId === link.id}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#CBD5E1', padding: 2, flexShrink: 0 }}
+              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = '#DC2626')}
+              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = '#CBD5E1')}
+              title="Remove link"
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
+        );
+      })}
+
+      {/* Add link form */}
+      {showForm ? (
+        <div style={{ border: '1px solid #DDD6FE', borderRadius: 6, padding: '12px', backgroundColor: '#FAFAFE', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#7C3AED' }}>New Relationship Link</div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Target Object Type</label>
+            <select
+              value={targetId}
+              onChange={(e) => setTargetId(e.target.value)}
+              style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+            >
+              <option value="">— select —</option>
+              {otherTypes.map((o) => (
+                <option key={o.id} value={o.id}>{o.displayName}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Relationship Type</label>
+            <select
+              value={relType}
+              onChange={(e) => setRelType(e.target.value as OntologyLink['relationshipType'])}
+              style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+            >
+              {REL_TYPES.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Label <span style={{ color: '#CBD5E1' }}>(optional)</span></label>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. HAS_CARE_EVENT"
+              style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
+            <button
+              onClick={() => { setShowForm(false); setTargetId(''); setLabel(''); }}
+              style={{ fontSize: 12, padding: '5px 12px', border: '1px solid #E2E8F0', borderRadius: 4, backgroundColor: '#fff', color: '#64748B', cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCreate}
+              disabled={!targetId || saving}
+              style={{ fontSize: 12, padding: '5px 12px', border: 'none', borderRadius: 4, backgroundColor: '#7C3AED', color: '#fff', cursor: targetId ? 'pointer' : 'not-allowed', opacity: targetId ? 1 : 0.5 }}
+            >
+              {saving ? 'Saving…' : 'Create Link'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setShowForm(true)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 12px', border: '1px dashed #DDD6FE',
+            borderRadius: 6, backgroundColor: '#FAFAFE',
+            color: '#7C3AED', fontSize: 12, fontWeight: 500,
+            cursor: 'pointer', width: '100%', justifyContent: 'center',
+          }}
+        >
+          <Plus size={13} />
+          Add Link
+        </button>
+      )}
+    </div>
+  );
+};
+
 export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, onClose }) => {
+  const { setPendingTypeId } = useGraphStore();
+  const { navigateTo } = useNavigationStore();
   const [activeTab, setActiveTab] = useState<TabId>('properties');
   const [visible, setVisible] = useState(true);
   const [versions, setVersions] = useState<ObjectTypeVersion[]>([]);
@@ -277,28 +1148,50 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
         </div>
 
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
-          {/* Delete button */}
+          {/* Open in Graph */}
           <button
-            onClick={handleDelete}
-            disabled={deleting}
-            title={confirmDelete ? 'Click again to confirm' : 'Delete object type'}
+            onClick={() => { setPendingTypeId(objectType.id); onClose(); navigateTo('graph'); }}
+            title="Open in Object Graph"
             style={{
-              height: 28, padding: '0 8px',
-              borderRadius: '4px',
-              border: `1px solid ${confirmDelete ? '#FCA5A5' : '#E2E8F0'}`,
-              backgroundColor: confirmDelete ? '#FEF2F2' : '#FFFFFF',
-              color: confirmDelete ? '#DC2626' : '#94A3B8',
-              fontSize: '11px', fontWeight: confirmDelete ? 600 : 400,
+              height: 28, padding: '0 8px', borderRadius: '4px',
+              border: '1px solid #E2E8F0', backgroundColor: '#FFFFFF',
+              color: '#7C3AED', fontSize: '11px', fontWeight: 500,
               display: 'flex', alignItems: 'center', gap: '4px',
-              cursor: deleting ? 'wait' : 'pointer',
-              transition: 'all 80ms', whiteSpace: 'nowrap',
+              cursor: 'pointer', transition: 'all 80ms', whiteSpace: 'nowrap',
             }}
-            onMouseEnter={(e) => { if (!confirmDelete) { (e.currentTarget as HTMLElement).style.borderColor = '#FCA5A5'; (e.currentTarget as HTMLElement).style.color = '#DC2626'; } }}
-            onMouseLeave={(e) => { if (!confirmDelete) { (e.currentTarget as HTMLElement).style.borderColor = '#E2E8F0'; (e.currentTarget as HTMLElement).style.color = '#94A3B8'; } }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#EDE9FE'; (e.currentTarget as HTMLElement).style.borderColor = '#DDD6FE'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = '#FFFFFF'; (e.currentTarget as HTMLElement).style.borderColor = '#E2E8F0'; }}
           >
-            <Trash2 size={12} />
-            {confirmDelete ? 'Confirm?' : ''}
+            <Share2 size={12} />
+            Graph
           </button>
+
+          {/* Delete button — wrapped in checkpoint gate */}
+          <CheckpointGate resource_type="object_type" operation="delete" onProceed={() => handleDelete()}>
+            {(triggerGate, checking) => (
+              <button
+                onClick={confirmDelete ? handleDelete : triggerGate}
+                disabled={deleting || checking}
+                title={confirmDelete ? 'Click again to confirm' : 'Delete object type'}
+                style={{
+                  height: 28, padding: '0 8px',
+                  borderRadius: '4px',
+                  border: `1px solid ${confirmDelete ? '#FCA5A5' : '#E2E8F0'}`,
+                  backgroundColor: confirmDelete ? '#FEF2F2' : '#FFFFFF',
+                  color: confirmDelete ? '#DC2626' : '#94A3B8',
+                  fontSize: '11px', fontWeight: confirmDelete ? 600 : 400,
+                  display: 'flex', alignItems: 'center', gap: '4px',
+                  cursor: deleting || checking ? 'wait' : 'pointer',
+                  transition: 'all 80ms', whiteSpace: 'nowrap',
+                }}
+                onMouseEnter={(e) => { if (!confirmDelete) { (e.currentTarget as HTMLElement).style.borderColor = '#FCA5A5'; (e.currentTarget as HTMLElement).style.color = '#DC2626'; } }}
+                onMouseLeave={(e) => { if (!confirmDelete) { (e.currentTarget as HTMLElement).style.borderColor = '#E2E8F0'; (e.currentTarget as HTMLElement).style.color = '#94A3B8'; } }}
+              >
+                <Trash2 size={12} />
+                {confirmDelete ? 'Confirm?' : ''}
+              </button>
+            )}
+          </CheckpointGate>
 
           <button onClick={handleClose} style={{
             width: 28, height: 28, borderRadius: '4px',
@@ -379,7 +1272,7 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
       {/* Tab content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
         {activeTab === 'properties' && (
-          <PropertyList properties={objectType.properties} />
+          <PropertiesTab objectType={objectType} updateObjectType={updateObjectType} />
         )}
 
         {activeTab === 'data' && (
@@ -423,9 +1316,20 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
         )}
 
         {activeTab === 'links' && (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: '#94A3B8', fontSize: '13px' }}>
-            Open the Ontology Graph to view relationship links
-          </div>
+          <LinksTab objectType={objectType} />
+        )}
+
+        {activeTab === 'correlate' && (
+          <CorrelateTab objectType={objectType} />
+        )}
+        {activeTab === 'pii' && (
+          <PiiScanTab objectType={objectType} />
+        )}
+        {activeTab === 'quality' && (
+          <QualityTab objectTypeId={objectType.id} />
+        )}
+        {activeTab === 'comments' && (
+          <CommentsPanel entityType="object_type" entityId={objectType.id} compact />
         )}
       </div>
     </div>
@@ -461,14 +1365,14 @@ const PipelineAuditTab: React.FC<{
   useEffect(() => {
     if (!pipelineId) return;
     setLoading(true);
-    fetch(`${PIPELINE_API}/pipelines/${pipelineId}/runs`, { headers: { 'x-tenant-id': 'tenant-001' } })
+    fetch(`${PIPELINE_API}/pipelines/${pipelineId}/runs`, { headers: { 'x-tenant-id': getTenantId() } })
       .then((r) => r.ok ? r.json() : [])
       .then(async (runs: { id: string; status: string; started_at: string; rows_in: number; rows_out: number }[]) => {
         const latest = runs.find((r) => r.status === 'COMPLETED') || runs[0];
         if (!latest) { setLoading(false); return; }
         setRunMeta(latest);
         const res = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/runs/${latest.id}/audit`, {
-          headers: { 'x-tenant-id': 'tenant-001' },
+          headers: { 'x-tenant-id': getTenantId() },
         });
         if (res.ok) {
           const data = await res.json();

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Bell } from 'lucide-react';
 import { useAlertStore } from '../store/alertStore';
 import { useRunLogStore } from '../store/runLogStore';
+import { useApprovalStore } from '../store/approvalStore';
 import { NotificationDrawer } from './NotificationDrawer';
 
 const POLL_INTERVAL_MS = 30_000;
@@ -9,13 +10,18 @@ const POLL_INTERVAL_MS = 30_000;
 export const NotificationBell: React.FC = () => {
   const { unreadCount: alertUnread, pollUnreadCount } = useAlertStore();
   const { unreadCount: logUnread } = useRunLogStore();
-  const unreadCount = alertUnread + logUnread;
+  const { pendingCount: approvalCount, fetchPendingForMe } = useApprovalStore();
+  const unreadCount = alertUnread + logUnread + approvalCount;
   const [open, setOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     pollUnreadCount();
-    intervalRef.current = setInterval(() => pollUnreadCount(), POLL_INTERVAL_MS);
+    fetchPendingForMe();
+    intervalRef.current = setInterval(() => {
+      pollUnreadCount();
+      fetchPendingForMe();
+    }, POLL_INTERVAL_MS);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };

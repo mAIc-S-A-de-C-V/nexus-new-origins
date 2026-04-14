@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from database import AgentConfigRow, AgentThreadRow, AgentMessageRow, AgentRunRow, get_session
+from database import AgentConfigRow, AgentThreadRow, AgentMessageRow, AgentRunRow, get_session, AsyncSessionLocal
 from runtime import run_agent, stream_agent
 
 router = APIRouter()
@@ -252,20 +252,88 @@ async def send_message(
 
     if body.stream:
         async def event_generator():
-            async for chunk in stream_agent(
-                agent_id=agent.id,
-                system_prompt=system_prompt,
-                model=agent.model,
-                enabled_tools=agent.enabled_tools or [],
-                max_iterations=agent.max_iterations,
-                conversation_history=history,
-                new_user_message=body.content,
-                tenant_id=tenant_id,
-                knowledge_scope=knowledge_scope,
-            ):
-                yield chunk
+            # Track conversation state so we can persist it when the stream ends
+            accumulated_text = ""
+            tool_calls: list[dict] = []
+            current_tool: dict | None = None
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+            try:
+                async for chunk in stream_agent(
+                    agent_id=agent.id,
+                    system_prompt=system_prompt,
+                    model=agent.model,
+                    enabled_tools=agent.enabled_tools or [],
+                    max_iterations=agent.max_iterations,
+                    conversation_history=history,
+                    new_user_message=body.content,
+                    tenant_id=tenant_id,
+                    knowledge_scope=knowledge_scope,
+                ):
+                    yield chunk
+                    # Parse event to reconstruct messages for persistence
+                    try:
+                        if chunk.startswith("data: "):
+                            ev = json.loads(chunk[6:])
+                            etype = ev.get("type")
+                            if etype == "text_delta":
+                                accumulated_text += ev.get("text", "")
+                            elif etype == "tool_start":
+                                current_tool = {
+                                    "id": ev.get("tool_use_id", ""),
+                                    "name": ev.get("tool", ""),
+                                    "input": {},
+                                }
+                            elif etype == "tool_calling" and current_tool:
+                                current_tool["input"] = ev.get("input", {})
+                            elif etype == "tool_result" and current_tool:
+                                tool_calls.append({**current_tool, "result": ev.get("result")})
+                                current_tool = None
+                    except Exception:
+                        pass
+            except Exception as exc:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+            finally:
+                # Save whatever we got to DB using a fresh session
+                try:
+                    async with AsyncSessionLocal() as save_db:
+                        new_msgs: list[dict] = [{"role": "user", "content": body.content}]
+                        assistant_blocks: list[dict] = []
+                        for tc in tool_calls:
+                            assistant_blocks.append({
+                                "type": "tool_use",
+                                "id": tc.get("id", ""),
+                                "name": tc["name"],
+                                "input": tc["input"],
+                            })
+                        if accumulated_text:
+                            assistant_blocks.append({"type": "text", "text": accumulated_text})
+                        if assistant_blocks:
+                            new_msgs.append({"role": "assistant", "content": assistant_blocks})
+                        await _save_new_messages(new_msgs, thread_id, tenant_id, save_db)
+                        # Log the run
+                        save_db.add(AgentRunRow(
+                            id=str(uuid4()),
+                            agent_id=agent.id,
+                            thread_id=thread_id,
+                            tenant_id=tenant_id,
+                            iterations=len(tool_calls) + 1,
+                            tool_calls=[{"tool": tc["name"]} for tc in tool_calls],
+                            final_text_len=len(accumulated_text),
+                            is_test=False,
+                        ))
+                        await save_db.commit()
+                except Exception:
+                    pass  # Persistence failure should not break the response
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     else:
         outcome = await run_agent(

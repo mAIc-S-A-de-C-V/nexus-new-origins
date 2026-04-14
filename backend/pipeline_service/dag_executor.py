@@ -13,6 +13,8 @@ FLATTEN    → explodes an array field into one row per item
 VALIDATE   → drops rows missing required fields
 SINK_OBJECT → pushes transformed records directly to the ontology ingest endpoint
 SINK_EVENT  → converts records into process mining events and writes to event-log
+AGENT_RUN  → fires a configured AI agent with the batch of records as context; agent
+              can call action_propose which lands proposals in the Human Actions queue
 """
 import asyncio
 import os
@@ -27,6 +29,7 @@ from shared.enums import PipelineStatus, NodeType
 ONTOLOGY_API = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
 EVENT_LOG_API = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
 CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
+AGENT_API = os.environ.get("AGENT_SERVICE_URL", "http://agent-service:8013")
 
 
 def _resolve_date_templates(params: dict, last_sync=None) -> dict:
@@ -179,9 +182,14 @@ class DagExecutor:
                 elif node.type == NodeType.MAP:
                     mappings = cfg.get("mappings")
                     if isinstance(mappings, str):
-                        import json as _json
-                        try: mappings = _json.loads(mappings)
-                        except: mappings = {}
+                        import json as _json, re as _re
+                        try:
+                            mappings = _json.loads(mappings)
+                        except Exception:
+                            try:
+                                mappings = _json.loads(_re.sub(r',\s*([\}\]])', r'\1', mappings))
+                            except Exception:
+                                mappings = {}
                     stats = {"mappings": mappings or {}}
                 elif node.type == NodeType.ENRICH:
                     matched = len(records_out)
@@ -315,6 +323,8 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_
         return await _sink_object(node, records_in, pipeline)
     if node.type == NodeType.SINK_EVENT:
         return await _sink_event(node, records_in, pipeline)
+    if node.type == NodeType.AGENT_RUN:
+        return await _agent_run(node, records_in, pipeline)
     return records_in
 
 
@@ -412,31 +422,59 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     if extra_h.get("key"):
                         headers[extra_h["key"]] = str(extra_h.get("value", ""))
 
-                r = await client.get(url, headers=headers, params=params, timeout=60)
-                if audit_extras is not None:
-                    audit_extras["url"] = str(r.url)
-                    audit_extras["http_status"] = r.status_code
-                    audit_extras["resolved_params"] = dict(params)
-                if r.is_success:
+                # ── Paginated fetch ───────────────────────────────────────
+                # Keeps fetching pages until has_more is False, total is
+                # reached, or no new rows are returned.
+                all_rows: list[dict] = []
+                page_limit = batch_size  # rows per page request
+                offset = 0
+                first_call = True
+                while True:
+                    page_params = dict(params)
+                    page_params["limit"] = page_limit
+                    page_params["offset"] = offset
+                    r = await client.get(url, headers=headers, params=page_params, timeout=60)
+                    if first_call and audit_extras is not None:
+                        audit_extras["url"] = str(r.url)
+                        audit_extras["http_status"] = r.status_code
+                        audit_extras["resolved_params"] = dict(page_params)
+                    first_call = False
+                    if not r.is_success:
+                        if audit_extras is not None:
+                            audit_extras["response_error"] = r.text[:500]
+                        break
                     data = r.json()
-                    rows = None
-                    raw_count = None
+                    page_rows: list[dict] | None = None
+                    total_declared: int | None = None
+                    has_more: bool | None = None
                     if isinstance(data, list):
-                        raw_count = len(data)
-                        rows = data[:batch_size]
+                        page_rows = data
                     elif isinstance(data, dict):
                         for key in ("data", "results", "items", "records", "value", "rows"):
                             if isinstance(data.get(key), list):
-                                raw_count = len(data[key])
-                                rows = data[key][:batch_size]
+                                page_rows = data[key]
                                 break
-                    if audit_extras is not None and raw_count is not None:
-                        audit_extras["raw_row_count"] = raw_count
-                    if rows is not None:
-                        asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
-                        return rows
-                elif audit_extras is not None:
-                    audit_extras["response_error"] = r.text[:500]
+                        total_declared = data.get("total")
+                        has_more = data.get("has_more")
+                    if not page_rows:
+                        break
+                    all_rows.extend(page_rows)
+                    # Stop if the API signals no more pages
+                    if has_more is False:
+                        break
+                    # Stop if we've reached the declared total
+                    if total_declared is not None and len(all_rows) >= total_declared:
+                        break
+                    # Stop if this page was smaller than requested (last page)
+                    if len(page_rows) < page_limit:
+                        break
+                    offset += len(page_rows)
+
+                if all_rows:
+                    if audit_extras is not None:
+                        audit_extras["raw_row_count"] = len(all_rows)
+                    asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
+                    return all_rows
                 return []
 
             # No endpoint configured — use /schema which resolves templates via connector service
@@ -538,20 +576,46 @@ def _map(node, records_in: list[dict]) -> list[dict]:
     cfg = node.config or {}
 
     # ── New format: mappings dict ─────────────────────────────────────────────
+    # Value shapes supported:
+    #   "source": "target"                           — plain rename
+    #   "source": {"target": "t", "transform": "x"} — rename + transform
+    #   "source": {"target": "t", "transform": "x", "args": {...}}  — with args
+    #   "source": ["t1", {"target": "t2", "transform": "x"}]        — one source → many targets
     mappings_raw = cfg.get("mappings")
     if isinstance(mappings_raw, str):
         try:
             mappings_raw = _json.loads(mappings_raw)
         except Exception:
-            mappings_raw = None
+            # Lenient parse: strip trailing commas before closing braces/brackets
+            import re as _re
+            cleaned = _re.sub(r',\s*([\}\]])', r'\1', mappings_raw)
+            try:
+                mappings_raw = _json.loads(cleaned)
+            except Exception:
+                mappings_raw = None
     if isinstance(mappings_raw, dict) and mappings_raw:
         result = []
         for rec in records_in:
             new_rec: dict = {}
-            for src_path, tgt_field in mappings_raw.items():
-                val = _get_nested(rec, src_path)
-                if val is not None:
-                    new_rec[str(tgt_field)] = val
+            for src_path, tgt_spec in mappings_raw.items():
+                # Normalise to a list of specs so we handle arrays uniformly
+                specs = tgt_spec if isinstance(tgt_spec, list) else [tgt_spec]
+                for spec in specs:
+                    if isinstance(spec, str):
+                        val = _get_nested(rec, src_path)
+                        if val is not None:
+                            new_rec[spec] = val
+                    elif isinstance(spec, dict):
+                        tgt_field = spec.get("target") or spec.get("targetField")
+                        transform = spec.get("transform") or spec.get("transform_type", "")
+                        t_args = spec.get("args") or {}
+                        if not tgt_field:
+                            continue
+                        # Build a throwaway record so _apply_transform can act on it
+                        tmp = dict(rec)
+                        tmp = _apply_transform(tmp, src_path, tgt_field, transform, t_args)
+                        if tmp.get(tgt_field) is not None:
+                            new_rec[tgt_field] = tmp[tgt_field]
             result.append(new_rec)
         return result
 
@@ -755,7 +819,11 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     if not records_in:
         return []
 
-    pk_field = _guess_pk(records_in[0]) if records_in else "id"
+    pk_field = (
+        cfg.get("mergeKey") or cfg.get("merge_key")
+        or cfg.get("pkField") or cfg.get("pk_field")
+        or (_guess_pk(records_in[0]) if records_in else "id")
+    )
 
     # ── Fetch existing records to diff (Celonis-style record-level events) ──
     existing_by_pk: dict[str, dict] = {}
@@ -798,10 +866,12 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
 
     # Fields that carry the record's own business timestamps (tried in order)
     _RECORD_TS_FIELDS = [
+        "occurred_at", "timestamp",
         "hs_lastmodifieddate", "lastmodifieddate", "updatedAt", "updated_at",
-        "createdate", "createdAt", "created_at", "timestamp", "date",
+        "createdate", "createdAt", "created_at", "date",
     ]
     _RECORD_CREATED_TS_FIELDS = [
+        "occurred_at", "timestamp",
         "createdate", "createdAt", "created_at", "hs_createdate",
         "hs_lastmodifieddate", "lastmodifieddate",
     ]
@@ -810,6 +880,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     # Check: (1) sink node config, (2) any SINK_EVENT node on the same pipeline,
     #         (3) auto-detect common stage/status field names from the first record
     _AUTO_ACTIVITY_FIELDS = [
+        "activity",  # event-log style (e.g. ClinicalEvent)
         "stage", "status", "dealstage", "deal_stage", "pipeline_stage",
         "hs_dealstage", "phase", "state", "step", "substatus",
     ]
@@ -847,7 +918,9 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
             ts = _record_timestamp(rec, prefer_create=True)
             # If activityField is set and the field has a value, use it as the activity
             if activity_field and rec.get(activity_field):
-                activity_name = str(rec[activity_field]).upper().replace(" ", "_")
+                raw = str(rec[activity_field])
+                # Preserve original casing for event-log activity fields; uppercase stage fields
+                activity_name = raw if activity_field == "activity" else raw.upper().replace(" ", "_")
             else:
                 activity_name = "RECORD_CREATED"
             record_events.append({
@@ -887,7 +960,8 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 )
                 if activity_change:
                     # Emit the stage transition as the primary event
-                    new_stage = str(activity_change["to"]).upper().replace(" ", "_")
+                    raw_stage = str(activity_change["to"])
+                    new_stage = raw_stage if activity_field == "activity" else raw_stage.upper().replace(" ", "_")
                     record_events.append({
                         "id": str(uuid4()),
                         "case_id": pk_val,
@@ -999,6 +1073,7 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
         records_in = preserved
 
     # ── Ingest records into ontology ──
+    new_source_ids: set[str] = set()
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
@@ -1010,12 +1085,15 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 },
                 headers={"x-tenant-id": pipeline.tenant_id},
             )
+            if resp.is_success:
+                ingest_data = resp.json()
+                new_source_ids = set(ingest_data.get("new_source_ids", []))
+                new_count = ingest_data.get("new_count", len(records_in))
+                print(f"[SINK_OBJECT] Ingested {ingest_data.get('ingested', '?')} records ({new_count} new)")
     except Exception:
         pass
 
     # ── Update object type schema + link source ───────────────────────────────
-    # Infer properties from the first record and add them to the object type,
-    # then register this pipeline and connector as the authoritative source.
     if records_in:
         try:
             await _update_object_type_schema(
@@ -1027,7 +1105,11 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
         except Exception:
             pass
 
-    return records_in
+    # Only pass NEW records downstream (to AGENT_RUN etc.) — not already-existing ones
+    if new_source_ids:
+        new_records = [r for r in records_in if str(r.get(pk_field) or "") in new_source_ids]
+        return new_records if new_records else []
+    return []
 
 
 async def _update_object_type_schema(
@@ -1227,6 +1309,81 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
     return records
 
 
+# ── Agent Run ─────────────────────────────────────────────────────────────────
+
+async def _agent_run(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+    """
+    Fire a configured AI agent with the batch of records as context.
+
+    The agent receives all records as a JSON block in its prompt and can call
+    action_propose to create Human Action proposals (e.g. urgency alerts).
+    This node is a pass-through — it returns records_in unchanged so downstream
+    nodes (if any) still receive the full record set.
+
+    Config fields:
+      agentId    — ID of the agent to run (required)
+      prompt     — instruction prepended to the record batch context
+      batchSize  — max records per agent call (default 50, to stay within context)
+      runAlways  — if true, fire even when there are no incoming records (default false)
+    """
+    import json as _json
+    cfg = node.config or {}
+    agent_id = cfg.get("agentId") or cfg.get("agent_id", "")
+    prompt = cfg.get("prompt", "Analyze the following records and propose urgent alerts for any that require immediate human attention.")
+    batch_size = int(cfg.get("batchSize") or cfg.get("batch_size") or 50)
+    run_always = bool(cfg.get("runAlways") or cfg.get("run_always") or False)
+
+    if not agent_id:
+        print(f"[AGENT_RUN] Skipped — no agentId configured on node {node.id}")
+        return records_in
+    if not records_in and not run_always:
+        print(f"[AGENT_RUN] Skipped — no records to process")
+        return records_in
+
+    # Truncate records to a safe context size
+    records_batch = records_in[:batch_size]
+    print(f"[AGENT_RUN] Firing agent {agent_id} with {len(records_batch)} records (pipeline {pipeline.id})")
+
+    # Always include the real current UTC time so agents can calculate ages accurately
+    from datetime import datetime, timezone as _tz
+    now_utc = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Build the message: prompt + serialized record batch (or standalone prompt if runAlways with no records)
+    if records_batch:
+        record_context = _json.dumps(records_batch, ensure_ascii=False, default=str, indent=2)
+        message = (
+            f"Current UTC time: {now_utc}\n\n"
+            f"{prompt}\n\n"
+            f"The following {len(records_batch)} records were just ingested by a pipeline "
+            f"(pipeline_id: {pipeline.id}). Analyze each one:\n\n"
+            f"```json\n{record_context}\n```"
+        )
+    else:
+        message = f"Current UTC time: {now_utc}\n\n{prompt}"
+
+    async def _fire():
+        try:
+            async with httpx.AsyncClient(timeout=180) as client:
+                resp = await client.post(
+                    f"{AGENT_API}/agents/{agent_id}/test",
+                    json={"message": message, "dry_run": False,
+                          "pipeline_id": pipeline.id,
+                          "pipeline_run_id": getattr(pipeline, 'current_run_id', None)},
+                    headers={"x-tenant-id": pipeline.tenant_id},
+                )
+                if resp.is_success:
+                    result = resp.json()
+                    print(f"[AGENT_RUN] Agent {agent_id} completed — {result.get('iterations', '?')} iterations, final: {str(result.get('final_text',''))[:120]}")
+                else:
+                    print(f"[AGENT_RUN] Agent {agent_id} returned {resp.status_code}: {resp.text[:300]}")
+        except Exception as e:
+            print(f"[AGENT_RUN] Failed to call agent {agent_id}: {e}")
+
+    asyncio.create_task(_fire())
+    print(f"[AGENT_RUN] Agent task dispatched (non-blocking)")
+    return records_in
+
+
 # ── Shared Helpers ────────────────────────────────────────────────────────────
 
 def _guess_pk(record: dict) -> str:
@@ -1319,19 +1476,252 @@ def _resolve_field(record: dict, field: str) -> str:
     return ""
 
 
-def _apply_transform(record: dict, source_field: str, target_field: str, transform_type: str) -> dict:
+"""
+MAP NODE — TRANSFORM REFERENCE
+===============================
+Use inside the "mappings" object of a MAP node config.
+
+SIMPLE RENAME (no transform)
+─────────────────────────────
+  "source_field": "target_field"
+  Copies the value as-is under a new name.
+
+  Example:
+    "category": "TipoAlerta"
+
+TRANSFORM OBJECT
+─────────────────
+  "source_field": { "target": "target_field", "transform": "transform_type", "args": {...} }
+  Renames AND transforms. "args" is optional.
+
+  Example:
+    "created_at": { "target": "FechaAlerta", "transform": "extract_date" }
+
+ONE SOURCE → MULTIPLE TARGETS (array)
+──────────────────────────────────────
+  "source_field": [
+    "plain_target",
+    { "target": "another_target", "transform": "extract_time" }
+  ]
+  Produces several output fields from the same input field.
+
+  Example:
+    "created_at": [
+      { "target": "FechaAlerta", "transform": "extract_date" },
+      { "target": "HoraAlerta",  "transform": "extract_time" }
+    ]
+
+─────────────────────────────────────────────────────────────────────────────
+AVAILABLE TRANSFORMS
+─────────────────────────────────────────────────────────────────────────────
+
+DATE / TIME  (source must be ISO 8601: "2026-04-06T16:29:56Z" or "2026-04-06")
+  extract_date      "2026-04-06T16:29:56Z" → "2026-04-06"
+                    args: { "format": "%d/%m/%Y" }  optional strftime string
+
+  extract_time      "2026-04-06T16:29:56Z" → "16:29:56"
+                    args: { "format": "%H:%M" }
+
+  extract_datetime  Reformat a full datetime.
+                    args: { "format": "%d/%m/%Y %H:%M" }
+
+  extract_year      → "2026"
+  extract_month     → "04"
+  extract_day       → "06"
+  extract_hour      → "16"
+  extract_minute    → "29"
+
+TYPE CONVERSION
+  to_string         Any value → string.  123 → "123"
+  to_number         "3.14" or "3,14" → 3.14  (int when whole number)
+  to_boolean        "true"/"1"/"yes"/"si"/"sí" → true, everything else → false
+
+STRING OPERATIONS
+  lowercase         "Hello World" → "hello world"
+  uppercase         "hello world" → "HELLO WORLD"
+  strip             "  hello  "  → "hello"  (removes whitespace)
+
+  truncate          Cut string at N characters.
+                    args: { "length": 100 }   default 255
+
+  replace           Find and replace inside a string.
+                    args: { "find": "foo", "replace": "bar" }
+
+  substring         Slice a string by character position.
+                    args: { "start": 0, "end": 10 }   (end optional)
+
+  template          Build a string from multiple record fields.
+                    args: { "template": "{name} ({id})" }
+                    Uses Python .format() — reference any field in the record.
+
+LIST / CSV
+  split_csv         "a, b, c" → ["a", "b", "c"]
+                    args: { "sep": "," }   default ","
+
+  first_csv         "a, b, c" → "a"  (first item only)
+                    args: { "sep": "," }
+
+  join_list         ["a", "b", "c"] → "a, b, c"
+                    args: { "sep": ", " }   default ", "
+
+FALLBACK
+  default_if_null   Return a fallback when the source value is null/empty.
+                    args: { "value": "N/A" }
+
+LEGACY
+  extract_company   Strips common suffixes (LLC, Inc, S.A., etc.) from a company name.
+  (no args)
+
+─────────────────────────────────────────────────────────────────────────────
+FULL EXAMPLE — Denuncias pipeline MAP config
+─────────────────────────────────────────────────────────────────────────────
+{
+  "mappings": {
+    "category":         "TipoAlerta",
+    "location":         "AlertaCalle",
+    "lat":              "Latitud",
+    "lon":              "Longitud",
+    "created_at": [
+      { "target": "FechaAlerta", "transform": "extract_date" },
+      { "target": "HoraAlerta",  "transform": "extract_time" }
+    ],
+    "id":               "complaint_id",
+    "text":             "description",
+    "status":           "status",
+    "priority":         "priority",
+    "source":           "source",
+    "link":             "source_url",
+    "twitter_username": "author",
+    "is_live_event":    { "target": "is_live_event", "transform": "to_boolean" },
+    "media_urls":       { "target": "media_urls",    "transform": "split_csv" }
+  }
+}
+─────────────────────────────────────────────────────────────────────────────
+"""
+
+
+def _apply_transform(record: dict, source_field: str, target_field: str, transform_type: str, transform_args: dict | None = None) -> dict:
     record = dict(record)
     source_val = _resolve_field(record, source_field)
+    args = transform_args or {}
+
+    # ── Legacy ────────────────────────────────────────────────────────────────
     if transform_type == "extract_company":
         record[target_field] = _apply_extract_company(source_val)
+
+    # ── Case ──────────────────────────────────────────────────────────────────
     elif transform_type == "lowercase":
-        record[target_field] = source_val.lower()
+        record[target_field] = str(source_val).lower() if source_val is not None else source_val
+
     elif transform_type == "uppercase":
-        record[target_field] = source_val.upper()
+        record[target_field] = str(source_val).upper() if source_val is not None else source_val
+
     elif transform_type == "strip":
-        record[target_field] = source_val.strip()
+        record[target_field] = str(source_val).strip() if source_val is not None else source_val
+
+    # ── Type conversion ───────────────────────────────────────────────────────
+    elif transform_type == "to_string":
+        record[target_field] = str(source_val) if source_val is not None else None
+
+    elif transform_type == "to_number":
+        try:
+            v = float(str(source_val).replace(",", "."))
+            record[target_field] = int(v) if v == int(v) else v
+        except (ValueError, TypeError):
+            record[target_field] = None
+
+    elif transform_type == "to_boolean":
+        if isinstance(source_val, bool):
+            record[target_field] = source_val
+        else:
+            record[target_field] = str(source_val).lower() in ("true", "1", "yes", "si", "sí")
+
+    # ── Date / time extraction ────────────────────────────────────────────────
+    elif transform_type in ("extract_date", "extract_time", "extract_year",
+                            "extract_month", "extract_day", "extract_hour",
+                            "extract_minute", "extract_datetime"):
+        from datetime import datetime as _dt
+        val = source_val
+        parsed = None
+        if isinstance(val, str) and val:
+            for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ",
+                        "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                try:
+                    parsed = _dt.strptime(val.replace("+00:00", "Z"), fmt)
+                    break
+                except ValueError:
+                    continue
+        if parsed:
+            fmt_str = args.get("format")
+            if transform_type == "extract_date":
+                record[target_field] = parsed.strftime(fmt_str or "%Y-%m-%d")
+            elif transform_type == "extract_time":
+                record[target_field] = parsed.strftime(fmt_str or "%H:%M:%S")
+            elif transform_type == "extract_year":
+                record[target_field] = str(parsed.year)
+            elif transform_type == "extract_month":
+                record[target_field] = parsed.strftime("%m")
+            elif transform_type == "extract_day":
+                record[target_field] = parsed.strftime("%d")
+            elif transform_type == "extract_hour":
+                record[target_field] = parsed.strftime("%H")
+            elif transform_type == "extract_minute":
+                record[target_field] = parsed.strftime("%M")
+            elif transform_type == "extract_datetime":
+                record[target_field] = parsed.strftime(fmt_str or "%Y-%m-%dT%H:%M:%SZ")
+        else:
+            record[target_field] = source_val
+
+    # ── String utilities ──────────────────────────────────────────────────────
+    elif transform_type == "split_csv":
+        sep = args.get("sep", ",")
+        if isinstance(source_val, str):
+            record[target_field] = [v.strip() for v in source_val.split(sep) if v.strip()]
+        else:
+            record[target_field] = source_val
+
+    elif transform_type == "join_list":
+        sep = args.get("sep", ", ")
+        if isinstance(source_val, list):
+            record[target_field] = sep.join(str(v) for v in source_val)
+        else:
+            record[target_field] = source_val
+
+    elif transform_type == "truncate":
+        n = int(args.get("length", 255))
+        record[target_field] = str(source_val)[:n] if source_val is not None else source_val
+
+    elif transform_type == "replace":
+        find = args.get("find", "")
+        repl = args.get("replace", "")
+        record[target_field] = str(source_val).replace(find, repl) if source_val is not None else source_val
+
+    elif transform_type == "substring":
+        start = int(args.get("start", 0))
+        end = args.get("end")
+        s = str(source_val) if source_val is not None else ""
+        record[target_field] = s[start:int(end)] if end is not None else s[start:]
+
+    elif transform_type == "template":
+        tmpl = args.get("template", str(source_val))
+        try:
+            record[target_field] = tmpl.format(**record)
+        except (KeyError, ValueError):
+            record[target_field] = tmpl
+
+    elif transform_type == "default_if_null":
+        default = args.get("value", "")
+        record[target_field] = source_val if source_val is not None else default
+
+    elif transform_type == "first_csv":
+        sep = args.get("sep", ",")
+        parts = str(source_val).split(sep) if source_val else []
+        record[target_field] = parts[0].strip() if parts else None
+
     else:
+        # Default: plain rename / copy
         record[target_field] = source_val
+
     return record
 
 

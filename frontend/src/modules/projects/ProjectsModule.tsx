@@ -8,36 +8,36 @@ import {
   ROLE_META, STAGE_META,
 } from '../../types/project';
 import { GanttChart } from './GanttChart';
+import { getTenantId } from '../../store/authStore';
 
 const API = import.meta.env.VITE_PROJECT_MGMT_URL || 'http://localhost:9000';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
-const TENANT = 'tenant-001';
-const H = { 'Content-Type': 'application/json', 'x-tenant-id': TENANT };
+const getH = () => ({ 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() });
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 const api = {
-  getCompanies: () => fetch(`${API}/projects/companies`, { headers: H }).then(r => r.json()),
-  createCompany: (b: object) => fetch(`${API}/projects/companies`, { method: 'POST', headers: H, body: JSON.stringify(b) }).then(r => r.json()),
-  deleteCompany: (id: string) => fetch(`${API}/projects/companies/${id}`, { method: 'DELETE', headers: H }),
+  getCompanies: () => fetch(`${API}/projects/companies`, { headers: getH() }).then(r => r.json()),
+  createCompany: (b: object) => fetch(`${API}/projects/companies`, { method: 'POST', headers: getH(), body: JSON.stringify(b) }).then(r => r.json()),
+  deleteCompany: (id: string) => fetch(`${API}/projects/companies/${id}`, { method: 'DELETE', headers: getH() }),
 
-  getMembers: (cid: string) => fetch(`${API}/projects/companies/${cid}/members`, { headers: H }).then(r => r.json()),
-  createMember: (cid: string, b: object) => fetch(`${API}/projects/companies/${cid}/members`, { method: 'POST', headers: H, body: JSON.stringify(b) }).then(r => r.json()),
-  deleteMember: (mid: string) => fetch(`${API}/projects/members/${mid}`, { method: 'DELETE', headers: H }),
+  getMembers: (cid: string) => fetch(`${API}/projects/companies/${cid}/members`, { headers: getH() }).then(r => r.json()),
+  createMember: (cid: string, b: object) => fetch(`${API}/projects/companies/${cid}/members`, { method: 'POST', headers: getH(), body: JSON.stringify(b) }).then(r => r.json()),
+  deleteMember: (mid: string) => fetch(`${API}/projects/members/${mid}`, { method: 'DELETE', headers: getH() }),
 
-  getProjects: (cid: string) => fetch(`${API}/projects/companies/${cid}/projects`, { headers: H }).then(r => r.json()),
-  createProject: (cid: string, b: object) => fetch(`${API}/projects/companies/${cid}/projects`, { method: 'POST', headers: H, body: JSON.stringify(b) }).then(r => r.json()),
-  deleteProject: (pid: string) => fetch(`${API}/projects/${pid}`, { method: 'DELETE', headers: H }),
+  getProjects: (cid: string) => fetch(`${API}/projects/companies/${cid}/projects`, { headers: getH() }).then(r => r.json()),
+  createProject: (cid: string, b: object) => fetch(`${API}/projects/companies/${cid}/projects`, { method: 'POST', headers: getH(), body: JSON.stringify(b) }).then(r => r.json()),
+  deleteProject: (pid: string) => fetch(`${API}/projects/${pid}`, { method: 'DELETE', headers: getH() }),
 
-  getProject: (pid: string) => fetch(`${API}/projects/${pid}`, { headers: H }).then(r => r.json()),
-  updateProject: (pid: string, b: object) => fetch(`${API}/projects/${pid}`, { method: 'PUT', headers: H, body: JSON.stringify(b) }).then(r => r.json()),
+  getProject: (pid: string) => fetch(`${API}/projects/${pid}`, { headers: getH() }).then(r => r.json()),
+  updateProject: (pid: string, b: object) => fetch(`${API}/projects/${pid}`, { method: 'PUT', headers: getH(), body: JSON.stringify(b) }).then(r => r.json()),
 
-  createStage: (pid: string, b: object) => fetch(`${API}/projects/${pid}/stages`, { method: 'POST', headers: H, body: JSON.stringify(b) }).then(r => r.json()),
-  updateStage: (sid: string, b: object) => fetch(`${API}/projects/stages/${sid}`, { method: 'PUT', headers: H, body: JSON.stringify(b) }).then(r => r.json()),
-  deleteStage: (sid: string) => fetch(`${API}/projects/stages/${sid}`, { method: 'DELETE', headers: H }),
+  createStage: (pid: string, b: object) => fetch(`${API}/projects/${pid}/stages`, { method: 'POST', headers: getH(), body: JSON.stringify(b) }).then(r => r.json()),
+  updateStage: (sid: string, b: object) => fetch(`${API}/projects/stages/${sid}`, { method: 'PUT', headers: getH(), body: JSON.stringify(b) }).then(r => r.json()),
+  deleteStage: (sid: string) => fetch(`${API}/projects/stages/${sid}`, { method: 'DELETE', headers: getH() }),
 
-  getOntologyRecords: (otId: string) => fetch(`${ONTOLOGY_API}/object-types/${otId}/records`, { headers: H }).then(r => r.json()).then(d => Array.isArray(d) ? d : (d.records ?? [])),
-  getObjectTypes: () => fetch(`${ONTOLOGY_API}/object-types`, { headers: H }).then(r => r.json()),
+  getOntologyRecords: (otId: string) => fetch(`${ONTOLOGY_API}/object-types/${otId}/records`, { headers: getH() }).then(r => r.json()).then(d => Array.isArray(d) ? d : (d.records ?? [])),
+  getObjectTypes: () => fetch(`${ONTOLOGY_API}/object-types`, { headers: getH() }).then(r => r.json()),
 };
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

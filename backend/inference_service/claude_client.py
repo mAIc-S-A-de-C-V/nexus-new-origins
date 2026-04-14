@@ -658,6 +658,294 @@ Rules:
         )
         return message.content[0].text
 
+    # ------------------------------------------------------------------
+    # Async AI Copilot methods (Phase 8)
+    # ------------------------------------------------------------------
+
+    async def create_pipeline_from_description(
+        self, description: str, connectors: list, object_types: list
+    ) -> dict:
+        """Generate a pipeline config from natural language description."""
+        from anthropic import AsyncAnthropic
+
+        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        prompt = f"""You are building a data pipeline configuration for Nexus platform.
+
+Available connectors:
+{json.dumps(connectors, indent=2)}
+
+Available object types (data targets):
+{json.dumps(object_types, indent=2)}
+
+User request: {description}
+
+Generate a pipeline configuration as JSON with this exact structure:
+{{
+  "name": "descriptive pipeline name",
+  "description": "what this pipeline does",
+  "nodes": [
+    {{
+      "id": "node-1",
+      "type": "source",
+      "label": "Source Name",
+      "config": {{
+        "connector_id": "<connector id from available list>",
+        "endpoint": "/api/data",
+        "method": "GET"
+      }}
+    }},
+    {{
+      "id": "node-2",
+      "type": "transform",
+      "label": "Transform",
+      "config": {{
+        "operation": "map|filter|normalize",
+        "rules": []
+      }}
+    }},
+    {{
+      "id": "node-3",
+      "type": "destination",
+      "label": "Load to Object Type",
+      "config": {{
+        "object_type_id": "<object type id from available list>",
+        "mode": "upsert"
+      }}
+    }}
+  ],
+  "edges": [
+    {{"source": "node-1", "target": "node-2"}},
+    {{"source": "node-2", "target": "node-3"}}
+  ]
+}}
+
+Return ONLY valid JSON. No explanation."""
+
+        message = await async_client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            system=(
+                "You are a precise data engineering assistant. Always respond with "
+                "valid JSON only — no markdown, no explanations outside the JSON structure."
+            ),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = message.content[0].text.strip()
+        if content.startswith("```"):
+            content = content[content.index("\n") + 1:]
+            if content.rstrip().endswith("```"):
+                content = content.rstrip()[:-3].rstrip()
+        return json.loads(content)
+
+    async def create_logic_function(
+        self, description: str, object_types: list, existing_functions: list
+    ) -> dict:
+        """Generate a logic function config from natural language description."""
+        from anthropic import AsyncAnthropic
+
+        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        prompt = f"""You are building a Logic Function for Nexus platform. Logic Functions are automated workflows composed of blocks.
+
+Available object types and their fields:
+{json.dumps(object_types, indent=2)}
+
+Existing functions (for reference/calling):
+{json.dumps([f['name'] for f in existing_functions], indent=2)}
+
+User request: {description}
+
+Generate a logic function as JSON:
+{{
+  "name": "descriptive function name",
+  "description": "what this function does",
+  "blocks": [
+    {{
+      "id": "block-1",
+      "type": "ontology_query",
+      "label": "Fetch Records",
+      "config": {{
+        "object_type_id": "<id>",
+        "filters": [],
+        "limit": 100
+      }}
+    }},
+    {{
+      "id": "block-2",
+      "type": "llm",
+      "label": "AI Analysis",
+      "config": {{
+        "prompt": "Analyze this data: {{{{input}}}}",
+        "model": "claude-haiku-4-5-20251001"
+      }}
+    }},
+    {{
+      "id": "block-3",
+      "type": "condition",
+      "label": "Check Result",
+      "config": {{
+        "expression": "output.length > 0"
+      }}
+    }}
+  ],
+  "block_order": ["block-1", "block-2", "block-3"]
+}}
+
+Available block types: ontology_query, llm, condition, http_request, transform, notification, email
+Return ONLY valid JSON."""
+
+        message = await async_client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            system=(
+                "You are a precise data engineering assistant. Always respond with "
+                "valid JSON only — no markdown, no explanations outside the JSON structure."
+            ),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = message.content[0].text.strip()
+        if content.startswith("```"):
+            content = content[content.index("\n") + 1:]
+            if content.rstrip().endswith("```"):
+                content = content.rstrip()[:-3].rstrip()
+        return json.loads(content)
+
+    async def explain_lineage(
+        self, nodes: list, edges: list, focus_node_id: str | None
+    ) -> dict:
+        """Analyze a data lineage graph and explain it in plain English."""
+        from anthropic import AsyncAnthropic
+
+        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        node_map = {n["id"]: n for n in nodes}
+        graph_lines = []
+        for edge in edges:
+            src = node_map.get(edge["source"], {})
+            tgt = node_map.get(edge["target"], {})
+            graph_lines.append(
+                f"{src.get('type','?')}:{src.get('label','?')} "
+                f"--[{edge.get('label','')}]--> "
+                f"{tgt.get('type','?')}:{tgt.get('label','?')}"
+            )
+
+        focus_info = ""
+        if focus_node_id and focus_node_id in node_map:
+            n = node_map[focus_node_id]
+            focus_info = (
+                f"\nUser is focused on: {n['type']}:{n['label']} "
+                f"(status: {n.get('status','unknown')})"
+            )
+
+        prompt = f"""You are a data lineage expert for Nexus platform. Analyze this data lineage graph and explain it clearly.
+
+Lineage Graph ({len(nodes)} nodes, {len(edges)} edges):
+{chr(10).join(graph_lines) or 'No edges — isolated nodes only'}
+
+All nodes: {json.dumps([{{'type': n['type'], 'label': n['label'], 'status': n.get('status')}} for n in nodes], indent=2)}
+{focus_info}
+
+Provide:
+1. A plain-English explanation of the data flow (2-3 sentences)
+2. Any issues or anomalies detected (orphan nodes, broken flows, inactive components)
+3. Key observations about the pipeline health
+
+Return JSON:
+{{
+  "explanation": "markdown string explaining the data flow",
+  "findings": [
+    {{"type": "warning|info|error", "title": "...", "description": "...", "node": "optional node label"}}
+  ]
+}}"""
+
+        message = await async_client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            system=(
+                "You are a precise data engineering assistant. Always respond with "
+                "valid JSON only — no markdown, no explanations outside the JSON structure."
+            ),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = message.content[0].text.strip()
+        if content.startswith("```"):
+            content = content[content.index("\n") + 1:]
+            if content.rstrip().endswith("```"):
+                content = content.rstrip()[:-3].rstrip()
+        return json.loads(content)
+
+    async def surface_anomalies(
+        self, object_type_name: str, fields: list, records: list
+    ) -> dict:
+        """Analyze a dataset for anomalies and data quality issues."""
+        from anthropic import AsyncAnthropic
+
+        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        stats = {}
+        for field in fields:
+            values = [r.get(field) for r in records if r.get(field) is not None]
+            null_count = len(records) - len(values)
+            stats[field] = {
+                "total": len(records),
+                "non_null": len(values),
+                "null_pct": round(null_count / len(records) * 100, 1) if records else 0,
+                "unique_count": len(set(str(v) for v in values)),
+                "sample": values[:5],
+            }
+
+        prompt = f"""You are a data quality analyst. Analyze this dataset for anomalies and data quality issues.
+
+Object Type: {object_type_name}
+Record Count: {len(records)}
+
+Field Statistics:
+{json.dumps(stats, indent=2)}
+
+Sample Records (first 10):
+{json.dumps(records[:10], indent=2, default=str)}
+
+Identify:
+1. Fields with high null rates (>20%)
+2. Fields with suspiciously low cardinality (might be miscategorized)
+3. Fields that look like they contain PII unexpectedly
+4. Outlier patterns or inconsistencies
+5. Fields where values don't match expected format
+
+Return JSON:
+{{
+  "summary": "2-3 sentence overall data quality assessment",
+  "anomalies": [
+    {{
+      "field": "field_name",
+      "type": "null_rate|low_cardinality|pii_risk|format_mismatch|outlier",
+      "severity": "high|medium|low",
+      "description": "clear explanation of the issue",
+      "affected_count": 0,
+      "recommendation": "what to do about it"
+    }}
+  ]
+}}
+
+Return ONLY valid JSON."""
+
+        message = await async_client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            system=(
+                "You are a precise data engineering assistant. Always respond with "
+                "valid JSON only — no markdown, no explanations outside the JSON structure."
+            ),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = message.content[0].text.strip()
+        if content.startswith("```"):
+            content = content[content.index("\n") + 1:]
+            if content.rstrip().endswith("```"):
+                content = content.rstrip()[:-3].rstrip()
+        return json.loads(content)
+
 
 def _safe_floats(values) -> list[float]:
     """Convert an iterable of values to floats, silently skipping non-numeric ones (e.g. datetimes)."""

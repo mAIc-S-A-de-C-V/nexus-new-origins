@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { ConnectorConfig } from '../types/connector';
+import { getTenantId } from './authStore';
 
 // ─── Store ──────────────────────────────────────────────────────────────────
 
@@ -25,8 +26,8 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
     set({ loading: true, error: null });
     try {
       const [connRes, pipeRes] = await Promise.all([
-        fetch(`${API}/connectors`),
-        fetch(`${PIPELINE_API}/pipelines`).catch(() => null),
+        fetch(`${API}/connectors`, { headers: { 'x-tenant-id': getTenantId() } }),
+        fetch(`${PIPELINE_API}/pipelines`, { headers: { 'x-tenant-id': getTenantId() } }).catch(() => null),
       ]);
       if (!connRes.ok) throw new Error(`HTTP ${connRes.status}`);
       const data = await connRes.json();
@@ -60,7 +61,7 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
           description: c.description,
           baseUrl: c.base_url,
           authType: c.auth_type,
-          credentials: c.credentials,
+          credentials: (c.config_metadata || c.credentials) as Record<string, string> | undefined,
           paginationStrategy: c.pagination_strategy,
           activePipelineCount: stats?.count ?? (c.active_pipeline_count as number) ?? 0,
           lastSync: stats?.lastRun ?? (c.last_sync as string | null) ?? undefined,
@@ -94,7 +95,7 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
     };
     const res = await fetch(`${API}/connectors`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -111,7 +112,7 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
       description: c.description,
       baseUrl: c.base_url,
       authType: c.auth_type,
-      credentials: c.credentials,
+      credentials: (c.config_metadata || c.credentials) as Record<string, string> | undefined,
       paginationStrategy: c.pagination_strategy,
       activePipelineCount: c.active_pipeline_count ?? 0,
       lastSync: c.last_sync,
@@ -140,7 +141,7 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
     if (updates.headers !== undefined) body.headers = updates.headers;
     const res = await fetch(`${API}/connectors/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -153,7 +154,7 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
   },
 
   removeConnector: async (id) => {
-    const res = await fetch(`${API}/connectors/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${API}/connectors/${id}`, { method: 'DELETE', headers: { 'x-tenant-id': getTenantId() } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     set((state) => ({
       connectors: state.connectors.filter((c) => c.id !== id),

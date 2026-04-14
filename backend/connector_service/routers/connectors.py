@@ -9,10 +9,11 @@ from sqlalchemy import select
 import httpx
 from models import (
     ConnectorConfig, ConnectorCreateRequest,
-    ConnectorUpdateRequest, ConnectionTestResult
+    ConnectorUpdateRequest, ConnectionTestResult, ConnectorPublicView
 )
 from database import ConnectorRow, get_session
 from schema_fetcher import fetch_schema, test_credentials
+from credential_crypto import encrypt_credentials, decrypt_credentials
 
 router = APIRouter()
 
@@ -38,7 +39,7 @@ def _row_to_model(row: ConnectorRow) -> ConnectorConfig:
         description=row.description,
         base_url=row.base_url,
         auth_type=row.auth_type,
-        credentials=row.credentials,
+        credentials=decrypt_credentials(row.credentials),
         headers=row.headers,
         pagination_strategy=row.pagination_strategy,
         active_pipeline_count=row.active_pipeline_count,
@@ -53,7 +54,7 @@ def _row_to_model(row: ConnectorRow) -> ConnectorConfig:
     )
 
 
-@router.get("", response_model=list[ConnectorConfig])
+@router.get("", response_model=list[ConnectorPublicView])
 async def list_connectors(
     category: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
@@ -67,10 +68,10 @@ async def list_connectors(
     if status:
         stmt = stmt.where(ConnectorRow.status == status)
     result = await db.execute(stmt)
-    return [_row_to_model(r) for r in result.scalars().all()]
+    return [ConnectorPublicView.from_config(_row_to_model(r)) for r in result.scalars().all()]
 
 
-@router.post("", response_model=ConnectorConfig, status_code=201)
+@router.post("", response_model=ConnectorPublicView, status_code=201)
 async def create_connector(
     req: ConnectorCreateRequest,
     x_tenant_id: Optional[str] = Header(None),
@@ -88,7 +89,7 @@ async def create_connector(
         description=req.description,
         base_url=req.base_url,
         auth_type=req.auth_type,
-        credentials=req.credentials,
+        credentials=encrypt_credentials(req.credentials),
         headers=req.headers,
         pagination_strategy=req.pagination_strategy,
         tags=req.tags,
@@ -97,10 +98,10 @@ async def create_connector(
     db.add(row)
     await db.commit()
     await db.refresh(row)
-    return _row_to_model(row)
+    return ConnectorPublicView.from_config(_row_to_model(row))
 
 
-@router.get("/{connector_id}", response_model=ConnectorConfig)
+@router.get("/{connector_id}", response_model=ConnectorPublicView)
 async def get_connector(
     connector_id: str,
     x_tenant_id: Optional[str] = Header(None),
@@ -116,10 +117,10 @@ async def get_connector(
     row = result.scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Connector not found")
-    return _row_to_model(row)
+    return ConnectorPublicView.from_config(_row_to_model(row))
 
 
-@router.put("/{connector_id}", response_model=ConnectorConfig)
+@router.put("/{connector_id}", response_model=ConnectorPublicView)
 async def update_connector(
     connector_id: str,
     req: ConnectorUpdateRequest,
@@ -139,11 +140,14 @@ async def update_connector(
 
     update_data = req.model_dump(exclude_none=True)
     for key, value in update_data.items():
-        setattr(row, key, value)
+        if key == "credentials":
+            setattr(row, key, encrypt_credentials(value))
+        else:
+            setattr(row, key, value)
     row.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(row)
-    return _row_to_model(row)
+    return ConnectorPublicView.from_config(_row_to_model(row))
 
 
 @router.delete("/{connector_id}", status_code=204)
@@ -186,7 +190,7 @@ async def test_connection(
     success, message, latency_ms = await test_credentials(
         connector_type=row.type,
         base_url=row.base_url,
-        credentials=row.credentials,
+        credentials=decrypt_credentials(row.credentials),
         config=row.config,
         db=db,
     )
@@ -238,7 +242,7 @@ async def get_schema(
     raw_schema, sample_rows, error = await fetch_schema(
         connector_type=row.type,
         base_url=row.base_url,
-        credentials=row.credentials,
+        credentials=decrypt_credentials(row.credentials),
         config=row.config,
         db=db,
         last_sync=row.last_sync,
@@ -302,7 +306,7 @@ async def fetch_row(
     _, sample_rows, error = await fetch_schema(
         connector_type=row.type,
         base_url=row.base_url,
-        credentials=row.credentials,
+        credentials=decrypt_credentials(row.credentials),
         config=config,
         db=db,
     )

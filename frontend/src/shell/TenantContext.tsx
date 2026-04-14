@@ -195,6 +195,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         name: data.name,
         role: mapRoleToApi(data.role),
         password: data.password || undefined,
+        allowed_modules: data.allowed_modules ?? null,
       }),
     })
       .then((res) => res.json())
@@ -216,6 +217,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (patch.role !== undefined) body.role = mapRoleToApi(patch.role as UserRole);
     if (patch.active !== undefined) body.is_active = patch.active;
     if (patch.password) body.password = patch.password;
+    if ('allowed_modules' in patch) body.allowed_modules = patch.allowed_modules ?? null;
 
     fetch(`${AUTH_API}/auth/users/${id}`, {
       method: 'PATCH',

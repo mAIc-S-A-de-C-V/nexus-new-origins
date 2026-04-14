@@ -85,6 +85,7 @@ class ActionDefinitionRow(Base):
     allowed_roles = Column(JSON, nullable=False, default=list)  # ["ADMIN", "DATA_ENGINEER"]
     writes_to_object_type = Column(String, nullable=True)
     enabled = Column(Boolean, nullable=False, default=True)
+    notify_email = Column(String, nullable=True)   # email to notify when execution is approved
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

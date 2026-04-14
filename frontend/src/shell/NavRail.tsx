@@ -1,30 +1,38 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Plug, Network, GitBranch, Activity, Workflow, Settings,
+  Plug, Network, Activity, Workflow, Settings,
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
-  FolderKanban, Users, LogOut, ScanSearch, DollarSign, Briefcase,
-  BrainCircuit, Bot, MessageSquare, ShieldCheck, Wrench,
+  FolderKanban, Users, LogOut, DollarSign, Briefcase,
+  BrainCircuit, Bot, MessageSquare, ShieldCheck, Wrench, Globe, FlaskConical,
+  Database, Shield, TrendingUp,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from './TenantContext';
+import { usePermission } from '../hooks/usePermission';
 import { useAppStore } from '../store/appStore';
 import { useAssistantStore } from '../store/assistantStore';
 import { useHumanActionsStore } from '../store/humanActionsStore';
+
+const LANGUAGES = [
+  { code: 'en', label: 'English', flag: '🇺🇸' },
+  { code: 'es', label: 'Español', flag: '🇸🇻' },
+];
 
 // ── maic icon SVG ──────────────────────────────────────────────────────────
 
 const MaicIcon: React.FC<{ size?: number }> = ({ size = 22 }) => (
   <svg width={size} height={size} viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <line x1="18" y1="18" x2="9"  y2="9"  stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
-    <line x1="26" y1="18" x2="35" y2="9"  stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
-    <line x1="18" y1="26" x2="9"  y2="35" stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
-    <line x1="26" y1="26" x2="35" y2="35" stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
-    <line x1="26" y1="22" x2="31" y2="22" stroke="#7C3AED" strokeWidth="2.8" strokeLinecap="round" />
-    <circle cx="8"  cy="8"  r="5.5" fill="#7C3AED" />
-    <circle cx="36" cy="8"  r="5.5" fill="#7C3AED" />
-    <circle cx="8"  cy="36" r="5.5" fill="#7C3AED" />
-    <circle cx="36" cy="36" r="5.5" fill="#7C3AED" />
-    <circle cx="33" cy="22" r="3.5" fill="#7C3AED" />
-    <rect x="17" y="17" width="10" height="10" rx="2.5" fill="#7C3AED" />
+    <line x1="18" y1="18" x2="9"  y2="9"  stroke="var(--color-brand)" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="26" y1="18" x2="35" y2="9"  stroke="var(--color-brand)" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="18" y1="26" x2="9"  y2="35" stroke="var(--color-brand)" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="26" y1="26" x2="35" y2="35" stroke="var(--color-brand)" strokeWidth="2.8" strokeLinecap="round" />
+    <line x1="26" y1="22" x2="31" y2="22" stroke="var(--color-brand)" strokeWidth="2.8" strokeLinecap="round" />
+    <circle cx="8"  cy="8"  r="5.5" fill="var(--color-brand)" />
+    <circle cx="36" cy="8"  r="5.5" fill="var(--color-brand)" />
+    <circle cx="8"  cy="36" r="5.5" fill="var(--color-brand)" />
+    <circle cx="36" cy="36" r="5.5" fill="var(--color-brand)" />
+    <circle cx="33" cy="22" r="3.5" fill="var(--color-brand)" />
+    <rect x="17" y="17" width="10" height="10" rx="2.5" fill="var(--color-brand)" />
   </svg>
 );
 
@@ -33,31 +41,35 @@ const MaicIcon: React.FC<{ size?: number }> = ({ size = 22 }) => (
 interface NavItem {
   id: string;
   label: string;
+  i18nKey: string;
   icon: React.ReactNode;
   active: boolean;
   comingSoon?: boolean;
   path: string;
   adminOnly?: boolean;
+  alwaysVisible?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'connectors', label: 'Connectors',     icon: <Plug size={16} />,         active: true,  path: 'connectors' },
-  { id: 'ontology',   label: 'Ontology',       icon: <Network size={16} />,       active: true,  path: 'ontology' },
-  { id: 'lineage',    label: 'Lineage',        icon: <GitBranch size={16} />,     active: false, comingSoon: true, path: 'lineage' },
-  { id: 'events',     label: 'Event Log',      icon: <Activity size={16} />,      active: true,  path: 'events' },
-  { id: 'process',    label: 'Process Mining', icon: <ScanSearch size={16} />,    active: true,  path: 'process' },
-  { id: 'pipelines',  label: 'Pipelines',      icon: <Workflow size={16} />,      active: true,  path: 'pipelines' },
-  { id: 'logic',      label: 'Logic Studio',   icon: <BrainCircuit size={16} />,  active: true,  path: 'logic' },
-  { id: 'agents',     label: 'Agent Studio',   icon: <Bot size={16} />,           active: true,  path: 'agents' },
-  { id: 'utilities',  label: 'Utilities',      icon: <Wrench size={16} />,        active: true,  path: 'utilities' },
-  { id: 'human-actions', label: 'Actions',     icon: <ShieldCheck size={16} />,   active: true,  path: 'human-actions' },
-  { id: 'users',      label: 'Users',          icon: <Users size={16} />,         active: true,  path: 'users', adminOnly: true },
-  { id: 'settings',   label: 'Settings',       icon: <Settings size={16} />,      active: false, comingSoon: true, path: 'settings' },
+  { id: 'apps',          label: 'Dashboards',   i18nKey: 'nav.dashboards',  icon: <LayoutDashboard size={16} />, active: true, path: 'apps' },
+  { id: 'connectors',    label: 'Connectors',   i18nKey: 'nav.connectors',  icon: <Plug size={16} />,            active: true, path: 'connectors' },
+  { id: 'ontology',      label: 'Ontology',     i18nKey: 'nav.ontology',    icon: <Network size={16} />,         active: true, path: 'ontology' },
+  { id: 'data',          label: 'Data',         i18nKey: 'nav.data',        icon: <Database size={16} />,        active: true, path: 'data' },
+  { id: 'pipelines',     label: 'Pipelines',    i18nKey: 'nav.pipelines',   icon: <Workflow size={16} />,        active: true, path: 'pipelines' },
+  { id: 'logic',         label: 'Logic Studio', i18nKey: 'nav.logicStudio', icon: <BrainCircuit size={16} />,    active: true, path: 'logic' },
+  { id: 'agents',        label: 'Agent Studio', i18nKey: 'nav.agentStudio', icon: <Bot size={16} />,             active: true, path: 'agents' },
+  { id: 'evals',         label: 'Evals',        i18nKey: 'nav.evals',       icon: <FlaskConical size={16} />,    active: true, path: 'evals' },
+  { id: 'value',         label: 'Value Monitor',i18nKey: 'nav.value',       icon: <TrendingUp size={16} />,      active: true, path: 'value' },
+  { id: 'activity',      label: 'Activity',     i18nKey: 'nav.activity',    icon: <Activity size={16} />,        active: true, path: 'activity' },
+  { id: 'utilities',     label: 'Utilities',    i18nKey: 'nav.utilities',   icon: <Wrench size={16} />,          active: true, path: 'utilities' },
+  { id: 'human-actions', label: 'Actions',      i18nKey: 'nav.actions',     icon: <ShieldCheck size={16} />,     active: true, path: 'human-actions', alwaysVisible: true },
+  { id: 'admin',         label: 'Admin',        i18nKey: 'nav.admin',       icon: <Shield size={16} />,          active: true, path: 'admin', adminOnly: true },
+  { id: 'settings',      label: 'Settings',     i18nKey: 'nav.settings',    icon: <Settings size={16} />,        active: true, path: 'settings', alwaysVisible: true },
 ];
 
 const MAIC_SUBITEMS: NavItem[] = [
-  { id: 'projects', label: 'Projects', icon: <Briefcase size={14} />, active: true, path: 'projects' },
-  { id: 'finance',  label: 'Finance',  icon: <DollarSign size={14} />, active: true, path: 'finance' },
+  { id: 'projects', label: 'Projects', i18nKey: 'nav.projects', icon: <Briefcase size={14} />, active: true, path: 'projects' },
+  { id: 'finance',  label: 'Finance',  i18nKey: 'nav.finance',  icon: <DollarSign size={14} />, active: true, path: 'finance' },
 ];
 
 // ── Component ──────────────────────────────────────────────────────────────
@@ -73,6 +85,8 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
   const [maicExpanded, setMaicExpanded] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { currentUser, logout } = useAuth();
+  const { isAdmin: isAdminNew, canAccess, modules } = usePermission();
+  const { t, i18n } = useTranslation();
   const { apps } = useAppStore();
   const { toggle: toggleAssistant, open: assistantOpen, conversations } = useAssistantStore();
   const { pendingCount, fetchPending } = useHumanActionsStore();
@@ -84,11 +98,14 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
     return () => clearInterval(interval);
   }, []);
 
-  const isAdmin = currentUser?.role === 'ADMIN';
+  // isAdmin: prefer JWT role from authStore, fall back to TenantContext for legacy compat
+  const isAdmin = isAdminNew || currentUser?.role === 'ADMIN';
   const width = expanded ? 220 : 56;
 
   const canSee = (moduleId: string): boolean => {
     if (isAdmin) return true;
+    // Use JWT modules if available, otherwise fall back to TenantContext allowed_modules
+    if (modules.length > 0) return modules.includes(moduleId);
     const mods = currentUser?.allowed_modules;
     if (!mods || mods.length === 0) return true;
     return mods.includes(moduleId);
@@ -114,7 +131,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
         color: isActive ? '#E2E8F0' : item.comingSoon ? '#334155' : '#64748B',
         cursor: item.active ? 'pointer' : 'default',
         transition: 'background-color 80ms, color 80ms',
-        borderLeft: isActive ? '2px solid #7C3AED' : '2px solid transparent',
+        borderLeft: isActive ? '2px solid var(--color-brand)' : '2px solid transparent',
         borderTop: 'none', borderRight: 'none', borderBottom: 'none',
         flexShrink: 0, textAlign: 'left',
       }}
@@ -139,7 +156,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             opacity: item.comingSoon ? 0.4 : 1,
           }}>
-            {item.label}
+            {t(item.i18nKey, item.label)}
           </span>
           {item.comingSoon && (
             <span style={{
@@ -147,7 +164,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
               border: '1px solid #1E293B', padding: '1px 4px',
               flexShrink: 0, letterSpacing: '0.04em',
             }}>
-              SOON
+              {t('nav.soon')}
             </span>
           )}
         </>
@@ -182,8 +199,14 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
       {/* Nav items */}
       <div style={{ flex: 1, padding: '6px 0', overflowY: 'auto', overflowX: 'hidden' }}>
         {NAV_ITEMS
-          .filter((item) => !item.adminOnly || isAdmin)
-          .filter((item) => canSee(item.path))
+          .filter((item) => {
+            if (item.alwaysVisible) return item.active;
+            if (item.adminOnly && !isAdmin) return false;
+            if (modules.length > 0 && !canAccess(item.path)) return false;
+            // Legacy TenantContext module check when no JWT modules present
+            if (modules.length === 0 && !canSee(item.path)) return false;
+            return item.active;
+          })
           .map((item) => {
             const btn = navBtn(item, currentPage === item.path, () => item.active && onNavigate(item.path));
             // Overlay badge for human-actions pending count
@@ -218,7 +241,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
                 backgroundColor: (currentPage === 'projects' || currentPage === 'finance') ? '#161D2B' : 'transparent',
                 color: (currentPage === 'projects' || currentPage === 'finance') ? '#E2E8F0' : '#64748B',
                 cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
-                borderLeft: (currentPage === 'projects' || currentPage === 'finance') ? '2px solid #7C3AED' : '2px solid transparent',
+                borderLeft: (currentPage === 'projects' || currentPage === 'finance') ? '2px solid var(--color-brand)' : '2px solid transparent',
                 borderTop: 'none', borderRight: 'none', borderBottom: 'none',
                 flexShrink: 0,
               }}
@@ -251,103 +274,6 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
           </>
         )}
 
-        {/* Apps section */}
-        <div style={{ borderTop: '1px solid #131C2E', marginTop: 6, paddingTop: 4 }}>
-          <button
-            onClick={() => { if (expanded) setAppsExpanded((v) => !v); onNavigate('apps'); }}
-            title={!expanded ? 'Apps' : undefined}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              width: '100%', height: 38,
-              padding: expanded ? '0 14px' : '0',
-              justifyContent: expanded ? 'flex-start' : 'center',
-              backgroundColor: currentPage === 'apps' ? '#161D2B' : 'transparent',
-              color: currentPage === 'apps' ? '#E2E8F0' : '#64748B',
-              cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
-              borderLeft: currentPage === 'apps' ? '2px solid #7C3AED' : '2px solid transparent',
-              borderTop: 'none', borderRight: 'none', borderBottom: 'none',
-              flexShrink: 0,
-            }}
-            onMouseEnter={(e) => {
-              if (currentPage !== 'apps') {
-                (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
-                (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (currentPage !== 'apps') {
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-                (e.currentTarget as HTMLElement).style.color = '#64748B';
-              }
-            }}
-          >
-            <span style={{ flexShrink: 0, lineHeight: 0 }}><LayoutDashboard size={16} /></span>
-            {expanded && (
-              <>
-                <span style={{ fontSize: 13, fontWeight: currentPage === 'apps' ? 500 : 400 }}>Apps</span>
-                {apps.length > 0 && (
-                  <span style={{
-                    marginLeft: 'auto', fontSize: 10, color: '#7C3AED',
-                    backgroundColor: '#1E1040', padding: '1px 6px', borderRadius: 10, flexShrink: 0,
-                  }}>{apps.length}</span>
-                )}
-                {apps.length > 0 && (
-                  <span onClick={(e) => { e.stopPropagation(); setAppsExpanded((v) => !v); }}
-                    style={{ marginLeft: 4, lineHeight: 0, flexShrink: 0, color: '#475569' }}>
-                    {appsExpanded ? <ChevronDown size={11} /> : <ChevronUp size={11} />}
-                  </span>
-                )}
-              </>
-            )}
-          </button>
-
-          {expanded && appsExpanded && apps.map((app) => {
-            const appPage = `app-${app.id}`;
-            const isAppActive = currentPage === appPage;
-            return (
-              <button
-                key={app.id}
-                onClick={() => onNavigate(appPage)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  width: '100%', height: 32, padding: '0 14px 0 30px',
-                  backgroundColor: isAppActive ? '#161D2B' : 'transparent',
-                  color: isAppActive ? '#E2E8F0' : '#475569',
-                  cursor: 'pointer', transition: 'background-color 80ms, color 80ms',
-                  borderLeft: isAppActive ? '2px solid #7C3AED' : '2px solid transparent',
-                  borderTop: 'none', borderRight: 'none', borderBottom: 'none',
-                  flexShrink: 0, textAlign: 'left',
-                }}
-                onMouseEnter={(e) => {
-                  if (!isAppActive) {
-                    (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620';
-                    (e.currentTarget as HTMLElement).style.color = '#CBD5E1';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isAppActive) {
-                    (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
-                    (e.currentTarget as HTMLElement).style.color = '#475569';
-                  }
-                }}
-              >
-                <div style={{
-                  width: 15, height: 15, backgroundColor: '#1E1040',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 8, fontWeight: 700, color: '#7C3AED', flexShrink: 0,
-                }}>
-                  {app.name.charAt(0).toUpperCase()}
-                </div>
-                <span style={{
-                  fontSize: 12, fontWeight: isAppActive ? 500 : 400,
-                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                }}>
-                  {app.name}
-                </span>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       {/* Bottom: user + collapse */}
@@ -367,6 +293,35 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
               borderRadius: 4, overflow: 'hidden', zIndex: 100,
               boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
             }}>
+              {/* Language selector */}
+              <div style={{ padding: '8px 12px 6px', borderBottom: '1px solid #1E2D42' }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: '#334155', textTransform: 'uppercase',
+                  letterSpacing: '0.06em', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <Globe size={11} /> {t('user.language')}
+                </div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {LANGUAGES.map(lang => (
+                    <button
+                      key={lang.code}
+                      onClick={() => i18n.changeLanguage(lang.code)}
+                      style={{
+                        flex: 1, height: 28, fontSize: 11, fontWeight: 500,
+                        borderRadius: 3, cursor: 'pointer',
+                        border: `1px solid ${i18n.language === lang.code ? 'var(--color-brand)' : '#1E2D42'}`,
+                        backgroundColor: i18n.language === lang.code ? '#1E1040' : 'transparent',
+                        color: i18n.language === lang.code ? 'var(--color-brand-text, #A78BFA)' : '#64748B',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                        transition: 'all 80ms',
+                      }}
+                    >
+                      <span>{lang.flag}</span>
+                      <span>{lang.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Sign out */}
               <button
                 onClick={() => { logout(); setUserMenuOpen(false); }}
                 style={{
@@ -386,7 +341,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
                 }}
               >
                 <LogOut size={13} />
-                Sign out
+                {t('user.signOut')}
               </button>
             </div>
           </>
@@ -402,23 +357,24 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
             justifyContent: expanded ? 'flex-start' : 'center',
             backgroundColor: assistantOpen ? '#1E1040' : 'transparent',
             border: 'none', cursor: 'pointer',
-            borderLeft: assistantOpen ? '2px solid #7C3AED' : '2px solid transparent',
+            borderLeft: assistantOpen ? '2px solid var(--color-brand)' : '2px solid transparent',
             transition: 'background-color 80ms',
             marginBottom: 2,
           }}
           onMouseEnter={(e) => { if (!assistantOpen) (e.currentTarget as HTMLElement).style.backgroundColor = '#0F1620'; }}
           onMouseLeave={(e) => { if (!assistantOpen) (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
         >
-          <MessageSquare size={16} color={assistantOpen ? '#A78BFA' : '#475569'} style={{ flexShrink: 0 }} />
+          <MessageSquare size={16} color={assistantOpen ? 'var(--color-brand)' : '#475569'} style={{ flexShrink: 0 }} />
           {expanded && (
             <>
-              <span style={{ fontSize: 13, color: assistantOpen ? '#A78BFA' : '#64748B', fontWeight: assistantOpen ? 500 : 400 }}>
+              <span style={{ fontSize: 13, color: assistantOpen ? 'var(--color-brand)' : '#64748B', fontWeight: assistantOpen ? 500 : 400 }}>
                 Assistant
               </span>
               {conversations.length > 0 && (
                 <span style={{
-                  marginLeft: 'auto', fontSize: 9, color: '#7C3AED',
-                  backgroundColor: '#1E1040', padding: '1px 6px', borderRadius: 10, flexShrink: 0,
+                  marginLeft: 'auto', fontSize: 9, color: 'var(--color-brand)',
+                  backgroundColor: 'var(--color-brand-dim)', padding: '1px 6px', borderRadius: 10, flexShrink: 0,
+                  border: '1px solid var(--color-brand-border)',
                 }}>
                   {conversations.length}
                 </span>
@@ -449,7 +405,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
           >
             <div style={{
               width: 26, height: 26, borderRadius: '50%',
-              backgroundColor: '#1E1040', border: '1px solid #2D1B69',
+              backgroundColor: 'var(--color-brand-dim)', border: '1px solid var(--color-brand-border)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 10, fontWeight: 700, color: '#A78BFA', flexShrink: 0,
             }}>
@@ -471,24 +427,43 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
           </button>
         )}
 
-        {/* Collapse toggle */}
-        <button
-          onClick={() => setExpanded(!expanded)}
-          style={{
-            display: 'flex', alignItems: 'center',
-            justifyContent: expanded ? 'flex-end' : 'center',
-            width: '100%', height: 28,
-            padding: expanded ? '0 10px' : '0',
-            color: '#1E293B', border: 'none', backgroundColor: 'transparent',
-            cursor: 'pointer', transition: 'color 80ms',
-          }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = '#334155'; }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = '#1E293B'; }}
-          title={expanded ? 'Collapse' : 'Expand'}
-        >
-          {expanded ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
-        </button>
       </div>
+
+      {/* Edge collapse tab — sits flush on the right border */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        title={expanded ? 'Collapse sidebar' : 'Expand sidebar'}
+        style={{
+          position: 'absolute',
+          top: '50%',
+          right: -12,
+          transform: 'translateY(-50%)',
+          width: 12,
+          height: 40,
+          backgroundColor: '#131C2E',
+          border: '1px solid #1E2D42',
+          borderLeft: 'none',
+          borderRadius: '0 4px 4px 0',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#334155',
+          padding: 0,
+          zIndex: 20,
+          transition: 'background-color 80ms, color 80ms',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLElement).style.backgroundColor = '#1E2D42';
+          (e.currentTarget as HTMLElement).style.color = '#64748B';
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLElement).style.backgroundColor = '#131C2E';
+          (e.currentTarget as HTMLElement).style.color = '#334155';
+        }}
+      >
+        {expanded ? <ChevronLeft size={10} /> : <ChevronRight size={10} />}
+      </button>
     </nav>
   );
 };

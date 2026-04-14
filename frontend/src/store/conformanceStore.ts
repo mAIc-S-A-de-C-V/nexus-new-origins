@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getTenantId } from './authStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
 
@@ -76,7 +77,7 @@ export const useConformanceStore = create<ConformanceState>((set, get) => ({
   loading: false,
   checking: false,
 
-  fetchModels: async (objectTypeId, tenantId = 'tenant-001') => {
+  fetchModels: async (objectTypeId, tenantId = getTenantId()) => {
     set({ loading: true });
     try {
       const res = await fetch(`${PROCESS_API}/process/conformance/models/${objectTypeId}`, {
@@ -91,7 +92,7 @@ export const useConformanceStore = create<ConformanceState>((set, get) => ({
     }
   },
 
-  createModel: async (objectTypeId, name, activities, tenantId = 'tenant-001') => {
+  createModel: async (objectTypeId, name, activities, tenantId = getTenantId()) => {
     const res = await fetch(`${PROCESS_API}/process/conformance/models/${objectTypeId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenantId },
@@ -102,7 +103,7 @@ export const useConformanceStore = create<ConformanceState>((set, get) => ({
     return model;
   },
 
-  updateModel: async (objectTypeId, modelId, updates, tenantId = 'tenant-001') => {
+  updateModel: async (objectTypeId, modelId, updates, tenantId = getTenantId()) => {
     await fetch(`${PROCESS_API}/process/conformance/models/${objectTypeId}/${modelId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenantId },
@@ -111,7 +112,7 @@ export const useConformanceStore = create<ConformanceState>((set, get) => ({
     await get().fetchModels(objectTypeId, tenantId);
   },
 
-  deleteModel: async (objectTypeId, modelId, tenantId = 'tenant-001') => {
+  deleteModel: async (objectTypeId, modelId, tenantId = getTenantId()) => {
     await fetch(`${PROCESS_API}/process/conformance/models/${objectTypeId}/${modelId}`, {
       method: 'DELETE',
       headers: { 'x-tenant-id': tenantId },
@@ -119,7 +120,7 @@ export const useConformanceStore = create<ConformanceState>((set, get) => ({
     set(s => ({ models: s.models.filter(m => m.id !== modelId) }));
   },
 
-  checkConformance: async (objectTypeId, modelId, threshold = 0.7, tenantId = 'tenant-001') => {
+  checkConformance: async (objectTypeId, modelId, threshold = 0.7, tenantId = getTenantId()) => {
     set({ checking: true });
     try {
       const res = await fetch(
@@ -133,7 +134,7 @@ export const useConformanceStore = create<ConformanceState>((set, get) => ({
     }
   },
 
-  fetchSummary: async (objectTypeId, threshold = 0.7, tenantId = 'tenant-001') => {
+  fetchSummary: async (objectTypeId, threshold = 0.7, tenantId = getTenantId()) => {
     set({ checking: true });
     try {
       const res = await fetch(

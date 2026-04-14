@@ -6,6 +6,8 @@ interface Props {
   pipelines: Array<{ id: string; name: string; nodes: Array<{ type: string; config: Record<string, unknown> }> }>;
 }
 
+import { getTenantId } from '../../store/authStore';
+
 const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
 
 // Infer field mapping from a pipeline's SINK_EVENT node
@@ -28,7 +30,7 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
     activePipelineId, setActivePipelineId,
     eventConfig, setEventConfig,
     activityProfile, fetchActivityProfile,
-    analysisResults, analyzeEvents,
+    analysisResults, analyzeEvents, suggestedOverrides,
     saveEventConfig,
     analyzing, saving,
     fetchTransitions, fetchVariants, fetchCases, fetchStats,
@@ -38,6 +40,8 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
   const [excluded, setExcluded] = useState<Set<string>>(new Set(eventConfig.excluded_activities));
   const [labels, setLabels] = useState<Record<string, string>>({ ...eventConfig.activity_labels });
   const [actAttr, setActAttr] = useState<string>(eventConfig.activity_attribute || '');
+  const [caseIdAttr, setCaseIdAttr] = useState<string>(eventConfig.case_id_attribute || '');
+  const [tsAttr, setTsAttr] = useState<string>(eventConfig.timestamp_attribute || '');
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [dirty, setDirty] = useState(false);
 
@@ -75,7 +79,7 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
   // Load saved config when pipeline changes
   useEffect(() => {
     if (!activePipelineId) return;
-    fetch(`${PIPELINE_API}/pipelines/${activePipelineId}`, { headers: { 'x-tenant-id': 'tenant-001' } })
+    fetch(`${PIPELINE_API}/pipelines/${activePipelineId}`, { headers: { 'x-tenant-id': getTenantId() } })
       .then(r => r.json())
       .then(data => {
         const cfg = data?.event_config;
@@ -84,12 +88,18 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
             excluded_activities: cfg.excluded_activities || [],
             activity_labels: cfg.activity_labels || {},
             activity_attribute: cfg.activity_attribute || '',
+            case_id_attribute: cfg.case_id_attribute || '',
+            timestamp_attribute: cfg.timestamp_attribute || '',
             saved_at: cfg.saved_at,
           });
           setActAttr(cfg.activity_attribute || '');
+          setCaseIdAttr(cfg.case_id_attribute || '');
+          setTsAttr(cfg.timestamp_attribute || '');
         } else {
           setEventConfig({ excluded_activities: [], activity_labels: {} });
           setActAttr('');
+          setCaseIdAttr('');
+          setTsAttr('');
         }
       })
       .catch(() => {});
@@ -135,6 +145,15 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
     }
     setExcluded(aiExcluded);
     setLabels(aiLabels);
+
+    // Auto-populate field overrides from AI suggestions
+    const overrides = store.suggestedOverrides;
+    if (overrides) {
+      if (overrides.activity_attribute) setActAttr(overrides.activity_attribute);
+      if (overrides.case_id_attribute) setCaseIdAttr(overrides.case_id_attribute);
+      if (overrides.timestamp_attribute) setTsAttr(overrides.timestamp_attribute);
+    }
+
     setDirty(true);
   }
 
@@ -144,6 +163,8 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
       excluded_activities: Array.from(excluded),
       activity_labels: labels,
       activity_attribute: actAttr.trim(),
+      case_id_attribute: caseIdAttr.trim(),
+      timestamp_attribute: tsAttr.trim(),
     };
     await saveEventConfig(activePipelineId, config);
     // Re-fetch the process map with new config applied
@@ -216,6 +237,58 @@ export const EventConfigPanel: React.FC<Props> = ({ objectTypeId, pipelines }) =
         {actAttr && (
           <div style={{ fontSize: 11, color: '#059669', marginTop: 4 }}>
             ✓ Process map will derive activity names from the <code style={{ fontSize: 10, backgroundColor: '#ECFDF5', padding: '0 3px', borderRadius: 2 }}>{actAttr}</code> field in record snapshots.
+          </div>
+        )}
+      </div>
+
+      {/* Case ID Field Override */}
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+          Case ID Field Override
+        </div>
+        <div style={{ fontSize: 12, color: '#64748B', marginBottom: 8, lineHeight: 1.5 }}>
+          If cases are not grouped correctly (each event appears as its own case), specify the record field that contains the <strong>real case identifier</strong> (e.g. <code style={{ fontSize: 11, backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: 3 }}>case_id</code>, <code style={{ fontSize: 11, backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: 3 }}>patient_id</code>).
+        </div>
+        <input
+          type="text"
+          value={caseIdAttr}
+          onChange={e => { setCaseIdAttr(e.target.value); setDirty(true); }}
+          placeholder="e.g. case_id, patient_id, order_id (leave blank for default)"
+          style={{
+            height: 32, padding: '0 10px', borderRadius: 6, border: '1px solid #E2E8F0',
+            backgroundColor: '#FFFFFF', color: '#0D1117', fontSize: 12, outline: 'none',
+            width: '100%', maxWidth: 420, boxSizing: 'border-box',
+          }}
+        />
+        {caseIdAttr && (
+          <div style={{ fontSize: 11, color: '#059669', marginTop: 4 }}>
+            ✓ Cases will be grouped by the <code style={{ fontSize: 10, backgroundColor: '#ECFDF5', padding: '0 3px', borderRadius: 2 }}>{caseIdAttr}</code> field from record snapshots.
+          </div>
+        )}
+      </div>
+
+      {/* Timestamp Field Override */}
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+          Timestamp Field Override
+        </div>
+        <div style={{ fontSize: 12, color: '#64748B', marginBottom: 8, lineHeight: 1.5 }}>
+          If durations show as 0d, specify the record field containing the <strong>real event timestamp</strong> (e.g. <code style={{ fontSize: 11, backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: 3 }}>occurred_at</code>, <code style={{ fontSize: 11, backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: 3 }}>timestamp</code>).
+        </div>
+        <input
+          type="text"
+          value={tsAttr}
+          onChange={e => { setTsAttr(e.target.value); setDirty(true); }}
+          placeholder="e.g. occurred_at, timestamp, event_time (leave blank for default)"
+          style={{
+            height: 32, padding: '0 10px', borderRadius: 6, border: '1px solid #E2E8F0',
+            backgroundColor: '#FFFFFF', color: '#0D1117', fontSize: 12, outline: 'none',
+            width: '100%', maxWidth: 420, boxSizing: 'border-box',
+          }}
+        />
+        {tsAttr && (
+          <div style={{ fontSize: 11, color: '#059669', marginTop: 4 }}>
+            ✓ Durations will be computed from the <code style={{ fontSize: 10, backgroundColor: '#ECFDF5', padding: '0 3px', borderRadius: 2 }}>{tsAttr}</code> field from record snapshots.
           </div>
         )}
       </div>

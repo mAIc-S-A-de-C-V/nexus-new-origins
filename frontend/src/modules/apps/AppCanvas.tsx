@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { NexusApp, AppComponent, AppFilter } from '../../types/app';
+import { getTenantId } from '../../store/authStore';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -16,7 +17,7 @@ function useRecords(objectTypeId?: string) {
     if (!objectTypeId) return;
     setLoading(true);
     fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/records`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     })
       .then((r) => r.json())
       .then((d) => setRecords(d.records || []))

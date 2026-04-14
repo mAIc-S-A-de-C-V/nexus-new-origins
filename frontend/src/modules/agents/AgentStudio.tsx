@@ -3,11 +3,14 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAgentStore, AgentConfig, AgentSchedule, KnowledgeScopeEntry } from '../../store/agentStore';
 import { useOntologyStore } from '../../store/ontologyStore';
+import { getTenantId } from '../../store/authStore';
+import { useNavigationStore } from '../../store/navigationStore';
 import {
-  Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, Database, Filter, X,
+  Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, MessageSquare, Database, Filter, X,
   Search, List, Zap, ShieldCheck, ListChecks, Network, CheckCircle, Clock, Play,
-  Activity,
+  Activity, Shield, RefreshCw, ChevronRight, Hash,
 } from 'lucide-react';
+import { CommentsPanel } from '../../components/CommentsPanel';
 
 const C = {
   bg: '#F8FAFC', sidebar: '#F1F5F9', panel: '#FFFFFF', card: '#F8FAFC',
@@ -19,15 +22,17 @@ const C = {
 };
 
 const TOOL_META: Record<string, { label: string; desc: string; icon: React.ReactNode; color: string }> = {
-  ontology_search:    { label: 'Ontology Search',    desc: 'Query records of any object type — Deals, Contacts, Companies…', icon: <Search size={14} />,     color: '#3B82F6' },
-  list_object_types:  { label: 'List Object Types',  desc: 'Discover what data exists in the ontology',                       icon: <List size={14} />,       color: '#8B5CF6' },
-  logic_function_run: { label: 'Run Logic Function', desc: 'Execute a pre-built Logic Function workflow with inputs',          icon: <Zap size={14} />,        color: '#F59E0B' },
-  action_propose:     { label: 'Propose Action',     desc: 'Propose a write operation — goes to Human Actions queue',         icon: <ShieldCheck size={14} />, color: '#EF4444' },
-  list_actions:       { label: 'List Actions',       desc: 'Discover available write actions and their input schemas',         icon: <ListChecks size={14} />, color: '#10B981' },
-  agent_call:         { label: 'Call Sub-Agent',     desc: 'Delegate a subtask to another configured agent by name',          icon: <Network size={14} />,    color: '#7C3AED' },
+  list_object_types:  { label: 'List Object Types',  desc: 'Discover what data exists — returns all types with record counts',          icon: <List size={14} />,       color: '#8B5CF6' },
+  get_object_schema:  { label: 'Get Object Schema',  desc: 'Inspect field names + 3 sample rows before querying',                       icon: <Search size={14} />,     color: '#3B82F6' },
+  query_records:      { label: 'Query Records',      desc: 'Server-side structured query — filters, aggregation, group-by',             icon: <Database size={14} />,   color: '#2563EB' },
+  count_records:      { label: 'Count Records',      desc: 'Return total count with optional filters — never loads data into context',  icon: <Hash size={14} />,       color: '#0891B2' },
+  logic_function_run: { label: 'Run Logic Function', desc: 'Execute a pre-built Logic Function workflow with inputs',                   icon: <Zap size={14} />,        color: '#F59E0B' },
+  action_propose:     { label: 'Propose Action',     desc: 'Propose a write operation — goes to Human Actions queue',                  icon: <ShieldCheck size={14} />, color: '#EF4444' },
+  list_actions:       { label: 'List Actions',       desc: 'Discover available write actions and their input schemas',                  icon: <ListChecks size={14} />, color: '#10B981' },
+  agent_call:         { label: 'Call Sub-Agent',     desc: 'Delegate a subtask to another configured agent by name',                   icon: <Network size={14} />,    color: '#7C3AED' },
   process_mining:     { label: 'Process Mining',     desc: 'Analyze event logs for patterns, bottlenecks, anomalies & co-occurrences', icon: <Activity size={14} />,  color: '#0891B2' },
-  utility_list:       { label: 'List Utilities',     desc: 'Discover available utilities (OCR, scrape, geocode, etc.)',                icon: <Wrench size={14} />,    color: '#0891B2' },
-  utility_run:        { label: 'Run Utility',        desc: 'Execute a pre-built utility — OCR, PDF extract, web scrape, geocode…',    icon: <Wrench size={14} />,    color: '#0891B2' },
+  utility_list:       { label: 'List Utilities',     desc: 'Discover available utilities (OCR, scrape, geocode, etc.)',                icon: <Wrench size={14} />,    color: '#6B7280' },
+  utility_run:        { label: 'Run Utility',        desc: 'Execute a pre-built utility — OCR, PDF extract, web scrape, geocode…',    icon: <Wrench size={14} />,    color: '#6B7280' },
 };
 
 const TOOL_LABELS: Record<string, string> = Object.fromEntries(
@@ -552,7 +557,7 @@ const TestPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
     try {
       const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/test`, {
         method: 'POST',
-        headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+        headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: input.trim(), dry_run: dryRun }),
       });
       const data = await r.json();
@@ -654,7 +659,7 @@ const HistoryPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
   const load = async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/versions`, { headers: { 'x-tenant-id': 'tenant-001' } });
+      const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/versions`, { headers: { 'x-tenant-id': getTenantId() } });
       const data = await r.json();
       setVersions(Array.isArray(data) ? data : []);
     } finally { setLoading(false); }
@@ -667,7 +672,7 @@ const HistoryPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
     setRestoring(versionId);
     try {
       const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/versions/${versionId}/restore`, {
-        method: 'POST', headers: { 'x-tenant-id': 'tenant-001' },
+        method: 'POST', headers: { 'x-tenant-id': getTenantId() },
       });
       if (r.ok) { await fetchAgents(); await load(); }
     } finally { setRestoring(null); }
@@ -727,7 +732,7 @@ const AnalyticsPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`${AGENT_API_URL}/agents/${agent.id}/analytics`, { headers: { 'x-tenant-id': 'tenant-001' } })
+    fetch(`${AGENT_API_URL}/agents/${agent.id}/analytics`, { headers: { 'x-tenant-id': getTenantId() } })
       .then(r => r.ok ? r.json() : null)
       .then(d => setData(d && typeof d.total_runs === 'number' ? d : null))
       .catch(() => setData(null))
@@ -781,7 +786,8 @@ const AnalyticsPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
           {data.recent_runs.map((run) => (
             <div key={run.id} style={{
               display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
-              backgroundColor: run.error ? '#FEF2F2' : C.panel, border: `1px solid ${run.error ? '#FCA5A5' : C.border}`,
+              backgroundColor: C.panel, border: `1px solid ${C.border}`,
+              borderLeft: run.error ? '3px solid #DC2626' : `1px solid ${C.border}`,
               borderRadius: 4, fontSize: 12,
             }}>
               <span style={{ color: run.error ? C.error : C.success, flexShrink: 0 }}>{run.error ? '✗' : '✓'}</span>
@@ -964,6 +970,157 @@ const SchedulePanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
   );
 };
 
+// ── Audit Panel ───────────────────────────────────────────────────────────────
+
+interface AuditRun {
+  id: string; agent_id: string; agent_name: string;
+  pipeline_id: string | null; iterations: number;
+  tool_calls: { tool: string; input?: Record<string, unknown>; result?: string }[];
+  final_text: string | null; error: string | null; created_at: string;
+}
+
+const AuditPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
+  const [runs, setRuns] = useState<AuditRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const load = () => {
+    setLoading(true);
+    fetch(`${AGENT_API_URL}/agents/runs/audit?agent_id=${agent.id}&limit=50`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    })
+      .then(r => r.ok ? r.json() : [])
+      .then(setRuns)
+      .catch(() => setRuns([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [agent.id]);
+
+  if (loading) return <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>Loading audit log...</div>;
+  if (!runs.length) return (
+    <div style={{ padding: 24, color: C.dim, fontSize: 13 }}>
+      No runs recorded yet. Runs will appear here after the agent fires from a pipeline or test.
+    </div>
+  );
+
+  const fmt = (iso: string) => new Date(iso).toLocaleString();
+  const toolColor = (tool: string) => {
+    if (tool === 'action_propose') return '#7C3AED';
+    if (tool === 'utility_run') return '#0891B2';
+    if (tool === 'query_records') return '#2563EB';
+    if (tool === 'get_object_schema') return '#3B82F6';
+    return '#64748B';
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <span style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em' }}>AGENT RUN AUDIT LOG ({runs.length})</span>
+        <button onClick={load} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.dim, fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <RefreshCw size={11} /> Refresh
+        </button>
+      </div>
+
+      {runs.map(run => {
+        const isOpen = expanded === run.id;
+        const hasError = !!run.error;
+        const proposeCount = run.tool_calls.filter(t => t.tool === 'action_propose').length;
+
+        return (
+          <div key={run.id} style={{
+            border: `1px solid ${C.border}`, borderRadius: 6,
+            backgroundColor: C.panel, overflow: 'hidden',
+            borderLeft: hasError ? '3px solid #DC2626' : '3px solid transparent',
+          }}>
+            {/* Row header */}
+            <div
+              onClick={() => setExpanded(isOpen ? null : run.id)}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', cursor: 'pointer' }}
+            >
+              {/* Status dot */}
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                backgroundColor: hasError ? '#DC2626' : '#16A34A',
+              }} />
+              <span style={{ fontSize: 12, color: C.dim, fontFamily: 'monospace', flexShrink: 0 }}>
+                {fmt(run.created_at)}
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: C.text, flex: 1 }}>
+                {run.agent_name}
+              </span>
+              {run.pipeline_id && (
+                <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 8, backgroundColor: '#EFF6FF', color: '#2563EB', border: '1px solid #BFDBFE' }}>
+                  pipeline
+                </span>
+              )}
+              {proposeCount > 0 && (
+                <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 8, backgroundColor: '#F3E8FF', color: '#7C3AED', border: '1px solid #DDD6FE' }}>
+                  {proposeCount} proposed
+                </span>
+              )}
+              <span style={{ fontSize: 12, color: C.muted }}>{run.iterations} iter · {run.tool_calls.length} calls</span>
+              {hasError && <span style={{ fontSize: 11, color: '#DC2626', fontWeight: 600 }}>FAILED</span>}
+              <ChevronRight size={13} color={C.dim} style={{ transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+            </div>
+
+            {/* Expanded detail */}
+            {isOpen && (
+              <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+                {/* Tool calls */}
+                {run.tool_calls.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, color: C.muted, letterSpacing: '0.06em', marginBottom: 6 }}>TOOL CALLS</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {run.tool_calls.map((tc, i) => (
+                        <div key={i} style={{ backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, padding: '6px 10px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: tc.input ? 6 : 0 }}>
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 3,
+                              backgroundColor: toolColor(tc.tool) + '18', color: toolColor(tc.tool),
+                              border: `1px solid ${toolColor(tc.tool)}44`,
+                            }}>{tc.tool}</span>
+                          </div>
+                          {tc.input && Object.keys(tc.input).length > 0 && (
+                            <pre style={{ margin: 0, fontSize: 10, color: C.muted, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                              {JSON.stringify(tc.input, null, 2).slice(0, 400)}
+                            </pre>
+                          )}
+                          {tc.result && (
+                            <div style={{ marginTop: 4, fontSize: 10, color: C.success, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                              ↳ {tc.result.slice(0, 200)}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Final summary */}
+                {run.final_text && (
+                  <div>
+                    <div style={{ fontSize: 10, color: C.muted, letterSpacing: '0.06em', marginBottom: 4 }}>AGENT SUMMARY</div>
+                    <pre style={{ margin: 0, fontSize: 11, color: C.text, fontFamily: 'inherit', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                      {run.final_text}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Error */}
+                {run.error && (
+                  <div style={{ fontSize: 11, color: '#DC2626', fontFamily: 'monospace' }}>{run.error}</div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 // ── Main AgentStudio ──────────────────────────────────────────────────────────
 
 const AgentStudio: React.FC = () => {
@@ -971,13 +1128,24 @@ const AgentStudio: React.FC = () => {
     agents, selectedAgent, availableTools, loading, schedules,
     fetchAgents, selectAgent, createAgent, updateAgent, deleteAgent, fetchAvailableTools, fetchSchedules,
   } = useAgentStore();
+  const { setBreadcrumbs, navigateTo } = useNavigationStore();
 
-  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat' | 'test' | 'history' | 'analytics' | 'schedule'>('config');
-
-  useEffect(() => { fetchAgents(); fetchAvailableTools(); }, []);
+  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat' | 'test' | 'history' | 'analytics' | 'schedule' | 'audit' | 'comments'>('config');
 
   useEffect(() => {
-    if (selectedAgent) fetchSchedules(selectedAgent.id);
+    fetchAgents();
+    fetchAvailableTools();
+    setBreadcrumbs([{ label: 'Agent Studio' }]);
+  }, []);
+
+  useEffect(() => {
+    if (selectedAgent) {
+      fetchSchedules(selectedAgent.id);
+      setBreadcrumbs([
+        { label: 'Agent Studio', page: 'agents' },
+        { label: selectedAgent.name },
+      ]);
+    }
   }, [selectedAgent?.id]);
 
   const panelStyle: React.CSSProperties = {
@@ -1002,7 +1170,7 @@ const AgentStudio: React.FC = () => {
                 name: 'New Agent',
                 system_prompt: 'You are a helpful AI assistant with access to the Nexus data ontology.',
                 model: 'claude-haiku-4-5-20251001',
-                enabled_tools: ['ontology_search', 'list_object_types'],
+                enabled_tools: ['list_object_types', 'get_object_schema', 'query_records', 'count_records'],
                 max_iterations: 10,
               });
               selectAgent(agent);
@@ -1070,10 +1238,17 @@ const AgentStudio: React.FC = () => {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {/* Tab bar */}
           <div style={{
-            height: 52, display: 'flex', alignItems: 'center', gap: 0, paddingRight: 52,
+            height: 52, display: 'flex', alignItems: 'center', gap: 0,
             borderBottom: `1px solid ${C.border}`, backgroundColor: C.panel, padding: '0 16px', flexShrink: 0,
           }}>
-            <span style={{ fontSize: 15, fontWeight: 600, marginRight: 20 }}>{selectedAgent.name}</span>
+            <span style={{ fontSize: 15, fontWeight: 600, marginRight: 8 }}>{selectedAgent.name}</span>
+            <button
+              onClick={() => { navigateTo('evals'); }}
+              title="Create eval suite for this agent"
+              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, border: `1px solid ${C.border}`, borderRadius: 5, backgroundColor: C.panel, color: C.accent, cursor: 'pointer', marginRight: 12 }}
+            >
+              <CheckCircle size={11} /> Eval Suite
+            </button>
             {([
               { id: 'config', label: 'Configure', icon: <Wrench size={12} /> },
               { id: 'knowledge', label: 'Knowledge', icon: <Database size={12} />, badge: Array.isArray(selectedAgent.knowledge_scope) ? selectedAgent.knowledge_scope.length : null },
@@ -1082,6 +1257,8 @@ const AgentStudio: React.FC = () => {
               { id: 'schedule', label: 'Schedule', icon: <Clock size={12} />, badge: schedules.filter((s) => s.agent_id === selectedAgent.id && s.enabled).length || null },
               { id: 'history', label: 'History', icon: <Loader size={12} /> },
               { id: 'analytics', label: 'Analytics', icon: <Bot size={12} /> },
+              { id: 'audit', label: 'Audit', icon: <Shield size={12} /> },
+              { id: 'comments', label: 'Comments', icon: <MessageSquare size={12} /> },
             ] as const).map((tab) => (
               <button key={tab.id} onClick={() => setRightTab(tab.id as typeof rightTab)} style={{
                 padding: '8px 12px', fontSize: 12, border: 'none', cursor: 'pointer',
@@ -1111,6 +1288,12 @@ const AgentStudio: React.FC = () => {
           {rightTab === 'schedule' && <SchedulePanel agent={selectedAgent} />}
           {rightTab === 'history' && <HistoryPanel agent={selectedAgent} />}
           {rightTab === 'analytics' && <AnalyticsPanel agent={selectedAgent} />}
+          {rightTab === 'audit' && <AuditPanel agent={selectedAgent} />}
+          {rightTab === 'comments' && (
+            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <CommentsPanel entityType="agent" entityId={selectedAgent.id} compact />
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, flexDirection: 'column', gap: 8 }}>

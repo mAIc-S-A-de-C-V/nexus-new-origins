@@ -6,6 +6,11 @@ import { Button } from '../../design-system/components/Button';
 import { nodeColors } from '../../design-system/tokens';
 import { useConnectorStore } from '../../store/connectorStore';
 import { useOntologyStore } from '../../store/ontologyStore';
+import { getTenantId } from '../../store/authStore';
+
+const AGENT_API = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
+
+interface AgentOption { id: string; name: string; }
 
 interface NodeConfigPanelProps {
   node: PipelineNode;
@@ -15,6 +20,7 @@ interface NodeConfigPanelProps {
 
 const CONNECTOR_FIELDS = new Set(['connectorId', 'lookupConnectorId']);
 const OBJECT_TYPE_FIELDS = new Set(['objectTypeId']);
+const AGENT_FIELDS = new Set(['agentId']);
 
 export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpdate }) => {
   const def = NODE_TYPE_DEFS.find((d) => d.type === node.type);
@@ -23,14 +29,22 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose,
 
   const { connectors, fetchConnectors } = useConnectorStore();
   const { objectTypes, fetchObjectTypes } = useOntologyStore();
+  const [agents, setAgents] = useState<AgentOption[]>([]);
 
   const needsConnectors = def?.configFields.some((f) => CONNECTOR_FIELDS.has(f.key));
   const needsObjectTypes = def?.configFields.some((f) => OBJECT_TYPE_FIELDS.has(f.key));
+  const needsAgents = def?.configFields.some((f) => AGENT_FIELDS.has(f.key));
 
   useEffect(() => {
     if (needsConnectors && connectors.length === 0) fetchConnectors();
     if (needsObjectTypes && objectTypes.length === 0) fetchObjectTypes();
-  }, [needsConnectors, needsObjectTypes]);
+    if (needsAgents && agents.length === 0) {
+      fetch(`${AGENT_API}/agents`, { headers: { 'x-tenant-id': getTenantId() } })
+        .then(r => r.ok ? r.json() : [])
+        .then(data => setAgents(Array.isArray(data) ? data : []))
+        .catch(() => {});
+    }
+  }, [needsConnectors, needsObjectTypes, needsAgents]);
 
   const handleChange = (key: string, value: unknown) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
@@ -79,6 +93,12 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose,
                 {field.type === 'text' || field.type === 'number' ? (
                   <input type={field.type} value={currentValue} onChange={(e) => handleChange(field.key, field.type === 'number' ? Number(e.target.value) : e.target.value)} placeholder={field.placeholder}
                     style={{ width: '100%', height: '30px', border: '1px solid #E2E8F0', borderRadius: '4px', padding: '0 8px', fontSize: '12px', color: '#0D1117', backgroundColor: '#FFFFFF', boxSizing: 'border-box' }} />
+                ) : field.type === 'select' && AGENT_FIELDS.has(field.key) ? (
+                  <select value={currentValue} onChange={(e) => handleChange(field.key, e.target.value)}
+                    style={{ width: '100%', height: '30px', border: '1px solid #E2E8F0', borderRadius: '4px', padding: '0 8px', fontSize: '12px', color: currentValue ? '#0D1117' : '#94A3B8', backgroundColor: '#FFFFFF' }}>
+                    <option value="">Select agent...</option>
+                    {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
                 ) : field.type === 'select' && CONNECTOR_FIELDS.has(field.key) ? (
                   <select value={currentValue} onChange={(e) => handleChange(field.key, e.target.value)}
                     style={{ width: '100%', height: '30px', border: '1px solid #E2E8F0', borderRadius: '4px', padding: '0 8px', fontSize: '12px', color: currentValue ? '#0D1117' : '#94A3B8', backgroundColor: '#FFFFFF' }}>

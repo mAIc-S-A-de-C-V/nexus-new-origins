@@ -1,17 +1,52 @@
 export const colors = {
+  // Backgrounds
   base: '#F8F9FA',
   surface: '#FFFFFF',
+  surfaceElevated: '#FFFFFF',
+
+  // Text
   text: '#0D1117',
   textMuted: '#64748B',
   textSubtle: '#94A3B8',
+
+  // Brand (violet — identity, logo, nav active, agent/AI context)
+  brand: '#7C3AED',
+  brandDim: '#EDE9FE',
+  brandBorder: '#C4B5FD',
+  brandText: '#5B21B6',
+
+  // Interactive (blue — buttons, focus rings, selected borders, links)
+  interactive: '#2563EB',
+  interactiveDim: '#EFF6FF',
+  interactiveBorder: '#BFDBFE',
+
+  // Legacy aliases (kept for backward compat)
   primary: '#1A3C6E',
   primaryInteractive: '#2563EB',
   accent: '#D97706',
+
+  // Semantic
+  warn: '#D97706',
+  warnDim: '#FFFBEB',
+  warnBorder: '#FDE68A',
   statusGreen: '#059669',
+  statusGreenDim: '#ECFDF5',
+  statusGreenBorder: '#6EE7B7',
   statusRed: '#DC2626',
+  statusRedDim: '#FEF2F2',
+  statusRedBorder: '#FECACA',
   statusYellow: '#D97706',
+
+  // Borders
   border: '#E2E8F0',
   borderEmphasis: '#CBD5E1',
+
+  // Nav (dark shell — always dark regardless of theme)
+  navBg: '#080E18',
+  navBorder: '#131C2E',
+  navText: '#64748B',
+  navTextActive: '#E2E8F0',
+  navActiveBg: '#161D2B',
 } as const;
 
 export const typography = {
@@ -65,6 +100,7 @@ export const nodeColors: Record<string, string> = {
   VALIDATE: '#0D9488',
   SINK_OBJECT: '#1A3C6E',
   SINK_EVENT: '#059669',
+  AGENT_RUN: '#7C3AED',
 };
 
 export const categoryColors: Record<string, { bg: string; text: string }> = {

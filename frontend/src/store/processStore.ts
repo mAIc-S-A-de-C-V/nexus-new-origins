@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getTenantId } from './authStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
 const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
@@ -76,7 +77,9 @@ export interface AnalysisResult {
 export interface EventConfig {
   excluded_activities: string[];
   activity_labels: Record<string, string>;
-  activity_attribute?: string;  // JSON attribute key to extract activity from (e.g. "stage")
+  activity_attribute?: string;  // JSON attribute key to extract activity from (e.g. "activity")
+  case_id_attribute?: string;   // JSON attribute key to extract case_id from (e.g. "case_id")
+  timestamp_attribute?: string; // JSON attribute key to extract timestamp from (e.g. "occurred_at")
   saved_at?: string;
 }
 
@@ -95,6 +98,7 @@ interface ProcessState {
   eventConfig: EventConfig;
   activityProfile: ActivityProfile[];
   analysisResults: AnalysisResult[] | null;
+  suggestedOverrides: { activity_attribute?: string; case_id_attribute?: string; timestamp_attribute?: string } | null;
   analyzing: boolean;
   saving: boolean;
 
@@ -124,6 +128,12 @@ function buildQueryParams(eventConfig: EventConfig): string {
   if (eventConfig.activity_attribute) {
     params.set('activity_attribute', eventConfig.activity_attribute);
   }
+  if (eventConfig.case_id_attribute) {
+    params.set('case_id_attribute', eventConfig.case_id_attribute);
+  }
+  if (eventConfig.timestamp_attribute) {
+    params.set('timestamp_attribute', eventConfig.timestamp_attribute);
+  }
   const qs = params.toString();
   return qs ? `?${qs}` : '';
 }
@@ -141,6 +151,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
   eventConfig: { excluded_activities: [], activity_labels: {} },
   activityProfile: [],
   analysisResults: null,
+  suggestedOverrides: null,
   analyzing: false,
   saving: false,
 
@@ -148,12 +159,12 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
   setActivePipelineId: (id) => set({ activePipelineId: id }),
   setEventConfig: (cfg) => set({ eventConfig: cfg }),
 
-  fetchCases: async (objectTypeId, tenantId = 'tenant-001') => {
+  fetchCases: async (objectTypeId, tenantId = getTenantId()) => {
     set({ loading: true });
     const { eventConfig } = get();
     const qs = buildQueryParams(eventConfig);
     try {
-      const res = await fetch(`${PROCESS_API}/process/cases/${objectTypeId}${qs}&limit=200`.replace('?&', '?'), {
+      const res = await fetch(`${PROCESS_API}/process/cases/${objectTypeId}${qs ? qs + '&limit=200' : '?limit=200'}`, {
         headers: { 'x-tenant-id': tenantId },
       });
       const data = await res.json();
@@ -165,7 +176,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     }
   },
 
-  fetchVariants: async (objectTypeId, tenantId = 'tenant-001') => {
+  fetchVariants: async (objectTypeId, tenantId = getTenantId()) => {
     const { eventConfig } = get();
     const qs = buildQueryParams(eventConfig);
     try {
@@ -179,7 +190,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     }
   },
 
-  fetchTransitions: async (objectTypeId, tenantId = 'tenant-001') => {
+  fetchTransitions: async (objectTypeId, tenantId = getTenantId()) => {
     const { eventConfig } = get();
     const qs = buildQueryParams(eventConfig);
     try {
@@ -197,7 +208,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     }
   },
 
-  fetchStats: async (objectTypeId, tenantId = 'tenant-001') => {
+  fetchStats: async (objectTypeId, tenantId = getTenantId()) => {
     const { eventConfig } = get();
     const excl = eventConfig.excluded_activities.length > 0
       ? `?excluded=${eventConfig.excluded_activities.join(',')}`
@@ -213,7 +224,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     }
   },
 
-  fetchCaseTimeline: async (objectTypeId, caseId, tenantId = 'tenant-001') => {
+  fetchCaseTimeline: async (objectTypeId, caseId, tenantId = getTenantId()) => {
     const res = await fetch(
       `${PROCESS_API}/process/cases/${objectTypeId}/${encodeURIComponent(caseId)}/timeline`,
       { headers: { 'x-tenant-id': tenantId } }
@@ -222,7 +233,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     return data.events || [];
   },
 
-  fetchActivityProfile: async (pipelineId, tenantId = 'tenant-001') => {
+  fetchActivityProfile: async (pipelineId, tenantId = getTenantId()) => {
     try {
       const res = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/event-profile`, {
         headers: { 'x-tenant-id': tenantId },
@@ -234,7 +245,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     }
   },
 
-  analyzeEvents: async (pipelineId, tenantId = 'tenant-001') => {
+  analyzeEvents: async (pipelineId, tenantId = getTenantId()) => {
     set({ analyzing: true });
     try {
       const res = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/analyze-events`, {
@@ -243,15 +254,15 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       });
       const data = await res.json();
       const all: AnalysisResult[] = [...(data.stages || []), ...(data.noise || [])];
-      set({ analysisResults: all });
+      set({ analysisResults: all, suggestedOverrides: data.suggested_overrides || null });
     } catch {
-      set({ analysisResults: [] });
+      set({ analysisResults: [], suggestedOverrides: null });
     } finally {
       set({ analyzing: false });
     }
   },
 
-  saveEventConfig: async (pipelineId, config, tenantId = 'tenant-001') => {
+  saveEventConfig: async (pipelineId, config, tenantId = getTenantId()) => {
     set({ saving: true });
     try {
       await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/event-config`, {

@@ -42,6 +42,54 @@ def _resolved_activity_expr(act_attr: str) -> str:
     )
 
 
+def _resolved_case_id_expr(case_id_attr: str) -> str:
+    """
+    SQL expression that resolves the logical case_id.
+    When case_id_attr is set, remaps RECORD_CREATED / RECORD_UPDATED events
+    to use the value from attributes.record_snapshot.{case_id_attr}.
+    """
+    if not case_id_attr:
+        return "case_id"
+    return (
+        f"CASE "
+        f"  WHEN activity IN ('RECORD_CREATED','RECORD_UPDATED')"
+        f"    AND attributes IS NOT NULL"
+        f"    AND COALESCE(NULLIF(attributes->'record_snapshot'->>:case_id_attr,''),"
+        f"                 NULLIF(attributes->>:case_id_attr,'')) IS NOT NULL"
+        f"  THEN COALESCE("
+        f"    NULLIF(attributes->'record_snapshot'->>:case_id_attr,''),"
+        f"    NULLIF(attributes->>:case_id_attr,''),"
+        f"    case_id"
+        f"  )"
+        f"  ELSE case_id"
+        f" END"
+    )
+
+
+def _resolved_timestamp_expr(ts_attr: str) -> str:
+    """
+    SQL expression that resolves the logical timestamp.
+    When ts_attr is set, remaps RECORD_CREATED / RECORD_UPDATED events
+    to use the value from attributes.record_snapshot.{ts_attr}, cast to timestamptz.
+    """
+    if not ts_attr:
+        return "timestamp"
+    return (
+        f"CASE "
+        f"  WHEN activity IN ('RECORD_CREATED','RECORD_UPDATED')"
+        f"    AND attributes IS NOT NULL"
+        f"    AND COALESCE(NULLIF(attributes->'record_snapshot'->>:ts_attr,''),"
+        f"                 NULLIF(attributes->>:ts_attr,'')) IS NOT NULL"
+        f"  THEN COALESCE("
+        f"    NULLIF(attributes->'record_snapshot'->>:ts_attr,''),"
+        f"    NULLIF(attributes->>:ts_attr,''),"
+        f"    timestamp::text"
+        f"  )::timestamptz"
+        f"  ELSE timestamp"
+        f" END"
+    )
+
+
 def _build_user_excl(excluded: list[str]) -> tuple[str, dict]:
     """Build a parameterized SQL fragment for user-defined excluded activities."""
     if not excluded:
@@ -76,36 +124,42 @@ async def list_cases(
     excluded: Optional[str] = Query(None, description="Comma-separated activity names to exclude"),
     labels: Optional[str] = Query(None, description="JSON object mapping activity→label"),
     activity_attribute: Optional[str] = Query(None, description="JSON attribute key to use as activity name (remaps RECORD_CREATED/RECORD_UPDATED)"),
+    case_id_attribute: Optional[str] = Query(None, description="JSON attribute key to use as case_id (remaps RECORD_CREATED/RECORD_UPDATED)"),
+    timestamp_attribute: Optional[str] = Query(None, description="JSON attribute key to use as timestamp (remaps RECORD_CREATED/RECORD_UPDATED)"),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
     act_attr = activity_attribute or ""
+    cid_attr = case_id_attribute or ""
+    ts_attr = timestamp_attribute or ""
     excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
     label_map: dict[str, str] = json.loads(labels) if labels else {}
     user_excl_sql, user_excl_params = _build_user_excl(excl_list)
     act_expr = _resolved_activity_expr(act_attr)
+    cid_expr = _resolved_case_id_expr(cid_attr)
+    ts_expr = _resolved_timestamp_expr(ts_attr)
 
     sql = text(f"""
         WITH case_agg AS (
             SELECT
-                case_id,
-                array_agg({act_expr} ORDER BY timestamp) AS activities,
-                array_agg(resource ORDER BY timestamp) AS resources,
-                min(timestamp) AS started_at,
-                max(timestamp) AS last_activity_at,
+                {cid_expr} AS resolved_case_id,
+                array_agg({act_expr} ORDER BY {ts_expr}) AS activities,
+                array_agg(resource ORDER BY {ts_expr}) AS resources,
+                min({ts_expr}) AS started_at,
+                max({ts_expr}) AS last_activity_at,
                 count(*) AS event_count
             FROM events
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
-              AND case_id != ''
+              AND ({cid_expr}) != ''
               {_SYSTEM_EXCL}
               {user_excl_sql}
-            GROUP BY case_id
+            GROUP BY resolved_case_id
         ),
         case_computed AS (
             SELECT
-                case_id,
+                resolved_case_id,
                 activities,
                 activities[array_length(activities, 1)] AS current_activity,
                 resources[array_length(resources, 1)] AS last_resource,
@@ -121,7 +175,7 @@ async def list_cases(
             FROM case_agg
         )
         SELECT
-            case_id,
+            resolved_case_id AS case_id,
             activities,
             current_activity,
             last_resource,
@@ -132,8 +186,8 @@ async def list_cases(
             last_activity_at
         FROM case_computed
         WHERE 1=1
-          AND (:state IS NULL OR (
-              :state = 'stuck' AND days_since_last_activity > :stuck_days
+          AND (:state::text IS NULL OR (
+              :state::text = 'stuck' AND days_since_last_activity > :stuck_days
           ))
         ORDER BY last_activity_at DESC
         LIMIT :limit OFFSET :offset
@@ -147,6 +201,8 @@ async def list_cases(
         "limit": limit,
         "offset": offset,
         **({"act_attr": act_attr} if act_attr else {}),
+        **({"case_id_attr": cid_attr} if cid_attr else {}),
+        **({"ts_attr": ts_attr} if ts_attr else {}),
         **user_excl_params,
     })
     rows = result.fetchall()
@@ -194,33 +250,45 @@ async def list_cases(
 async def get_case_timeline(
     object_type_id: str,
     case_id: str,
+    activity_attribute: Optional[str] = Query(None),
+    case_id_attribute: Optional[str] = Query(None),
+    timestamp_attribute: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    act_attr = activity_attribute or ""
+    cid_attr = case_id_attribute or ""
+    ts_attr = timestamp_attribute or ""
+    act_expr = _resolved_activity_expr(act_attr)
+    cid_expr = _resolved_case_id_expr(cid_attr)
+    ts_expr = _resolved_timestamp_expr(ts_attr)
 
     sql = text(f"""
         SELECT
             id,
-            activity,
-            timestamp,
+            {act_expr} AS activity,
+            {ts_expr} AS resolved_ts,
             resource,
             attributes,
             pipeline_id,
             connector_id,
-            lag(timestamp) OVER (ORDER BY timestamp) AS prev_timestamp
+            lag({ts_expr}) OVER (ORDER BY {ts_expr}) AS prev_timestamp
         FROM events
-        WHERE case_id = :case_id
+        WHERE ({cid_expr}) = :case_id
           AND tenant_id = :tenant_id
           AND (:ot_id = '' OR object_type_id = :ot_id)
           {_SYSTEM_EXCL}
-        ORDER BY timestamp ASC
+        ORDER BY {ts_expr} ASC
     """)
 
     result = await db.execute(sql, {
         "case_id": case_id,
         "tenant_id": tenant_id,
         "ot_id": object_type_id,
+        **({"act_attr": act_attr} if act_attr else {}),
+        **({"case_id_attr": cid_attr} if cid_attr else {}),
+        **({"ts_attr": ts_attr} if ts_attr else {}),
     })
     rows = result.fetchall()
 
@@ -231,13 +299,13 @@ async def get_case_timeline(
     for row in rows:
         duration_since_prev_hours = None
         if row.prev_timestamp:
-            delta = row.timestamp - row.prev_timestamp
+            delta = row.resolved_ts - row.prev_timestamp
             duration_since_prev_hours = round(delta.total_seconds() / 3600, 2)
 
         events.append({
             "id": row.id,
             "activity": row.activity,
-            "timestamp": row.timestamp.isoformat(),
+            "timestamp": row.resolved_ts.isoformat(),
             "resource": row.resource,
             "attributes": row.attributes or {},
             "pipeline_id": row.pipeline_id,
@@ -246,7 +314,7 @@ async def get_case_timeline(
 
     total_days = 0.0
     if rows:
-        delta = rows[-1].timestamp - rows[0].timestamp
+        delta = rows[-1].resolved_ts - rows[0].resolved_ts
         total_days = round(delta.total_seconds() / 86400, 1)
 
     return {
@@ -265,39 +333,45 @@ async def list_variants(
     excluded: Optional[str] = Query(None),
     labels: Optional[str] = Query(None),
     activity_attribute: Optional[str] = Query(None),
+    case_id_attribute: Optional[str] = Query(None),
+    timestamp_attribute: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
     act_attr = activity_attribute or ""
+    cid_attr = case_id_attribute or ""
+    ts_attr = timestamp_attribute or ""
     excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
     label_map: dict[str, str] = json.loads(labels) if labels else {}
     user_excl_sql, user_excl_params = _build_user_excl(excl_list)
     act_expr = _resolved_activity_expr(act_attr)
+    cid_expr = _resolved_case_id_expr(cid_attr)
+    ts_expr = _resolved_timestamp_expr(ts_attr)
 
     sql = text(f"""
         WITH raw AS (
-            SELECT case_id, {act_expr} AS activity, timestamp,
-                   lag({act_expr}) OVER (PARTITION BY case_id ORDER BY timestamp) AS prev_activity,
-                   min(timestamp) OVER (PARTITION BY case_id) AS started_at,
-                   max(timestamp) OVER (PARTITION BY case_id) AS last_activity_at
+            SELECT {cid_expr} AS resolved_case_id, {act_expr} AS activity, {ts_expr} AS resolved_ts,
+                   lag({act_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS prev_activity,
+                   min({ts_expr}) OVER (PARTITION BY {cid_expr}) AS started_at,
+                   max({ts_expr}) OVER (PARTITION BY {cid_expr}) AS last_activity_at
             FROM events
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
-              AND case_id != ''
+              AND ({cid_expr}) != ''
               {_SYSTEM_EXCL}
               {user_excl_sql}
         ),
         case_sequences AS (
             SELECT
-                case_id,
-                array_agg(activity ORDER BY timestamp) AS activities,
+                resolved_case_id,
+                array_agg(activity ORDER BY resolved_ts) AS activities,
                 min(started_at) AS started_at,
                 max(last_activity_at) AS last_activity_at,
                 count(*) AS event_count
             FROM raw
             WHERE prev_activity IS NULL OR prev_activity != activity
-            GROUP BY case_id
+            GROUP BY resolved_case_id
         )
         SELECT
             activities,
@@ -316,6 +390,8 @@ async def list_variants(
         "tenant_id": tenant_id,
         "limit": limit,
         **({"act_attr": act_attr} if act_attr else {}),
+        **({"case_id_attr": cid_attr} if cid_attr else {}),
+        **({"ts_attr": ts_attr} if ts_attr else {}),
         **user_excl_params,
     })
     rows = result.fetchall()
@@ -362,28 +438,34 @@ async def get_transitions(
     excluded: Optional[str] = Query(None),
     labels: Optional[str] = Query(None),
     activity_attribute: Optional[str] = Query(None),
+    case_id_attribute: Optional[str] = Query(None),
+    timestamp_attribute: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
     act_attr = activity_attribute or ""
+    cid_attr = case_id_attribute or ""
+    ts_attr = timestamp_attribute or ""
     excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
     label_map: dict[str, str] = json.loads(labels) if labels else {}
     user_excl_sql, user_excl_params = _build_user_excl(excl_list)
     act_expr = _resolved_activity_expr(act_attr)
+    cid_expr = _resolved_case_id_expr(cid_attr)
+    ts_expr = _resolved_timestamp_expr(ts_attr)
 
     sql = text(f"""
         WITH ordered AS (
             SELECT
-                case_id,
+                {cid_expr} AS resolved_case_id,
                 {act_expr} AS activity,
-                timestamp,
-                lag({act_expr}) OVER (PARTITION BY case_id ORDER BY timestamp) AS from_activity,
-                lag(timestamp) OVER (PARTITION BY case_id ORDER BY timestamp) AS from_timestamp
+                {ts_expr} AS resolved_ts,
+                lag({act_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS from_activity,
+                lag({ts_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS from_timestamp
             FROM events
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
-              AND case_id != ''
+              AND ({cid_expr}) != ''
               {_SYSTEM_EXCL}
               {user_excl_sql}
         )
@@ -391,9 +473,9 @@ async def get_transitions(
             from_activity,
             activity AS to_activity,
             count(*) AS transition_count,
-            avg(extract(epoch FROM (timestamp - from_timestamp)) / 3600.0) AS avg_hours,
-            percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (timestamp - from_timestamp)) / 3600.0) AS p50_hours,
-            percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM (timestamp - from_timestamp)) / 3600.0) AS p95_hours
+            avg(extract(epoch FROM (resolved_ts - from_timestamp)) / 3600.0) AS avg_hours,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (resolved_ts - from_timestamp)) / 3600.0) AS p50_hours,
+            percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM (resolved_ts - from_timestamp)) / 3600.0) AS p95_hours
         FROM ordered
         WHERE from_activity IS NOT NULL
           AND from_activity != activity
@@ -404,6 +486,8 @@ async def get_transitions(
     result = await db.execute(sql, {
         "ot_id": object_type_id, "tenant_id": tenant_id,
         **({"act_attr": act_attr} if act_attr else {}),
+        **({"case_id_attr": cid_attr} if cid_attr else {}),
+        **({"ts_attr": ts_attr} if ts_attr else {}),
         **user_excl_params,
     })
     rows = result.fetchall()
@@ -442,31 +526,46 @@ async def get_transitions(
 async def get_bottlenecks(
     object_type_id: str,
     top_n: int = Query(10),
+    excluded: Optional[str] = Query(None),
+    labels: Optional[str] = Query(None),
+    activity_attribute: Optional[str] = Query(None),
+    case_id_attribute: Optional[str] = Query(None),
+    timestamp_attribute: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    act_attr = activity_attribute or ""
+    cid_attr = case_id_attribute or ""
+    ts_attr = timestamp_attribute or ""
+    excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
+    label_map: dict[str, str] = json.loads(labels) if labels else {}
+    user_excl_sql, user_excl_params = _build_user_excl(excl_list)
+    act_expr = _resolved_activity_expr(act_attr)
+    cid_expr = _resolved_case_id_expr(cid_attr)
+    ts_expr = _resolved_timestamp_expr(ts_attr)
 
     sql = text(f"""
         WITH ordered AS (
             SELECT
-                case_id,
-                activity,
-                timestamp,
-                lag(activity) OVER (PARTITION BY case_id ORDER BY timestamp) AS from_activity,
-                lag(timestamp) OVER (PARTITION BY case_id ORDER BY timestamp) AS from_timestamp
+                {cid_expr} AS resolved_case_id,
+                {act_expr} AS activity,
+                {ts_expr} AS resolved_ts,
+                lag({act_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS from_activity,
+                lag({ts_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS from_timestamp
             FROM events
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
-              AND case_id != ''
+              AND ({cid_expr}) != ''
               {_SYSTEM_EXCL}
+              {user_excl_sql}
         ),
         transitions AS (
             SELECT
                 from_activity,
                 activity AS to_activity,
-                case_id,
-                extract(epoch FROM (timestamp - from_timestamp)) / 3600.0 AS hours
+                resolved_case_id,
+                extract(epoch FROM (resolved_ts - from_timestamp)) / 3600.0 AS hours
             FROM ordered
             WHERE from_activity IS NOT NULL
               AND from_activity != activity
@@ -484,14 +583,20 @@ async def get_bottlenecks(
         LIMIT :top_n
     """)
 
-    result = await db.execute(sql, {"ot_id": object_type_id, "tenant_id": tenant_id, "top_n": top_n})
+    result = await db.execute(sql, {
+        "ot_id": object_type_id, "tenant_id": tenant_id, "top_n": top_n,
+        **({"act_attr": act_attr} if act_attr else {}),
+        **({"case_id_attr": cid_attr} if cid_attr else {}),
+        **({"ts_attr": ts_attr} if ts_attr else {}),
+        **user_excl_params,
+    })
     rows = result.fetchall()
 
     return {
         "bottlenecks": [
             {
-                "from_activity": r.from_activity,
-                "to_activity": r.to_activity,
+                "from_activity": label_map.get(r.from_activity, r.from_activity) if label_map else r.from_activity,
+                "to_activity": label_map.get(r.to_activity, r.to_activity) if label_map else r.to_activity,
                 "case_count": int(r.case_count),
                 "avg_hours": round(float(r.avg_hours or 0), 1),
                 "max_hours": round(float(r.max_hours or 0), 1),
@@ -506,28 +611,46 @@ async def get_bottlenecks(
 async def get_stats(
     object_type_id: str,
     excluded: Optional[str] = Query(None),
+    activity_attribute: Optional[str] = Query(None),
+    case_id_attribute: Optional[str] = Query(None),
+    timestamp_attribute: Optional[str] = Query(None),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_ts_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    act_attr = activity_attribute or ""
+    cid_attr = case_id_attribute or ""
+    ts_attr = timestamp_attribute or ""
     excl_list = [a.strip() for a in excluded.split(",") if a.strip()] if excluded else []
     user_excl_sql, user_excl_params = _build_user_excl(excl_list)
+    act_expr = _resolved_activity_expr(act_attr)
+    cid_expr = _resolved_case_id_expr(cid_attr)
+    ts_expr = _resolved_timestamp_expr(ts_attr)
+
+    bind_params = {
+        "ot_id": object_type_id,
+        "tenant_id": tenant_id,
+        **({"act_attr": act_attr} if act_attr else {}),
+        **({"case_id_attr": cid_attr} if cid_attr else {}),
+        **({"ts_attr": ts_attr} if ts_attr else {}),
+        **user_excl_params,
+    }
 
     sql = text(f"""
         WITH case_agg AS (
             SELECT
-                case_id,
+                {cid_expr} AS resolved_case_id,
                 count(*) AS event_count,
-                min(timestamp) AS started_at,
-                max(timestamp) AS last_activity_at,
-                array_agg(activity ORDER BY timestamp) AS activities
+                min({ts_expr}) AS started_at,
+                max({ts_expr}) AS last_activity_at,
+                array_agg({act_expr} ORDER BY {ts_expr}) AS activities
             FROM events
             WHERE object_type_id = :ot_id
               AND tenant_id = :tenant_id
-              AND case_id != ''
+              AND ({cid_expr}) != ''
               {_SYSTEM_EXCL}
               {user_excl_sql}
-            GROUP BY case_id
+            GROUP BY resolved_case_id
         )
         SELECT
             count(*) AS total_cases,
@@ -537,7 +660,7 @@ async def get_stats(
         FROM case_agg
     """)
 
-    result = await db.execute(sql, {"ot_id": object_type_id, "tenant_id": tenant_id, **user_excl_params})
+    result = await db.execute(sql, bind_params)
     row = result.fetchone()
 
     if not row or not row.total_cases:
@@ -546,19 +669,19 @@ async def get_stats(
     # rework rate — cases where an activity recurs non-consecutively (true rework, not same-stage repeats)
     rework_sql = text(f"""
         WITH deduped AS (
-            SELECT case_id, activity, timestamp,
-                   lag(activity) OVER (PARTITION BY case_id ORDER BY timestamp) AS prev_activity
+            SELECT {cid_expr} AS resolved_case_id, {act_expr} AS resolved_activity, {ts_expr} AS resolved_ts,
+                   lag({act_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS prev_activity
             FROM events
-            WHERE object_type_id = :ot_id AND tenant_id = :tenant_id AND case_id != ''
+            WHERE object_type_id = :ot_id AND tenant_id = :tenant_id AND ({cid_expr}) != ''
               {_SYSTEM_EXCL}
               {user_excl_sql}
         ),
         case_sequences AS (
-            SELECT case_id,
-                   array_agg(activity ORDER BY timestamp) AS activities
+            SELECT resolved_case_id,
+                   array_agg(resolved_activity ORDER BY resolved_ts) AS activities
             FROM deduped
-            WHERE prev_activity IS NULL OR prev_activity != activity
-            GROUP BY case_id
+            WHERE prev_activity IS NULL OR prev_activity != resolved_activity
+            GROUP BY resolved_case_id
         )
         SELECT count(*) AS rework_cases
         FROM case_sequences
@@ -568,7 +691,7 @@ async def get_stats(
             ) AS unique_acts
         ) < array_length(activities, 1)
     """)
-    rework_result = await db.execute(rework_sql, {"ot_id": object_type_id, "tenant_id": tenant_id, **user_excl_params})
+    rework_result = await db.execute(rework_sql, bind_params)
     rework_row = rework_result.fetchone()
     rework_cases = int(rework_row.rework_cases) if rework_row else 0
     total = int(row.total_cases)

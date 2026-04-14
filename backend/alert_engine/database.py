@@ -54,8 +54,9 @@ DDL_STATEMENTS = [
         severity  TEXT NOT NULL DEFAULT 'warning',
         message   TEXT NOT NULL,
         details   JSONB NOT NULL DEFAULT '{}',
-        read      BOOLEAN NOT NULL DEFAULT FALSE,
-        fired_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        read          BOOLEAN NOT NULL DEFAULT FALSE,
+        fired_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        snoozed_until TIMESTAMPTZ
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_alert_notifs_tenant ON alert_notifications (tenant_id, fired_at DESC)",
@@ -75,6 +76,21 @@ DDL_STATEMENTS = [
     CREATE TABLE IF NOT EXISTS alert_rule_last_fired (
         rule_id  TEXT PRIMARY KEY REFERENCES alert_rules(id) ON DELETE CASCADE,
         fired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # Idempotent migration — adds snoozed_until if the table was created before this column existed
+    """
+    ALTER TABLE alert_notifications ADD COLUMN IF NOT EXISTS snoozed_until TIMESTAMPTZ
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS alert_channels (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id         TEXT NOT NULL UNIQUE,
+        email_enabled     BOOLEAN DEFAULT FALSE,
+        email_recipients  TEXT DEFAULT '',
+        slack_enabled     BOOLEAN DEFAULT FALSE,
+        slack_webhook_url TEXT DEFAULT '',
+        updated_at        TIMESTAMPTZ DEFAULT NOW()
     )
     """,
 ]

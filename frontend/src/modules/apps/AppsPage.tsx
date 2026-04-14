@@ -3,6 +3,7 @@ import { Plus, Trash2, ExternalLink, Sparkles, Loader, LayoutDashboard } from 'l
 import { useAppStore } from '../../store/appStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { NexusApp, AppComponent } from '../../types/app';
+import { getTenantId } from '../../store/authStore';
 import AppEditor from './AppEditor';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
@@ -10,7 +11,7 @@ const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://loca
 
 function genId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return genId();
+    return crypto.randomUUID();
   }
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = Math.random() * 16 | 0;
@@ -50,7 +51,7 @@ const NewAppModal: React.FC<{
 
   useEffect(() => {
     fetch(`${ONTOLOGY_API}/object-types`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     })
       .then((r) => r.json())
       .then((d) => {
@@ -80,7 +81,7 @@ const NewAppModal: React.FC<{
     try {
       const recordsResp = await fetch(
         `${ONTOLOGY_API}/object-types/${selectedOtId}/records`,
-        { headers: { 'x-tenant-id': 'tenant-001' } }
+        { headers: { 'x-tenant-id': getTenantId() } }
       );
       const recordsData = recordsResp.ok ? await recordsResp.json() : {};
       const sampleRows: Record<string, unknown>[] = (recordsData.records || []).slice(0, 7);
@@ -567,7 +568,7 @@ const AppsPage: React.FC = () => {
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h1 style={{ fontSize: 16, fontWeight: 500, color: '#0D1117' }}>Apps</h1>
+          <h1 style={{ fontSize: 16, fontWeight: 500, color: '#0D1117' }}>Dashboards</h1>
           <span style={{
             fontSize: 11,
             backgroundColor: '#EFF6FF',

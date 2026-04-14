@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
@@ -18,28 +18,49 @@ export const Button: React.FC<ButtonProps> = ({
   loading = false,
   disabled,
   style,
+  onMouseEnter,
+  onMouseLeave,
   ...props
 }) => {
-  const variantStyles: Record<string, React.CSSProperties> = {
+  const [hovered, setHovered] = useState(false);
+
+  const variantBase: Record<string, React.CSSProperties> = {
     primary: {
-      backgroundColor: '#2563EB',
+      backgroundColor: 'var(--color-interactive)',
       color: '#FFFFFF',
-      border: '1px solid #2563EB',
+      border: '1px solid var(--color-interactive)',
     },
     secondary: {
-      backgroundColor: '#FFFFFF',
-      color: '#0D1117',
-      border: '1px solid #E2E8F0',
+      backgroundColor: 'var(--color-surface)',
+      color: 'var(--color-text)',
+      border: '1px solid var(--color-border)',
     },
     ghost: {
       backgroundColor: 'transparent',
-      color: '#0D1117',
+      color: 'var(--color-text)',
       border: '1px solid transparent',
     },
     danger: {
-      backgroundColor: '#FFFFFF',
-      color: '#DC2626',
-      border: '1px solid #DC2626',
+      backgroundColor: 'var(--color-surface)',
+      color: 'var(--color-status-red)',
+      border: '1px solid var(--color-status-red)',
+    },
+  };
+
+  const variantHover: Record<string, React.CSSProperties> = {
+    primary: {
+      backgroundColor: '#1D4ED8',
+      border: '1px solid #1D4ED8',
+    },
+    secondary: {
+      backgroundColor: 'var(--color-base)',
+      border: '1px solid var(--color-border-emphasis)',
+    },
+    ghost: {
+      backgroundColor: 'var(--color-base)',
+    },
+    danger: {
+      backgroundColor: 'var(--color-status-red-dim)',
     },
   };
 
@@ -49,11 +70,18 @@ export const Button: React.FC<ButtonProps> = ({
     lg: { height: '36px', padding: '0 18px', fontSize: '14px' },
   };
 
+  const isDisabled = disabled || loading;
+  const base = variantBase[variant];
+  const hover = hovered && !isDisabled ? variantHover[variant] : {};
+
   return (
     <button
-      disabled={disabled || loading}
+      disabled={isDisabled}
+      onMouseEnter={(e) => { setHovered(true); onMouseEnter?.(e); }}
+      onMouseLeave={(e) => { setHovered(false); onMouseLeave?.(e); }}
       style={{
-        ...variantStyles[variant],
+        ...base,
+        ...hover,
         ...sizeStyles[size],
         borderRadius: '4px',
         fontWeight: 500,
@@ -61,9 +89,9 @@ export const Button: React.FC<ButtonProps> = ({
         display: 'inline-flex',
         alignItems: 'center',
         gap: '6px',
-        cursor: disabled || loading ? 'not-allowed' : 'pointer',
-        opacity: disabled || loading ? 0.6 : 1,
-        transition: 'background-color 80ms ease-out, border-color 80ms ease-out',
+        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        opacity: isDisabled ? 0.6 : 1,
+        transition: 'background-color 80ms ease-out, border-color 80ms ease-out, opacity 80ms',
         whiteSpace: 'nowrap',
         ...style,
       }}

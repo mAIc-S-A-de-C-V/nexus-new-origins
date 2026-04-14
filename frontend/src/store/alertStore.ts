@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getTenantId } from './authStore';
 
 const ALERT_API = import.meta.env.VITE_ALERT_ENGINE_URL || 'http://localhost:8010';
 
@@ -28,12 +29,21 @@ export interface AlertNotification {
   fired_at: string;
 }
 
+export interface ChannelConfig {
+  email_enabled: boolean;
+  email_recipients: string;
+  slack_enabled: boolean;
+  slack_webhook_url: string;
+}
+
 interface AlertState {
   rules: AlertRule[];
   notifications: AlertNotification[];
   unreadCount: number;
   loadingRules: boolean;
   loadingNotifications: boolean;
+  webhooks: { id: string; url: string; enabled: boolean; created_at: string }[];
+  channels: ChannelConfig | null;
 
   fetchRules: (tenantId?: string) => Promise<void>;
   createRule: (rule: Omit<AlertRule, 'id' | 'created_at' | 'last_fired'>, tenantId?: string) => Promise<void>;
@@ -46,6 +56,14 @@ interface AlertState {
   markAllRead: (tenantId?: string) => Promise<void>;
   deleteNotification: (id: string, tenantId?: string) => Promise<void>;
   pollUnreadCount: (tenantId?: string) => Promise<void>;
+
+  snoozeNotification: (id: string, until: string) => Promise<void>;
+  fetchWebhooks: () => Promise<void>;
+  createWebhook: (url: string) => Promise<{ id: string; url: string; secret: string }>;
+  deleteWebhook: (id: string) => Promise<void>;
+  fetchChannels: () => Promise<void>;
+  updateChannels: (config: ChannelConfig) => Promise<void>;
+  testChannels: () => Promise<{ ok: boolean; slack?: string; email?: string }>;
 }
 
 export const useAlertStore = create<AlertState>((set, get) => ({
@@ -54,8 +72,10 @@ export const useAlertStore = create<AlertState>((set, get) => ({
   unreadCount: 0,
   loadingRules: false,
   loadingNotifications: false,
+  webhooks: [],
+  channels: null,
 
-  fetchRules: async (tenantId = 'tenant-001') => {
+  fetchRules: async (tenantId = getTenantId()) => {
     set({ loadingRules: true });
     try {
       const res = await fetch(`${ALERT_API}/alerts/rules?tenant_id=${tenantId}`);
@@ -68,7 +88,7 @@ export const useAlertStore = create<AlertState>((set, get) => ({
     }
   },
 
-  createRule: async (rule, tenantId = 'tenant-001') => {
+  createRule: async (rule, tenantId = getTenantId()) => {
     await fetch(`${ALERT_API}/alerts/rules?tenant_id=${tenantId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -77,7 +97,7 @@ export const useAlertStore = create<AlertState>((set, get) => ({
     await get().fetchRules(tenantId);
   },
 
-  updateRule: async (id, updates, tenantId = 'tenant-001') => {
+  updateRule: async (id, updates, tenantId = getTenantId()) => {
     await fetch(`${ALERT_API}/alerts/rules/${id}?tenant_id=${tenantId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -86,19 +106,19 @@ export const useAlertStore = create<AlertState>((set, get) => ({
     await get().fetchRules(tenantId);
   },
 
-  deleteRule: async (id, tenantId = 'tenant-001') => {
+  deleteRule: async (id, tenantId = getTenantId()) => {
     await fetch(`${ALERT_API}/alerts/rules/${id}?tenant_id=${tenantId}`, { method: 'DELETE' });
     set(s => ({ rules: s.rules.filter(r => r.id !== id) }));
   },
 
-  testRule: async (id, tenantId = 'tenant-001') => {
+  testRule: async (id, tenantId = getTenantId()) => {
     const res = await fetch(`${ALERT_API}/alerts/rules/${id}/test?tenant_id=${tenantId}`, {
       method: 'POST',
     });
     return res.json();
   },
 
-  fetchNotifications: async (tenantId = 'tenant-001', unreadOnly = false) => {
+  fetchNotifications: async (tenantId = getTenantId(), unreadOnly = false) => {
     set({ loadingNotifications: true });
     try {
       const url = `${ALERT_API}/alerts/notifications?tenant_id=${tenantId}&unread_only=${unreadOnly}&limit=50`;
@@ -115,7 +135,7 @@ export const useAlertStore = create<AlertState>((set, get) => ({
     }
   },
 
-  markRead: async (id, tenantId = 'tenant-001') => {
+  markRead: async (id, tenantId = getTenantId()) => {
     await fetch(`${ALERT_API}/alerts/notifications/${id}/read?tenant_id=${tenantId}`, {
       method: 'POST',
     });
@@ -125,7 +145,7 @@ export const useAlertStore = create<AlertState>((set, get) => ({
     }));
   },
 
-  markAllRead: async (tenantId = 'tenant-001') => {
+  markAllRead: async (tenantId = getTenantId()) => {
     await fetch(`${ALERT_API}/alerts/notifications/read-all?tenant_id=${tenantId}`, {
       method: 'POST',
     });
@@ -135,14 +155,14 @@ export const useAlertStore = create<AlertState>((set, get) => ({
     }));
   },
 
-  deleteNotification: async (id, tenantId = 'tenant-001') => {
+  deleteNotification: async (id, tenantId = getTenantId()) => {
     await fetch(`${ALERT_API}/alerts/notifications/${id}?tenant_id=${tenantId}`, {
       method: 'DELETE',
     });
     set(s => ({ notifications: s.notifications.filter(n => n.id !== id) }));
   },
 
-  pollUnreadCount: async (tenantId = 'tenant-001') => {
+  pollUnreadCount: async (tenantId = getTenantId()) => {
     try {
       const res = await fetch(
         `${ALERT_API}/alerts/notifications?tenant_id=${tenantId}&unread_only=true&limit=1`
@@ -152,5 +172,73 @@ export const useAlertStore = create<AlertState>((set, get) => ({
     } catch {
       // silent
     }
+  },
+
+  snoozeNotification: async (id, until) => {
+    await fetch(`${ALERT_API}/alerts/notifications/${id}/snooze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      body: JSON.stringify({ until }),
+    });
+  },
+
+  fetchWebhooks: async () => {
+    try {
+      const res = await fetch(`${ALERT_API}/alerts/notifications/webhooks`, {
+        headers: { 'x-tenant-id': getTenantId() },
+      });
+      const data = await res.json();
+      set({ webhooks: data.webhooks || data || [] });
+    } catch {
+      set({ webhooks: [] });
+    }
+  },
+
+  createWebhook: async (url) => {
+    const res = await fetch(`${ALERT_API}/alerts/notifications/webhooks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      body: JSON.stringify({ url }),
+    });
+    const data = await res.json();
+    await get().fetchWebhooks();
+    return data;
+  },
+
+  deleteWebhook: async (id) => {
+    await fetch(`${ALERT_API}/alerts/notifications/webhooks/${id}`, {
+      method: 'DELETE',
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    set(s => ({ webhooks: s.webhooks.filter(w => w.id !== id) }));
+  },
+
+  fetchChannels: async () => {
+    try {
+      const res = await fetch(`${ALERT_API}/alerts/channels`, {
+        headers: { 'x-tenant-id': getTenantId() },
+      });
+      const data = await res.json();
+      set({ channels: data });
+    } catch {
+      set({ channels: null });
+    }
+  },
+
+  updateChannels: async (config) => {
+    await fetch(`${ALERT_API}/alerts/channels`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      body: JSON.stringify(config),
+    });
+    set({ channels: config });
+  },
+
+  testChannels: async () => {
+    const res = await fetch(`${ALERT_API}/alerts/channels/test`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    return res.json();
   },
 }));

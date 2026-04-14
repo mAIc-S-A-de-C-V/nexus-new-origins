@@ -2,6 +2,7 @@
 Notification read / dismiss endpoints + webhook management.
 """
 import secrets
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -22,6 +23,7 @@ async def list_notifications(
     pg: AsyncSession = Depends(get_pg_session),
 ):
     where = "WHERE tenant_id = :tid"
+    where += " AND (snoozed_until IS NULL OR snoozed_until <= NOW())"
     if unread_only:
         where += " AND read = FALSE"
     rows = await pg.execute(
@@ -56,6 +58,30 @@ async def mark_read(
         ),
         {"id": notification_id, "tid": tenant_id},
     )
+    await pg.commit()
+    return {"ok": True}
+
+
+class SnoozeBody(BaseModel):
+    until: datetime
+
+
+@router.post("/{notification_id}/snooze")
+async def snooze_notification(
+    notification_id: str,
+    body: SnoozeBody,
+    tenant_id: str = "tenant-001",
+    pg: AsyncSession = Depends(get_pg_session),
+):
+    result = await pg.execute(
+        text(
+            "UPDATE alert_notifications SET snoozed_until = :until "
+            "WHERE id = :id AND tenant_id = :tid"
+        ),
+        {"until": body.until, "id": notification_id, "tid": tenant_id},
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
     await pg.commit()
     return {"ok": True}
 

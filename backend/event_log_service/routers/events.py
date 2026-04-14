@@ -155,6 +155,72 @@ async def get_event_profile(
     }
 
 
+@router.get("/sample-fields")
+async def sample_record_fields(
+    pipeline_id: Optional[str] = Query(None),
+    object_type_id: Optional[str] = Query(None),
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Sample record_snapshot keys from recent events so AI can suggest field overrides."""
+    tenant_id = x_tenant_id or "tenant-001"
+
+    filters = [EventRow.tenant_id == tenant_id]
+    if pipeline_id:
+        filters.append(EventRow.pipeline_id == pipeline_id)
+    if object_type_id:
+        filters.append(EventRow.object_type_id == object_type_id)
+
+    # Get a sample of events that have attributes
+    stmt = (
+        select(EventRow)
+        .where(and_(*filters, EventRow.attributes.isnot(None)))
+        .order_by(EventRow.timestamp.desc())
+        .limit(5)
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    # Collect unique keys from record_snapshot and top-level attributes
+    snapshot_keys: dict[str, list] = {}  # key -> sample values
+    attr_keys: dict[str, list] = {}
+    sample_events = []
+
+    for row in rows:
+        attrs = row.attributes or {}
+        snapshot = attrs.get("record_snapshot", {})
+
+        # Collect snapshot field keys with sample values
+        if isinstance(snapshot, dict):
+            for k, v in snapshot.items():
+                if k not in snapshot_keys:
+                    snapshot_keys[k] = []
+                if v is not None and len(snapshot_keys[k]) < 3:
+                    snapshot_keys[k].append(str(v)[:100])
+
+        # Collect top-level attribute keys
+        for k, v in attrs.items():
+            if k == "record_snapshot":
+                continue
+            if k not in attr_keys:
+                attr_keys[k] = []
+            if v is not None and len(attr_keys[k]) < 3:
+                attr_keys[k].append(str(v)[:100])
+
+        sample_events.append({
+            "case_id": row.case_id,
+            "activity": row.activity,
+            "snapshot_keys": list(snapshot.keys()) if isinstance(snapshot, dict) else [],
+        })
+
+    return {
+        "snapshot_fields": {k: v for k, v in snapshot_keys.items()},
+        "attribute_fields": {k: v for k, v in attr_keys.items()},
+        "sample_events": sample_events,
+        "event_count": len(rows),
+    }
+
+
 @router.get("/quality/{pipeline_id}", response_model=EventLogQualityScore)
 async def get_quality_score(
     pipeline_id: str,

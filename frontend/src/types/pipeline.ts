@@ -8,7 +8,8 @@ export type NodeType =
   | 'DEDUPE'
   | 'VALIDATE'
   | 'SINK_OBJECT'
-  | 'SINK_EVENT';
+  | 'SINK_EVENT'
+  | 'AGENT_RUN';
 
 export type PipelineStatus = 'RUNNING' | 'IDLE' | 'FAILED' | 'PAUSED' | 'DRAFT' | 'COMPLETED';
 

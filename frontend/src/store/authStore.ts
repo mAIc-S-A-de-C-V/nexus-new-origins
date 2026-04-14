@@ -10,6 +10,7 @@ export interface AuthUser {
   name: string;
   role: UserRole;
   tenant_id: string;
+  modules: string[];
 }
 
 interface AuthState {
@@ -54,7 +55,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const data = await res.json();
       _inMemoryToken = data.access_token;
       _tenantId = data.user?.tenant_id || 'tenant-001';
-      set({ user: data.user, accessToken: data.access_token, loading: false });
+      set({
+        user: { ...data.user, modules: (data.user?.modules as string[]) || [] },
+        accessToken: data.access_token,
+        loading: false,
+      });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Login failed';
       set({ loading: false, error: msg });
@@ -79,6 +84,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           name: payload.name || payload.email,
           role: payload.role as UserRole,
           tenant_id: payload.tenant_id,
+          modules: (payload.modules as string[]) || [],
         },
       });
     } catch {
@@ -115,6 +121,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             name: payload.name || payload.email,
             role: payload.role as UserRole,
             tenant_id: payload.tenant_id,
+            modules: (payload.modules as string[]) || [],
           },
         });
       } catch {
@@ -151,3 +158,8 @@ export const getAccessToken = () => _inMemoryToken;
 
 /** Get the current tenant_id for the logged-in user. */
 export const getTenantId = () => _tenantId;
+
+/** Get the current allowed modules for the logged-in user. */
+export function getModules(): string[] {
+  return useAuthStore.getState().user?.modules ?? [];
+}

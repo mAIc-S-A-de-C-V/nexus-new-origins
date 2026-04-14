@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getTenantId } from './authStore';
 
 const AGENT_API = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
 
@@ -53,6 +54,14 @@ export interface StreamingTool {
   result?: unknown;
 }
 
+export interface AgentVersion {
+  id: string;
+  agent_id: string;
+  version_number: number;
+  config_snapshot: AgentConfig;
+  created_at: string;
+}
+
 export interface AgentSchedule {
   id: string;
   agent_id: string;
@@ -99,6 +108,10 @@ interface AgentStore {
   updateSchedule: (agentId: string, scheduleId: string, data: Partial<AgentSchedule>) => Promise<void>;
   deleteSchedule: (agentId: string, scheduleId: string) => Promise<void>;
   runScheduleNow: (agentId: string, scheduleId: string) => Promise<void>;
+
+  versions: AgentVersion[];
+  fetchVersions: (agentId: string) => Promise<void>;
+  restoreVersion: (agentId: string, versionId: string) => Promise<void>;
 }
 
 export const useAgentStore = create<AgentStore>((set, get) => ({
@@ -113,12 +126,13 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   streamingText: '',
   streamingTools: [],
   schedules: [],
+  versions: [],
 
   fetchAgents: async () => {
     set({ loading: true });
     try {
       const r = await fetch(`${AGENT_API}/agents`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       const data = await r.json();
       set({ agents: Array.isArray(data) ? data : [] });
@@ -132,7 +146,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   createAgent: async (data) => {
     const r = await fetch(`${AGENT_API}/agents`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     const agent = await r.json();
@@ -143,7 +157,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   updateAgent: async (id, data) => {
     const r = await fetch(`${AGENT_API}/agents/${id}`, {
       method: 'PUT',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     const agent = await r.json();
@@ -156,7 +170,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   deleteAgent: async (id) => {
     await fetch(`${AGENT_API}/agents/${id}`, {
       method: 'DELETE',
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     set((s) => ({
       agents: s.agents.filter((a) => a.id !== id),
@@ -167,7 +181,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   setKnowledgeScope: async (id, scope) => {
     const r = await fetch(`${AGENT_API}/agents/${id}/knowledge-scope`, {
       method: 'PUT',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),
     });
     const agent = await r.json();
@@ -179,7 +193,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
   fetchAvailableTools: async () => {
     const r = await fetch(`${AGENT_API}/agents/tools`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     const data = await r.json();
     set({ availableTools: data.tools || [] });
@@ -187,7 +201,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
   fetchThreads: async (agentId) => {
     const r = await fetch(`${AGENT_API}/threads?agent_id=${agentId}`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     const data = await r.json();
     set({ threads: Array.isArray(data) ? data : [] });
@@ -196,7 +210,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   createThread: async (agentId) => {
     const r = await fetch(`${AGENT_API}/threads/${agentId}`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: `Thread ${new Date().toLocaleTimeString()}` }),
     });
     const thread = await r.json();
@@ -215,7 +229,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
   fetchMessages: async (threadId) => {
     const r = await fetch(`${AGENT_API}/threads/${threadId}/messages`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     const data = await r.json();
     set({ messages: Array.isArray(data) ? data : [] });
@@ -233,12 +247,17 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     set((s) => ({ messages: [...s.messages, userMsg] }));
 
     let finalText = '';
+    let streamError: string | null = null;
     try {
       const response = await fetch(`${AGENT_API}/threads/${threadId}/messages`, {
         method: 'POST',
-        headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+        headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, stream: true }),
       });
+
+      if (!response.ok) {
+        throw new Error(`Server error ${response.status}`);
+      }
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
@@ -269,22 +288,38 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                     : t
                 ),
               }));
+            } else if (event.type === 'error') {
+              streamError = event.error || 'Unknown error';
             }
           } catch { /* partial JSON */ }
         }
       }
-      await get().fetchMessages(threadId);
-      return finalText;
+    } catch (err) {
+      streamError = err instanceof Error ? err.message : String(err);
     } finally {
       set({ sending: false, streamingText: '', streamingTools: [] });
+      // Small delay so the backend's finally-block DB save completes before we reload
+      await new Promise((r) => setTimeout(r, 400));
+      await get().fetchMessages(threadId);
+      if (streamError && !finalText) {
+        const errMsg: AgentMessage = {
+          id: `err-${Date.now()}`,
+          thread_id: threadId,
+          role: 'assistant',
+          content: `⚠️ Stream error: ${streamError}`,
+          created_at: new Date().toISOString(),
+        };
+        set((s) => ({ messages: [...s.messages, errMsg] }));
+      }
     }
+    return finalText;
   },
 
   clearStreaming: () => set({ streamingText: '', streamingTools: [] }),
 
   fetchSchedules: async (agentId) => {
     const r = await fetch(`${AGENT_API}/agents/${agentId}/schedules`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     const data = await r.json();
     set({ schedules: Array.isArray(data) ? data : [] });
@@ -293,7 +328,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   createSchedule: async (agentId, data) => {
     const r = await fetch(`${AGENT_API}/agents/${agentId}/schedules`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     const schedule = await r.json();
@@ -304,7 +339,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   updateSchedule: async (agentId, scheduleId, data) => {
     const r = await fetch(`${AGENT_API}/agents/${agentId}/schedules/${scheduleId}`, {
       method: 'PUT',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     const schedule = await r.json();
@@ -314,7 +349,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   deleteSchedule: async (agentId, scheduleId) => {
     await fetch(`${AGENT_API}/agents/${agentId}/schedules/${scheduleId}`, {
       method: 'DELETE',
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
     set((s) => ({ schedules: s.schedules.filter((sc) => sc.id !== scheduleId) }));
   },
@@ -322,7 +357,27 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   runScheduleNow: async (agentId, scheduleId) => {
     await fetch(`${AGENT_API}/agents/${agentId}/schedules/${scheduleId}/run-now`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     });
+  },
+
+  fetchVersions: async (agentId) => {
+    const r = await fetch(`${AGENT_API}/agents/${agentId}/versions`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    const data = await r.json();
+    set({ versions: Array.isArray(data) ? data : [] });
+  },
+
+  restoreVersion: async (agentId, versionId) => {
+    const r = await fetch(`${AGENT_API}/agents/${agentId}/versions/${versionId}/restore`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    const agent = await r.json();
+    set((s) => ({
+      agents: s.agents.map((a) => (a.id === agentId ? agent : a)),
+      selectedAgent: s.selectedAgent?.id === agentId ? agent : s.selectedAgent,
+    }));
   },
 }));

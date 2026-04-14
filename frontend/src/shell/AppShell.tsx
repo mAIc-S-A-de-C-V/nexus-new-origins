@@ -2,7 +2,12 @@ import React from 'react';
 import NavRail from './NavRail';
 import { NotificationBell } from './NotificationBell';
 import NexusAssistant from './NexusAssistant';
+import { CommandPalette } from './CommandPalette';
+import { ObjectContextPanel } from './ObjectContextPanel';
+import { Breadcrumb } from '../design-system/components/Breadcrumb';
+import { ThemeToggle } from '../design-system/components/ThemeToggle';
 import { useNavigationStore } from '../store/navigationStore';
+import { useGlobalKeyboard } from '../hooks/useGlobalKeyboard';
 
 interface AppShellProps {
   children: (page: string) => React.ReactNode;
@@ -10,6 +15,9 @@ interface AppShellProps {
 
 export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const { currentPage, navigateTo } = useNavigationStore();
+
+  // Mount global keyboard handler
+  useGlobalKeyboard();
 
   return (
     <div style={{
@@ -20,27 +28,31 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
       backgroundColor: 'var(--color-base)',
     }}>
       <NavRail currentPage={currentPage} onNavigate={(page) => navigateTo(page)} />
-      <main style={{
-        flex: 1,
-        overflow: 'hidden',
-        display: 'flex',
-        flexDirection: 'column',
-        minWidth: 0,
-      }}>
-        {children(currentPage)}
-      </main>
 
-      {/* Global notification bell — fixed top-right */}
-      <div style={{
-        position: 'fixed',
-        top: 10, right: 14,
-        zIndex: 100,
-      }}>
-        <NotificationBell />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        {/* Breadcrumb bar */}
+        <Breadcrumb />
+
+        <main style={{
+          flex: 1,
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          minWidth: 0,
+        }}>
+          {children(currentPage)}
+        </main>
       </div>
 
       {/* Nexus Assistant — right-side panel */}
       <NexusAssistant />
+
+      {/* Object context panel */}
+      <ObjectContextPanel />
+
+      {/* Global command palette — Cmd+K */}
+      <CommandPalette />
+
     </div>
   );
 };

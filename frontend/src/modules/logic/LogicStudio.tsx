@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { getTenantId } from '../../store/authStore';
 import { useLogicStore, LogicFunction, Block } from '../../store/logicStore';
 import { useUtilityStore } from '../../store/utilityStore';
-import { Plus, Play, Save, Trash2, ChevronRight, CheckCircle, XCircle, Loader, BookOpen, Clock, Wrench } from 'lucide-react';
+import { useNavigationStore } from '../../store/navigationStore';
+import { Plus, Play, Save, Trash2, ChevronRight, CheckCircle, XCircle, Loader, BookOpen, Clock, Wrench, GitBranch, Repeat2, FlaskConical } from 'lucide-react';
 
 // ── Colour palette (light) ────────────────────────────────────────────────────
 const C = {
@@ -19,6 +21,8 @@ const BLOCK_TYPES = [
   { type: 'ontology_update',  label: 'Ontology Update',  color: '#059669', desc: 'Write fields back to an ontology record' },
   { type: 'transform',        label: 'Transform',        color: '#10B981', desc: 'Transform data in memory' },
   { type: 'utility_call',     label: 'Utility Call',     color: '#0891B2', desc: 'Run a utility (OCR, scrape, geocode…)' },
+  { type: 'conditional',      label: 'Conditional',      color: '#F97316', desc: 'Branch on a condition — if/else' },
+  { type: 'foreach',          label: 'For Each',          color: '#8B5CF6', desc: 'Iterate over an array of results' },
 ];
 
 const blockColor = (type: string) => BLOCK_TYPES.find((b) => b.type === type)?.color ?? C.dim;
@@ -233,7 +237,7 @@ const BlockEditor: React.FC<{
       setOtProperties(ot.properties);
     } else if (ot?.id) {
       const ontologyUrl = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
-      fetch(`${ontologyUrl}/object-types/${ot.id}`, { headers: { 'x-tenant-id': 'tenant-001' } })
+      fetch(`${ontologyUrl}/object-types/${ot.id}`, { headers: { 'x-tenant-id': getTenantId() } })
         .then((r) => r.json())
         .then((data) => setOtProperties(data.properties || []))
         .catch(() => setOtProperties([]));
@@ -595,6 +599,88 @@ const BlockEditor: React.FC<{
             </>
           );
         })()}
+        {block.type === 'conditional' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', backgroundColor: '#FFF7ED', border: '1px solid #FED7AA', marginBottom: 4 }}>
+              <GitBranch size={12} color="#F97316" />
+              <span style={{ fontSize: 11, color: '#C2410C' }}>Branches execution based on the evaluated condition. Reference previous block outputs using &#123;&#123;block_id.result&#125;&#125;.</span>
+            </div>
+            <div>
+              <label style={labelStyle}>Condition expression</label>
+              <input
+                style={inputStyle}
+                value={block.condition_expression || ''}
+                onChange={(e) => u({ condition_expression: e.target.value })}
+                placeholder={'e.g. {{llm_call_1.result.score}} > 0.8'}
+              />
+              <div style={{ fontSize: 10, color: C.dim, marginTop: 3 }}>
+                Use Python-style comparisons. References to previous blocks use &#123;&#123;block_id.result.field&#125;&#125; syntax.
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
+              <div>
+                <label style={{ ...labelStyle, color: '#059669' }}>✓ True path — block IDs (comma-separated)</label>
+                <input
+                  style={{ ...inputStyle, borderColor: '#BBF7D0' }}
+                  value={(block.true_branch || []).join(', ')}
+                  onChange={(e) => u({ true_branch: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                  placeholder="e.g. send_email_1, action_1"
+                />
+              </div>
+              <div>
+                <label style={{ ...labelStyle, color: '#DC2626' }}>✗ False path — block IDs (comma-separated)</label>
+                <input
+                  style={{ ...inputStyle, borderColor: '#FECACA' }}
+                  value={(block.false_branch || []).join(', ')}
+                  onChange={(e) => u({ false_branch: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                  placeholder="e.g. llm_call_2"
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {block.type === 'foreach' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', backgroundColor: '#F5F3FF', border: '1px solid #DDD6FE', marginBottom: 4 }}>
+              <Repeat2 size={12} color="#8B5CF6" />
+              <span style={{ fontSize: 11, color: '#5B21B6' }}>Iterates over each item in an array. Each iteration runs the loop blocks with &#123;&#123;item&#125;&#125; available as the current element.</span>
+            </div>
+            <div>
+              <label style={labelStyle}>Array input (block reference)</label>
+              <input
+                style={inputStyle}
+                value={block.array_input || ''}
+                onChange={(e) => u({ array_input: e.target.value })}
+                placeholder={'e.g. {{ontology_query_1.records}}'}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Iteration variable name</label>
+              <input
+                style={{ ...inputStyle, width: 160 }}
+                value={block.iteration_variable || 'item'}
+                onChange={(e) => u({ iteration_variable: e.target.value })}
+                placeholder="item"
+              />
+              <div style={{ fontSize: 10, color: C.dim, marginTop: 3 }}>
+                Inside loop blocks, reference this variable as &#123;&#123;item.field_name&#125;&#125;
+              </div>
+            </div>
+            <div>
+              <label style={labelStyle}>Loop block IDs (comma-separated, in order)</label>
+              <input
+                style={inputStyle}
+                value={(block.loop_blocks || []).join(', ')}
+                onChange={(e) => u({ loop_blocks: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+                placeholder="e.g. llm_call_1, send_email_1"
+              />
+              <div style={{ fontSize: 10, color: C.dim, marginTop: 3 }}>
+                Add block IDs of the blocks to run per iteration. Those blocks run in sequence for each item.
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -652,6 +738,7 @@ const LogicStudio: React.FC = () => {
     deleteFunction, publishFunction, runSync,
   } = useLogicStore();
   const { fetchUtilities } = useUtilityStore();
+  const { navigateTo } = useNavigationStore();
 
   const [localFn, setLocalFn] = useState<LogicFunction | null>(null);
   const [testInputs, setTestInputs] = useState('{}');
@@ -672,7 +759,7 @@ const LogicStudio: React.FC = () => {
   const fetchSchedules = async (fnId: string) => {
     try {
       const r = await fetch(`${logicUrl}/logic/functions/${fnId}/schedules`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       const data = await r.json();
       setSchedules(Array.isArray(data) ? data : []);
@@ -687,7 +774,7 @@ const LogicStudio: React.FC = () => {
     try {
       await fetch(`${logicUrl}/logic/functions/${localFn.id}/schedules`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant-001' },
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
         body: JSON.stringify({ cron: schedCron, label: schedLabel, inputs, enabled: true }),
       });
       await fetchSchedules(localFn.id);
@@ -698,7 +785,7 @@ const LogicStudio: React.FC = () => {
     if (!localFn) return;
     await fetch(`${logicUrl}/logic/functions/${localFn.id}/schedules/${s.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant-001' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify({ enabled: !s.enabled }),
     });
     await fetchSchedules(localFn.id);
@@ -717,7 +804,7 @@ const LogicStudio: React.FC = () => {
     fetchFunctions();
     fetchUtilities();
     const ontologyUrl = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
-    fetch(`${ontologyUrl}/object-types`, { headers: { 'x-tenant-id': 'tenant-001' } })
+    fetch(`${ontologyUrl}/object-types`, { headers: { 'x-tenant-id': getTenantId() } })
       .then((r) => r.json())
       .then((data) => setObjectTypes(Array.isArray(data) ? data : []))
       .catch(() => {});
@@ -854,7 +941,7 @@ const LogicStudio: React.FC = () => {
           {/* Toolbar */}
           <div style={{
             height: 52, display: 'flex', alignItems: 'center', gap: 8,
-            padding: '0 52px 0 16px', borderBottom: `1px solid ${C.border}`,
+            padding: '0 16px', borderBottom: `1px solid ${C.border}`,
             backgroundColor: C.panel, flexShrink: 0,
           }}>
             <input
@@ -867,6 +954,13 @@ const LogicStudio: React.FC = () => {
             />
             {dirty && <span style={{ fontSize: 10, color: C.warn }}>unsaved</span>}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+              <button
+                onClick={() => navigateTo('evals')}
+                title="Create eval suite for this function"
+                style={{ padding: '5px 10px', border: `1px solid ${C.border}`, backgroundColor: 'transparent', color: C.accent, cursor: 'pointer', fontSize: 12, display: 'flex', gap: 4, alignItems: 'center' }}
+              >
+                <FlaskConical size={12} /> Eval Suite
+              </button>
               <button
                 onClick={() => {
                   if (confirm('Delete this function?')) deleteFunction(localFn.id);

@@ -2,15 +2,19 @@ import React, { useState, useEffect } from 'react';
 import {
   Play, Square, Plus, Save, Trash2, ChevronUp, ChevronDown,
   Plug, Filter, ArrowRightLeft, Repeat, Sparkles,
-  Layers, Copy, ShieldCheck, Database, Activity, X,
+  Layers, Copy, ShieldCheck, Database, Activity, X, Bot, Clock, MessageSquare,
 } from 'lucide-react';
+import { CommentsPanel } from '../../components/CommentsPanel';
 import { Button } from '../../design-system/components/Button';
 import { usePipelineStore } from '../../store/pipelineStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { useConnectorStore } from '../../store/connectorStore';
 import { useOntologyStore } from '../../store/ontologyStore';
+import { getTenantId } from '../../store/authStore';
 import { PipelineNode, NodeType } from '../../types/pipeline';
 import { NODE_TYPE_DEFS } from './pipelineTypes';
+
+const AGENT_API = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -25,10 +29,12 @@ const NODE_ICONS: Record<string, React.ReactNode> = {
   ShieldCheck: <ShieldCheck size={13} />,
   Database: <Database size={13} />,
   Activity: <Activity size={13} />,
+  Bot: <Bot size={13} />,
 };
 
 const CONNECTOR_FIELDS = new Set(['connectorId', 'lookupConnectorId']);
 const OBJECT_TYPE_FIELDS = new Set(['objectTypeId']);
+const AGENT_FIELDS = new Set(['agentId']);
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
   RUNNING:   { label: 'Running',   bg: '#FFF7ED', text: '#92400E' },
@@ -53,12 +59,13 @@ interface FieldProps {
   value: unknown;
   connectors: { id: string; name: string }[];
   objectTypes: { id: string; name: string }[];
+  agents: { id: string; name: string }[];
   onChange: (stepId: string, key: string, value: unknown) => void;
 }
 
 const FieldInput: React.FC<FieldProps> = ({
   stepId, fieldKey, fieldType, placeholder, options, defaultVal,
-  value, connectors, objectTypes, onChange,
+  value, connectors, objectTypes, agents, onChange,
 }) => {
   const strVal = String(value ?? defaultVal ?? '');
   const inputStyle: React.CSSProperties = {
@@ -85,6 +92,14 @@ const FieldInput: React.FC<FieldProps> = ({
         placeholder={placeholder}
         style={inputStyle}
       />
+    );
+  }
+  if (fieldType === 'select' && AGENT_FIELDS.has(fieldKey)) {
+    return (
+      <select value={strVal} onChange={e => onChange(stepId, fieldKey, e.target.value)} style={selectStyle}>
+        <option value="">Select agent...</option>
+        {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+      </select>
     );
   }
   if (fieldType === 'select' && CONNECTOR_FIELDS.has(fieldKey)) {
@@ -135,6 +150,97 @@ const FieldInput: React.FC<FieldProps> = ({
   );
 };
 
+// ─── Schedule Panel ──────────────────────────────────────────────────────────
+
+const PipelineSchedulePanel: React.FC<{ pipelineId: string }> = ({ pipelineId }) => {
+  const { schedules, fetchSchedules, createSchedule, updateSchedule, deleteSchedule, runScheduleNow } = usePipelineStore();
+  const [form, setForm] = React.useState({ name: '', cron_expression: '0 * * * *', enabled: true });
+  const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => { fetchSchedules(pipelineId); }, [pipelineId]);
+
+  const pipelineSchedules = schedules.filter(s => s.pipeline_id === pipelineId);
+
+  const handleCreate = async () => {
+    if (!form.name.trim() || !form.cron_expression.trim()) return;
+    setSaving(true);
+    try { await createSchedule(pipelineId, form); setForm({ name: '', cron_expression: '0 * * * *', enabled: true }); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Cron Schedules</div>
+
+      {/* Create form */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px', border: '1px solid #E2E8F0', borderRadius: 6, backgroundColor: '#F8FAFC' }}>
+        <input
+          placeholder="Schedule name"
+          value={form.name}
+          onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+          style={{ height: 28, padding: '0 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+        />
+        <input
+          placeholder="Cron expression (e.g. 0 * * * *)"
+          value={form.cron_expression}
+          onChange={e => setForm(f => ({ ...f, cron_expression: e.target.value }))}
+          style={{ height: 28, padding: '0 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none', fontFamily: 'monospace' }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748B', cursor: 'pointer' }}>
+            <input type="checkbox" checked={form.enabled} onChange={e => setForm(f => ({ ...f, enabled: e.target.checked }))} />
+            Enabled
+          </label>
+          <button
+            onClick={handleCreate}
+            disabled={saving}
+            style={{ marginLeft: 'auto', height: 26, padding: '0 12px', borderRadius: 4, border: 'none', backgroundColor: '#2563EB', color: '#fff', fontSize: 11, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}
+          >
+            {saving ? 'Adding...' : '+ Add'}
+          </button>
+        </div>
+      </div>
+
+      {/* Schedule list */}
+      {pipelineSchedules.length === 0 ? (
+        <p style={{ fontSize: 12, color: '#94A3B8', textAlign: 'center', margin: '8px 0' }}>No schedules yet</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {pipelineSchedules.map(s => (
+            <div key={s.id} style={{ padding: '8px 10px', border: '1px solid #E2E8F0', borderRadius: 6, backgroundColor: '#fff' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{ fontSize: 12, fontWeight: 500, color: '#1E293B' }}>{s.name}</span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    onClick={() => runScheduleNow(pipelineId, s.id)}
+                    title="Run now"
+                    style={{ padding: '2px 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3, background: '#fff', cursor: 'pointer', color: '#2563EB' }}
+                  >▶</button>
+                  <button
+                    onClick={() => updateSchedule(pipelineId, s.id, { enabled: !s.enabled })}
+                    style={{ padding: '2px 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3, background: s.enabled ? '#DCFCE7' : '#F1F5F9', cursor: 'pointer', color: s.enabled ? '#16A34A' : '#64748B' }}
+                  >{s.enabled ? 'ON' : 'OFF'}</button>
+                  <button
+                    onClick={() => deleteSchedule(pipelineId, s.id)}
+                    title="Delete"
+                    style={{ padding: '2px 6px', fontSize: 10, border: '1px solid #FEE2E2', borderRadius: 3, background: '#fff', cursor: 'pointer', color: '#DC2626' }}
+                  >✕</button>
+                </div>
+              </div>
+              <code style={{ fontSize: 10, color: '#64748B', fontFamily: 'monospace' }}>{s.cron_expression}</code>
+              {s.last_run_at && (
+                <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 1 }}>
+                  Last: {new Date(s.last_run_at).toLocaleString()}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── Main component ──────────────────────────────────────────────────────────
 
 export const PipelineBuilder: React.FC = () => {
@@ -143,9 +249,10 @@ export const PipelineBuilder: React.FC = () => {
     updatePipelineNodes, updatePipeline, fetchPipelines, runPipeline,
     addPipeline, removePipeline,
   } = usePipelineStore();
-  const { consumePendingPipeline } = useNavigationStore();
+  const { consumePendingPipeline, setBreadcrumbs } = useNavigationStore();
   const { connectors, fetchConnectors } = useConnectorStore();
   const { objectTypes, fetchObjectTypes } = useOntologyStore();
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
 
   const [isRunning, setIsRunning]         = useState(false);
   const [showNewModal, setShowNewModal]   = useState(false);
@@ -157,13 +264,19 @@ export const PipelineBuilder: React.FC = () => {
   const [localSteps, setLocalSteps]       = useState<PipelineNode[]>([]);
   const [dirty, setDirty]                 = useState(false);
   const [saving, setSaving]               = useState(false);
+  const [activeRightTab, setActiveRightTab] = useState<'schedule' | 'comments' | null>(null);
 
   const currentPipeline = pipelines.find(p => p.id === selectedPipelineId) || pipelines[0];
 
   // ── Bootstrap ─────────────────────────────────────────────────────────────
   useEffect(() => {
+    setBreadcrumbs([{ label: 'Pipelines' }]);
     fetchConnectors();
     fetchObjectTypes();
+    fetch(`${AGENT_API}/agents`, { headers: { 'x-tenant-id': getTenantId() } })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setAgents(Array.isArray(data) ? data : []))
+      .catch(() => {});
     const pending = consumePendingPipeline();
     fetchPipelines().then(() => {
       if (pending) {
@@ -175,7 +288,7 @@ export const PipelineBuilder: React.FC = () => {
           connectorIds: pending.connectorIds || [],
           targetObjectTypeId: pending.targetObjectTypeId,
           createdAt: now, updatedAt: now,
-          tenantId: pending.tenantId || 'tenant-001', version: 1,
+          tenantId: pending.tenantId || getTenantId(), version: 1,
         }).then(created => selectPipeline(created.id));
       }
     });
@@ -186,6 +299,7 @@ export const PipelineBuilder: React.FC = () => {
     if (currentPipeline) {
       setLocalSteps(currentPipeline.nodes || []);
       setDirty(false);
+      setBreadcrumbs([{ label: 'Pipelines', page: 'pipelines' }, { label: currentPipeline.name }]);
       if (currentPipeline.nodes?.length > 0) {
         setExpandedSteps(new Set([currentPipeline.nodes[0].id]));
       } else {
@@ -202,7 +316,7 @@ export const PipelineBuilder: React.FC = () => {
     const created = await addPipeline({
       id: '', name, status: 'DRAFT', nodes: [], edges: [],
       connectorIds: newConnectorId ? [newConnectorId] : [],
-      createdAt: now, updatedAt: now, tenantId: 'tenant-001', version: 1,
+      createdAt: now, updatedAt: now, tenantId: getTenantId(), version: 1,
     });
     selectPipeline(created.id);
     setShowNewModal(false);
@@ -283,7 +397,7 @@ export const PipelineBuilder: React.FC = () => {
         const ontologyBase = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
         await fetch(`${ontologyBase}/object-types/${sinkOtId}/set-pipeline`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant-001' },
+          headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
           body: JSON.stringify({ pipeline_id: currentPipeline.id }),
         });
         // Refresh ontology store so the panel picks up the new sourcePipelineId
@@ -318,7 +432,7 @@ export const PipelineBuilder: React.FC = () => {
       {/* ── Top bar ───────────────────────────────────────────────────────── */}
       <div style={{
         height: 52, backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0',
-        display: 'flex', alignItems: 'center', padding: '0 52px 0 16px',
+        display: 'flex', alignItems: 'center', padding: '0 16px',
         gap: '12px', flexShrink: 0,
       }}>
         <h1 style={{ fontSize: '15px', fontWeight: 600, color: '#0D1117' }}>Pipeline Builder</h1>
@@ -381,6 +495,32 @@ export const PipelineBuilder: React.FC = () => {
               v{currentPipeline.version}
             </span>
           )}
+          <button
+            onClick={() => setActiveRightTab(activeRightTab === 'schedule' ? null : 'schedule')}
+            title="Schedules"
+            style={{
+              height: 28, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 5,
+              borderRadius: 4, border: '1px solid #E2E8F0', fontSize: 12, cursor: 'pointer',
+              backgroundColor: activeRightTab === 'schedule' ? '#EFF6FF' : '#FFFFFF',
+              color: activeRightTab === 'schedule' ? '#2563EB' : '#64748B',
+            }}
+          >
+            <Clock size={12} />
+            Schedule
+          </button>
+          <button
+            onClick={() => setActiveRightTab(activeRightTab === 'comments' ? null : 'comments')}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              height: 28, padding: '0 10px', borderRadius: 4, fontSize: 11,
+              border: '1px solid #E2E8F0',
+              backgroundColor: activeRightTab === 'comments' ? '#EFF6FF' : '#FFFFFF',
+              color: activeRightTab === 'comments' ? '#2563EB' : '#64748B',
+              cursor: 'pointer',
+            }}
+          >
+            <MessageSquare size={12} /> Comments
+          </button>
           <Button
             variant="secondary" size="sm" icon={<Save size={12} />}
             onClick={handleSave} loading={saving} disabled={!dirty || saving}
@@ -396,6 +536,9 @@ export const PipelineBuilder: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {/* ── Content area (steps + optional right panel) ───────────────────── */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
       {/* ── Steps area ────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '28px 52px' }}>
@@ -579,6 +722,7 @@ export const PipelineBuilder: React.FC = () => {
                                 value={step.config[field.key]}
                                 connectors={connectors}
                                 objectTypes={objectTypes}
+                                agents={agents}
                                 onChange={updateStepConfig}
                               />
                             </div>
@@ -845,6 +989,53 @@ export const PipelineBuilder: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* ── Right panel (Schedule) ────────────────────────────────────────── */}
+      {activeRightTab === 'schedule' && currentPipeline && (
+        <div style={{
+          width: 300, borderLeft: '1px solid #E2E8F0', backgroundColor: '#FFFFFF',
+          display: 'flex', flexDirection: 'column', flexShrink: 0, overflowY: 'auto',
+        }}>
+          {/* Panel tab bar */}
+          <div style={{
+            height: 38, borderBottom: '1px solid #E2E8F0', display: 'flex',
+            alignItems: 'center', padding: '0 12px', gap: 4, flexShrink: 0,
+          }}>
+            <button
+              style={{
+                height: 26, padding: '0 10px', borderRadius: 4, border: 'none',
+                backgroundColor: '#EFF6FF', color: '#2563EB', fontSize: 11,
+                fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+              }}
+            >
+              <Clock size={11} />
+              Schedule
+            </button>
+            <button
+              onClick={() => setActiveRightTab(null)}
+              title="Close panel"
+              style={{
+                marginLeft: 'auto', width: 22, height: 22, border: 'none',
+                background: 'none', cursor: 'pointer', color: '#94A3B8',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 3,
+              }}
+            >
+              <X size={13} />
+            </button>
+          </div>
+          <PipelineSchedulePanel pipelineId={currentPipeline.id} />
+        </div>
+      )}
+
+      {activeRightTab === 'comments' && currentPipeline && (
+        <div style={{ width: 300, flexShrink: 0, borderLeft: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column', overflow: 'hidden', height: '100%' }}>
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid #E2E8F0', fontSize: 12, fontWeight: 600, color: '#374151' }}>Comments</div>
+          <CommentsPanel entityType="pipeline" entityId={currentPipeline.id} compact />
+        </div>
+      )}
+
+      </div>{/* end content area */}
 
       {/* ── Status bar ────────────────────────────────────────────────────── */}
       <div style={{

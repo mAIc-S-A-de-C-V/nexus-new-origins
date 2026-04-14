@@ -1,20 +1,57 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* ── Light theme (default) ─────────────────────────────────────────────────── */
 :root {
+  /* Backgrounds */
   --color-base: #F8F9FA;
   --color-surface: #FFFFFF;
+  --color-surface-elevated: #FFFFFF;
+
+  /* Text */
   --color-text: #0D1117;
   --color-text-muted: #64748B;
   --color-text-subtle: #94A3B8;
+
+  /* Brand (violet) — logo, nav active, agent/AI context */
+  --color-brand: #7C3AED;
+  --color-brand-dim: #EDE9FE;
+  --color-brand-border: #C4B5FD;
+  --color-brand-text: #5B21B6;
+
+  /* Interactive (blue) — buttons, focus, selected state */
+  --color-interactive: #2563EB;
+  --color-interactive-dim: #EFF6FF;
+  --color-interactive-border: #BFDBFE;
+
+  /* Legacy alias */
   --color-primary: #1A3C6E;
   --color-primary-interactive: #2563EB;
   --color-accent: #D97706;
+
+  /* Semantic */
+  --color-warn: #D97706;
+  --color-warn-dim: #FFFBEB;
+  --color-warn-border: #FDE68A;
   --color-status-green: #059669;
+  --color-status-green-dim: #ECFDF5;
+  --color-status-green-border: #6EE7B7;
   --color-status-red: #DC2626;
+  --color-status-red-dim: #FEF2F2;
+  --color-status-red-border: #FECACA;
   --color-status-yellow: #D97706;
+
+  /* Borders */
   --color-border: #E2E8F0;
   --color-border-emphasis: #CBD5E1;
 
+  /* Nav (always dark — does NOT change with theme) */
+  --color-nav-bg: #080E18;
+  --color-nav-border: #131C2E;
+  --color-nav-text: #64748B;
+  --color-nav-text-active: #E2E8F0;
+  --color-nav-active-bg: #161D2B;
+
+  /* Typography */
   --font-interface: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 
@@ -25,18 +62,76 @@
   --font-size-lg: 16px;
   --font-size-xl: 18px;
 
+  /* Shape */
   --radius-card: 4px;
   --radius-chip: 2px;
 
+  /* Motion */
   --transition-panel: 120ms ease-out;
   --transition-hover: 80ms ease-out;
 
+  /* Layout */
   --nav-width-collapsed: 56px;
   --nav-width-expanded: 220px;
 
+  /* Density — comfortable (default) */
   --table-row-height: 36px;
+  --density-pad: 12px;
+  --density-pad-sm: 8px;
 }
 
+/* ── Dark theme ─────────────────────────────────────────────────────────────── */
+[data-theme="dark"] {
+  --color-base: #0D1117;
+  --color-surface: #161D2B;
+  --color-surface-elevated: #1E2D42;
+
+  --color-text: #E2E8F0;
+  --color-text-muted: #94A3B8;
+  --color-text-subtle: #64748B;
+
+  --color-brand: #A78BFA;
+  --color-brand-dim: #1E1040;
+  --color-brand-border: #4C1D95;
+  --color-brand-text: #DDD6FE;
+
+  --color-interactive: #3B82F6;
+  --color-interactive-dim: #1E3A5F;
+  --color-interactive-border: #1D4ED8;
+
+  --color-primary: #2D5BAF;
+  --color-primary-interactive: #3B82F6;
+  --color-accent: #F59E0B;
+
+  --color-warn: #F59E0B;
+  --color-warn-dim: #1C1400;
+  --color-warn-border: #92400E;
+  --color-status-green: #10B981;
+  --color-status-green-dim: #052E16;
+  --color-status-green-border: #065F46;
+  --color-status-red: #EF4444;
+  --color-status-red-dim: #1C0A0A;
+  --color-status-red-border: #7F1D1D;
+  --color-status-yellow: #F59E0B;
+
+  --color-border: #1E2D42;
+  --color-border-emphasis: #2D3E55;
+}
+
+/* ── Compact density ────────────────────────────────────────────────────────── */
+[data-density="compact"] {
+  --table-row-height: 28px;
+  --density-pad: 8px;
+  --density-pad-sm: 4px;
+}
+
+[data-density="comfortable"] {
+  --table-row-height: 36px;
+  --density-pad: 12px;
+  --density-pad-sm: 8px;
+}
+
+/* ── Resets ─────────────────────────────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -63,7 +158,7 @@ code, pre, .mono {
   font-size: var(--font-size-sm);
 }
 
-/* Scrollbar styling */
+/* ── Scrollbar ──────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -79,7 +174,7 @@ code, pre, .mono {
   background: var(--color-text-subtle);
 }
 
-/* Reset */
+/* ── Element resets ─────────────────────────────────────────────────────────── */
 button {
   cursor: pointer;
   border: none;
@@ -98,7 +193,7 @@ a {
   text-decoration: none;
 }
 
-/* Utility classes */
+/* ── Utility classes ────────────────────────────────────────────────────────── */
 .text-muted {
   color: var(--color-text-muted);
 }
@@ -114,7 +209,7 @@ a {
   white-space: nowrap;
 }
 
-/* Status dot animation */
+/* ── Animations ─────────────────────────────────────────────────────────────── */
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.7; transform: scale(1.2); }
@@ -124,7 +219,6 @@ a {
   animation: pulse-dot 2s ease-in-out infinite;
 }
 
-/* Slide-in panel animation */
 @keyframes slideInRight {
   from { transform: translateX(100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
@@ -135,11 +229,25 @@ a {
   to { transform: translateX(100%); opacity: 0; }
 }
 
+@keyframes slideInUp {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .panel-slide-in {
   animation: slideInRight var(--transition-panel) ease-out forwards;
 }
 
-/* React Flow overrides */
+/* ── React Flow overrides ───────────────────────────────────────────────────── */
 .react-flow__renderer {
   background: var(--color-base);
 }
@@ -148,7 +256,7 @@ a {
   background-color: var(--color-base);
 }
 
-/* Table base */
+/* ── Table base ─────────────────────────────────────────────────────────────── */
 table {
   border-collapse: collapse;
   width: 100%;
@@ -159,7 +267,7 @@ th {
   font-weight: 500;
   color: var(--color-text-muted);
   text-align: left;
-  padding: 0 12px;
+  padding: 0 var(--density-pad);
   height: var(--table-row-height);
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -167,21 +275,30 @@ th {
 
 td {
   font-size: var(--font-size-sm);
-  padding: 0 12px;
+  padding: 0 var(--density-pad);
   height: var(--table-row-height);
   border-bottom: 1px solid var(--color-border);
 }
 
 tr:nth-child(even) td {
-  background: #FAFAFA;
+  background: rgba(0,0,0,0.015);
 }
 
 tr:nth-child(odd) td {
   background: var(--color-surface);
 }
 
-/* Focus styles */
+/* ── Focus ──────────────────────────────────────────────────────────────────── */
 :focus-visible {
-  outline: 2px solid var(--color-primary-interactive);
+  outline: 2px solid var(--color-interactive);
   outline-offset: 2px;
+}
+
+/* ── Command palette backdrop ───────────────────────────────────────────────── */
+.cmd-backdrop {
+  animation: fadeIn 80ms ease-out forwards;
+}
+
+.cmd-panel {
+  animation: slideInUp 120ms ease-out forwards;
 }

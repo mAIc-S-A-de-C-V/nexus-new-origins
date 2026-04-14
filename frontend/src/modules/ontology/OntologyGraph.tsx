@@ -18,6 +18,7 @@ import { Button } from '../../design-system/components/Button';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { useConnectorStore } from '../../store/connectorStore';
 import { usePipelineStore } from '../../store/pipelineStore';
+import { getTenantId } from '../../store/authStore';
 import { ObjectType } from '../../types/ontology';
 
 function genId(): string {
@@ -232,12 +233,12 @@ const StepAuditPanel: React.FC<{ step: SelectedStep; onClose: () => void }> = ({
     setAudit(null);
     setNoRun(false);
 
-    fetch(`${PIPELINE_API}/pipelines/${step.pipelineId}/runs`, { headers: { 'x-tenant-id': 'tenant-001' } })
+    fetch(`${PIPELINE_API}/pipelines/${step.pipelineId}/runs`, { headers: { 'x-tenant-id': getTenantId() } })
       .then(r => r.json())
       .then(async (runs: { id: string; status: string }[]) => {
         const latest = runs.find(r => r.status === 'COMPLETED' || r.status === 'FAILED' || r.status === 'RUNNING');
         if (!latest) { setNoRun(true); setLoading(false); return; }
-        const auditRes = await fetch(`${PIPELINE_API}/pipelines/${step.pipelineId}/runs/${latest.id}/audit`, { headers: { 'x-tenant-id': 'tenant-001' } });
+        const auditRes = await fetch(`${PIPELINE_API}/pipelines/${step.pipelineId}/runs/${latest.id}/audit`, { headers: { 'x-tenant-id': getTenantId() } });
         const data = await auditRes.json();
         const nodeAudits: Record<string, NodeAuditData> = data.node_audits || {};
         setAudit(step.nodeId ? (nodeAudits[step.nodeId] || null) : null);
@@ -459,7 +460,7 @@ export const OntologyGraph: React.FC = () => {
   useEffect(() => {
     if (!createConnectorId) { setConnectorFields([]); setSelectedFields(new Set()); return; }
     setLoadingFields(true);
-    fetch(`${CONNECTOR_API}/connectors/${createConnectorId}/sample`, { headers: { 'x-tenant-id': 'tenant-001' } })
+    fetch(`${CONNECTOR_API}/connectors/${createConnectorId}/sample`, { headers: { 'x-tenant-id': getTenantId() } })
       .then(r => r.json())
       .then(data => {
         const row: Record<string, unknown> = data.row || (data.rows && data.rows[0]) || {};
@@ -481,10 +482,23 @@ export const OntologyGraph: React.FC = () => {
     const flowNodes: Node[] = [];
     const flowEdges: Edge[] = [];
 
+    // Helper: get all connector IDs for a pipeline, including from SOURCE node configs
+    const getPipelineConnectorIds = (p: Pipeline): string[] => {
+      const ids = new Set<string>(p.connectorIds);
+      p.nodes.forEach((n) => {
+        if (n.type === 'SOURCE') {
+          const cfg = (n.config as Record<string, unknown>) || {};
+          const cid = (cfg.connectorId || cfg.connector_id) as string | undefined;
+          if (cid) ids.add(cid);
+        }
+      });
+      return Array.from(ids);
+    };
+
     // Only show connectors that are referenced by at least one object type or pipeline
     const usedConnectorIds = new Set<string>([
       ...objectTypes.flatMap((o) => o.sourceConnectorIds),
-      ...pipelines.flatMap((p) => p.connectorIds),
+      ...pipelines.flatMap((p) => getPipelineConnectorIds(p)),
     ]);
     const relevantConnectors = connectors.filter((c) => usedConnectorIds.has(c.id));
 
@@ -626,7 +640,7 @@ export const OntologyGraph: React.FC = () => {
 
       // Connector → first step edges (one edge per connector)
       if (stepNodeIds.length > 0) {
-        p.connectorIds.forEach((cId) => {
+        getPipelineConnectorIds(p).forEach((cId) => {
           if (!usedConnectorIds.has(cId)) return;
           flowEdges.push({
             id: `e-con-${cId}-pipe-${p.id}`,

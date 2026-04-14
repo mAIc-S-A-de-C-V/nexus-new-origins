@@ -48,7 +48,7 @@ export const ConnectorGrid: React.FC = () => {
       }}>
         {/* Header */}
         <div style={{
-          padding: '20px 52px 16px 24px',
+          padding: '20px 24px 16px 24px',
           borderBottom: '1px solid #E2E8F0',
           backgroundColor: '#FFFFFF',
           flexShrink: 0,

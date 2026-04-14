@@ -1,7 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Plus, ArrowLeft, Send, Loader, Trash2, MessageSquare } from 'lucide-react';
+import {
+  X, Plus, ArrowLeft, Send, Loader, Trash2, MessageSquare,
+  Database, HelpCircle, GitBranch, Code, Network, AlertTriangle, BarChart2, Zap,
+  type LucideIcon,
+} from 'lucide-react';
 import { useAssistantStore, AssistantMessage } from '../store/assistantStore';
 import { useNavigationStore } from '../store/navigationStore';
+import { useOntologyStore } from '../store/ontologyStore';
 import { getTenantId } from '../store/authStore';
 
 const INFERENCE_URL  = import.meta.env.VITE_INFERENCE_SERVICE_URL  || 'http://localhost:8003';
@@ -35,7 +40,6 @@ async function fetchLiveContext(currentPage: string) {
   const rawConnectors: any[] = connRes.status === 'fulfilled' ? (connRes.value || []) : [];
   const pipelines: any[]    = pipRes.status  === 'fulfilled' ? (pipRes.value  || []) : [];
 
-  // Strip credentials from connectors (never send secrets to AI)
   const connectors = rawConnectors.map((c: any) => ({
     id: c.id,
     name: c.name,
@@ -53,7 +57,6 @@ async function fetchLiveContext(currentPage: string) {
     tags: c.tags,
   }));
 
-  // Fetch schedules for logic functions (with timeout)
   const functionsWithSchedules = await Promise.all(
     functions.map(async (fn: any) => {
       try {
@@ -63,7 +66,6 @@ async function fetchLiveContext(currentPage: string) {
     })
   );
 
-  // Fetch sample records for each object type (with timeout, no external calls)
   const objectTypesWithRecords = await Promise.all(
     object_types.slice(0, 8).map(async (ot: any) => {
       try {
@@ -104,7 +106,6 @@ function Markdown({ text }: { text: string }) {
         </div>
       );
     } else if (line.startsWith('```')) {
-      const lang = line.slice(3);
       const codeLines: string[] = [];
       i++;
       while (i < lines.length && !lines[i].startsWith('```')) {
@@ -143,19 +144,79 @@ function inlineFormat(text: string): React.ReactNode {
   });
 }
 
+// ── Action cards ──────────────────────────────────────────────────────────────
+interface ActionDef {
+  title: string;
+  description: string;
+  prefill: string;
+  Icon: LucideIcon;
+}
+
+const ACTIONS: ActionDef[] = [
+  { title: 'Create Pipeline',       Icon: GitBranch,     description: 'Describe a pipeline in plain English',       prefill: 'Create a pipeline that ' },
+  { title: 'Create Logic Function', Icon: Code,          description: 'Describe business logic to generate',        prefill: 'Create a logic function that ' },
+  { title: 'Explain Lineage',       Icon: Network,       description: 'Explain data flow for a record type',        prefill: 'Explain the lineage for ' },
+  { title: 'Surface Anomalies',     Icon: AlertTriangle, description: 'Find data quality issues',                   prefill: 'Surface anomalies in ' },
+  { title: 'Run Evaluation',        Icon: BarChart2,     description: "Evaluate a pipeline's accuracy",             prefill: 'Run an evaluation on ' },
+];
+
+interface ActionCardProps extends ActionDef {
+  onSelect: (prefill: string) => void;
+}
+
+function ActionCard({ title, description, prefill, Icon, onSelect }: ActionCardProps) {
+  return (
+    <div
+      onClick={() => onSelect(prefill)}
+      style={{
+        border: '1px solid #E2E8F0',
+        borderRadius: 6,
+        padding: '10px 12px',
+        cursor: 'pointer',
+        backgroundColor: '#F8FAFC',
+        transition: 'all 80ms',
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.backgroundColor = '#EFF6FF';
+        e.currentTarget.style.borderColor = '#93C5FD';
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.backgroundColor = '#F8FAFC';
+        e.currentTarget.style.borderColor = '#E2E8F0';
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <Icon size={14} style={{ color: '#2563EB' }} />
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#1E293B' }}>{title}</span>
+      </div>
+      <p style={{ fontSize: 11, color: '#64748B', margin: 0 }}>{description}</p>
+    </div>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 const NexusAssistant: React.FC = () => {
   const { currentPage } = useNavigationStore();
   const {
     open, setOpen, activeId, conversations,
     newConversation, selectConversation, deleteConversation, addMessage,
+    updateMessageContent, updateMessageStreaming, setMessageFeedback, setStreamingMessageId,
   } = useAssistantStore();
+  const { objectTypes, fetchObjectTypes } = useOntologyStore();
 
   const [view, setView]     = useState<'list' | 'chat'>('list');
   const [input, setInput]   = useState('');
   const [loading, setLoading] = useState(false);
+  const [chatMode, setChatMode] = useState<'help' | 'data' | 'actions'>('help');
+  const [selectedObjectTypeId, setSelectedObjectTypeId] = useState<string>('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef  = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (open && chatMode === 'data' && objectTypes.length === 0) {
+      fetchObjectTypes();
+    }
+  }, [open, chatMode]);
 
   const activeConvo = conversations.find(c => c.id === activeId) ?? null;
 
@@ -180,7 +241,13 @@ const NexusAssistant: React.FC = () => {
     if (!text || loading || !activeId) return;
     setInput('');
 
-    const userMsg: AssistantMessage = { role: 'user', content: text };
+    const now = new Date().toISOString();
+    const userMsg: AssistantMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: text,
+      timestamp: now,
+    };
     addMessage(activeId, userMsg);
     setLoading(true);
 
@@ -188,16 +255,91 @@ const NexusAssistant: React.FC = () => {
     const history = [...(convo?.messages ?? []), userMsg];
 
     try {
-      const context = await fetchLiveContext(currentPage).catch(() => ({ current_page: currentPage }));
-      const res = await fetch(`${INFERENCE_URL}/infer/help`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, context }),
-      });
-      const data = await res.json();
-      addMessage(activeId, { role: 'assistant', content: data.answer || 'No response.' });
+      if (chatMode === 'data' && selectedObjectTypeId) {
+        const ot = objectTypes.find(o => o.id === selectedObjectTypeId);
+        let records: unknown[] = [];
+        try {
+          const r = await fetch(
+            `${ONTOLOGY_URL}/object-types/${selectedObjectTypeId}/records?limit=100`,
+            { headers: { 'x-tenant-id': getTenantId() } },
+          );
+          if (r.ok) { const d = await r.json(); records = d.records || []; }
+        } catch { /* ignore */ }
+
+        const res = await fetch(`${INFERENCE_URL}/infer/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+          body: JSON.stringify({
+            question: text,
+            object_type_id: selectedObjectTypeId,
+            object_type_name: ot?.displayName || ot?.name || selectedObjectTypeId,
+            fields: (ot?.properties || []).map((p: { name: string }) => p.name),
+            records: records.slice(0, 50),
+          }),
+        });
+        const data = await res.json();
+        addMessage(activeId, {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: data.answer || 'No response.',
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        // Streaming platform help mode
+        const context = await fetchLiveContext(currentPage).catch(() => ({ current_page: currentPage }));
+        const response = await fetch(`${INFERENCE_URL}/infer/stream-help`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+          body: JSON.stringify({ messages: history, context }),
+        });
+
+        const assistantMsgId = crypto.randomUUID();
+        addMessage(activeId, {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: '',
+          streaming: true,
+          timestamp: new Date().toISOString(),
+        });
+        setStreamingMessageId(assistantMsgId);
+
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = '';
+
+        outer: while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6).trim();
+              if (data === '[DONE]') break outer;
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.text) {
+                  accumulated += parsed.text;
+                  updateMessageContent(assistantMsgId, accumulated);
+                }
+                if (parsed.error) {
+                  updateMessageContent(assistantMsgId, `Error: ${parsed.error}`);
+                }
+              } catch { /* ignore malformed SSE lines */ }
+            }
+          }
+        }
+
+        setStreamingMessageId(null);
+        updateMessageStreaming(assistantMsgId, false);
+      }
     } catch {
-      addMessage(activeId, { role: 'assistant', content: "Couldn't reach the inference service." });
+      addMessage(activeId, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: "Couldn't reach the inference service.",
+        timestamp: new Date().toISOString(),
+      });
     } finally {
       setLoading(false);
     }
@@ -214,7 +356,12 @@ const NexusAssistant: React.FC = () => {
 
   return (
     <>
-      {/* Backdrop — clicking outside closes */}
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+      `}</style>
+
+      {/* Backdrop */}
       <div
         onClick={() => setOpen(false)}
         style={{ position: 'fixed', inset: 0, zIndex: 149, backgroundColor: 'rgba(0,0,0,0.15)' }}
@@ -346,102 +493,220 @@ const NexusAssistant: React.FC = () => {
         {/* ── Chat view ── */}
         {view === 'chat' && activeConvo && (
           <>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 8px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-
-              {activeConvo.messages.length === 0 && (
-                <div style={{ textAlign: 'center', color: C.dim, padding: '40px 0' }}>
-                  <MessageSquare size={28} color={C.border} style={{ marginBottom: 10 }} />
-                  <div style={{ fontSize: 13 }}>Start the conversation</div>
-                  <div style={{ fontSize: 12, marginTop: 4 }}>I can see your functions, schedules, and object types in real time.</div>
+            {/* Actions panel */}
+            {chatMode === 'actions' ? (
+              <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', flex: 1 }}>
+                <p style={{ fontSize: 11, color: '#64748B', margin: '0 0 4px' }}>
+                  Quick actions — click to start a conversation
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {ACTIONS.map(action => (
+                    <ActionCard
+                      key={action.title}
+                      {...action}
+                      onSelect={(prefill) => {
+                        setInput(prefill);
+                        setChatMode('help');
+                        setTimeout(() => inputRef.current?.focus(), 50);
+                      }}
+                    />
+                  ))}
                 </div>
-              )}
+              </div>
+            ) : (
+              <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 8px', display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-              {activeConvo.messages.map((m, i) => (
-                <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
-                  flexDirection: m.role === 'user' ? 'row-reverse' : 'row' }}>
-                  {/* Avatar */}
-                  <div style={{
-                    width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                    backgroundColor: m.role === 'user' ? C.accentDim : C.dark,
-                    border: `1px solid ${m.role === 'user' ? C.accent + '44' : C.darkBorder}`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 10, fontWeight: 700,
-                    color: m.role === 'user' ? C.accent : '#A78BFA',
-                  }}>
-                    {m.role === 'user' ? 'U' : 'N'}
+                {activeConvo.messages.length === 0 && (
+                  <div style={{ textAlign: 'center', color: C.dim, padding: '40px 0' }}>
+                    <MessageSquare size={28} color={C.border} style={{ marginBottom: 10 }} />
+                    <div style={{ fontSize: 13 }}>Start the conversation</div>
+                    <div style={{ fontSize: 12, marginTop: 4 }}>I can see your functions, schedules, and object types in real time.</div>
                   </div>
-                  <div style={{
-                    maxWidth: '82%',
-                    backgroundColor: m.role === 'user' ? C.accentDim : C.sidebar,
-                    border: `1px solid ${m.role === 'user' ? C.accent + '33' : C.border}`,
-                    padding: '10px 13px', fontSize: 13, lineHeight: 1.55,
-                    color: C.text,
-                  }}>
-                    {m.role === 'assistant'
-                      ? <Markdown text={m.content} />
-                      : <span style={{ whiteSpace: 'pre-wrap' }}>{m.content}</span>}
-                  </div>
-                </div>
-              ))}
+                )}
 
-              {loading && (
-                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  <div style={{
-                    width: 28, height: 28, borderRadius: '50%', backgroundColor: C.dark,
-                    border: `1px solid ${C.darkBorder}`, display: 'flex', alignItems: 'center',
-                    justifyContent: 'center', flexShrink: 0,
-                  }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#A78BFA' }}>N</span>
+                {activeConvo.messages.map((m) => (
+                  <div key={m.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
+                    flexDirection: m.role === 'user' ? 'row-reverse' : 'row' }}>
+                    {/* Avatar */}
+                    <div style={{
+                      width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                      backgroundColor: m.role === 'user' ? C.accentDim : C.dark,
+                      border: `1px solid ${m.role === 'user' ? C.accent + '44' : C.darkBorder}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 10, fontWeight: 700,
+                      color: m.role === 'user' ? C.accent : '#A78BFA',
+                    }}>
+                      {m.role === 'user' ? 'U' : 'N'}
+                    </div>
+                    <div style={{ maxWidth: '82%' }}>
+                      <div style={{
+                        backgroundColor: m.role === 'user' ? C.accentDim : C.sidebar,
+                        border: `1px solid ${m.role === 'user' ? C.accent + '33' : C.border}`,
+                        padding: '10px 13px', fontSize: 13, lineHeight: 1.55,
+                        color: C.text,
+                      }}>
+                        {m.role === 'assistant'
+                          ? <Markdown text={m.content} />
+                          : <span style={{ whiteSpace: 'pre-wrap' }}>{m.content}</span>}
+                        {m.streaming && (
+                          <span style={{
+                            display: 'inline-block', width: 8, height: 14,
+                            backgroundColor: '#2563EB', marginLeft: 2,
+                            animation: 'blink 1s step-end infinite',
+                            verticalAlign: 'text-bottom',
+                          }} />
+                        )}
+                      </div>
+                      {m.role === 'assistant' && !m.streaming && (
+                        <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                          <button
+                            onClick={() => setMessageFeedback(m.id, 'up')}
+                            style={{
+                              background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
+                              fontSize: 12, opacity: m.feedback === 'up' ? 1 : 0.4,
+                              color: m.feedback === 'up' ? '#16A34A' : '#64748B',
+                            }}
+                            title="Helpful"
+                          >👍</button>
+                          <button
+                            onClick={() => setMessageFeedback(m.id, 'down')}
+                            style={{
+                              background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
+                              fontSize: 12, opacity: m.feedback === 'down' ? 1 : 0.4,
+                              color: m.feedback === 'down' ? '#DC2626' : '#64748B',
+                            }}
+                            title="Not helpful"
+                          >👎</button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ backgroundColor: C.sidebar, border: `1px solid ${C.border}`, padding: '10px 14px' }}>
-                    <Loader size={14} color={C.accent} style={{ animation: 'spin 0.7s linear infinite' }} />
+                ))}
+
+                {loading && (
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                    <div style={{
+                      width: 28, height: 28, borderRadius: '50%', backgroundColor: C.dark,
+                      border: `1px solid ${C.darkBorder}`, display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#A78BFA' }}>N</span>
+                    </div>
+                    <div style={{ backgroundColor: C.sidebar, border: `1px solid ${C.border}`, padding: '10px 14px' }}>
+                      <Loader size={14} color={C.accent} style={{ animation: 'spin 0.7s linear infinite' }} />
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              <div ref={bottomRef} />
-            </div>
+                <div ref={bottomRef} />
+              </div>
+            )}
 
-            {/* Input */}
+            {/* Input area (always shown in chat view) */}
             <div style={{ padding: '10px 16px 14px', borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                <textarea
-                  ref={inputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-                  placeholder="Ask anything about your Nexus setup… (Enter to send)"
-                  rows={2}
-                  style={{
-                    flex: 1, resize: 'none', padding: '9px 12px', fontSize: 13,
-                    backgroundColor: C.bg, border: `1px solid ${C.border}`,
-                    color: C.text, outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
-                  }}
-                />
+              {/* Mode toggle */}
+              <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
                 <button
-                  onClick={send}
-                  disabled={loading || !input.trim()}
+                  onClick={() => setChatMode('help')}
                   style={{
-                    width: 38, height: 38, flexShrink: 0,
-                    backgroundColor: input.trim() && !loading ? C.accent : C.sidebar,
-                    color: input.trim() && !loading ? '#fff' : C.dim,
-                    border: 'none', cursor: input.trim() && !loading ? 'pointer' : 'default',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'background-color 0.15s',
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    height: 26, padding: '0 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                    border: `1px solid ${chatMode === 'help' ? C.accent : C.border}`,
+                    backgroundColor: chatMode === 'help' ? C.accentDim : 'transparent',
+                    color: chatMode === 'help' ? C.accent : C.muted, cursor: 'pointer',
                   }}
                 >
-                  <Send size={15} />
+                  <HelpCircle size={11} /> Platform Help
+                </button>
+                <button
+                  onClick={() => { setChatMode('data'); if (objectTypes.length === 0) fetchObjectTypes(); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    height: 26, padding: '0 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                    border: `1px solid ${chatMode === 'data' ? C.accent : C.border}`,
+                    backgroundColor: chatMode === 'data' ? C.accentDim : 'transparent',
+                    color: chatMode === 'data' ? C.accent : C.muted, cursor: 'pointer',
+                  }}
+                >
+                  <Database size={11} /> Analyze Data
+                </button>
+                <button
+                  onClick={() => setChatMode('actions')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    height: 26, padding: '0 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                    border: `1px solid ${chatMode === 'actions' ? C.accent : C.border}`,
+                    backgroundColor: chatMode === 'actions' ? C.accentDim : 'transparent',
+                    color: chatMode === 'actions' ? C.accent : C.muted, cursor: 'pointer',
+                  }}
+                >
+                  <Zap size={11} /> Actions
                 </button>
               </div>
-              <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>
-                Context-aware — sees your functions, schedules & ontology in real time
-              </div>
+
+              {/* Object type selector (data mode only) */}
+              {chatMode === 'data' && (
+                <select
+                  value={selectedObjectTypeId}
+                  onChange={e => setSelectedObjectTypeId(e.target.value)}
+                  style={{
+                    width: '100%', height: 30, marginBottom: 8, padding: '0 8px',
+                    border: `1px solid ${C.border}`, borderRadius: 4,
+                    fontSize: 12, color: selectedObjectTypeId ? C.text : C.dim,
+                    backgroundColor: C.bg,
+                  }}
+                >
+                  <option value="">Select object type to analyze…</option>
+                  {objectTypes.map(ot => (
+                    <option key={ot.id} value={ot.id}>{ot.displayName || ot.name}</option>
+                  ))}
+                </select>
+              )}
+
+              {chatMode !== 'actions' && (
+                <>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                    <textarea
+                      ref={inputRef}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+                      placeholder={chatMode === 'data'
+                        ? 'Ask a question about your data… (e.g. "How many records have status pending?")'
+                        : 'Ask anything about your Nexus setup… (Enter to send)'}
+                      rows={2}
+                      style={{
+                        flex: 1, resize: 'none', padding: '9px 12px', fontSize: 13,
+                        backgroundColor: C.bg, border: `1px solid ${C.border}`,
+                        color: C.text, outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
+                      }}
+                    />
+                    <button
+                      onClick={send}
+                      disabled={loading || !input.trim() || (chatMode === 'data' && !selectedObjectTypeId)}
+                      style={{
+                        width: 38, height: 38, flexShrink: 0,
+                        backgroundColor: (input.trim() && !loading && (chatMode !== 'data' || selectedObjectTypeId)) ? C.accent : C.sidebar,
+                        color: (input.trim() && !loading && (chatMode !== 'data' || selectedObjectTypeId)) ? '#fff' : C.dim,
+                        border: 'none', cursor: (input.trim() && !loading && (chatMode !== 'data' || selectedObjectTypeId)) ? 'pointer' : 'default',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'background-color 0.15s',
+                      }}
+                    >
+                      <Send size={15} />
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 10, color: C.dim, marginTop: 5 }}>
+                    {chatMode === 'data'
+                      ? 'Fetches up to 50 records and asks Claude to analyze them'
+                      : 'Context-aware — sees your functions, schedules & ontology in real time'}
+                  </div>
+                </>
+              )}
             </div>
           </>
         )}
       </div>
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </>
   );
 };

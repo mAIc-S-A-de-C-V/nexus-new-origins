@@ -13,8 +13,10 @@ from runtime import run_agent
 router = APIRouter()
 
 AVAILABLE_TOOLS = [
-    "ontology_search",
     "list_object_types",
+    "get_object_schema",
+    "query_records",
+    "count_records",
     "logic_function_run",
     "action_propose",
     "list_actions",
@@ -244,6 +246,8 @@ async def set_knowledge_scope(
 class TestRequest(BaseModel):
     message: str
     dry_run: bool = True
+    pipeline_id: Optional[str] = None
+    pipeline_run_id: Optional[str] = None
 
 
 @router.post("/{agent_id}/test")
@@ -284,20 +288,59 @@ async def test_agent(
         dry_run=body.dry_run,
     )
 
-    # Save run record for analytics
+    # Save run record for analytics — capture full tool inputs + results for audit
     tool_calls = []
+    tool_results: dict[str, dict] = {}  # tool_use_id -> result
+
     for msg in outcome.get("new_messages", []):
+        role = msg.get("role")
         content = msg.get("content", [])
-        if isinstance(content, list):
+        if not isinstance(content, list):
+            continue
+        if role == "user":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tid = block.get("tool_use_id", "")
+                    result_content = block.get("content", "")
+                    if isinstance(result_content, list):
+                        result_content = " ".join(
+                            b.get("text", "") for b in result_content if isinstance(b, dict)
+                        )
+                    tool_results[tid] = {"result": str(result_content)[:500]}
+        elif role == "assistant":
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
-                    tool_calls.append({"tool": block.get("name")})
-    db.add(AgentRunRow(
+                    inp = block.get("input", {})
+                    # Trim large fields (record batches) to keep storage lean
+                    trimmed = {k: (str(v)[:300] if isinstance(v, str) and len(str(v)) > 300 else v)
+                               for k, v in inp.items()} if isinstance(inp, dict) else inp
+                    tool_calls.append({
+                        "tool": block.get("name"),
+                        "tool_use_id": block.get("id", ""),
+                        "input": trimmed,
+                    })
+
+    # Attach results to their corresponding tool calls
+    for tc in tool_calls:
+        tid = tc.pop("tool_use_id", "")
+        if tid in tool_results:
+            tc["result"] = tool_results[tid]["result"]
+
+    final_text = outcome.get("final_text", "")
+    run_row = AgentRunRow(
         id=str(uuid4()), agent_id=agent.id, thread_id=None, tenant_id=tenant_id,
         iterations=outcome.get("iterations", 0), tool_calls=tool_calls,
-        final_text_len=len(outcome.get("final_text", "")),
+        final_text_len=len(final_text),
         is_test=True, error=outcome.get("error"),
-    ))
+    )
+    # Store extended fields if columns exist
+    try:
+        run_row.final_text = final_text[:4000] if final_text else None
+        run_row.pipeline_id = body.pipeline_id
+        run_row.pipeline_run_id = body.pipeline_run_id
+    except Exception:
+        pass
+    db.add(run_row)
     await db.commit()
 
     return {
@@ -427,3 +470,42 @@ async def get_analytics(
             for r in runs[:20]
         ],
     }
+
+
+# ── Agent Run Audit Log ───────────────────────────────────────────────────────
+
+@router.get("/runs/audit")
+async def get_audit_runs(
+    limit: int = 100,
+    agent_id: Optional[str] = None,
+    pipeline_id: Optional[str] = None,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Return detailed audit log of agent runs across all agents for a tenant."""
+    tenant_id = x_tenant_id or "tenant-001"
+    q = select(AgentRunRow, AgentConfigRow.name.label("agent_name")).join(
+        AgentConfigRow, AgentRunRow.agent_id == AgentConfigRow.id, isouter=True
+    ).where(AgentRunRow.tenant_id == tenant_id)
+    if agent_id:
+        q = q.where(AgentRunRow.agent_id == agent_id)
+    if pipeline_id:
+        q = q.where(AgentRunRow.pipeline_id == pipeline_id)
+    q = q.order_by(AgentRunRow.created_at.desc()).limit(min(limit, 500))
+    rows = (await db.execute(q)).all()
+
+    return [
+        {
+            "id": r.AgentRunRow.id,
+            "agent_id": r.AgentRunRow.agent_id,
+            "agent_name": r.agent_name or r.AgentRunRow.agent_id[:8],
+            "pipeline_id": getattr(r.AgentRunRow, "pipeline_id", None),
+            "pipeline_run_id": getattr(r.AgentRunRow, "pipeline_run_id", None),
+            "iterations": r.AgentRunRow.iterations,
+            "tool_calls": r.AgentRunRow.tool_calls or [],
+            "final_text": getattr(r.AgentRunRow, "final_text", None),
+            "error": r.AgentRunRow.error,
+            "created_at": r.AgentRunRow.created_at.isoformat() if r.AgentRunRow.created_at else None,
+        }
+        for r in rows
+    ]

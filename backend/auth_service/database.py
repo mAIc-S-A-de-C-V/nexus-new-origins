@@ -52,6 +52,12 @@ DDL = [
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS mfa_secret TEXT",
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ",
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ",
+    "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS allowed_modules TEXT DEFAULT '[]'",
 ]
 
 

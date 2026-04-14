@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getTenantId } from './authStore';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
@@ -31,6 +32,8 @@ interface HumanActionsStore {
   fetchHistory: () => Promise<void>;
   confirm: (executionId: string, confirmedBy?: string, note?: string) => Promise<void>;
   reject: (executionId: string, rejectedBy: string, reason: string) => Promise<void>;
+  bulkConfirm: (ids: string[], confirmedBy?: string) => Promise<{ succeeded: number; failed: number }>;
+  bulkReject: (ids: string[], rejectedBy: string, reason: string) => Promise<{ succeeded: number; failed: number }>;
 }
 
 export const useHumanActionsStore = create<HumanActionsStore>((set, get) => ({
@@ -43,7 +46,7 @@ export const useHumanActionsStore = create<HumanActionsStore>((set, get) => ({
     set({ loading: true });
     try {
       const r = await fetch(`${ONTOLOGY_API}/actions/executions/pending`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       const data = await r.json();
       const pending = Array.isArray(data) ? data : [];
@@ -61,7 +64,7 @@ export const useHumanActionsStore = create<HumanActionsStore>((set, get) => ({
     // We'll fetch up to 100 executions via the global executions endpoint.
     try {
       const r = await fetch(`${ONTOLOGY_API}/actions/executions?limit=100`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       if (r.ok) {
         const data = await r.json();
@@ -75,7 +78,7 @@ export const useHumanActionsStore = create<HumanActionsStore>((set, get) => ({
   confirm: async (executionId, confirmedBy = 'admin', note) => {
     const r = await fetch(`${ONTOLOGY_API}/actions/executions/${executionId}/confirm`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirmed_by: confirmedBy, note }),
     });
     if (r.ok) {
@@ -91,7 +94,7 @@ export const useHumanActionsStore = create<HumanActionsStore>((set, get) => ({
   reject: async (executionId, rejectedBy, reason) => {
     const r = await fetch(`${ONTOLOGY_API}/actions/executions/${executionId}/reject`, {
       method: 'POST',
-      headers: { 'x-tenant-id': 'tenant-001', 'Content-Type': 'application/json' },
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ rejected_by: rejectedBy, reason }),
     });
     if (r.ok) {
@@ -102,5 +105,51 @@ export const useHumanActionsStore = create<HumanActionsStore>((set, get) => ({
         history: [updated, ...s.history],
       }));
     }
+  },
+
+  bulkConfirm: async (ids, confirmedBy = 'admin') => {
+    const results = await Promise.allSettled(
+      ids.map((id) =>
+        fetch(`${ONTOLOGY_API}/actions/executions/${id}/confirm`, {
+          method: 'POST',
+          headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirmed_by: confirmedBy }),
+        }).then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      )
+    );
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    const updated = results
+      .filter((r): r is PromiseFulfilledResult<ActionExecution> => r.status === 'fulfilled')
+      .map((r) => r.value);
+    set((s) => ({
+      pending: s.pending.filter((e) => !ids.includes(e.id)),
+      pendingCount: Math.max(0, s.pendingCount - succeeded),
+      history: [...updated, ...s.history],
+    }));
+    return { succeeded, failed };
+  },
+
+  bulkReject: async (ids, rejectedBy, reason) => {
+    const results = await Promise.allSettled(
+      ids.map((id) =>
+        fetch(`${ONTOLOGY_API}/actions/executions/${id}/reject`, {
+          method: 'POST',
+          headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rejected_by: rejectedBy, reason }),
+        }).then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      )
+    );
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    const updated = results
+      .filter((r): r is PromiseFulfilledResult<ActionExecution> => r.status === 'fulfilled')
+      .map((r) => r.value);
+    set((s) => ({
+      pending: s.pending.filter((e) => !ids.includes(e.id)),
+      pendingCount: Math.max(0, s.pendingCount - succeeded),
+      history: [...updated, ...s.history],
+    }));
+    return { succeeded, failed };
   },
 }));

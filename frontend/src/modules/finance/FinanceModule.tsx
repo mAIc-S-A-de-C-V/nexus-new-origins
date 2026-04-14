@@ -4,9 +4,10 @@ import {
   X, Check, ChevronDown, DollarSign, FileText, ReceiptText,
 } from 'lucide-react';
 
+import { getTenantId } from '../../store/authStore';
+
 const API = import.meta.env.VITE_FINANCE_SERVICE_URL || 'http://localhost:9001';
-const TENANT = 'tenant-001';
-const H = { 'Content-Type': 'application/json', 'x-tenant-id': TENANT };
+const getH = () => ({ 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -163,8 +164,8 @@ function ExpensesTab() {
     if (filterCat) params.set('category', filterCat);
     if (filterYear) params.set('year', filterYear);
     const [txns, summ] = await Promise.all([
-      fetch(`${API}/finance/transactions?${params}`, { headers: H }).then(r => r.json()),
-      fetch(`${API}/finance/transactions/summary?year=${filterYear}`, { headers: H }).then(r => r.json()),
+      fetch(`${API}/finance/transactions?${params}`, { headers: getH() }).then(r => r.json()),
+      fetch(`${API}/finance/transactions/summary?year=${filterYear}`, { headers: getH() }).then(r => r.json()),
     ]);
     setRows(Array.isArray(txns) ? txns : []);
     setSummary(summ);
@@ -175,14 +176,14 @@ function ExpensesTab() {
   const save = async (data: Partial<Transaction>) => {
     const isNew = modal === 'new';
     const url = isNew ? `${API}/finance/transactions` : `${API}/finance/transactions/${(modal as Transaction).id}`;
-    await fetch(url, { method: isNew ? 'POST' : 'PUT', headers: H, body: JSON.stringify(data) });
+    await fetch(url, { method: isNew ? 'POST' : 'PUT', headers: getH(), body: JSON.stringify(data) });
     setModal(null);
     load();
   };
 
   const del = async (id: string) => {
     if (!confirm('Delete this transaction?')) return;
-    await fetch(`${API}/finance/transactions/${id}`, { method: 'DELETE', headers: H });
+    await fetch(`${API}/finance/transactions/${id}`, { method: 'DELETE', headers: getH() });
     load();
   };
 
@@ -194,7 +195,7 @@ function ExpensesTab() {
     fd.append('file', file);
     const res = await fetch(`${API}/finance/transactions/upload`, {
       method: 'POST',
-      headers: { 'x-tenant-id': TENANT },
+      headers: { 'x-tenant-id': getTenantId() },
       body: fd,
     }).then(r => r.json());
     setUploading(false);
@@ -360,8 +361,8 @@ function RevenueTab() {
 
   const load = useCallback(async () => {
     const [rev, summ] = await Promise.all([
-      fetch(`${API}/finance/revenue?year=${filterYear}`, { headers: H }).then(r => r.json()),
-      fetch(`${API}/finance/revenue/summary?year=${filterYear}`, { headers: H }).then(r => r.json()),
+      fetch(`${API}/finance/revenue?year=${filterYear}`, { headers: getH() }).then(r => r.json()),
+      fetch(`${API}/finance/revenue/summary?year=${filterYear}`, { headers: getH() }).then(r => r.json()),
     ]);
     setRows(Array.isArray(rev) ? rev : []);
     setSummary(summ);
@@ -372,14 +373,14 @@ function RevenueTab() {
   const save = async (data: Partial<Revenue>) => {
     const isNew = modal === 'new';
     const url = isNew ? `${API}/finance/revenue` : `${API}/finance/revenue/${(modal as Revenue).id}`;
-    await fetch(url, { method: isNew ? 'POST' : 'PUT', headers: H, body: JSON.stringify(data) });
+    await fetch(url, { method: isNew ? 'POST' : 'PUT', headers: getH(), body: JSON.stringify(data) });
     setModal(null);
     load();
   };
 
   const del = async (id: string) => {
     if (!confirm('Delete this revenue entry?')) return;
-    await fetch(`${API}/finance/revenue/${id}`, { method: 'DELETE', headers: H });
+    await fetch(`${API}/finance/revenue/${id}`, { method: 'DELETE', headers: getH() });
     load();
   };
 
@@ -486,8 +487,8 @@ function ReceivablesTab() {
     const params = new URLSearchParams();
     if (filterStatus) params.set('status', filterStatus);
     const [recs, summ] = await Promise.all([
-      fetch(`${API}/finance/receivables?${params}`, { headers: H }).then(r => r.json()),
-      fetch(`${API}/finance/receivables/summary`, { headers: H }).then(r => r.json()),
+      fetch(`${API}/finance/receivables?${params}`, { headers: getH() }).then(r => r.json()),
+      fetch(`${API}/finance/receivables/summary`, { headers: getH() }).then(r => r.json()),
     ]);
     setRows(Array.isArray(recs) ? recs : []);
     setSummary(summ);
@@ -498,14 +499,14 @@ function ReceivablesTab() {
   const save = async (data: Partial<Receivable>) => {
     const isNew = modal === 'new';
     const url = isNew ? `${API}/finance/receivables` : `${API}/finance/receivables/${(modal as Receivable).id}`;
-    await fetch(url, { method: isNew ? 'POST' : 'PUT', headers: H, body: JSON.stringify(data) });
+    await fetch(url, { method: isNew ? 'POST' : 'PUT', headers: getH(), body: JSON.stringify(data) });
     setModal(null);
     load();
   };
 
   const del = async (id: string) => {
     if (!confirm('Delete this receivable?')) return;
-    await fetch(`${API}/finance/receivables/${id}`, { method: 'DELETE', headers: H });
+    await fetch(`${API}/finance/receivables/${id}`, { method: 'DELETE', headers: getH() });
     load();
   };
 

@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Activity, RefreshCw, Filter, ChevronDown, ChevronRight } from 'lucide-react';
+import { Activity, RefreshCw, Filter, ChevronDown, ChevronRight, Radio, BarChart2, List } from 'lucide-react';
+import {
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts';
+import { useEventStream } from '../../hooks/useEventStream';
 import { usePipelineStore } from '../../store/pipelineStore';
 import { useConnectorStore } from '../../store/connectorStore';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { EventLogQualityScore } from '../../types/pipeline';
+import { getTenantId } from '../../store/authStore';
 
 const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
 const EVENT_LOG_API = import.meta.env.VITE_EVENT_LOG_SERVICE_URL || 'http://localhost:8005';
@@ -79,6 +84,38 @@ export const EventLog: React.FC = () => {
   const [loadingQuality, setLoadingQuality] = useState<Record<string, boolean>>({});
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
+  const [liveMode, setLiveMode] = useState(false);
+  const [viewMode, setViewMode] = useState<'events' | 'timeseries'>('events');
+  const [tsBucket, setTsBucket] = useState('1h');
+  const [tsData, setTsData] = useState<{ bucket: string; [activity: string]: number | string }[]>([]);
+  const [tsActivities, setTsActivities] = useState<string[]>([]);
+  const [tsSummary, setTsSummary] = useState<{ total_events: number; unique_cases: number; first_event: string | null; last_event: string | null; activity_breakdown: { activity: string; count: number }[] } | null>(null);
+  const [loadingTs, setLoadingTs] = useState(false);
+
+  // Live streaming
+  const streamUrl = liveMode && selectedPipelineId
+    ? `${EVENT_LOG_API}/events/stream?pipeline_id=${selectedPipelineId}`
+    : null;
+
+  const { connected: streamConnected, error: streamError } = useEventStream<Record<string, unknown>>({
+    url: streamUrl,
+    enabled: liveMode,
+    onEvent: (e) => {
+      const mapped: LiveEvent = {
+        id: e.id as string,
+        caseId: e.case_id as string,
+        activity: e.activity as string,
+        timestamp: e.timestamp as string,
+        pipelineId: e.pipeline_id as string,
+        objectTypeId: e.object_type_id as string,
+        connectorId: e.connector_id as string,
+        resource: e.resource as string | undefined,
+        cost: e.cost as number | undefined,
+        attributes: (e.attributes as Record<string, unknown>) || {},
+      };
+      setEvents((prev) => [mapped, ...prev].slice(0, 500));
+    },
+  });
 
   useEffect(() => {
     fetchPipelines();
@@ -101,8 +138,8 @@ export const EventLog: React.FC = () => {
     setLoadingEvents(true);
     try {
       const res = await fetch(
-        `${EVENT_LOG_API}/events?pipeline_id=${pipelineId}&limit=200`,
-        { headers: { 'x-tenant-id': 'tenant-001' } }
+        `${EVENT_LOG_API}/events?pipeline_id=${pipelineId}&limit=1000`,
+        { headers: { 'x-tenant-id': getTenantId() } }
       );
       if (res.ok) {
         const data: Record<string, unknown>[] = await res.json();
@@ -131,7 +168,7 @@ export const EventLog: React.FC = () => {
     setLoadingQuality((m) => ({ ...m, [pipelineId]: true }));
     try {
       const res = await fetch(`${EVENT_LOG_API}/events/quality/${pipelineId}`, {
-        headers: { 'x-tenant-id': 'tenant-001' },
+        headers: { 'x-tenant-id': getTenantId() },
       });
       if (res.ok) {
         const data = await res.json();
@@ -144,12 +181,56 @@ export const EventLog: React.FC = () => {
     }
   }, [loadingQuality]);
 
+  const loadTimeseries = useCallback(async (pipelineId: string, bucket: string) => {
+    setLoadingTs(true);
+    try {
+      const [tsRes, summRes] = await Promise.all([
+        fetch(`${EVENT_LOG_API}/events/timeseries?pipeline_id=${pipelineId}&bucket=${bucket}`, { headers: { 'x-tenant-id': getTenantId() } }),
+        fetch(`${EVENT_LOG_API}/events/timeseries/summary?pipeline_id=${pipelineId}`, { headers: { 'x-tenant-id': getTenantId() } }),
+      ]);
+      if (tsRes.ok) {
+        const raw: { bucket: string; activity: string; count: number }[] = await tsRes.json();
+        // Pivot to [{bucket, ACTIVITY1: count, ACTIVITY2: count}]
+        const acts = Array.from(new Set(raw.map((r) => r.activity)));
+        const byBucket: Record<string, Record<string, number>> = {};
+        raw.forEach((r) => {
+          if (!byBucket[r.bucket]) byBucket[r.bucket] = {};
+          byBucket[r.bucket][r.activity] = r.count;
+        });
+        const pivoted = Object.entries(byBucket)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([bucket, actMap]) => {
+            const row: { bucket: string; [k: string]: number | string } = {
+              bucket: new Date(bucket).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+            };
+            acts.forEach((a) => { row[a] = actMap[a] || 0; });
+            return row;
+          });
+        setTsData(pivoted);
+        setTsActivities(acts);
+      }
+      if (summRes.ok) {
+        setTsSummary(await summRes.json());
+      }
+    } catch {
+      setTsData([]);
+    } finally {
+      setLoadingTs(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (currentPipeline) {
       loadEvents(currentPipeline.id);
       loadQuality(currentPipeline.id);
     }
   }, [currentPipeline?.id]);
+
+  useEffect(() => {
+    if (currentPipeline && viewMode === 'timeseries') {
+      loadTimeseries(currentPipeline.id, tsBucket);
+    }
+  }, [currentPipeline?.id, viewMode, tsBucket]);
 
   const filtered = activityFilter
     ? events.filter((e) => e.activity.toLowerCase().includes(activityFilter.toLowerCase()) || e.caseId.toLowerCase().includes(activityFilter.toLowerCase()))
@@ -172,7 +253,7 @@ export const EventLog: React.FC = () => {
       {/* Header */}
       <div style={{
         height: 52, backgroundColor: '#FFFFFF', borderBottom: '1px solid #E2E8F0',
-        display: 'flex', alignItems: 'center', padding: '0 52px 0 16px', gap: '12px', flexShrink: 0,
+        display: 'flex', alignItems: 'center', padding: '0 16px', gap: '12px', flexShrink: 0,
       }}>
         <Activity size={16} color="#7C3AED" />
         <h1 style={{ fontSize: '16px', fontWeight: 500, color: '#0D1117' }}>Event Log</h1>
@@ -220,6 +301,29 @@ export const EventLog: React.FC = () => {
           >
             <RefreshCw size={13} color={loadingEvents ? '#2563EB' : '#64748B'} />
           </button>
+
+          {/* Live mode toggle */}
+          <button
+            onClick={() => setLiveMode((v) => !v)}
+            title={liveMode ? 'Disable live mode' : 'Enable live streaming'}
+            style={{
+              height: 30, padding: '0 10px',
+              border: `1px solid ${liveMode ? '#059669' : '#E2E8F0'}`,
+              borderRadius: 4,
+              backgroundColor: liveMode ? '#ECFDF5' : '#FFFFFF',
+              cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 5,
+              fontSize: 11, fontWeight: 600,
+              color: liveMode ? '#059669' : '#64748B',
+              transition: 'all 120ms',
+            }}
+          >
+            <Radio size={11} style={liveMode ? { animation: 'pulse-dot 1.5s ease-in-out infinite' } : {}} />
+            {liveMode ? (streamConnected ? 'LIVE' : 'Connecting…') : 'Live'}
+          </button>
+          {streamError && liveMode && (
+            <span style={{ fontSize: 10, color: '#D97706' }}>{streamError}</span>
+          )}
         </div>
       </div>
 
@@ -327,25 +431,157 @@ export const EventLog: React.FC = () => {
           )}
         </div>
 
-        {/* Right: event table */}
+        {/* Right: event table / timeseries */}
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {/* Table header */}
+          {/* View mode toggle + table header */}
           <div style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', padding: '0 16px', flexShrink: 0 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-              <thead>
-                <tr>
-                  <th style={{ padding: '8px 0', textAlign: 'left', fontWeight: 600, color: '#64748B', width: '24px' }} />
-                  <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Timestamp</th>
-                  <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Case ID</th>
-                  <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Activity</th>
-                  <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Resource</th>
-                  <th style={{ padding: '8px 8px', textAlign: 'right', fontWeight: 600, color: '#64748B' }}>Cost</th>
-                </tr>
-              </thead>
-            </table>
+            {/* Mode tabs */}
+            <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #E2E8F0', marginBottom: 0 }}>
+              {([['events', List, 'Events'], ['timeseries', BarChart2, 'Time Series']] as const).map(([mode, Icon, label]) => (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    padding: '7px 14px', border: 'none',
+                    borderBottom: viewMode === mode ? '2px solid #7C3AED' : '2px solid transparent',
+                    backgroundColor: 'transparent', cursor: 'pointer',
+                    fontSize: 12, fontWeight: viewMode === mode ? 600 : 500,
+                    color: viewMode === mode ? '#7C3AED' : '#64748B',
+                    transition: 'all 120ms',
+                  }}
+                >
+                  <Icon size={12} /> {label}
+                </button>
+              ))}
+            </div>
+            {viewMode === 'events' && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                <thead>
+                  <tr>
+                    <th style={{ padding: '8px 0', textAlign: 'left', fontWeight: 600, color: '#64748B', width: '24px' }} />
+                    <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Timestamp</th>
+                    <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Case ID</th>
+                    <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Activity</th>
+                    <th style={{ padding: '8px 8px', textAlign: 'left', fontWeight: 600, color: '#64748B' }}>Resource</th>
+                    <th style={{ padding: '8px 8px', textAlign: 'right', fontWeight: 600, color: '#64748B' }}>Cost</th>
+                  </tr>
+                </thead>
+              </table>
+            )}
+            {viewMode === 'timeseries' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0' }}>
+                <span style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Bucket</span>
+                {(['5m', '15m', '1h', '6h', '1d', '1w'] as const).map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => setTsBucket(b)}
+                    style={{
+                      padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                      border: `1px solid ${tsBucket === b ? '#7C3AED' : '#E2E8F0'}`,
+                      backgroundColor: tsBucket === b ? '#EDE9FE' : '#FFFFFF',
+                      color: tsBucket === b ? '#7C3AED' : '#64748B',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {b}
+                  </button>
+                ))}
+                {loadingTs && <span style={{ fontSize: 11, color: '#94A3B8', marginLeft: 4 }}>Loading…</span>}
+              </div>
+            )}
           </div>
 
+          {/* Timeseries view */}
+          {viewMode === 'timeseries' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+              {tsSummary && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 20 }}>
+                  {[
+                    { label: 'Total Events', value: tsSummary.total_events.toLocaleString() },
+                    { label: 'Unique Cases', value: tsSummary.unique_cases.toLocaleString() },
+                    { label: 'First Event', value: tsSummary.first_event ? new Date(tsSummary.first_event).toLocaleDateString() : '—' },
+                    { label: 'Last Event', value: tsSummary.last_event ? new Date(tsSummary.last_event).toLocaleDateString() : '—' },
+                  ].map(({ label, value }) => (
+                    <div key={label} style={{ padding: '10px 14px', border: '1px solid #E2E8F0', borderRadius: 6, backgroundColor: '#FFFFFF' }}>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: '#0D1117', fontFamily: 'var(--font-mono)' }}>{value}</div>
+                      <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 2 }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {tsData.length === 0 && !loadingTs && (
+                <div style={{ textAlign: 'center', padding: '48px 0', color: '#94A3B8', fontSize: 13 }}>
+                  No time series data available for this pipeline
+                </div>
+              )}
+
+              {tsData.length > 0 && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+                    Events over time
+                  </div>
+                  <div style={{ height: 320, marginBottom: 24 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={tsData} margin={{ top: 4, right: 16, left: 0, bottom: 40 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+                        <XAxis dataKey="bucket" tick={{ fontSize: 10, fill: '#94A3B8' }} angle={-35} textAnchor="end" interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 10, fill: '#94A3B8' }} />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 6, fontSize: 11 }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+                        {tsActivities.map((act, i) => {
+                          const colors = ['#7C3AED', '#2563EB', '#059669', '#D97706', '#DC2626', '#DB2777'];
+                          const color = colors[i % colors.length];
+                          return (
+                            <Area
+                              key={act}
+                              type="monotone"
+                              dataKey={act}
+                              stackId="1"
+                              stroke={color}
+                              fill={color + '33'}
+                              strokeWidth={2}
+                            />
+                          );
+                        })}
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {tsSummary && tsSummary.activity_breakdown.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                        Activity breakdown
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {tsSummary.activity_breakdown.map(({ activity, count }) => {
+                          const total = tsSummary.total_events || 1;
+                          const pct = count / total;
+                          const meta = activityMeta(activity);
+                          return (
+                            <div key={activity} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <div style={{ width: 180, flexShrink: 0, fontSize: 11, color: '#64748B', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activity}</div>
+                              <div style={{ flex: 1, height: 14, backgroundColor: '#F1F5F9', borderRadius: 2, overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${pct * 100}%`, backgroundColor: meta.bg, borderRadius: 2 }} />
+                              </div>
+                              <div style={{ width: 60, textAlign: 'right', fontSize: 11, color: '#64748B', fontFamily: 'var(--font-mono)' }}>{count.toLocaleString()}</div>
+                              <div style={{ width: 40, textAlign: 'right', fontSize: 11, color: '#94A3B8', fontFamily: 'var(--font-mono)' }}>{Math.round(pct * 100)}%</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
           {/* Table body */}
+          {viewMode === 'events' && (
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {filtered.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '60px 0', color: '#94A3B8', fontSize: '13px' }}>
@@ -505,6 +741,7 @@ export const EventLog: React.FC = () => {
               </table>
             )}
           </div>
+          )}
         </div>
       </div>
 

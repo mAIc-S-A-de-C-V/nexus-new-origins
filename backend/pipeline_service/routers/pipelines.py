@@ -367,6 +367,8 @@ class EventConfigSaveRequest(BaseModel):
     excluded_activities: list[str] = []
     activity_labels: dict[str, str] = {}
     activity_attribute: str = ""
+    case_id_attribute: str = ""
+    timestamp_attribute: str = ""
 
 
 @router.post("/{pipeline_id}/analyze-events")
@@ -401,7 +403,7 @@ async def analyze_events(
         pass
 
     if not activities:
-        return {"stages": [], "noise": [], "labels": {}, "reasoning": "No events found for this pipeline."}
+        return {"stages": [], "noise": [], "labels": {}, "suggested_overrides": {}, "reasoning": "No events found for this pipeline."}
 
     # Find activityField from SINK_EVENT node
     activity_field = ""
@@ -411,6 +413,37 @@ async def analyze_events(
         if af:
             activity_field = af
             break
+
+    # Sample record_snapshot fields to detect available field overrides
+    snapshot_info = {}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{EVENT_LOG_URL}/events/sample-fields",
+                params={"pipeline_id": pipeline_id},
+                headers={"x-tenant-id": tenant_id},
+            )
+            if r.is_success:
+                snapshot_info = r.json()
+    except Exception:
+        pass
+
+    snapshot_fields = snapshot_info.get("snapshot_fields", {})
+    sample_events = snapshot_info.get("sample_events", [])
+
+    # Build snapshot field description for the AI
+    snapshot_desc = ""
+    if snapshot_fields:
+        snapshot_desc = "\n\nThe events store a `record_snapshot` inside attributes with these fields and sample values:\n"
+        for k, vals in snapshot_fields.items():
+            samples = ", ".join(f'"{v}"' for v in vals[:3])
+            snapshot_desc += f"- {k}: [{samples}]\n"
+
+    sample_event_desc = ""
+    if sample_events:
+        sample_event_desc = "\n\nSample events (showing raw case_id and activity):\n"
+        for se in sample_events[:3]:
+            sample_event_desc += f"- case_id={se['case_id']}, activity={se['activity']}, snapshot_keys={se['snapshot_keys']}\n"
 
     # Build prompt for Claude
     activity_list = "\n".join(
@@ -424,15 +457,29 @@ The activity field tracked is: "{activity_field or 'unknown'}"
 
 Here are all distinct activity values found in the event log:
 {activity_list}
+{snapshot_desc}{sample_event_desc}
 
-Categorize each activity as either:
-- "stage": A meaningful business stage or state transition (e.g. deal stages, lifecycle states, status values)
-- "noise": A technical/system event that pollutes the process map (e.g. RECORD_UPDATED, RECORD_CREATED, field change events like AMOUNT_CHANGED, system pipeline events)
+Your tasks:
 
-Also suggest a human-readable label for each activity (e.g. "APPOINTMENTSCHEDULED" → "Appointment Scheduled", "CLOSEDWON" → "Closed Won").
+1. **Field Override Detection**: Look at the activity values and record_snapshot fields. If the activities are generic (like RECORD_CREATED, RECORD_UPDATED) and the record_snapshot contains fields that look like they hold the real activity name, case ID, or timestamp, suggest field overrides. This is CRITICAL for process mining to work correctly.
+
+   - `activity_attribute`: which record_snapshot field holds the real activity/stage name (e.g. "activity", "stage", "status")
+   - `case_id_attribute`: which record_snapshot field holds the real case identifier (e.g. "case_id", "patient_id", "order_id") — especially if the raw case_id looks like auto-generated IDs (evt_*, uuid, etc.)
+   - `timestamp_attribute`: which record_snapshot field holds the real event timestamp (e.g. "occurred_at", "timestamp", "event_time")
+
+2. **Activity Classification**: Categorize each activity as either:
+   - "stage": A meaningful business stage or state transition
+   - "noise": A technical/system event that pollutes the process map
+
+3. **Labels**: Suggest a human-readable label for each activity.
 
 Respond with ONLY valid JSON in this exact format:
 {{
+  "suggested_overrides": {{
+    "activity_attribute": "field_name_or_empty_string",
+    "case_id_attribute": "field_name_or_empty_string",
+    "timestamp_attribute": "field_name_or_empty_string"
+  }},
   "results": [
     {{"activity": "ACTIVITY_NAME", "category": "stage", "label": "Human Label", "reason": "brief reason"}},
     ...
@@ -455,6 +502,7 @@ Respond with ONLY valid JSON in this exact format:
                 raw = raw[4:]
         parsed = json.loads(raw)
         results = parsed.get("results", [])
+        suggested_overrides = parsed.get("suggested_overrides", {})
     except Exception as e:
         # Fallback: heuristic classification
         _NOISE_KEYWORDS = {"record_created", "record_updated", "record_synced", "_changed", "pipeline_run", "connector_"}
@@ -468,6 +516,25 @@ Respond with ONLY valid JSON in this exact format:
                 "label": a["activity"].replace("_", " ").title(),
                 "reason": "heuristic classification",
             })
+        # Heuristic field override detection from snapshot fields
+        suggested_overrides = {}
+        if snapshot_fields:
+            _ACT_HINTS = {"activity", "stage", "status", "step", "phase", "action", "event_type"}
+            _CID_HINTS = {"case_id", "patient_id", "order_id", "ticket_id", "request_id", "id", "external_id"}
+            _TS_HINTS = {"occurred_at", "timestamp", "event_time", "created_at", "happened_at", "date", "time"}
+            sf_lower = {k.lower(): k for k in snapshot_fields}
+            for hint in _ACT_HINTS:
+                if hint in sf_lower:
+                    suggested_overrides["activity_attribute"] = sf_lower[hint]
+                    break
+            for hint in _CID_HINTS:
+                if hint in sf_lower:
+                    suggested_overrides["case_id_attribute"] = sf_lower[hint]
+                    break
+            for hint in _TS_HINTS:
+                if hint in sf_lower:
+                    suggested_overrides["timestamp_attribute"] = sf_lower[hint]
+                    break
 
     stages = [r for r in results if r.get("category") == "stage"]
     noise = [r for r in results if r.get("category") == "noise"]
@@ -477,6 +544,7 @@ Respond with ONLY valid JSON in this exact format:
         "stages": stages,
         "noise": noise,
         "labels": labels,
+        "suggested_overrides": suggested_overrides,
         "activity_count": len(activities),
     }
 
@@ -502,6 +570,8 @@ async def save_event_config(
         "excluded_activities": body.excluded_activities,
         "activity_labels": body.activity_labels,
         "activity_attribute": body.activity_attribute,
+        "case_id_attribute": body.case_id_attribute,
+        "timestamp_attribute": body.timestamp_attribute,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     row.data = pipeline.model_dump(mode="json")

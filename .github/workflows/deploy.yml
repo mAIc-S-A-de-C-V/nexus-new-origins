@@ -6,7 +6,40 @@ on:
       - main
 
 jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit Python dependencies
+        run: |
+          for req in backend/*/requirements.txt backend/requirements.txt; do
+            if [ -f "$req" ]; then
+              echo "Auditing $req"
+              pip-audit -r "$req" --ignore-vuln PYSEC-2022-43012
+            fi
+          done
+
+      - name: Scan Docker images with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          exit-code: '1'
+
   deploy:
+    needs: security-scan
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to EC2

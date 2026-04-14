@@ -11,6 +11,7 @@ import { useOntologyStore } from '../../store/ontologyStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { useInferenceStore } from '../../store/inferenceStore';
 import { ObjectType, ObjectProperty } from '../../types/ontology';
+import { getTenantId } from '../../store/authStore';
 import { Pipeline, PipelineNode, PipelineEdge } from '../../types/pipeline';
 
 type TabId = 'overview' | 'configuration' | 'pipelines' | 'schema' | 'health';
@@ -1102,6 +1103,84 @@ interface CorrelationResult {
   new_object_name: string;
 }
 
+// ── Schema Version History (Schema Registry) ──────────────────────────────
+
+const SCHEMA_REGISTRY_API = import.meta.env.VITE_SCHEMA_REGISTRY_URL || 'http://localhost:8007';
+
+interface SchemaVersion {
+  id: string;
+  connector_id: string;
+  hash: string;
+  schema: Record<string, unknown>;
+  version: number;
+  registered_at: string;
+  tenant_id: string;
+}
+
+const SchemaVersionHistory: React.FC<{ connectorId: string }> = ({ connectorId }) => {
+  const [versions, setVersions] = useState<SchemaVersion[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`${SCHEMA_REGISTRY_API}/schemas/${connectorId}`, { headers: { 'x-tenant-id': getTenantId() } })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setVersions(Array.isArray(data) ? data.slice().reverse() : []))
+      .catch(() => setVersions([]))
+      .finally(() => setLoading(false));
+  }, [connectorId]);
+
+  if (loading) return null;
+  if (versions.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+        Schema Registry — {versions.length} version{versions.length !== 1 ? 's' : ''}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {versions.map((v, idx) => {
+          const fieldCount = Array.isArray(v.schema?.fields) ? (v.schema.fields as unknown[]).length : Object.keys(v.schema || {}).length;
+          const isExpanded = expandedId === v.id;
+          return (
+            <div
+              key={v.id}
+              style={{ border: '1px solid #E2E8F0', borderRadius: 4, overflow: 'hidden' }}
+            >
+              <div
+                onClick={() => setExpandedId(isExpanded ? null : v.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                  backgroundColor: idx === 0 ? '#F0FDF4' : '#FAFAFA', cursor: 'pointer',
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 700, color: idx === 0 ? '#15803D' : '#64748B', minWidth: 28 }}>v{v.version}</span>
+                {idx === 0 && <span style={{ fontSize: 10, backgroundColor: '#DCFCE7', color: '#15803D', padding: '1px 6px', borderRadius: 8, fontWeight: 600 }}>LATEST</span>}
+                <span style={{ fontSize: 11, color: '#94A3B8', flex: 1 }}>
+                  {fieldCount} fields · {new Date(v.registered_at).toLocaleString()}
+                </span>
+                <code style={{ fontSize: 10, color: '#94A3B8', fontFamily: 'var(--font-mono)' }}>{v.hash.slice(0, 18)}…</code>
+                <GitBranch size={12} color={isExpanded ? '#7C3AED' : '#CBD5E1'} />
+              </div>
+              {isExpanded && (
+                <pre style={{
+                  margin: 0, padding: '10px 14px',
+                  backgroundColor: '#0D1117', color: '#A5F3FC',
+                  fontSize: '11px', fontFamily: 'var(--font-mono)',
+                  lineHeight: 1.6, overflowX: 'auto', maxHeight: 240,
+                }}>
+                  {JSON.stringify(v.schema, null, 2)}
+                </pre>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
   const inferenceStore = useInferenceStore();
   const cached = inferenceStore.get(connector.id);
@@ -1129,7 +1208,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
   useEffect(() => {
     if (inferenceResult) return;
     fetch(`${CONNECTOR_API}/connectors/${connector.id}/inference`, {
-      headers: { 'x-tenant-id': 'tenant-001' },
+      headers: { 'x-tenant-id': getTenantId() },
     })
       .then((r) => r.ok ? r.json() : null)
       .then((d) => {
@@ -1290,7 +1369,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
       });
       fetch(`${CONNECTOR_API}/connectors/${connector.id}/inference`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-tenant-id': 'tenant-001' },
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
         body: JSON.stringify({ result: data, correlationResult: finalCorrResult, sampleRows }),
       }).catch(() => {}); // fire-and-forget
     } catch (err: unknown) {
@@ -1341,7 +1420,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
         sourceConnectorIds: [connector.id],
         version: 1, schemaHealth: 'healthy',
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        tenantId: 'tenant-001',
+        tenantId: getTenantId(),
       };
       const created = await addObjectType(ot);
       const freq = syncFrequency || '1h';
@@ -1384,7 +1463,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
         edges,
         connectorIds: [connector.id],
         targetObjectTypeId: created.id,
-        tenantId: 'tenant-001',
+        tenantId: getTenantId(),
       };
       setSavedActions((prev) => ({ ...prev, __new__: `Created "${created.displayName}" — opening pipeline...` }));
       setTimeout(() => navigateTo('pipelines', pipelineTemplate), 600);
@@ -1428,7 +1507,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
       edges,
       connectorIds: [connector.id],
       targetObjectTypeId: match.object_type_id,
-      tenantId: 'tenant-001',
+      tenantId: getTenantId(),
     };
     navigateTo('pipelines', template);
   };
@@ -1562,7 +1641,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
       status: 'DRAFT', nodes, edges,
       connectorIds: [connector.id],
       targetObjectTypeId: targetOtId,
-      tenantId: 'tenant-001',
+      tenantId: getTenantId(),
     };
     navigateTo('pipelines', template);
   };
@@ -1830,6 +1909,8 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
           Click "Run Inference" — Claude will fetch your schema from {connector.type} and label each field.
         </div>
       )}
+
+      <SchemaVersionHistory connectorId={connector.id} />
     </div>
   );
 };

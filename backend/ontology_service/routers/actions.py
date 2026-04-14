@@ -2,6 +2,11 @@
 Actions Registry — typed, permissioned write operations that AI agents and Logic Functions
 can propose. Humans approve or reject proposals when requires_confirmation=True.
 """
+import os
+import smtplib
+import logging
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional, Any
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -10,6 +15,46 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from database import ActionDefinitionRow, ActionExecutionRow, get_session
+
+logger = logging.getLogger(__name__)
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER)
+
+
+def _send_approval_email(to: str, action_name: str, inputs: dict, confirmed_by: str, note: str = "") -> None:
+    """Fire-and-forget email notification on action approval."""
+    if not SMTP_HOST or not SMTP_USER:
+        logger.warning("SMTP not configured — skipping approval email notification")
+        return
+    try:
+        subject = f"[Nexus] Action approved: {action_name}"
+        lines = [
+            f"Action '{action_name}' was approved by {confirmed_by}.",
+            "",
+            "Inputs:",
+        ] + [f"  {k}: {v}" for k, v in inputs.items()]
+        if note:
+            lines += ["", f"Note: {note}"]
+        body = "\n".join(lines)
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"Nexus Platform <{SMTP_FROM}>"
+        msg["To"] = to
+        msg.attach(MIMEText(body, "plain"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_FROM, [to], msg.as_string())
+        logger.info(f"Approval email sent to {to} for action '{action_name}'")
+    except Exception as e:
+        logger.error(f"Failed to send approval email to {to}: {e}")
 
 router = APIRouter()
 
@@ -24,6 +69,7 @@ class ActionDefinitionCreate(BaseModel):
     allowed_roles: list[str] = []
     writes_to_object_type: Optional[str] = None
     enabled: bool = True
+    notify_email: Optional[str] = None   # email to notify when approved
 
 
 class ActionExecuteRequest(BaseModel):
@@ -55,6 +101,7 @@ def _def_to_dict(row: ActionDefinitionRow) -> dict:
         "allowed_roles": row.allowed_roles or [],
         "writes_to_object_type": row.writes_to_object_type,
         "enabled": row.enabled,
+        "notify_email": row.notify_email,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -112,6 +159,7 @@ async def create_action(
         allowed_roles=body.allowed_roles,
         writes_to_object_type=body.writes_to_object_type,
         enabled=body.enabled,
+        notify_email=body.notify_email,
     )
     db.add(row)
     await db.commit()
@@ -160,6 +208,7 @@ async def update_action(
     row.allowed_roles = body.allowed_roles
     row.writes_to_object_type = body.writes_to_object_type
     row.enabled = body.enabled
+    row.notify_email = body.notify_email
     await db.commit()
     return _def_to_dict(row)
 
@@ -333,11 +382,34 @@ async def confirm_execution(
         raise HTTPException(status_code=404, detail="Execution not found")
     if row.status != "pending_confirmation":
         raise HTTPException(status_code=400, detail=f"Cannot confirm execution in status '{row.status}'")
+    action_name = row.action_name
+    inputs = row.inputs or {}
     row.status = "completed"
     row.confirmed_by = body.confirmed_by
-    row.result = {"applied": row.inputs, "action": row.action_name, "confirmed_by": body.confirmed_by}
+    row.result = {"applied": inputs, "action": action_name, "confirmed_by": body.confirmed_by}
+
+    # Build response dict while row is still loaded (before commit expires it)
+    response = _exec_to_dict(row)
     await db.commit()
-    return _exec_to_dict(row)
+
+    # Send email notification if the action definition has one configured
+    def_result = await db.execute(
+        select(ActionDefinitionRow).where(
+            ActionDefinitionRow.name == action_name,
+            ActionDefinitionRow.tenant_id == tenant_id,
+        )
+    )
+    action_def = def_result.scalar_one_or_none()
+    if action_def and action_def.notify_email:
+        _send_approval_email(
+            to=action_def.notify_email,
+            action_name=action_name,
+            inputs=inputs,
+            confirmed_by=body.confirmed_by,
+            note=body.note or "",
+        )
+
+    return response
 
 
 @router.post("/executions/{execution_id}/reject")
@@ -362,5 +434,6 @@ async def reject_execution(
     row.status = "rejected"
     row.rejected_by = body.rejected_by
     row.rejection_reason = body.reason
+    response = _exec_to_dict(row)
     await db.commit()
-    return _exec_to_dict(row)
+    return response

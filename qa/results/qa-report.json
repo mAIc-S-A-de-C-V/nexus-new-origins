@@ -1,0 +1,1985 @@
+{
+  "config": {
+    "configFile": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/playwright.config.ts",
+    "rootDir": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/tests",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "results/qa-report.json"
+        }
+      ],
+      [
+        "html",
+        {
+          "outputFolder": "results/html-report",
+          "open": "never"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.59.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "qa_e2e_full.spec.ts",
+      "file": "qa_e2e_full.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "TEARDOWN: delete pre-existing fixtures",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1351,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[teardown] deleting connector fcb06b3f-295e-4375-8c7a-4a29316978b1\n"
+                    },
+                    {
+                      "text": "[teardown] deleting object type 3f6ab1ee-9e9e-4043-a9ce-5f4f97542b06 (sepsiscase)\n"
+                    },
+                    {
+                      "text": "[teardown] deleting object type b10946fe-0959-4d2c-a461-3885cfc612dd (hospitalevent)\n"
+                    },
+                    {
+                      "text": "[teardown] deleting pipeline 47981f43-a122-4d6f-8e7d-650010ea2aad\n"
+                    },
+                    {
+                      "text": "[teardown] deleting value category b7983671-3b99-48c1-9f73-266d79ab80bd (Operational Efficiency)\n"
+                    },
+                    {
+                      "text": "[teardown] complete\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:38:48.375Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-6636658b1fa836b05487",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 37,
+          "column": 5
+        },
+        {
+          "title": "M1_01: create Sepsis Hospital Data connector",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6276,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M1_01] connector created: id=6ba42c0f-1f36-40f1-83bd-5192cc29479b\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:38:49.734Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M1-01-create-Sepsis-Hospital-Data-connector/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M1-01-create-Sepsis-Hospital-Data-connector/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-988281dc061241d9461b",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 98,
+          "column": 5
+        },
+        {
+          "title": "M1_02: open connector detail panel and test connection",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 7121,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M1_02] test connection result visible: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:38:56.225Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M1-02-open-con-fdeae-l-panel-and-test-connection/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M1-02-open-con-fdeae-l-panel-and-test-connection/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-d917f5a95f859beec726",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 152,
+          "column": 5
+        },
+        {
+          "title": "M1_03: API — verify all 10 sepsis endpoints return 200",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 376,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M1_03] /info → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /cases → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /cases/A → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /events → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /events/activities → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /stats → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /timeline → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /flow → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /health → 200\n"
+                    },
+                    {
+                      "text": "[M1_03] /benchmark → 200\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:03.351Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-6ce2de6af1c685fea3b6",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 179,
+          "column": 5
+        },
+        {
+          "title": "M1_04: API — ICU filter returns only ICU cases",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M1_04] ICU cases returned: 50\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:03.731Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-dad9094166449ce86e26",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 200,
+          "column": 5
+        },
+        {
+          "title": "M2_01: create SepsisCase object type",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6928,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M2_01] SepsisCase created: id=7ce5cd69-1cfe-4f3e-a907-74dc90bf7dc2\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:03.740Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-01-create-SepsisCase-object-type/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-01-create-SepsisCase-object-type/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-e0138f26573f823a240b",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 217,
+          "column": 5
+        },
+        {
+          "title": "M2_02: create HospitalEvent object type",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6940,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M2_02] HospitalEvent created: id=c3fe5278-5760-462c-a585-7afbdbf8b1b2\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:10.671Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-02-create-HospitalEvent-object-type/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-02-create-HospitalEvent-object-type/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-e4da1395533bed2307ef",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 260,
+          "column": 5
+        },
+        {
+          "title": "M2_03: graph shows both SepsisCase and HospitalEvent nodes",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5221,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M2_03] react-flow node count: 38\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:17.615Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-03-graph-sh-4ae77-ase-and-HospitalEvent-nodes/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-03-graph-sh-4ae77-ase-and-HospitalEvent-nodes/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-012f42233442661cc3e0",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 303,
+          "column": 5
+        },
+        {
+          "title": "M2_04: click SepsisCase node opens detail panel with Properties tab",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5760,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M2_04] clicked SepsisCase header button\n"
+                    },
+                    {
+                      "text": "[M2_04] \"Properties\" in body: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:22.840Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-04-click-Se-ff935-l-panel-with-Properties-tab/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M2-04-click-Se-ff935-l-panel-with-Properties-tab/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-1ca5b2e077e68f693bdc",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 320,
+          "column": 5
+        },
+        {
+          "title": "M3_01: create Sepsis Case Ingest pipeline with Source, Map, Sink steps",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 14006,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M3_01] Pipeline saved\n"
+                    },
+                    {
+                      "text": "[M3_01] pipeline created: id=95f5949e-f9a8-4a79-9686-77de448ff739\n"
+                    },
+                    {
+                      "text": "[M3_01] pipeline node count: 3\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:28.604Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M3-01-create-S-859e8--with-Source-Map-Sink-steps/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M3-01-create-S-859e8--with-Source-Map-Sink-steps/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-18274fad564b133b071e",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 360,
+          "column": 5
+        },
+        {
+          "title": "M3_02: run Sepsis Case Ingest pipeline and wait for COMPLETED",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 11923,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M3_02] poll 1: status=COMPLETED, rows=0\n"
+                    },
+                    {
+                      "text": "[M3_02] final status=COMPLETED, rows=0\n"
+                    }
+                  ],
+                  "stderr": [
+                    {
+                      "text": "[M3_02] FINDING: 0 rows returned — connector URL may be misconfigured or service unavailable\n"
+                    }
+                  ],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:42.614Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M3-02-run-Seps-abf1b-line-and-wait-for-COMPLETED/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M3-02-run-Seps-abf1b-line-and-wait-for-COMPLETED/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-e4e545600bd946b30c91",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 513,
+          "column": 5
+        },
+        {
+          "title": "M3_03: schedule pipeline — Hourly Sepsis Sync",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 7700,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [
+                    {
+                      "text": "[M3_03] /schedules API not available — schedule may be stored under pipeline\n"
+                    }
+                  ],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:39:54.540Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M3-03-schedule-pipeline-—-Hourly-Sepsis-Sync/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M3-03-schedule-pipeline-—-Hourly-Sepsis-Sync/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-d834da04d34fca82fd8c",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 559,
+          "column": 5
+        },
+        {
+          "title": "M4_01: Ontology graph renders react-flow SVG with nodes",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4232,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M4_01] graph node count: 41\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:02.244Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M4-01-Ontology-e9a4d-s-react-flow-SVG-with-nodes/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M4-01-Ontology-e9a4d-s-react-flow-SVG-with-nodes/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-f5a291a2360aa2830a5a",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 618,
+          "column": 5
+        },
+        {
+          "title": "M4_02: click react-flow node opens detail panel",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5770,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M4_02] panel contains \"Properties\": true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:06.480Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M4-02-click-react-flow-node-opens-detail-panel/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M4-02-click-react-flow-node-opens-detail-panel/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-be3da00273bc0ca6b1fc",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 634,
+          "column": 5
+        },
+        {
+          "title": "M5_01: navigate to Data, verify Data Explorer tab",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3483,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M5_01] \"Data Explorer\" found on page: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:12.254Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M5-01-navigate-to-Data-verify-Data-Explorer-tab/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M5-01-navigate-to-Data-verify-Data-Explorer-tab/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-dd4c90c8080bfe1b8d73",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 664,
+          "column": 5
+        },
+        {
+          "title": "M5_02: Data Explorer — screenshot chart/table area",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3473,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M5_02] chart/table elements found: 6\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:15.741Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M5-02-Data-Exp-3d645-screenshot-chart-table-area/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M5-02-Data-Exp-3d645-screenshot-chart-table-area/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-cc8b2c8ddafe7a14ea4a",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 683,
+          "column": 5
+        },
+        {
+          "title": "M5_03: API — /stats benchmark B1 matches 1050 cases",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 310,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M5_03] /stats total_cases=1050\n"
+                    },
+                    {
+                      "text": "[M5_03] benchmark B1=undefined\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:19.219Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-1a3ea6566a07a925358f",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 701,
+          "column": 5
+        },
+        {
+          "title": "M6_01: Data Quality tab — verify quality content visible",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4484,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M6_01] quality content found: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:19.534Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M6-01-Data-Qua-24d29-ify-quality-content-visible/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M6-01-Data-Qua-24d29-ify-quality-content-visible/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-4f33d3d2980ae445b974",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 724,
+          "column": 5
+        },
+        {
+          "title": "M7_01: Meta+K opens search input",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3488,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M7_01] search input visible: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:24.022Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M7-01-Meta-K-opens-search-input/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M7-01-Meta-K-opens-search-input/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-ba965affc681cba7c8b8",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 756,
+          "column": 5
+        },
+        {
+          "title": "M7_02: search for SEPSIS — results visible",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4636,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M7_02] results visible for \"SEPSIS\": true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:27.514Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M7-02-search-for-SEPSIS-—-results-visible/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M7-02-search-for-SEPSIS-—-results-visible/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-0fdea208f3070589f59a",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 772,
+          "column": 5
+        },
+        {
+          "title": "M7_03: search for ER Registration — results",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4691,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M7_03] results for \"ER Registration\": true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:32.154Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M7-03-search-for-ER-Registration-—-results/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M7-03-search-for-ER-Registration-—-results/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-a82ffced4e8cd34bb729",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 791,
+          "column": 5
+        },
+        {
+          "title": "M8_01: Agent Studio loads with agent content",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3682,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M8_01] agent content found: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:36.849Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M8-01-Agent-Studio-loads-with-agent-content/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M8-01-Agent-Studio-loads-with-agent-content/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-52e36646ee3414ad153a",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 817,
+          "column": 5
+        },
+        {
+          "title": "M9_01: Activity nav — Process Mining content visible",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 27149,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[login] Attempt 1 failed (timeout), retrying…\n"
+                    },
+                    {
+                      "text": "[login] Attempt 2 failed (timeout), retrying…\n"
+                    },
+                    {
+                      "text": "[M9_01] process mining content: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:40:40.535Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M9-01-Activity-b4f2d-cess-Mining-content-visible/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M9-01-Activity-b4f2d-cess-Mining-content-visible/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-1a612da3d62ae8652026",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 833,
+          "column": 5
+        },
+        {
+          "title": "M9_02: API — case trace first event is ER Registration",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 316,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M9_02] fetching trace for caseId=A\n"
+                    },
+                    {
+                      "text": "[M9_02] first event activity: \"ER Registration\"\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:07.688Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-ed230e031c2d031dce7b",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 860,
+          "column": 5
+        },
+        {
+          "title": "M9_03: API — flow graph edges have {from, to, count} and ER Registration is a source",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 24,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M9_03] first edge: {\"from\":\"Leucocytes\",\"to\":\"CRP\",\"count\":1778}\n"
+                    },
+                    {
+                      "text": "[M9_03] ER Registration as source: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:08.009Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-085d43f800eb7897cc5c",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 883,
+          "column": 5
+        },
+        {
+          "title": "M10_01: Evals page loads",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3534,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M10_01] evals content found: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:08.036Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M10-01-Evals-page-loads/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M10-01-Evals-page-loads/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-25177780c3896eacba78",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 907,
+          "column": 5
+        },
+        {
+          "title": "M10_02: click + New Suite opens modal",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4316,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M10_02] modal opened: false\n"
+                    },
+                    {
+                      "text": "[M10_02] page text after click: maic\nDashboards\nConnectors\nOntology\nData\nPipelines\nLogic Studio\nAgent Studio\nEvals\nValue Monitor\nActivity\nUtilities\nActions\nAdmin\nSettings\nmaic\nProjects\nFinance\nAssistant\nA\nAdmin\nADMIN\nSearch\n⌘K\nNew E\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:11.573Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M10-02-click-New-Suite-opens-modal/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M10-02-click-New-Suite-opens-modal/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-6387f1164acc1f620a31",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 919,
+          "column": 5
+        },
+        {
+          "title": "M11_01: add comment to SepsisCase node in Ontology",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 7535,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M11_01] comment visible on page: false\n"
+                    }
+                  ],
+                  "stderr": [
+                    {
+                      "text": "[M11_01] FINDING: comment text not found in page after submission\n"
+                    }
+                  ],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:15.893Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M11-01-add-com-29ab3-SepsisCase-node-in-Ontology/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M11-01-add-com-29ab3-SepsisCase-node-in-Ontology/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-cf7b291d853ee7295e8e",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 950,
+          "column": 5
+        },
+        {
+          "title": "M12_01: Activity page loads with event log content",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3726,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M12_01] activity content found: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:23.432Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M12-01-Activit-b6022-oads-with-event-log-content/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M12-01-Activit-b6022-oads-with-event-log-content/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-e24b6d6d05291e0d0f60",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1028,
+          "column": 5
+        },
+        {
+          "title": "M13_01: Settings — Health tab lists services",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4340,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M13_01] services/health content found: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:27.161Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M13-01-Settings-—-Health-tab-lists-services/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M13-01-Settings-—-Health-tab-lists-services/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-1b8ee50a6fd36ce98602",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1044,
+          "column": 5
+        },
+        {
+          "title": "M14_01: Settings Schedules tab shows Sepsis Case Ingest schedule",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3487,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M14_01] Sepsis schedule visible: false\n"
+                    }
+                  ],
+                  "stderr": [
+                    {
+                      "text": "[M14_01] FINDING: Sepsis schedule not yet visible in Settings/Schedules — may require M3_03 to complete first\n"
+                    }
+                  ],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:31.505Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M14-01-Setting-f116a-Sepsis-Case-Ingest-schedule/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M14-01-Setting-f116a-Sepsis-Case-Ingest-schedule/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-d1ff969ff57b27cd8dc7",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1075,
+          "column": 5
+        },
+        {
+          "title": "M15_01: Admin page loads with tenant/admin content",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3746,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M15_01] admin content found: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:34.995Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M15-01-Admin-p-32da7-s-with-tenant-admin-content/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M15-01-Admin-p-32da7-s-with-tenant-admin-content/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-1bb024fb70b3ab457e50",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1108,
+          "column": 5
+        },
+        {
+          "title": "M16_01: create Operational Efficiency value category",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6321,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M16_01] value category created: id=dbd521cf-d657-4a39-bfdb-44fc75ef0606\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:38.744Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M16-01-create--2f078-l-Efficiency-value-category/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M16-01-create--2f078-l-Efficiency-value-category/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-8bfa930618aac10573dd",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1124,
+          "column": 5
+        },
+        {
+          "title": "M16_02: create Sepsis Case Ingest Automation use case",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 8123,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M16_02] use case visible on page: false\n"
+                    }
+                  ],
+                  "stderr": [
+                    {
+                      "text": "[M16_02] FINDING: Use case not found in page after creation\n"
+                    }
+                  ],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:45.014Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M16-02-create--09210--Ingest-Automation-use-case/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M16-02-create--09210--Ingest-Automation-use-case/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-f9533ebb4bd4449bd63a",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1159,
+          "column": 5
+        },
+        {
+          "title": "M16_03: Value Monitor summary cards show Identified/Framed/Realized",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 15427,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[login] Attempt 1 failed (timeout), retrying…\n"
+                    },
+                    {
+                      "text": "[M16_03] Identified: true, Framed: true, Realized: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:41:53.141Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M16-03-Value-M-0d1c6--Identified-Framed-Realized/test-finished-1.png"
+                    },
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/Users/ishmontalvo/Desktop/nexus-new-origins/qa/test-results/qa_e2e_full-M16-03-Value-M-0d1c6--Identified-Framed-Realized/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-6b400fcb9f7521e3ae88",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1245,
+          "column": 5
+        },
+        {
+          "title": "M16_04: API — value categories endpoint includes Operational Efficiency",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 307,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M16_04] \"Operational Efficiency\" in API: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:42:08.572Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-02a6bbb8065b6b0a8121",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1259,
+          "column": 5
+        },
+        {
+          "title": "M16_05: API — value summary has correct structure",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "[M16_05] summary: {\"currency\":\"USD\",\"total_identified\":0,\"total_framed\":0,\"total_realized\":0,\"categories\":[{\"category_id\":\"dbd521cf-d657-4a39-bfdb-44fc75ef0606\",\"category_name\":\"Operational Efficiency\",\"color\":\"#7C3AED\",\"currency\":\"USD\",\"use_case_count\":0,\"total_identified\":0,\"total_framed\":0,\"total_realized\":0}]}\n"
+                    },
+                    {
+                      "text": "[M16_05] total_identified: true, total_framed: true, total_realized: true\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:42:08.883Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-4651dcdfd46ce783c7c9",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1270,
+          "column": 5
+        },
+        {
+          "title": "FINAL: summary and benchmark assertions",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 320,
+                  "errors": [],
+                  "stdout": [
+                    {
+                      "text": "\n══════════════════════════════════════════════════════\n"
+                    },
+                    {
+                      "text": "  NEXUS QA SUITE — ENTITY SUMMARY\n"
+                    },
+                    {
+                      "text": "══════════════════════════════════════════════════════\n"
+                    },
+                    {
+                      "text": "  connectorId          = 6ba42c0f-1f36-40f1-83bd-5192cc29479b\n"
+                    },
+                    {
+                      "text": "  sepsisObjectTypeId   = 7ce5cd69-1cfe-4f3e-a907-74dc90bf7dc2\n"
+                    },
+                    {
+                      "text": "  hospitalObjectTypeId = c3fe5278-5760-462c-a585-7afbdbf8b1b2\n"
+                    },
+                    {
+                      "text": "  pipelineId           = 95f5949e-f9a8-4a79-9686-77de448ff739\n"
+                    },
+                    {
+                      "text": "  scheduleId           = (not set)\n"
+                    },
+                    {
+                      "text": "  valueCategoryId      = dbd521cf-d657-4a39-bfdb-44fc75ef0606\n"
+                    },
+                    {
+                      "text": "══════════════════════════════════════════════════════\n\n"
+                    },
+                    {
+                      "text": "  Benchmark B1 (total cases):       undefined — expected 1050\n"
+                    },
+                    {
+                      "text": "  Benchmark B2 (total events):      undefined — expected 15214\n"
+                    },
+                    {
+                      "text": "  Benchmark B3 (unique activities): undefined — expected 16\n"
+                    },
+                    {
+                      "text": "  Benchmark B9 (first activity):    \"ER Registration\" — expected \"ER Registration\"\n"
+                    },
+                    {
+                      "text": "\n  QA suite complete.\n\n"
+                    }
+                  ],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-11T15:42:08.890Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "468a5dd32133df62f4ce-907cc87f67012813a5df",
+          "file": "qa_e2e_full.spec.ts",
+          "line": 1290,
+          "column": 5
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-04-11T15:38:47.991Z",
+    "duration": 201310.617,
+    "expected": 38,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

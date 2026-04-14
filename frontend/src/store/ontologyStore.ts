@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   ObjectType, OntologyLink, ObjectTypeVersion, SchemaDiff,
 } from '../types/ontology';
+import { getTenantId } from './authStore';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
@@ -71,7 +72,7 @@ export const useOntologyStore = create<OntologyStoreState>((set, get) => ({
   fetchObjectTypes: async () => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${ONTOLOGY_API}/object-types`);
+      const res = await fetch(`${ONTOLOGY_API}/object-types`, { headers: { 'x-tenant-id': getTenantId() } });
       if (!res.ok) throw new Error(`Failed to fetch object types: ${res.status}`);
       const data = await res.json();
       const objectTypes = data.map((item: Record<string, unknown>) => snakeToCamel(item) as unknown as ObjectType);
@@ -85,7 +86,7 @@ export const useOntologyStore = create<OntologyStoreState>((set, get) => ({
     const body = camelToSnake(ot as unknown as Record<string, unknown>);
     const res = await fetch(`${ONTOLOGY_API}/object-types`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Failed to create object type: ${res.status}`);
@@ -102,7 +103,7 @@ export const useOntologyStore = create<OntologyStoreState>((set, get) => ({
     const body = camelToSnake(merged as unknown as Record<string, unknown>);
     const res = await fetch(`${ONTOLOGY_API}/object-types/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Failed to update object type: ${res.status}`);
@@ -114,14 +115,14 @@ export const useOntologyStore = create<OntologyStoreState>((set, get) => ({
   },
 
   removeObjectType: async (id: string) => {
-    const res = await fetch(`${ONTOLOGY_API}/object-types/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${ONTOLOGY_API}/object-types/${id}`, { method: 'DELETE', headers: { 'x-tenant-id': getTenantId() } });
     if (!res.ok && res.status !== 204) throw new Error(`Failed to delete object type: ${res.status}`);
     set((state) => ({ objectTypes: state.objectTypes.filter((o) => o.id !== id) }));
   },
 
   fetchLinks: async () => {
     try {
-      const res = await fetch(`${ONTOLOGY_API}/object-types/links/all`);
+      const res = await fetch(`${ONTOLOGY_API}/object-types/links/all`, { headers: { 'x-tenant-id': getTenantId() } });
       if (!res.ok) throw new Error(`Failed to fetch links: ${res.status}`);
       const data = await res.json();
       const links = data.map((item: Record<string, unknown>) => snakeToCamel(item) as unknown as OntologyLink);
@@ -135,7 +136,7 @@ export const useOntologyStore = create<OntologyStoreState>((set, get) => ({
     const body = camelToSnake(link as unknown as Record<string, unknown>);
     const res = await fetch(`${ONTOLOGY_API}/object-types/links`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Failed to create link: ${res.status}`);
@@ -146,14 +147,14 @@ export const useOntologyStore = create<OntologyStoreState>((set, get) => ({
   },
 
   removeLink: async (id: string) => {
-    const res = await fetch(`${ONTOLOGY_API}/object-types/links/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${ONTOLOGY_API}/object-types/links/${id}`, { method: 'DELETE', headers: { 'x-tenant-id': getTenantId() } });
     if (!res.ok && res.status !== 204) throw new Error(`Failed to delete link: ${res.status}`);
     set((state) => ({ links: state.links.filter((l) => l.id !== id) }));
   },
 
   fetchVersions: async (objectTypeId: string) => {
     try {
-      const res = await fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/versions`);
+      const res = await fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/versions`, { headers: { 'x-tenant-id': getTenantId() } });
       if (!res.ok) return [];
       const data = await res.json();
       return data.map((item: Record<string, unknown>) => snakeToCamel(item) as unknown as ObjectTypeVersion);
@@ -164,7 +165,7 @@ export const useOntologyStore = create<OntologyStoreState>((set, get) => ({
 
   fetchDiff: async (objectTypeId: string, v1: number, v2: number) => {
     try {
-      const res = await fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/diff/${v1}/${v2}`);
+      const res = await fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/diff/${v1}/${v2}`, { headers: { 'x-tenant-id': getTenantId() } });
       if (!res.ok) return null;
       const data = await res.json();
       return snakeToCamel(data) as unknown as SchemaDiff;

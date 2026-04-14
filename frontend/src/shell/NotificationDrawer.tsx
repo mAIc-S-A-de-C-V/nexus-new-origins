@@ -2,13 +2,142 @@ import React, { useEffect, useState } from 'react';
 import {
   X, CheckCheck, AlertTriangle, AlertCircle, Trash2,
   CheckCircle2, XCircle, ChevronDown, ChevronRight, Activity,
+  ShieldCheck, Bot, User, ArrowUpRight, Clock, CheckSquare, XSquare,
 } from 'lucide-react';
 import { useAlertStore, AlertNotification } from '../store/alertStore';
 import { useRunLogStore, RunLog, NodeAudit } from '../store/runLogStore';
+import { useHumanActionsStore, ActionExecution } from '../store/humanActionsStore';
+import { useApprovalStore, ApprovalRequest } from '../store/approvalStore';
+import { useNavigationStore } from '../store/navigationStore';
 
 interface Props {
   onClose: () => void;
 }
+
+// ─── Approvals tab ────────────────────────────────────────────────────────────
+
+const ApprovalRow: React.FC<{
+  req: ApprovalRequest;
+  onApprove: () => void;
+  onReject: () => void;
+}> = ({ req, onApprove, onReject }) => {
+  const [note, setNote] = useState('');
+  const [rejectMode, setRejectMode] = useState(false);
+  const [reason, setReason] = useState('');
+
+  const approvedCount = req.approvals.length;
+  const progress = `${approvedCount}/${req.required_approvers}`;
+  const isExpired = new Date(req.expires_at) < new Date();
+
+  return (
+    <div style={{
+      padding: '10px 16px',
+      borderBottom: '1px solid #131C2E',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+        <ShieldCheck size={12} style={{ color: '#A78BFA', flexShrink: 0, marginTop: 2 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0', marginBottom: 2 }}>
+            {req.resource_type} · {req.operation}
+          </div>
+          <div style={{ fontSize: 11, color: '#64748B', marginBottom: 2 }}>
+            Requested by <span style={{ color: '#94A3B8' }}>{req.requested_by}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: '#475569' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+              <Clock size={9} /> {timeAgo(req.created_at)}
+            </span>
+            <span style={{
+              padding: '1px 6px', borderRadius: 10,
+              backgroundColor: '#312E81', color: '#A5B4FC', fontSize: 10,
+            }}>
+              {progress} approvals
+            </span>
+            {isExpired && (
+              <span style={{ color: '#EF4444', fontSize: 10 }}>Expired</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {req.context && Object.keys(req.context).length > 0 && (
+        <div style={{
+          marginBottom: 6, padding: '4px 8px',
+          backgroundColor: '#0A1220', borderRadius: 4,
+          fontSize: 10, color: '#64748B', fontFamily: 'var(--font-mono)',
+          maxHeight: 60, overflow: 'hidden',
+        }}>
+          {JSON.stringify(req.context).slice(0, 120)}
+        </div>
+      )}
+
+      {!rejectMode ? (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            onClick={onApprove}
+            style={{
+              flex: 1, height: 24, fontSize: 11, fontWeight: 600,
+              cursor: 'pointer', borderRadius: 3, border: 'none',
+              backgroundColor: '#065F46', color: '#6EE7B7',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+            }}
+          >
+            <CheckSquare size={11} /> Approve
+          </button>
+          <button
+            onClick={() => setRejectMode(true)}
+            style={{
+              flex: 1, height: 24, fontSize: 11, fontWeight: 600,
+              cursor: 'pointer', borderRadius: 3,
+              border: '1px solid #7F1D1D', backgroundColor: 'transparent', color: '#FCA5A5',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+            }}
+          >
+            <XSquare size={11} /> Reject
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <input
+            autoFocus
+            placeholder="Reason for rejection..."
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            style={{
+              height: 28, padding: '0 8px', fontSize: 11,
+              backgroundColor: '#0A1220', border: '1px solid #1E2D42',
+              borderRadius: 3, color: '#E2E8F0', outline: 'none',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              onClick={() => { if (reason.trim()) onReject(); }}
+              disabled={!reason.trim()}
+              style={{
+                flex: 1, height: 22, fontSize: 10, fontWeight: 600,
+                cursor: reason.trim() ? 'pointer' : 'not-allowed', borderRadius: 3,
+                border: 'none', backgroundColor: reason.trim() ? '#7F1D1D' : '#1E2D42',
+                color: '#FCA5A5',
+              }}
+            >
+              Confirm Reject
+            </button>
+            <button
+              onClick={() => setRejectMode(false)}
+              style={{
+                width: 64, height: 22, fontSize: 10, fontWeight: 500,
+                cursor: 'pointer', borderRadius: 3,
+                border: '1px solid #1E2D42', backgroundColor: 'transparent', color: '#64748B',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const timeAgo = (iso: string) => {
   const diff = Date.now() - new Date(iso).getTime();
@@ -319,6 +448,57 @@ const LogRow: React.FC<{
 
 // ─── Drawer ───────────────────────────────────────────────────────────────────
 
+// ─── Actions tab ─────────────────────────────────────────────────────────────
+
+const ActionRow: React.FC<{
+  exec: ActionExecution;
+  onConfirm: () => void;
+  onReject: () => void;
+}> = ({ exec, onConfirm, onReject }) => {
+  const title = (exec.inputs as Record<string, unknown>)?.title as string | undefined;
+  const isAgent = exec.source === 'agent';
+  const sev = (exec.inputs as Record<string, unknown>)?.severity as string | undefined;
+  const sevColor = sev === 'critical' ? '#DC2626' : sev === 'high' ? '#D97706' : '#2563EB';
+
+  return (
+    <div style={{
+      padding: '10px 16px',
+      borderBottom: '1px solid #131C2E',
+      display: 'flex', flexDirection: 'column', gap: 6,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        {isAgent ? <Bot size={12} style={{ color: '#3B82F6', flexShrink: 0, marginTop: 1 }} /> : <User size={12} style={{ color: '#64748B', flexShrink: 0, marginTop: 1 }} />}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#E2E8F0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {title || exec.action_name}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+            <span style={{ fontSize: 10, fontFamily: 'monospace', color: '#64748B' }}>{exec.action_name}</span>
+            {sev && (
+              <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 2, color: sevColor, border: `1px solid ${sevColor}33`, textTransform: 'uppercase' }}>{sev}</span>
+            )}
+          </div>
+        </div>
+        <span style={{ fontSize: 10, color: '#475569', flexShrink: 0 }}>{timeAgo(exec.created_at || '')}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          onClick={onConfirm}
+          style={{ flex: 1, height: 24, fontSize: 11, fontWeight: 600, cursor: 'pointer', borderRadius: 3, border: 'none', backgroundColor: '#065F46', color: '#6EE7B7' }}
+        >
+          Approve
+        </button>
+        <button
+          onClick={onReject}
+          style={{ flex: 1, height: 24, fontSize: 11, fontWeight: 600, cursor: 'pointer', borderRadius: 3, border: '1px solid #7F1D1D', backgroundColor: 'transparent', color: '#FCA5A5' }}
+        >
+          Reject
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
   const {
     notifications, unreadCount: alertUnread,
@@ -332,10 +512,15 @@ export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
     deleteLog,
   } = useRunLogStore();
 
-  const [tab, setTab] = useState<'alerts' | 'logs'>('logs');
+  const { pending, pendingCount, confirm, reject } = useHumanActionsStore();
+  const { pendingForMe, pendingCount: approvalCount, fetchPendingForMe, approve, reject: rejectApproval } = useApprovalStore();
+  const { navigateTo } = useNavigationStore();
+
+  const [tab, setTab] = useState<'alerts' | 'logs' | 'actions' | 'approvals'>('logs');
 
   useEffect(() => {
     fetchNotifications();
+    fetchPendingForMe();
   }, []);
 
   const tabStyle = (active: boolean): React.CSSProperties => ({
@@ -365,8 +550,9 @@ export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
           height: 52, display: 'flex', alignItems: 'center', padding: '0 16px',
           borderBottom: '1px solid #1E2D42', gap: 10, flexShrink: 0,
         }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: '#E2E8F0', flex: 1 }}>
-            Notifications
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#E2E8F0', flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+            {tab === 'actions' ? <ShieldCheck size={14} /> : null}
+            {tab === 'actions' ? 'Action Queue' : 'Notifications'}
           </span>
           {tab === 'alerts' && alertUnread > 0 && (
             <button
@@ -410,6 +596,22 @@ export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
               </span>
             )}
           </button>
+          <button style={tabStyle(tab === 'actions')} onClick={() => setTab('actions')}>
+            Actions
+            {pendingCount > 0 && (
+              <span style={{ marginLeft: 5, fontSize: 10, backgroundColor: '#D97706', color: '#FFF', borderRadius: 10, padding: '1px 5px' }}>
+                {pendingCount}
+              </span>
+            )}
+          </button>
+          <button style={tabStyle(tab === 'approvals')} onClick={() => setTab('approvals')}>
+            Approvals
+            {approvalCount > 0 && (
+              <span style={{ marginLeft: 5, fontSize: 10, backgroundColor: '#7C3AED', color: '#FFF', borderRadius: 10, padding: '1px 5px' }}>
+                {approvalCount}
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Content */}
@@ -438,17 +640,59 @@ export const NotificationDrawer: React.FC<Props> = ({ onClose }) => {
                 />
               ))
           )}
+          {tab === 'actions' && (
+            pending.length === 0
+              ? <EmptyState message="No pending actions" hint="Agent-proposed actions awaiting your approval appear here" />
+              : pending.slice(0, 20).map((exec) => (
+                <ActionRow
+                  key={exec.id}
+                  exec={exec}
+                  onConfirm={() => confirm(exec.id, 'admin')}
+                  onReject={() => reject(exec.id, 'admin', 'Rejected via notification center')}
+                />
+              ))
+          )}
+          {tab === 'approvals' && (
+            pendingForMe.length === 0
+              ? <EmptyState message="No pending approvals" hint="Approval requests assigned to your role appear here" />
+              : pendingForMe.map((req) => (
+                <ApprovalRow
+                  key={req.id}
+                  req={req}
+                  onApprove={() => approve(req.id, 'admin', 'admin')}
+                  onReject={() => rejectApproval(req.id, 'admin', 'admin', 'Rejected via notification center')}
+                />
+              ))
+          )}
         </div>
 
         {/* Footer */}
         <div style={{
           height: 40, borderTop: '1px solid #1E2D42', padding: '0 16px',
-          display: 'flex', alignItems: 'center',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           fontSize: 11, color: '#334155',
         }}>
-          {tab === 'alerts'
-            ? `${notifications.length} total · ${alertUnread} unread`
-            : `${logs.length} runs · ${logUnread} unread`}
+          <span>
+            {tab === 'alerts'
+              ? `${notifications.length} total · ${alertUnread} unread`
+              : tab === 'logs'
+              ? `${logs.length} runs · ${logUnread} unread`
+              : tab === 'approvals'
+              ? `${approvalCount} pending for you`
+              : `${pendingCount} pending`}
+          </span>
+          {(tab === 'actions' || tab === 'approvals') && (
+            <button
+              onClick={() => { navigateTo(tab === 'approvals' ? 'audit' : 'human-actions'); onClose(); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4, fontSize: 11,
+                color: tab === 'approvals' ? '#A78BFA' : '#3B82F6',
+                backgroundColor: 'transparent', border: 'none', cursor: 'pointer',
+              }}
+            >
+              View all <ArrowUpRight size={11} />
+            </button>
+          )}
         </div>
       </div>
     </>

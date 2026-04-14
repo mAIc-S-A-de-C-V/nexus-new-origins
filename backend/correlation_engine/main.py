@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -5,6 +6,10 @@ from typing import Optional
 from shared.models import InferenceResult, ObjectType, SimilarityScore
 from shared.enums import SemanticType
 from scorer import CorrelationScorer
+
+# CORS
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app = FastAPI(
     title="Nexus Correlation Engine",
@@ -14,7 +19,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -171,3 +176,17 @@ async def score_all(req: ScoreAllRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "correlation-engine"}
+
+
+from fastapi import Request as _Req, Depends as _Dep
+from shared.auth_middleware import require_auth as _require_auth
+
+
+@app.middleware("http")
+async def _security_headers(request: _Req, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response

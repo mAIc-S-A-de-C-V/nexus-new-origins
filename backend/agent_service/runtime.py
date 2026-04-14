@@ -147,51 +147,62 @@ async def stream_agent(
             kwargs["tools"] = tool_defs
 
         assistant_content = []
+        current_text = ""
         final_text = ""
+        stop_reason = "end_turn"
 
-        # Use streaming
-        with client.messages.stream(**kwargs) as stream:
-            current_tool_use = None
-            current_tool_json = ""
+        try:
+            with client.messages.stream(**kwargs) as stream:
+                current_tool_use = None
+                current_tool_json = ""
 
-            for event in stream:
-                if event.type == "content_block_start":
-                    if hasattr(event.content_block, "type"):
-                        if event.content_block.type == "tool_use":
-                            current_tool_use = {
-                                "id": event.content_block.id,
-                                "name": event.content_block.name,
-                                "input": {},
-                            }
+                for event in stream:
+                    if event.type == "content_block_start":
+                        if hasattr(event.content_block, "type"):
+                            if event.content_block.type == "tool_use":
+                                # Flush any accumulated text block first
+                                if current_text:
+                                    assistant_content.append({"type": "text", "text": current_text})
+                                    final_text = current_text
+                                    current_text = ""
+                                current_tool_use = {
+                                    "id": event.content_block.id,
+                                    "name": event.content_block.name,
+                                    "input": {},
+                                }
+                                current_tool_json = ""
+                                yield _sse({"type": "tool_start", "tool": event.content_block.name, "tool_use_id": event.content_block.id})
+                            elif event.content_block.type == "text":
+                                current_text = ""
+
+                    elif event.type == "content_block_delta":
+                        if hasattr(event.delta, "type"):
+                            if event.delta.type == "text_delta":
+                                current_text += event.delta.text
+                                yield _sse({"type": "text_delta", "text": event.delta.text})
+                            elif event.delta.type == "input_json_delta":
+                                current_tool_json += event.delta.partial_json
+
+                    elif event.type == "content_block_stop":
+                        if current_tool_use is not None:
+                            try:
+                                current_tool_use["input"] = json.loads(current_tool_json) if current_tool_json else {}
+                            except Exception:
+                                current_tool_use["input"] = {}
+                            assistant_content.append({"type": "tool_use", **current_tool_use})
+                            current_tool_use = None
                             current_tool_json = ""
-                            yield _sse({"type": "tool_start", "tool": event.content_block.name, "tool_use_id": event.content_block.id})
+                        elif current_text:
+                            assistant_content.append({"type": "text", "text": current_text})
+                            final_text = current_text
+                            current_text = ""
 
-                elif event.type == "content_block_delta":
-                    if hasattr(event.delta, "type"):
-                        if event.delta.type == "text_delta":
-                            text = event.delta.text
-                            final_text += text
-                            yield _sse({"type": "text_delta", "text": text})
-                        elif event.delta.type == "input_json_delta":
-                            current_tool_json += event.delta.partial_json
+                final_msg = stream.get_final_message()
+                stop_reason = final_msg.stop_reason
 
-                elif event.type == "content_block_stop":
-                    if current_tool_use is not None:
-                        try:
-                            current_tool_use["input"] = json.loads(current_tool_json) if current_tool_json else {}
-                        except Exception:
-                            current_tool_use["input"] = {}
-                        assistant_content.append({
-                            "type": "tool_use",
-                            **current_tool_use,
-                        })
-                        current_tool_use = None
-                        current_tool_json = ""
-                    elif final_text and not any(b.get("type") == "text" and b.get("text") == final_text for b in assistant_content):
-                        assistant_content.append({"type": "text", "text": final_text})
-
-            final_msg = stream.get_final_message()
-            stop_reason = final_msg.stop_reason
+        except Exception as exc:
+            yield _sse({"type": "error", "error": str(exc), "iterations": iterations})
+            return
 
         messages.append({"role": "assistant", "content": assistant_content})
 
@@ -204,7 +215,10 @@ async def stream_agent(
             for block in assistant_content:
                 if block.get("type") == "tool_use":
                     yield _sse({"type": "tool_calling", "tool": block["name"], "input": block["input"]})
-                    result = await execute_tool(block["name"], block["input"], tenant_id, agent_id, knowledge_scope=knowledge_scope, dry_run=dry_run)
+                    try:
+                        result = await execute_tool(block["name"], block["input"], tenant_id, agent_id, knowledge_scope=knowledge_scope, dry_run=dry_run)
+                    except Exception as exc:
+                        result = {"error": str(exc)}
                     yield _sse({"type": "tool_result", "tool": block["name"], "result": result})
                     tool_results.append({
                         "type": "tool_result",

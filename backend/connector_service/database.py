@@ -28,7 +28,7 @@ class ConnectorRow(Base):
     description = Column(Text, nullable=True)
     base_url = Column(String, nullable=True)
     auth_type = Column(String, nullable=False, default="None")
-    credentials = Column(JSON, nullable=True)
+    credentials = Column(Text, nullable=True)  # AES-256-GCM encrypted JSON
     headers = Column(JSON, nullable=True)
     pagination_strategy = Column(String, nullable=True)
     active_pipeline_count = Column(Integer, nullable=False, default=0)
@@ -51,6 +51,7 @@ async def init_db():
             "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS config JSON",
             "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS inference_result JSON",
             "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS inference_ran_at TIMESTAMPTZ",
+            "ALTER TABLE connectors ALTER COLUMN credentials TYPE TEXT USING credentials::TEXT",
         ]:
             try:
                 await conn.execute(sa_text(col_sql))
