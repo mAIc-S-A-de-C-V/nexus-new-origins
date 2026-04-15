@@ -14,7 +14,8 @@ class AppCreateRequest(BaseModel):
     name: str
     description: Optional[str] = None
     icon: Optional[str] = None
-    object_type_id: str
+    object_type_id: str = ""
+    object_type_ids: list[str] = []
     components: list[dict] = []
 
 
@@ -22,17 +23,21 @@ class AppUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     icon: Optional[str] = None
+    object_type_ids: Optional[list[str]] = None
     components: Optional[list[dict]] = None
 
 
 def _row_to_dict(row: AppRow) -> dict:
+    # Resolve object_type_ids: prefer new column, fall back to wrapping legacy single ID
+    ot_ids = row.object_type_ids or ([row.object_type_id] if row.object_type_id else [])
     return {
         "id": row.id,
         "tenant_id": row.tenant_id,
         "name": row.name,
         "description": row.description,
         "icon": row.icon,
-        "object_type_id": row.object_type_id,
+        "object_type_id": ot_ids[0] if ot_ids else "",
+        "object_type_ids": ot_ids,
         "components": row.components or [],
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -61,13 +66,15 @@ async def create_app(
     db: AsyncSession = Depends(get_session),
 ):
     tenant_id = x_tenant_id or "tenant-001"
+    ot_ids = req.object_type_ids or ([req.object_type_id] if req.object_type_id else [])
     row = AppRow(
         id=str(uuid4()),
         tenant_id=tenant_id,
         name=req.name,
         description=req.description,
         icon=req.icon,
-        object_type_id=req.object_type_id,
+        object_type_id=ot_ids[0] if ot_ids else "",
+        object_type_ids=ot_ids,
         components=req.components,
     )
     db.add(row)
@@ -113,6 +120,9 @@ async def update_app(
         row.description = req.description
     if req.icon is not None:
         row.icon = req.icon
+    if req.object_type_ids is not None:
+        row.object_type_ids = req.object_type_ids
+        row.object_type_id = req.object_type_ids[0] if req.object_type_ids else row.object_type_id
     if req.components is not None:
         row.components = req.components
 

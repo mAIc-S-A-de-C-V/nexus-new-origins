@@ -24,14 +24,32 @@ function useRecords(objectTypeId?: string) {
 
   useEffect(() => {
     if (!objectTypeId) return;
+    let cancelled = false;
     setLoading(true);
-    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/records`, {
-      headers: { 'x-tenant-id': getTenantId() },
-    })
-      .then((r) => r.json())
-      .then((d) => setRecords(d.records || []))
-      .catch(() => setRecords([]))
-      .finally(() => setLoading(false));
+
+    // Fetch all records by paginating through pages of 500
+    const PAGE = 500;
+    async function fetchAll() {
+      const all: Record<string, unknown>[] = [];
+      let offset = 0;
+      let total = Infinity;
+      while (offset < total) {
+        const res = await fetch(
+          `${ONTOLOGY_API}/object-types/${objectTypeId}/records?limit=${PAGE}&offset=${offset}`,
+          { headers: { 'x-tenant-id': getTenantId() } },
+        );
+        const d = await res.json();
+        const rows = d.records || [];
+        total = d.total ?? rows.length;
+        all.push(...rows);
+        offset += PAGE;
+        if (rows.length < PAGE) break; // no more pages
+      }
+      if (!cancelled) setRecords(all);
+    }
+
+    fetchAll().catch(() => { if (!cancelled) setRecords([]); }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [objectTypeId]);
 
   return { records, loading };
@@ -952,7 +970,9 @@ const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, u
 
 // ── Inline widget (used inside chat messages) ──────────────────────────────
 
-const InlineWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({ comp, records }) => {
+const InlineWidget: React.FC<{ comp: AppComponent; records?: Record<string, unknown>[] }> = ({ comp, records: passedRecords }) => {
+  const { records: fetchedRecords } = useRecords(passedRecords ? undefined : comp.objectTypeId);
+  const records = passedRecords || fetchedRecords;
   const filtered = applyFilters(records, comp.filters);
   switch (comp.type) {
     case 'metric-card': return <MetricCard comp={comp} records={filtered} />;
@@ -987,7 +1007,7 @@ const mdStyles: Record<string, React.CSSProperties> = {
 
 const MarkdownMessage: React.FC<{
   text: string;
-  records: Record<string, unknown>[];
+  records?: Record<string, unknown>[];
   objectTypeId?: string;
 }> = ({ text, records, objectTypeId }) => {
   let widgetIdx = 0;
@@ -1055,7 +1075,6 @@ interface ChatMessage { role: 'user' | 'assistant'; text: string }
 
 const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
   comp,
-  records,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -1065,8 +1084,6 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-
-  const fields = records.length > 0 ? Object.keys(records[0]) : [];
 
   const send = async () => {
     const q = input.trim();
@@ -1082,8 +1099,7 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
           question: q,
           object_type_id: comp.objectTypeId || '',
           object_type_name: comp.title || 'Data',
-          fields,
-          records: records.slice(0, 100),
+          tenant_id: getTenantId(),
         }),
       });
       const data = await res.json();
@@ -1106,7 +1122,7 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
         display: 'flex', alignItems: 'center', gap: 8,
       }}>
         <span style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', flex: 1 }}>{comp.title}</span>
-        <span style={{ fontSize: 11, color: '#94A3B8' }}>{records.length} records loaded</span>
+        <span style={{ fontSize: 11, color: '#94A3B8' }}>Full data access</span>
       </div>
 
       {/* Messages */}
@@ -1131,7 +1147,7 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
             }}>
               {m.role === 'user'
                 ? m.text
-                : <MarkdownMessage text={m.text} records={records} objectTypeId={comp.objectTypeId} />
+                : <MarkdownMessage text={m.text} objectTypeId={comp.objectTypeId} />
               }
             </div>
           </div>
@@ -1501,57 +1517,67 @@ const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
 const ObjectTableWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   const { variables, setVariable } = useAppVariables();
   const [records, setRecords] = useState<Record<string, unknown>[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortAsc, setSortAsc] = useState(true);
+  const [page, setPage] = useState(0);
+  const pageSize = comp.maxRows || 100;
 
   // Build filter params from inputBindings + current variable values
   const filterKey = comp.inputBindings
     ? Object.entries(comp.inputBindings).map(([k, vId]) => `${k}=${variables.get(vId) ?? ''}`).join('&')
     : '';
 
+  // Build server-side filter from inputBindings
+  const buildFilter = () => {
+    if (!comp.inputBindings) return null;
+    const filters: Record<string, unknown> = {};
+    for (const [field, varId] of Object.entries(comp.inputBindings)) {
+      const val = variables.get(varId);
+      if (val !== undefined && val !== null && val !== '') {
+        filters[field] = { op: 'eq', value: String(val) };
+      }
+    }
+    return Object.keys(filters).length > 0 ? filters : null;
+  };
+
   useEffect(() => {
     if (!comp.objectTypeId) return;
     setLoading(true);
-    fetch(`${ONTOLOGY_API}/object-types/${comp.objectTypeId}/records`, {
+    const params = new URLSearchParams();
+    params.set('limit', String(pageSize));
+    params.set('offset', String(page * pageSize));
+    if (sortField) {
+      params.set('sort_field', sortField);
+      params.set('sort_dir', sortAsc ? 'asc' : 'desc');
+    }
+    const filter = buildFilter();
+    if (filter) params.set('filter', JSON.stringify(filter));
+
+    fetch(`${ONTOLOGY_API}/object-types/${comp.objectTypeId}/records?${params}`, {
       headers: { 'x-tenant-id': getTenantId() },
     })
       .then((r) => r.json())
       .then((d) => {
-        let recs: Record<string, unknown>[] = d.records || [];
-        // Apply inputBinding filters client-side
-        if (comp.inputBindings) {
-          for (const [field, varId] of Object.entries(comp.inputBindings)) {
-            const val = variables.get(varId);
-            if (val !== undefined && val !== null && val !== '') {
-              recs = recs.filter((r) => String(r[field] ?? '') === String(val));
-            }
-          }
-        }
-        setRecords(recs);
+        setRecords(d.records || []);
+        setTotal(d.total ?? (d.records || []).length);
       })
-      .catch(() => setRecords([]))
+      .catch(() => { setRecords([]); setTotal(0); })
       .finally(() => setLoading(false));
-  }, [comp.objectTypeId, filterKey]);
+  }, [comp.objectTypeId, filterKey, page, pageSize, sortField, sortAsc]);
+
+  // Reset page when filters change
+  useEffect(() => { setPage(0); }, [filterKey]);
 
   const cols = comp.columns?.length
     ? comp.columns
     : (records.length > 0 ? Object.keys(records[0]).filter((k) => !k.endsWith('[]')).slice(0, 8) : []);
 
-  // Sort
-  const sorted = sortField
-    ? [...records].sort((a, b) => {
-        const av = String(a[sortField] ?? '');
-        const bv = String(b[sortField] ?? '');
-        const numA = parseFloat(av), numB = parseFloat(bv);
-        const cmp = !isNaN(numA) && !isNaN(numB) ? numA - numB : av.localeCompare(bv);
-        return sortAsc ? cmp : -cmp;
-      })
-    : records;
-
   const handleSort = (field: string) => {
     if (sortField === field) setSortAsc((a) => !a);
     else { setSortField(field); setSortAsc(true); }
+    setPage(0);
   };
 
   const handleRowClick = (row: Record<string, unknown>) => {
@@ -1562,7 +1588,9 @@ const ObjectTableWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
     }
   };
 
-  if (loading) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  if (loading && records.length === 0) {
     return (
       <div style={{
         backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
@@ -1579,13 +1607,19 @@ const ObjectTableWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
       backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
       overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column',
     }}>
+      {/* Header */}
       <div style={{
         padding: '12px 16px', borderBottom: '1px solid #E2E8F0', fontSize: 13, fontWeight: 600,
         color: '#0D1117', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
         <span>{comp.title}</span>
-        <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>{records.length} records</span>
+        <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>
+          {total.toLocaleString()} records
+          {loading && ' (loading...)'}
+        </span>
       </div>
+
+      {/* Table */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
@@ -1600,13 +1634,13 @@ const ObjectTableWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
                     userSelect: 'none',
                   }}
                 >
-                  {c} {sortField === c ? (sortAsc ? '↑' : '↓') : ''}
+                  {c} {sortField === c ? (sortAsc ? '\u2191' : '\u2193') : ''}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {sorted.slice(0, comp.maxRows || 50).map((row, i) => (
+            {records.map((row, i) => (
               <tr
                 key={i}
                 onClick={() => handleRowClick(row)}
@@ -1626,12 +1660,73 @@ const ObjectTableWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
             ))}
           </tbody>
         </table>
-        {records.length === 0 && (
+        {records.length === 0 && !loading && (
           <div style={{ textAlign: 'center', padding: 32, color: '#94A3B8', fontSize: 12 }}>
             No records found
           </div>
         )}
       </div>
+
+      {/* Pagination footer */}
+      {total > pageSize && (
+        <div style={{
+          padding: '8px 16px', borderTop: '1px solid #E2E8F0', backgroundColor: '#F8FAFC',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 11, color: '#64748B' }}>
+            {(page * pageSize + 1).toLocaleString()}–{Math.min((page + 1) * pageSize, total).toLocaleString()} of {total.toLocaleString()}
+          </span>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              onClick={() => setPage(0)}
+              disabled={page === 0}
+              style={{
+                height: 26, padding: '0 8px', borderRadius: 4, border: '1px solid #E2E8F0',
+                backgroundColor: '#fff', color: page === 0 ? '#CBD5E1' : '#64748B',
+                fontSize: 11, cursor: page === 0 ? 'default' : 'pointer',
+              }}
+            >
+              First
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0}
+              style={{
+                height: 26, padding: '0 8px', borderRadius: 4, border: '1px solid #E2E8F0',
+                backgroundColor: '#fff', color: page === 0 ? '#CBD5E1' : '#64748B',
+                fontSize: 11, cursor: page === 0 ? 'default' : 'pointer',
+              }}
+            >
+              Prev
+            </button>
+            <span style={{ fontSize: 11, color: '#64748B', padding: '0 8px', lineHeight: '26px' }}>
+              Page {page + 1} of {totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              style={{
+                height: 26, padding: '0 8px', borderRadius: 4, border: '1px solid #E2E8F0',
+                backgroundColor: '#fff', color: page >= totalPages - 1 ? '#CBD5E1' : '#64748B',
+                fontSize: 11, cursor: page >= totalPages - 1 ? 'default' : 'pointer',
+              }}
+            >
+              Next
+            </button>
+            <button
+              onClick={() => setPage(totalPages - 1)}
+              disabled={page >= totalPages - 1}
+              style={{
+                height: 26, padding: '0 8px', borderRadius: 4, border: '1px solid #E2E8F0',
+                backgroundColor: '#fff', color: page >= totalPages - 1 ? '#CBD5E1' : '#64748B',
+                fontSize: 11, cursor: page >= totalPages - 1 ? 'default' : 'pointer',
+              }}
+            >
+              Last
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

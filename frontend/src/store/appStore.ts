@@ -5,13 +5,17 @@ import { getTenantId } from './authStore';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
 function toNexusApp(raw: Record<string, unknown>): NexusApp {
+  // Prefer object_type_ids array, fall back to wrapping single object_type_id
+  const otIds = Array.isArray(raw.object_type_ids) && (raw.object_type_ids as string[]).length > 0
+    ? (raw.object_type_ids as string[])
+    : raw.object_type_id ? [raw.object_type_id as string] : [];
   return {
     id: raw.id as string,
     name: raw.name as string,
     description: (raw.description as string) || '',
     icon: (raw.icon as string) || '',
     components: (raw.components as NexusApp['components']) || [],
-    objectTypeIds: raw.object_type_id ? [raw.object_type_id as string] : [],
+    objectTypeIds: otIds,
     createdAt: (raw.created_at as string) || new Date().toISOString(),
     updatedAt: (raw.updated_at as string) || new Date().toISOString(),
   };
@@ -49,7 +53,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   addApp: async (app: NexusApp) => {
-    const objectTypeId = app.objectTypeIds?.[0] || '';
     const resp = await fetch(`${ONTOLOGY_API}/apps`, {
       method: 'POST',
       headers: {
@@ -60,7 +63,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         name: app.name,
         description: app.description,
         icon: app.icon,
-        object_type_id: objectTypeId,
+        object_type_ids: app.objectTypeIds || [],
         components: app.components,
       }),
     });

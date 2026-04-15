@@ -44,7 +44,7 @@ const NewAppModal: React.FC<{
   const [step, setStep] = useState<'describe' | 'generating' | 'preview'>('describe');
   const [genStatus, setGenStatus] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedOtId, setSelectedOtId] = useState('');
+  const [selectedOtIds, setSelectedOtIds] = useState<string[]>([]);
   const [objectTypes, setObjectTypes] = useState<OntologyObjectType[]>([]);
   const [error, setError] = useState('');
   const [pendingApp, setPendingApp] = useState<NexusApp | null>(null);
@@ -61,26 +61,29 @@ const NewAppModal: React.FC<{
           properties: (o.properties as Array<{ name: string }>) || [],
         }));
         setObjectTypes(ots);
-        if (ots.length > 0) setSelectedOtId(ots[0].id);
+        if (ots.length > 0) setSelectedOtIds([ots[0].id]);
       })
       .catch(() => {});
   }, []);
 
   const handleGenerate = async () => {
-    if (!description.trim() || !selectedOtId) {
-      setError('Please enter a description and select an object type.');
+    if (!description.trim() || selectedOtIds.length === 0) {
+      setError('Please enter a description and select at least one object type.');
       return;
     }
     setError('');
     setStep('generating');
     setGenStatus('Fetching sample data from ontology...');
 
-    const ot = objectTypes.find((o) => o.id === selectedOtId);
-    const properties = (ot?.properties || []).map((p) => p.name);
+    // Use first selected OT for generation prompt context
+    const primaryOtId = selectedOtIds[0];
+    const ot = objectTypes.find((o) => o.id === primaryOtId);
+    const allSelectedOts = selectedOtIds.map(id => objectTypes.find(o => o.id === id)).filter(Boolean);
+    const properties = allSelectedOts.flatMap(o => (o?.properties || []).map(p => p.name));
 
     try {
       const recordsResp = await fetch(
-        `${ONTOLOGY_API}/object-types/${selectedOtId}/records`,
+        `${ONTOLOGY_API}/object-types/${primaryOtId}/records`,
         { headers: { 'x-tenant-id': getTenantId() } }
       );
       const recordsData = recordsResp.ok ? await recordsResp.json() : {};
@@ -92,9 +95,9 @@ const NewAppModal: React.FC<{
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           description,
-          object_type_id: selectedOtId,
-          object_type_name: ot?.name || 'Object',
-          properties,
+          object_type_id: primaryOtId,
+          object_type_name: allSelectedOts.map(o => o?.name).join(', ') || 'Object',
+          properties: [...new Set(properties)],
           sample_rows: sampleRows,
         }),
       });
@@ -118,7 +121,7 @@ const NewAppModal: React.FC<{
           ...c,
           id: c.id || `c${i + 1}`,
         })),
-        objectTypeIds: [selectedOtId],
+        objectTypeIds: selectedOtIds,
         createdAt: now,
         updatedAt: now,
       };
@@ -205,26 +208,49 @@ const NewAppModal: React.FC<{
 
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 12, fontWeight: 500, color: '#374151', display: 'block', marginBottom: 6 }}>
-                Data source
+                Data sources <span style={{ fontWeight: 400, color: '#94A3B8' }}>(select one or more)</span>
               </label>
               {objectTypes.length === 0 ? (
                 <div style={{ fontSize: 12, color: '#94A3B8' }}>
                   No object types found. Create one in the Ontology module first.
                 </div>
               ) : (
-                <select
-                  value={selectedOtId}
-                  onChange={(e) => setSelectedOtId(e.target.value)}
-                  style={{
-                    width: '100%', padding: '8px 12px',
-                    border: '1px solid #E2E8F0', borderRadius: 6,
-                    fontSize: 13, color: '#0D1117', backgroundColor: '#fff', outline: 'none',
-                  }}
-                >
-                  {objectTypes.map((ot) => (
-                    <option key={ot.id} value={ot.id}>{ot.name}</option>
-                  ))}
-                </select>
+                <div style={{
+                  border: '1px solid #E2E8F0', borderRadius: 6, maxHeight: 160,
+                  overflowY: 'auto', backgroundColor: '#fff',
+                }}>
+                  {objectTypes.map((ot) => {
+                    const checked = selectedOtIds.includes(ot.id);
+                    return (
+                      <label
+                        key={ot.id}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          padding: '7px 12px', cursor: 'pointer',
+                          backgroundColor: checked ? '#EFF6FF' : 'transparent',
+                          borderBottom: '1px solid #F1F5F9',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setSelectedOtIds(prev =>
+                              prev.includes(ot.id)
+                                ? prev.filter(id => id !== ot.id)
+                                : [...prev, ot.id]
+                            );
+                          }}
+                          style={{ accentColor: '#2563EB' }}
+                        />
+                        <span style={{ fontSize: 13, color: '#0D1117' }}>{ot.name}</span>
+                        <span style={{ fontSize: 10, color: '#94A3B8', marginLeft: 'auto' }}>
+                          {ot.properties.length} fields
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
@@ -247,12 +273,12 @@ const NewAppModal: React.FC<{
               </button>
               <button
                 onClick={handleGenerate}
-                disabled={!description.trim() || !selectedOtId}
+                disabled={!description.trim() || selectedOtIds.length === 0}
                 style={{
                   padding: '8px 16px', border: 'none', borderRadius: 6,
                   fontSize: 13, fontWeight: 500, color: '#fff',
-                  backgroundColor: description.trim() && selectedOtId ? '#2563EB' : '#94A3B8',
-                  cursor: description.trim() && selectedOtId ? 'pointer' : 'default',
+                  backgroundColor: description.trim() && selectedOtIds.length > 0 ? '#2563EB' : '#94A3B8',
+                  cursor: description.trim() && selectedOtIds.length > 0 ? 'pointer' : 'default',
                   display: 'flex', alignItems: 'center', gap: 6,
                 }}
               >

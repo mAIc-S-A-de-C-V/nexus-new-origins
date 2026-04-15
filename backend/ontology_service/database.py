@@ -67,6 +67,7 @@ class AppRow(Base):
     description = Column(Text, nullable=True)
     icon = Column(String, nullable=True)
     object_type_id = Column(String, nullable=False, index=True)
+    object_type_ids = Column(JSON, nullable=True, default=list)
     components = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

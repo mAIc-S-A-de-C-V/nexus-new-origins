@@ -559,13 +559,14 @@ The 'code' value must be a JSON string — escape all double quotes as \\", newl
         object_type_name: str,
         fields: list[str],
         records: list[dict],
+        total_count: int | None = None,
     ) -> str:
         """Two-pass approach: Claude plans the query from 5 samples, then answers from real results."""
         if not self.client:
             raise ValueError("Anthropic API key not configured")
 
         today = datetime.now().strftime("%Y-%m-%d")
-        total = len(records)
+        total = total_count if total_count is not None else len(records)
         sample = records[:5]
 
         # ── Pass 1: Query planning ────────────────────────────────────────────

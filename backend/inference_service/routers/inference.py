@@ -11,6 +11,8 @@ from claude_client import ClaudeInferenceClient
 
 PIPELINE_SERVICE_URL = os.environ.get("PIPELINE_SERVICE_URL", "http://pipeline-service:8002")
 LOGIC_SERVICE_URL = os.environ.get("LOGIC_SERVICE_URL", "http://logic-service:8012")
+ONTOLOGY_SERVICE_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
+ANALYTICS_SERVICE_URL = os.environ.get("ANALYTICS_SERVICE_URL", "http://analytics-service:8007")
 
 router = APIRouter()
 client = ClaudeInferenceClient()
@@ -379,24 +381,119 @@ async def stream_help(req: HelpRequest, x_tenant_id: str = Header(default="tenan
 class ChatRequest(BaseModel):
     question: str
     object_type_id: str = ""
-    object_type_name: str
+    object_type_name: str = ""
     fields: list[str] = []
     records: list[dict] = []
+    tenant_id: str = ""
+
+
+async def _fetch_records_server_side(
+    object_type_id: str, tenant_id: str
+) -> tuple[list[dict], list[str], str, int]:
+    """Fetch records + metadata from ontology service when frontend doesn't provide them."""
+    headers = {"x-tenant-id": tenant_id} if tenant_id else {}
+    async with httpx.AsyncClient(timeout=30) as hc:
+        # Fetch object type metadata
+        ot_name = ""
+        fields: list[str] = []
+        try:
+            r = await hc.get(f"{ONTOLOGY_SERVICE_URL}/object-types/{object_type_id}", headers=headers)
+            if r.is_success:
+                ot = r.json()
+                ot_name = ot.get("display_name") or ot.get("name", "")
+                fields = [p["name"] for p in ot.get("properties", []) if not p["name"].endswith("[]")]
+        except Exception:
+            pass
+
+        # Fetch records (up to 500 for context)
+        records: list[dict] = []
+        total = 0
+        try:
+            r = await hc.get(
+                f"{ONTOLOGY_SERVICE_URL}/object-types/{object_type_id}/records?limit=500",
+                headers=headers,
+            )
+            if r.is_success:
+                d = r.json()
+                records = d.get("records", [])
+                total = d.get("total", len(records))
+        except Exception:
+            pass
+
+    return records, fields, ot_name, total
+
+
+async def _run_query_server_side(
+    object_type_id: str, plan: dict, tenant_id: str
+) -> list[dict] | dict:
+    """Execute a Claude-generated query plan via the analytics service."""
+    # Map chat plan operators to analytics filter ops
+    op_map = {
+        "eq": "eq", "neq": "neq", "contains": "contains",
+        "gt": "gt", "gte": "gte", "lt": "lt", "lte": "lte",
+        "after": "gt", "before": "lt",
+    }
+    filters = []
+    for f in (plan.get("filters") or []):
+        op = op_map.get(f.get("operator", "eq"), "eq")
+        filters.append({"field": f["field"], "op": op, "value": str(f.get("value", ""))})
+
+    body: dict = {
+        "object_type_id": object_type_id,
+        "filters": filters,
+        "limit": min(plan.get("limit", 200), 500),
+        "offset": 0,
+        "select_fields": plan.get("selectFields") or [],
+    }
+    if plan.get("aggregation") and plan.get("aggregationField"):
+        body["aggregate"] = {
+            "function": plan["aggregation"].upper(),
+            "field": plan["aggregationField"],
+        }
+    if plan.get("groupBy"):
+        body["group_by"] = plan["groupBy"]
+    if plan.get("sortBy"):
+        body["order_by"] = {"field": plan["sortBy"], "direction": plan.get("sortDir", "asc")}
+
+    headers = {"x-tenant-id": tenant_id} if tenant_id else {}
+    try:
+        async with httpx.AsyncClient(timeout=30) as hc:
+            r = await hc.post(f"{ANALYTICS_SERVICE_URL}/explore/query", json=body, headers=headers)
+            if r.is_success:
+                result = r.json()
+                return result.get("rows", result if isinstance(result, list) else [])
+    except Exception:
+        pass
+    return []
 
 
 @router.post("/chat")
 async def chat_with_data(req: ChatRequest):
     """
-    Answer a natural language question about provided records.
-    Returns a markdown answer from Claude, optionally with embedded widget specs.
+    Answer a natural language question about data.
+    If records are provided, uses them directly (legacy).
+    If only object_type_id is provided, fetches records server-side
+    and runs queries via the analytics service for full data access.
     """
     try:
+        records = req.records
+        fields = req.fields
+        ot_name = req.object_type_name
+        total = len(records)
+
+        # Server-side fetch when frontend doesn't send records
+        if not records and req.object_type_id:
+            records, fields, ot_name, total = await _fetch_records_server_side(
+                req.object_type_id, req.tenant_id
+            )
+
         answer = client.chat_with_data(
             question=req.question,
             object_type_id=req.object_type_id,
-            object_type_name=req.object_type_name,
-            fields=req.fields,
-            records=req.records,
+            object_type_name=ot_name or "Data",
+            fields=fields,
+            records=records,
+            total_count=total,
         )
         return {"answer": answer}
     except ValueError as e:
