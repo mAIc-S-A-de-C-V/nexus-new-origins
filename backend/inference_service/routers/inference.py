@@ -173,7 +173,9 @@ async def generate_code_widget(req: GenerateWidgetRequest):
             sample_rows=req.sample_rows,
         )
     except ValueError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        detail = str(e)
+        status = 503 if "API key" in detail else 422
+        raise HTTPException(status_code=status, detail=detail)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Code widget generation failed: {e}")
 

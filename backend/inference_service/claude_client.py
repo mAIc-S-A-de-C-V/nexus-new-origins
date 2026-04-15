@@ -65,7 +65,61 @@ class ClaudeInferenceClient:
                 content = content.rstrip()[:-3].rstrip()
 
         logger.debug(f"Claude raw content (first 200): {repr(content[:200])}")
-        return json.loads(content)
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            # Attempt repair: Claude often produces broken JSON for code widgets
+            # because the "code" field has unescaped newlines or quotes.
+            # Try to extract the code field and re-escape it.
+            return self._repair_code_json(content)
+
+    @staticmethod
+    def _repair_code_json(raw: str) -> dict:
+        """Attempt to repair JSON with a broken 'code' string field."""
+        import re
+        # Find "code": "..." and extract the value, handling unescaped newlines
+        m = re.search(r'"code"\s*:\s*"', raw)
+        if not m:
+            raise ValueError(f"Invalid JSON from Claude (no code field found): {raw[:200]}...")
+
+        code_start = m.end()
+        # Walk forward to find the closing quote (not preceded by \)
+        depth = 0
+        i = code_start
+        while i < len(raw):
+            ch = raw[i]
+            if ch == '\\':
+                i += 2  # skip escaped char
+                continue
+            if ch == '"':
+                # Check if this quote closes the code string
+                # It should be followed by optional whitespace + , or }
+                rest = raw[i + 1:].lstrip()
+                if rest and rest[0] in (',', '}', '\n'):
+                    break
+            i += 1
+
+        code_value = raw[code_start:i]
+        # Properly escape the code value
+        escaped = code_value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+
+        # Rebuild JSON with escaped code
+        repaired = raw[:code_start] + escaped + raw[i:]
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            # Last resort: parse everything except code, inject code separately
+            try:
+                # Remove the code field entirely and parse the rest
+                no_code = raw[:m.start()] + raw[i + 1:]
+                # Clean up dangling comma
+                no_code = re.sub(r',\s*}', '}', no_code)
+                no_code = re.sub(r'{\s*,', '{', no_code)
+                result = json.loads(no_code)
+                result['code'] = code_value
+                return result
+            except Exception:
+                raise ValueError(f"Could not repair JSON from Claude: {raw[:300]}...")
 
     def infer_schema(
         self,
