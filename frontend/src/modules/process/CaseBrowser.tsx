@@ -24,6 +24,7 @@ export const CaseBrowser: React.FC<Props> = ({ objectTypeId, filterVariantId }) 
   const { cases, fetchCases, loading } = useProcessStore();
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState('all');
+  const [durationFilter, setDurationFilter] = useState('all');
   const [selectedCase, setSelectedCase] = useState<string | null>(null);
 
   useEffect(() => {
@@ -39,6 +40,9 @@ export const CaseBrowser: React.FC<Props> = ({ objectTypeId, filterVariantId }) 
         !(c.current_activity || '').toLowerCase().includes(search.toLowerCase())) return false;
     if (stateFilter !== 'all' && c.state !== stateFilter) return false;
     if (filterVariantId && c.variant_id !== filterVariantId) return false;
+    if (durationFilter === 'short' && c.total_duration_days > 1) return false;
+    if (durationFilter === 'medium' && (c.total_duration_days <= 1 || c.total_duration_days > 7)) return false;
+    if (durationFilter === 'long' && c.total_duration_days <= 7) return false;
     return true;
   });
 
@@ -62,6 +66,13 @@ export const CaseBrowser: React.FC<Props> = ({ objectTypeId, filterVariantId }) 
             <option value="all">All States</option>
             <option value="active">Active</option>
             <option value="stuck">Stuck</option>
+          </select>
+          <select value={durationFilter} onChange={e => setDurationFilter(e.target.value)}
+            style={{ height: 28, padding: '0 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, backgroundColor: '#FFFFFF' }}>
+            <option value="all">All Durations</option>
+            <option value="short">&lt; 1 day</option>
+            <option value="medium">1–7 days</option>
+            <option value="long">&gt; 7 days</option>
           </select>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, fontSize: 11, color: '#64748B' }}>
             <span><strong style={{ color: '#0D1117', fontFamily: 'var(--font-mono)' }}>{filtered.length}</strong> cases</span>

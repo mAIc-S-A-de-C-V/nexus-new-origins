@@ -17,6 +17,10 @@ export type ComponentType =
   | 'data-table'
   | 'bar-chart'
   | 'line-chart'
+  | 'pie-chart'
+  | 'area-chart'
+  | 'stat-card'
+  | 'date-picker'
   | 'kpi-banner'
   | 'text-block'
   | 'filter-bar'
@@ -53,6 +57,8 @@ export interface AppComponent {
   filterField?: string;
   // custom-code
   code?: string;
+  // stat-card
+  comparisonField?: string; // date field for period comparison
   // filters applied before rendering
   filters?: AppFilter[];
   // layout (react-grid-layout)

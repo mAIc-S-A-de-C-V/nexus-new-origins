@@ -1124,40 +1124,44 @@ export const HumanActions: React.FC = () => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: C.bg }}>
 
-      {/* Top bar */}
+      {/* Top bar — standard white header */}
       <div style={{
-        height: 50, backgroundColor: C.navy, borderBottom: `1px solid #0A2240`,
+        height: 48, backgroundColor: '#FFFFFF', borderBottom: `1px solid ${C.border}`,
         display: 'flex', alignItems: 'center', padding: '0 20px', gap: 16, flexShrink: 0,
       }}>
-        <h1 style={{ fontSize: 14, fontWeight: 700, color: '#FFFFFF', margin: 0, letterSpacing: '0.01em' }}>
+        <h1 style={{ fontSize: 15, fontWeight: 600, color: C.text, margin: 0, whiteSpace: 'nowrap' }}>
           {t('humanActions.title')}
         </h1>
         {pendingCount > 0 && (
           <span style={{
-            fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
-            backgroundColor: C.error, color: '#FFF', minWidth: 20, textAlign: 'center',
+            fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+            backgroundColor: C.errorDim, color: C.error, border: `1px solid ${C.errorBorder}`,
+            minWidth: 20, textAlign: 'center',
           }}>
             {pendingCount}
           </span>
         )}
 
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: 2, marginLeft: 8 }}>
+        {/* Tabs — pill style matching Process Mining */}
+        <div style={{ display: 'flex', gap: 1, backgroundColor: '#F1F5F9', borderRadius: 6, padding: 2 }}>
           {TABS.map(tab_ => (
             <button key={tab_.id} onClick={() => setTab(tab_.id)} style={{
-              height: 30, padding: '0 14px', borderRadius: 4,
+              height: 28, padding: '0 12px', borderRadius: 4,
               border: 'none',
-              backgroundColor: tab === tab_.id ? 'rgba(255,255,255,0.15)' : 'transparent',
-              color: tab === tab_.id ? '#FFFFFF' : 'rgba(255,255,255,0.55)',
-              fontSize: 12.5, fontWeight: tab === tab_.id ? 700 : 400,
-              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+              backgroundColor: tab === tab_.id ? '#1E3A5F' : 'transparent',
+              color: tab === tab_.id ? '#FFFFFF' : C.muted,
+              fontSize: 11, fontWeight: 500,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
+              transition: 'all 100ms',
             }}>
               {tab_.icon}
               {tab_.label}
               {'count' in tab_ && tab_.count > 0 && (
                 <span style={{
-                  fontSize: 10, fontWeight: 700, backgroundColor: C.error,
-                  color: '#FFF', borderRadius: 8, padding: '0 5px', minWidth: 16, textAlign: 'center',
+                  fontSize: 9, fontWeight: 700,
+                  backgroundColor: tab === tab_.id ? 'rgba(255,255,255,0.2)' : C.errorDim,
+                  color: tab === tab_.id ? '#FFFFFF' : C.error,
+                  borderRadius: 8, padding: '0 5px', minWidth: 16, textAlign: 'center',
                 }}>
                   {tab_.count}
                 </span>
@@ -1172,11 +1176,11 @@ export const HumanActions: React.FC = () => {
               onClick={handleDeduplicate}
               disabled={dedupRunning}
               style={{
-                height: 28, padding: '0 12px', borderRadius: 4,
-                border: `1px solid rgba(255,255,255,0.25)`,
-                backgroundColor: dedupRunning ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.1)',
-                color: dedupRunning ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.85)',
-                fontSize: 12, cursor: dedupRunning ? 'default' : 'pointer',
+                height: 28, padding: '0 12px', borderRadius: 5,
+                border: `1px solid ${C.border}`,
+                backgroundColor: dedupRunning ? '#F8FAFC' : '#FFFFFF',
+                color: dedupRunning ? C.dim : C.muted,
+                fontSize: 11, cursor: dedupRunning ? 'default' : 'pointer',
                 display: 'flex', alignItems: 'center', gap: 5, fontWeight: 500,
               }}
             >
@@ -1185,8 +1189,8 @@ export const HumanActions: React.FC = () => {
             </button>
           )}
           <button onClick={() => { fetchPending(); if (tab === 'history') fetchHistory(); }}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.55)',
-              display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.dim,
+              display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
             <RefreshCw size={13} /> {t('common.refresh')}
           </button>
         </div>

@@ -20,6 +20,7 @@ import {
   ChevronRight, RefreshCw,
   BarChart2, LineChart, Table, Hash, AlignLeft, Gauge, SlidersHorizontal,
   Database, Tag, MessageSquare, Sparkles, Loader, Braces, MapPin, Wrench,
+  PieChart, AreaChart, TrendingUp,
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator } from '../../types/app';
 import { useAppStore } from '../../store/appStore';
@@ -73,7 +74,11 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'data-table',   label: 'Data Table',   icon: <Table size={13} />,              defaultColSpan: 12, description: 'Rows from your object type' },
   { type: 'bar-chart',    label: 'Bar Chart',    icon: <BarChart2 size={13} />,          defaultColSpan: 6,  description: 'Grouped bar chart' },
   { type: 'line-chart',   label: 'Line Chart',   icon: <LineChart size={13} />,          defaultColSpan: 6,  description: 'Time-series line chart' },
+  { type: 'pie-chart',    label: 'Pie Chart',    icon: <PieChart size={13} />,           defaultColSpan: 4,  description: 'Pie / donut proportional chart' },
+  { type: 'area-chart',   label: 'Area Chart',   icon: <AreaChart size={13} />,          defaultColSpan: 6,  description: 'Stacked area for trends over time' },
+  { type: 'stat-card',    label: 'Stat Number',  icon: <TrendingUp size={13} />,         defaultColSpan: 3,  description: 'Large number with trend arrow' },
   { type: 'filter-bar',   label: 'Filter Bar',   icon: <SlidersHorizontal size={13} />,  defaultColSpan: 12, description: 'Interactive filter chips' },
+  { type: 'date-picker',  label: 'Date Picker',  icon: <SlidersHorizontal size={13} />,  defaultColSpan: 6,  description: 'Date range filter for all widgets' },
   { type: 'text-block',   label: 'Text Block',   icon: <AlignLeft size={13} />,          defaultColSpan: 12, description: 'Rich text / notes' },
   { type: 'chat-widget',  label: 'Chat',         icon: <MessageSquare size={13} />,      defaultColSpan: 12, description: 'Ask questions about data with AI' },
   { type: 'custom-code',  label: 'Custom Code',  icon: <Braces size={13} />,             defaultColSpan: 12, description: 'AI-generated custom visualization' },
@@ -397,7 +402,8 @@ const MiniRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
 // Default grid row heights per widget type (1 row = 60px via rowHeight prop)
 const DEFAULT_GRID_H: Record<string, number> = {
   'metric-card': 3, 'kpi-banner': 2, 'filter-bar': 2, 'text-block': 2,
-  'bar-chart': 5, 'line-chart': 4, 'data-table': 6, 'chat-widget': 7,
+  'bar-chart': 5, 'line-chart': 4, 'pie-chart': 5, 'area-chart': 5, 'stat-card': 3, 'date-picker': 2,
+  'data-table': 6, 'chat-widget': 7,
 };
 const ROW_HEIGHT = 60;
 const GRID_COLS = 12;
@@ -1045,10 +1051,69 @@ const ConfigPanel: React.FC<{
           </>
         )}
 
+        {/* pie-chart */}
+        {comp.type === 'pie-chart' && (
+          <>
+            <Row label="CATEGORY (SLICES)">
+              <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} />
+            </Row>
+            <Row label="VALUE (BLANK = COUNT)">
+              <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} placeholder="Count (auto)" />
+            </Row>
+          </>
+        )}
+
+        {/* area-chart */}
+        {comp.type === 'area-chart' && (
+          <>
+            <Row label="X-AXIS (DATE / TIME)">
+              <FieldPicker value={comp.xField} onPick={(f) => set({ xField: f })} />
+            </Row>
+            <Row label="Y-AXIS (NUMBER)">
+              <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} />
+            </Row>
+            <Row label="GROUP BY (SERIES)">
+              <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} placeholder="Optional" />
+            </Row>
+          </>
+        )}
+
+        {/* stat-card */}
+        {comp.type === 'stat-card' && (
+          <>
+            <Row label="METRIC FIELD">
+              <FieldPicker value={comp.field} onPick={(f) => set({ field: f })} />
+            </Row>
+            <Row label="AGGREGATION">
+              <select
+                value={comp.aggregation || 'count'}
+                onChange={(e) => set({ aggregation: e.target.value as AppComponent['aggregation'] })}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <option value="count">Count</option>
+                <option value="sum">Sum</option>
+                <option value="avg">Average</option>
+                <option value="max">Max</option>
+                <option value="min">Min</option>
+              </select>
+            </Row>
+            <Row label="DATE FIELD (FOR TREND)">
+              <FieldPicker value={comp.comparisonField} onPick={(f) => set({ comparisonField: f })} placeholder="Optional" />
+            </Row>
+          </>
+        )}
+
         {/* filter-bar */}
         {comp.type === 'filter-bar' && (
           <Row label="FILTER FIELD">
             <FieldPicker value={comp.filterField} onPick={(f) => set({ filterField: f })} />
+          </Row>
+        )}
+
+        {/* date-picker */}
+        {comp.type === 'date-picker' && (
+          <Row label="DATE FIELD TO FILTER">
+            <FieldPicker value={comp.xField} onPick={(f) => set({ xField: f })} />
           </Row>
         )}
 

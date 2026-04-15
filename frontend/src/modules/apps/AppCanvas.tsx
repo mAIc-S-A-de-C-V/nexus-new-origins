@@ -1,8 +1,16 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { NexusApp, AppComponent, AppFilter } from '../../types/app';
 import { getTenantId } from '../../store/authStore';
+
+// ── Cross-widget filter context ───────────────────────────────────────────
+interface CrossFilter { field: string; value: string; sourceId: string }
+interface CrossFilterCtx {
+  filter: CrossFilter | null;
+  setFilter: (f: CrossFilter | null) => void;
+}
+const CrossFilterContext = createContext<CrossFilterCtx>({ filter: null, setFilter: () => {} });
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -282,6 +290,7 @@ const BarChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[
   comp,
   records,
 }) => {
+  const { filter: crossFilter, setFilter: setCrossFilter } = useContext(CrossFilterContext);
   // Auto-detect the best label field: prefer the configured one, but fall back to
   // the first field that produces more than 1 distinct non-numeric value
   const candidateLabelField = comp.labelField || comp.columns?.[0] || '';
@@ -372,14 +381,23 @@ const BarChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[
             {entries.map(([label, val], i) => {
               const y = i * (barHeight + gap);
               const barW = ((val / maxVal) * (400 - labelW - 60));
+              const isActive = crossFilter?.field === labelField && crossFilter?.value === label;
               return (
-                <g key={label}>
+                <g
+                  key={label}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => {
+                    if (isActive) setCrossFilter(null);
+                    else setCrossFilter({ field: labelField, value: label === '(empty)' ? '' : label, sourceId: comp.id });
+                  }}
+                >
                   <text
                     x={labelW - 6}
                     y={y + barHeight / 2 + 4}
                     textAnchor="end"
                     fontSize={10}
-                    fill="#64748B"
+                    fill={isActive ? '#2563EB' : '#64748B'}
+                    fontWeight={isActive ? 700 : 400}
                   >
                     {label.length > 18 ? label.slice(0, 18) + '…' : label}
                   </text>
@@ -389,8 +407,10 @@ const BarChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[
                     width={Math.max(barW, 2)}
                     height={barHeight}
                     rx={3}
-                    fill="#2563EB"
-                    opacity={0.8}
+                    fill={isActive ? '#1D4ED8' : '#2563EB'}
+                    opacity={isActive ? 1 : 0.8}
+                    stroke={isActive ? '#1E40AF' : 'none'}
+                    strokeWidth={isActive ? 2 : 0}
                   />
                   <text
                     x={labelW + barW + 6}
@@ -539,6 +559,312 @@ const LineChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>
   );
 };
 
+// ── Pie / Donut Chart ────────────────────────────────────────────────────
+const PieChartWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
+  comp, records,
+}) => {
+  const { filter: crossFilter, setFilter: setCrossFilter } = useContext(CrossFilterContext);
+  const labelField = comp.labelField || (records.length ? Object.keys(records[0])[0] : 'name');
+  const valueField = comp.valueField || '';
+
+  // Group data
+  const grouped: Record<string, number> = {};
+  for (const r of records) {
+    const label = (r[labelField] != null && r[labelField] !== '' ? String(r[labelField]) : '(empty)').slice(0, 30);
+    if (valueField) {
+      const n = parseFloat(String(r[valueField] ?? 0));
+      grouped[label] = (grouped[label] || 0) + (isNaN(n) ? 0 : n);
+    } else {
+      grouped[label] = (grouped[label] || 0) + 1;
+    }
+  }
+
+  const entries = Object.entries(grouped).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+  const colors = ['#2563EB', '#7C3AED', '#DC2626', '#F59E0B', '#10B981', '#EC4899', '#06B6D4', '#8B5CF6', '#14B8A6', '#F97316', '#6366F1', '#84CC16'];
+  const cx = 100, cy = 100, r = 80, ir = 45; // outer and inner (donut) radius
+
+  // Build SVG arcs
+  let cumAngle = -Math.PI / 2;
+  const arcs = entries.map(([label, val], i) => {
+    const angle = (val / total) * Math.PI * 2;
+    const startAngle = cumAngle;
+    cumAngle += angle;
+    const endAngle = cumAngle;
+    const largeArc = angle > Math.PI ? 1 : 0;
+    const x1 = cx + r * Math.cos(startAngle), y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle), y2 = cy + r * Math.sin(endAngle);
+    const ix1 = cx + ir * Math.cos(endAngle), iy1 = cy + ir * Math.sin(endAngle);
+    const ix2 = cx + ir * Math.cos(startAngle), iy2 = cy + ir * Math.sin(startAngle);
+    const path = `M ${ix2} ${iy2} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} L ${ix1} ${iy1} A ${ir} ${ir} 0 ${largeArc} 0 ${ix2} ${iy2} Z`;
+    return { label, val, path, color: colors[i % colors.length], pct: ((val / total) * 100).toFixed(1) };
+  });
+
+  return (
+    <div style={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid #E2E8F0', fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 24, padding: '12px 16px', overflow: 'hidden' }}>
+        {entries.length === 0 ? (
+          <div style={{ color: '#94A3B8', fontSize: 12 }}>No data</div>
+        ) : (
+          <>
+            <svg width="200" height="200" viewBox="0 0 200 200">
+              {arcs.map((a, i) => {
+                const isActive = crossFilter?.field === labelField && crossFilter?.value === a.label;
+                return (
+                  <path
+                    key={i} d={a.path} fill={a.color} stroke={isActive ? '#0D1117' : '#fff'}
+                    strokeWidth={isActive ? 3 : 1.5}
+                    style={{ cursor: 'pointer', opacity: crossFilter && !isActive ? 0.4 : 1 }}
+                    onClick={() => {
+                      if (isActive) setCrossFilter(null);
+                      else setCrossFilter({ field: labelField, value: a.label === '(empty)' ? '' : a.label, sourceId: comp.id });
+                    }}
+                  >
+                    <title>{a.label}: {a.val.toLocaleString()} ({a.pct}%)</title>
+                  </path>
+                );
+              })}
+              <text x={cx} y={cy - 4} textAnchor="middle" fontSize={18} fontWeight={700} fill="#0D1117">{total.toLocaleString()}</text>
+              <text x={cx} y={cy + 12} textAnchor="middle" fontSize={9} fill="#94A3B8">total</text>
+            </svg>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 100 }}>
+              {arcs.map((a, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#64748B' }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: a.color, flexShrink: 0 }} />
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.label}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', color: '#0D1117', fontWeight: 600 }}>{a.pct}%</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ── Area Chart ───────────────────────────────────────────────────────────
+const AreaChartWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
+  comp, records,
+}) => {
+  const allFields = records.length > 0 ? Object.keys(records[0]) : [];
+  const xField = comp.xField || allFields.find(f => /date|time|created|updated/i.test(f)) || allFields[0] || '';
+  const valueField = comp.valueField || allFields.find(f => /count|amount|value|total|price|revenue/i.test(f)) || '';
+  const groupField = comp.labelField || '';
+
+  // Parse and sort by date
+  const parseDate = (v: unknown) => {
+    if (!v) return 0;
+    const s = String(v);
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return d.getTime();
+    const n = Number(s);
+    if (!isNaN(n) && n > 1e9 && n < 1e13) return n * 1000;
+    if (!isNaN(n) && n >= 1e13) return n;
+    return 0;
+  };
+
+  // Bucket by month
+  const buckets: Record<string, Record<string, number>> = {};
+  for (const r of records) {
+    const ts = parseDate(r[xField]);
+    if (!ts) continue;
+    const d = new Date(ts);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (!buckets[key]) buckets[key] = {};
+    const series = groupField && r[groupField] ? String(r[groupField]) : 'value';
+    if (valueField) {
+      const n = parseFloat(String(r[valueField] ?? 0));
+      buckets[key][series] = (buckets[key][series] || 0) + (isNaN(n) ? 0 : n);
+    } else {
+      buckets[key][series] = (buckets[key][series] || 0) + 1;
+    }
+  }
+
+  const sortedKeys = Object.keys(buckets).sort();
+  const allSeries = [...new Set(sortedKeys.flatMap(k => Object.keys(buckets[k])))].slice(0, 5);
+  const colors = ['#2563EB', '#10B981', '#F59E0B', '#DC2626', '#7C3AED'];
+
+  if (!sortedKeys.length) {
+    return (
+      <div style={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid #E2E8F0', fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94A3B8', fontSize: 12 }}>No data</div>
+      </div>
+    );
+  }
+
+  const data = sortedKeys.map(k => ({ key: k, ...Object.fromEntries(allSeries.map(s => [s, buckets[k][s] || 0])) }));
+  const maxVal = Math.max(...data.flatMap(d => allSeries.map(s => (d as unknown as Record<string, number>)[s] || 0)), 1);
+
+  // SVG area chart
+  const W = 400, H = 200, padL = 40, padR = 10, padT = 10, padB = 30;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+
+  return (
+    <div style={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid #E2E8F0', fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+      <div style={{ flex: 1, padding: '12px 16px', overflow: 'hidden' }}>
+        <svg width="100%" height="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+          {/* Y-axis gridlines */}
+          {[0, 0.25, 0.5, 0.75, 1].map(pct => {
+            const y = padT + chartH * (1 - pct);
+            return (
+              <g key={pct}>
+                <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#F1F5F9" strokeWidth={1} />
+                <text x={padL - 4} y={y + 3} textAnchor="end" fontSize={8} fill="#94A3B8">{Math.round(maxVal * pct).toLocaleString()}</text>
+              </g>
+            );
+          })}
+          {/* Areas (stacked if multiple series, single otherwise) */}
+          {allSeries.map((s, si) => {
+            const points = data.map((d, i) => {
+              const x = padL + (i / Math.max(data.length - 1, 1)) * chartW;
+              const val = (d as unknown as Record<string, number>)[s] || 0;
+              const y = padT + chartH * (1 - val / maxVal);
+              return `${x},${y}`;
+            });
+            const baseline = `${padL + chartW},${padT + chartH} ${padL},${padT + chartH}`;
+            return (
+              <polygon key={s} points={`${points.join(' ')} ${baseline}`} fill={colors[si % colors.length]} opacity={0.25} stroke={colors[si % colors.length]} strokeWidth={1.5}
+                style={{ transition: 'opacity 0.2s' }}
+              />
+            );
+          })}
+          {/* X labels */}
+          {data.filter((_, i) => i % Math.max(1, Math.floor(data.length / 6)) === 0).map((d, i, arr) => {
+            const idx = data.indexOf(d);
+            const x = padL + (idx / Math.max(data.length - 1, 1)) * chartW;
+            return <text key={i} x={x} y={H - 4} textAnchor="middle" fontSize={8} fill="#94A3B8">{d.key}</text>;
+          })}
+          {/* Legend */}
+          {allSeries.length > 1 && allSeries.map((s, i) => (
+            <g key={s} transform={`translate(${padL + i * 80}, ${H - 14})`}>
+              <rect width={8} height={8} rx={1} fill={colors[i % colors.length]} />
+              <text x={11} y={7} fontSize={8} fill="#64748B">{s.slice(0, 12)}</text>
+            </g>
+          ))}
+        </svg>
+      </div>
+    </div>
+  );
+};
+
+// ── Stat Card ────────────────────────────────────────────────────────────
+const StatCard: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
+  comp, records,
+}) => {
+  const field = comp.field || '';
+  const agg = comp.aggregation || 'count';
+  const dateField = comp.comparisonField || '';
+
+  // Compute current value
+  const computeValue = (recs: Record<string, unknown>[]) => {
+    if (agg === 'count') return recs.length;
+    const nums = recs.map(r => parseFloat(String(r[field] ?? ''))).filter(n => !isNaN(n));
+    if (!nums.length) return 0;
+    switch (agg) {
+      case 'sum': return nums.reduce((a, b) => a + b, 0);
+      case 'avg': return nums.reduce((a, b) => a + b, 0) / nums.length;
+      case 'max': return Math.max(...nums);
+      case 'min': return Math.min(...nums);
+      default: return nums.length;
+    }
+  };
+
+  const currentVal = computeValue(records);
+
+  // Compute trend if dateField is set — compare last 30 days vs prior 30 days
+  let trendPct: number | null = null;
+  let trendDirection: 'up' | 'down' | 'flat' = 'flat';
+  if (dateField && records.length > 0) {
+    const now = Date.now();
+    const d30 = 30 * 86400000;
+    const recent = records.filter(r => {
+      const d = new Date(String(r[dateField] ?? ''));
+      return !isNaN(d.getTime()) && d.getTime() > now - d30;
+    });
+    const prior = records.filter(r => {
+      const d = new Date(String(r[dateField] ?? ''));
+      return !isNaN(d.getTime()) && d.getTime() > now - d30 * 2 && d.getTime() <= now - d30;
+    });
+    const recentVal = computeValue(recent);
+    const priorVal = computeValue(prior);
+    if (priorVal > 0) {
+      trendPct = ((recentVal - priorVal) / priorVal) * 100;
+      trendDirection = trendPct > 1 ? 'up' : trendPct < -1 ? 'down' : 'flat';
+    }
+  }
+
+  const fmt = (v: number) => {
+    if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+    if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+    return agg === 'avg' ? v.toFixed(1) : v.toLocaleString();
+  };
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center',
+      padding: '20px 24px',
+    }}>
+      <div style={{ fontSize: 10, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        {comp.title}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <span style={{ fontSize: 32, fontWeight: 700, color: '#0D1117', fontFamily: 'var(--font-mono)', lineHeight: 1 }}>
+          {fmt(currentVal)}
+        </span>
+        {trendPct !== null && (
+          <span style={{
+            fontSize: 13, fontWeight: 600,
+            color: trendDirection === 'up' ? '#10B981' : trendDirection === 'down' ? '#DC2626' : '#94A3B8',
+          }}>
+            {trendDirection === 'up' ? '↑' : trendDirection === 'down' ? '↓' : '→'} {Math.abs(trendPct).toFixed(1)}%
+          </span>
+        )}
+      </div>
+      {trendPct !== null && (
+        <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 4 }}>
+          vs prior 30 days
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Date Picker Widget ───────────────────────────────────────────────────
+const DatePickerWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({ comp }) => {
+  const [start, setStart] = React.useState('');
+  const [end, setEnd] = React.useState('');
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      padding: '12px 16px', height: '100%',
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginBottom: 10 }}>{comp.title || 'Date Filter'}</div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input type="date" value={start} onChange={e => setStart(e.target.value)}
+          style={{ height: 28, padding: '0 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, color: '#0D1117', outline: 'none' }} />
+        <span style={{ fontSize: 10, color: '#94A3B8' }}>to</span>
+        <input type="date" value={end} onChange={e => setEnd(e.target.value)}
+          style={{ height: 28, padding: '0 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, color: '#0D1117', outline: 'none' }} />
+        {(start || end) && (
+          <button onClick={() => { setStart(''); setEnd(''); }}
+            style={{ height: 28, padding: '0 10px', border: '1px solid #E2E8F0', borderRadius: 4, background: '#FFF', fontSize: 11, color: '#64748B', cursor: 'pointer' }}>
+            Clear
+          </button>
+        )}
+        <div style={{ fontSize: 10, color: '#94A3B8', marginLeft: 'auto' }}>
+          Filters: {comp.xField || 'date field'}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const FilterBar: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
   comp,
   records,
@@ -633,6 +959,10 @@ const InlineWidget: React.FC<{ comp: AppComponent; records: Record<string, unkno
     case 'data-table': return <DataTable comp={comp} records={filtered} />;
     case 'bar-chart': return <BarChart comp={comp} records={filtered} />;
     case 'line-chart': return <LineChart comp={comp} records={filtered} />;
+    case 'pie-chart': return <PieChartWidget comp={comp} records={filtered} />;
+    case 'area-chart': return <AreaChartWidget comp={comp} records={filtered} />;
+    case 'stat-card': return <StatCard comp={comp} records={filtered} />;
+    case 'date-picker': return <DatePickerWidget comp={comp} records={filtered} />;
     case 'custom-code': return <CustomCodeWidget comp={comp} records={filtered} />;
     default: return null;
   }
@@ -1006,7 +1336,15 @@ const UtilityWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
 
 const ComponentRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   const { records: rawRecords, loading } = useRecords(comp.objectTypeId);
-  const records = applyFilters(rawRecords, comp.filters);
+  const { filter: crossFilter } = useContext(CrossFilterContext);
+  const afterCompFilters = applyFilters(rawRecords, comp.filters);
+  // Apply cross-widget filter (skip if this widget is the source)
+  const records = crossFilter && crossFilter.sourceId !== comp.id
+    ? afterCompFilters.filter(r => {
+        const raw = resolveRaw(r, crossFilter.field);
+        return String(raw ?? '') === crossFilter.value || (crossFilter.value === '' && (raw == null || raw === ''));
+      })
+    : afterCompFilters;
 
   if (loading) {
     return (
@@ -1032,6 +1370,10 @@ const ComponentRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
     case 'data-table': return <DataTable comp={comp} records={records} />;
     case 'bar-chart': return <BarChart comp={comp} records={records} />;
     case 'line-chart': return <LineChart comp={comp} records={records} />;
+    case 'pie-chart': return <PieChartWidget comp={comp} records={records} />;
+    case 'area-chart': return <AreaChartWidget comp={comp} records={records} />;
+    case 'stat-card': return <StatCard comp={comp} records={records} />;
+    case 'date-picker': return <DatePickerWidget comp={comp} records={records} />;
     case 'filter-bar': return <FilterBar comp={comp} records={records} />;
     case 'text-block': return <TextBlock comp={comp} />;
     case 'chat-widget': return <ChatWidget comp={comp} records={records} />;
@@ -1049,31 +1391,60 @@ interface Props {
 }
 
 const AppCanvas: React.FC<Props> = ({ app }) => {
+  const [crossFilter, setCrossFilter] = useState<CrossFilter | null>(null);
+
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: 'repeat(12, 1fr)',
-      gap: 16,
-      padding: 24,
-      alignItems: 'start',
-    }}>
-      {app.components.map((comp) => {
-        const defaultMin = comp.type === 'data-table' ? 320 : comp.type === 'bar-chart' ? 280 : comp.type === 'chat-widget' ? 400 : 140;
-        const fixedH = comp.gridH ? comp.gridH * 60 : undefined;
-        return (
-          <div
-            key={comp.id}
-            style={{
-              gridColumn: `span ${comp.colSpan || 6}`,
-              height: fixedH ? fixedH : undefined,
-              minHeight: fixedH ? undefined : defaultMin,
-            }}
-          >
-            <ComponentRenderer comp={comp} />
+    <CrossFilterContext.Provider value={{ filter: crossFilter, setFilter: setCrossFilter }}>
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {/* Cross-filter badge */}
+        {crossFilter && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '8px 24px',
+            backgroundColor: '#EFF6FF', borderBottom: '1px solid #BFDBFE',
+          }}>
+            <span style={{ fontSize: 11, color: '#1D4ED8', fontWeight: 600 }}>Filtered:</span>
+            <span style={{
+              fontSize: 11, padding: '2px 8px', borderRadius: 10,
+              backgroundColor: '#DBEAFE', color: '#1E40AF', fontWeight: 500,
+            }}>
+              {crossFilter.field} = {crossFilter.value || '(empty)'}
+            </span>
+            <button
+              onClick={() => setCrossFilter(null)}
+              style={{
+                border: 'none', background: '#BFDBFE', borderRadius: 3,
+                width: 20, height: 20, cursor: 'pointer', fontSize: 12,
+                color: '#1D4ED8', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >×</button>
           </div>
-        );
-      })}
-    </div>
+        )}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(12, 1fr)',
+          gap: 16,
+          padding: 24,
+          alignItems: 'start',
+        }}>
+          {app.components.map((comp) => {
+            const defaultMin = comp.type === 'data-table' ? 320 : comp.type === 'bar-chart' ? 280 : comp.type === 'chat-widget' ? 400 : 140;
+            const fixedH = comp.gridH ? comp.gridH * 60 : undefined;
+            return (
+              <div
+                key={comp.id}
+                style={{
+                  gridColumn: `span ${comp.colSpan || 6}`,
+                  height: fixedH ? fixedH : undefined,
+                  minHeight: fixedH ? undefined : defaultMin,
+                }}
+              >
+                <ComponentRenderer comp={comp} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </CrossFilterContext.Provider>
   );
 };
 
