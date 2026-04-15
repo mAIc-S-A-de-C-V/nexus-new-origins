@@ -216,6 +216,11 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
             run_row.error_message = run.get("error")
             run_row.node_audits = run.get("node_audits")
             run_row.finished_at = datetime.now(timezone.utc)
+            # Persist watermark value from node_audits for incremental pipelines
+            node_audits = run.get("node_audits") or {}
+            watermark = node_audits.get("_watermark_value")
+            if watermark:
+                run_row.watermark_value = watermark
 
         # Update pipeline status too
         pipeline_result = await db.execute(

@@ -97,6 +97,21 @@ class AgentRunRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class ModelProviderRow(Base):
+    """A configured AI model provider (Anthropic, OpenAI, Google, etc.)."""
+    __tablename__ = "model_providers"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    provider_type = Column(String, nullable=False)  # anthropic, openai, google, azure_openai, local
+    api_key_encrypted = Column(String, nullable=True)
+    base_url = Column(String, nullable=True)
+    models = Column(JSON, default=list)  # [{id, label, context_window}]
+    is_default = Column(Boolean, default=False)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class AgentScheduleRow(Base):
     """A recurring schedule that auto-runs an agent with a prompt."""
     __tablename__ = "agent_schedules"

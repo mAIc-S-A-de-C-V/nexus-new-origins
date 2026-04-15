@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { NexusApp, AppComponent, AppFilter } from '../../types/app';
+import { NexusApp, AppComponent, AppFilter, AppEvent } from '../../types/app';
 import { getTenantId } from '../../store/authStore';
+import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 
 // ── Cross-widget filter context ───────────────────────────────────────────
 interface CrossFilter { field: string; value: string; sourceId: string }
@@ -1332,9 +1333,339 @@ const UtilityWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   );
 };
 
+// ── Dropdown Filter Widget ────────────────────────────────────────────────
+
+const DropdownFilterWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const { setVariable, getVariable } = useAppVariables();
+  const varId = comp.variableId || '';
+  const currentValue = varId ? getVariable(varId) : '';
+  const { records } = useRecords(comp.objectTypeId);
+
+  // Static options from config or distinct values from records
+  const opts: string[] = comp.options && comp.options.length > 0
+    ? comp.options
+    : (() => {
+        const field = comp.filterField || comp.labelField || '';
+        if (!field || !records.length) return [];
+        const seen = new Set<string>();
+        for (const r of records) {
+          const v = String(r[field] ?? '');
+          if (v) seen.add(v);
+          if (seen.size >= 100) break;
+        }
+        return Array.from(seen).sort();
+      })();
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      padding: '12px 16px', height: '100%', display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+      <select
+        value={currentValue ?? ''}
+        onChange={(e) => { if (varId) setVariable(varId, e.target.value); }}
+        style={{
+          width: '100%', height: 32, padding: '0 8px',
+          border: '1px solid #E2E8F0', borderRadius: 6, fontSize: 12,
+          color: currentValue ? '#0D1117' : '#94A3B8', backgroundColor: '#F8FAFC',
+          outline: 'none', cursor: 'pointer',
+        }}
+      >
+        <option value="">-- Select --</option>
+        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+      {currentValue && (
+        <button
+          onClick={() => { if (varId) setVariable(varId, ''); }}
+          style={{
+            alignSelf: 'flex-start', padding: '2px 8px', border: '1px solid #E2E8F0',
+            borderRadius: 4, background: '#F8FAFC', fontSize: 11, color: '#64748B',
+            cursor: 'pointer',
+          }}
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+};
+
+// ── Form Widget ──────────────────────────────────────────────────────────
+
+const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const formFields = comp.fields || [];
+  const [values, setValues] = useState<Record<string, any>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const handleSubmit = async () => {
+    if (!comp.actionName) return;
+    setSubmitting(true);
+    setStatus('idle');
+    setErrorMsg('');
+    try {
+      const ACTION_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
+      const res = await fetch(`${ACTION_API}/actions/${comp.actionName}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+        body: JSON.stringify({ inputs: values }),
+      });
+      if (!res.ok) throw new Error(`Status ${res.status}`);
+      setStatus('success');
+      setTimeout(() => setStatus('idle'), 3000);
+    } catch (e: unknown) {
+      setStatus('error');
+      setErrorMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      padding: '16px 20px', height: '100%', display: 'flex', flexDirection: 'column', gap: 10,
+      overflowY: 'auto',
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+      {formFields.map((f) => (
+        <div key={f.name}>
+          <div style={{ fontSize: 11, fontWeight: 500, color: '#64748B', marginBottom: 4 }}>{f.label || f.name}</div>
+          {f.type === 'boolean' ? (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={!!values[f.name]}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.checked }))}
+              />
+              <span style={{ fontSize: 12, color: '#374151' }}>{values[f.name] ? 'Yes' : 'No'}</span>
+            </label>
+          ) : f.type === 'textarea' ? (
+            <textarea
+              value={values[f.name] ?? ''}
+              onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+              rows={3}
+              style={{
+                width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
+                borderRadius: 4, fontSize: 12, color: '#0D1117', resize: 'vertical',
+                boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+          ) : (
+            <input
+              type={f.type === 'number' ? 'number' : 'text'}
+              value={values[f.name] ?? ''}
+              onChange={(e) => setValues((v) => ({ ...v, [f.name]: f.type === 'number' ? Number(e.target.value) : e.target.value }))}
+              style={{
+                width: '100%', height: 30, padding: '0 8px', border: '1px solid #E2E8F0',
+                borderRadius: 4, fontSize: 12, color: '#0D1117', boxSizing: 'border-box',
+                outline: 'none',
+              }}
+            />
+          )}
+        </div>
+      ))}
+      {comp.actionName && (
+        <button
+          onClick={handleSubmit}
+          disabled={submitting}
+          style={{
+            marginTop: 4, padding: '7px 16px', border: 'none', borderRadius: 6,
+            backgroundColor: submitting ? '#E2E8F0' : '#2563EB',
+            color: submitting ? '#94A3B8' : '#fff',
+            fontSize: 12, fontWeight: 600, cursor: submitting ? 'default' : 'pointer',
+            alignSelf: 'flex-start',
+          }}
+        >
+          {submitting ? 'Submitting...' : 'Submit'}
+        </button>
+      )}
+      {status === 'success' && (
+        <div style={{ fontSize: 11, color: '#16A34A', backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 4, padding: '4px 8px' }}>
+          Submitted successfully
+        </div>
+      )}
+      {status === 'error' && (
+        <div style={{ fontSize: 11, color: '#DC2626', backgroundColor: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 4, padding: '4px 8px' }}>
+          Error: {errorMsg}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Object Table Widget ──────────────────────────────────────────────────
+
+const ObjectTableWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const { variables, setVariable } = useAppVariables();
+  const [records, setRecords] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [sortField, setSortField] = useState<string | null>(null);
+  const [sortAsc, setSortAsc] = useState(true);
+
+  // Build filter params from inputBindings + current variable values
+  const filterKey = comp.inputBindings
+    ? Object.entries(comp.inputBindings).map(([k, vId]) => `${k}=${variables.get(vId) ?? ''}`).join('&')
+    : '';
+
+  useEffect(() => {
+    if (!comp.objectTypeId) return;
+    setLoading(true);
+    fetch(`${ONTOLOGY_API}/object-types/${comp.objectTypeId}/records`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        let recs: Record<string, unknown>[] = d.records || [];
+        // Apply inputBinding filters client-side
+        if (comp.inputBindings) {
+          for (const [field, varId] of Object.entries(comp.inputBindings)) {
+            const val = variables.get(varId);
+            if (val !== undefined && val !== null && val !== '') {
+              recs = recs.filter((r) => String(r[field] ?? '') === String(val));
+            }
+          }
+        }
+        setRecords(recs);
+      })
+      .catch(() => setRecords([]))
+      .finally(() => setLoading(false));
+  }, [comp.objectTypeId, filterKey]);
+
+  const cols = comp.columns?.length
+    ? comp.columns
+    : (records.length > 0 ? Object.keys(records[0]).filter((k) => !k.endsWith('[]')).slice(0, 8) : []);
+
+  // Sort
+  const sorted = sortField
+    ? [...records].sort((a, b) => {
+        const av = String(a[sortField] ?? '');
+        const bv = String(b[sortField] ?? '');
+        const numA = parseFloat(av), numB = parseFloat(bv);
+        const cmp = !isNaN(numA) && !isNaN(numB) ? numA - numB : av.localeCompare(bv);
+        return sortAsc ? cmp : -cmp;
+      })
+    : records;
+
+  const handleSort = (field: string) => {
+    if (sortField === field) setSortAsc((a) => !a);
+    else { setSortField(field); setSortAsc(true); }
+  };
+
+  const handleRowClick = (row: Record<string, unknown>) => {
+    if (comp.outputBindings) {
+      for (const [, varId] of Object.entries(comp.outputBindings)) {
+        setVariable(varId, row);
+      }
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{
+        backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        height: '100%', color: '#94A3B8', fontSize: 12,
+      }}>
+        Loading...
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column',
+    }}>
+      <div style={{
+        padding: '12px 16px', borderBottom: '1px solid #E2E8F0', fontSize: 13, fontWeight: 600,
+        color: '#0D1117', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      }}>
+        <span>{comp.title}</span>
+        <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>{records.length} records</span>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ backgroundColor: '#F8FAFC', position: 'sticky', top: 0 }}>
+              {cols.map((c) => (
+                <th
+                  key={c}
+                  onClick={() => handleSort(c)}
+                  style={{
+                    textAlign: 'left', padding: '8px 12px', color: '#64748B', fontWeight: 500,
+                    borderBottom: '1px solid #E2E8F0', whiteSpace: 'nowrap', cursor: 'pointer',
+                    userSelect: 'none',
+                  }}
+                >
+                  {c} {sortField === c ? (sortAsc ? '↑' : '↓') : ''}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.slice(0, comp.maxRows || 50).map((row, i) => (
+              <tr
+                key={i}
+                onClick={() => handleRowClick(row)}
+                style={{ borderBottom: '1px solid #F1F5F9', cursor: comp.outputBindings ? 'pointer' : 'default' }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '')}
+              >
+                {cols.map((c) => (
+                  <td key={c} style={{
+                    padding: '7px 12px', color: '#374151', maxWidth: 200,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {Array.isArray(row[c]) ? `[${(row[c] as unknown[]).length} items]` : String(row[c] ?? '')}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {records.length === 0 && (
+          <div style={{ textAlign: 'center', padding: 32, color: '#94A3B8', fontSize: 12 }}>
+            No records found
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ── Event bus helper ─────────────────────────────────────────────────────
+
+function useEventBus(events: AppEvent[] | undefined) {
+  const { setVariable } = useAppVariables();
+
+  const fireTrigger = useCallback(
+    (sourceWidgetId: string, trigger: string, payload?: any) => {
+      if (!events) return;
+      const matched = events.filter(
+        (e) => e.sourceWidgetId === sourceWidgetId && e.trigger === trigger,
+      );
+      for (const ev of matched) {
+        for (const action of ev.actions) {
+          if (action.type === 'setVariable' && action.variableId) {
+            const value = action.valueFrom && payload ? payload[action.valueFrom] : payload;
+            setVariable(action.variableId, value);
+          }
+          // refreshWidget is a no-op for now — widgets auto-refresh on variable change
+        }
+      }
+    },
+    [events, setVariable],
+  );
+
+  return { fireTrigger };
+}
+
 // ── Component wrapper with per-type data loading ───────────────────────────
 
-const ComponentRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[] }> = ({ comp, events }) => {
   const { records: rawRecords, loading } = useRecords(comp.objectTypeId);
   const { filter: crossFilter } = useContext(CrossFilterContext);
   const afterCompFilters = applyFilters(rawRecords, comp.filters);
@@ -1380,6 +1711,9 @@ const ComponentRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
     case 'custom-code': return <CustomCodeWidget comp={comp} records={records} />;
     case 'map': return <MapWidget comp={comp} records={records} />;
     case 'utility-output': return <UtilityWidget comp={comp} />;
+    case 'dropdown-filter': return <DropdownFilterWidget comp={comp} />;
+    case 'form': return <FormWidget comp={comp} />;
+    case 'object-table': return <ObjectTableWidget comp={comp} />;
     default: return null;
   }
 };
@@ -1394,57 +1728,59 @@ const AppCanvas: React.FC<Props> = ({ app }) => {
   const [crossFilter, setCrossFilter] = useState<CrossFilter | null>(null);
 
   return (
-    <CrossFilterContext.Provider value={{ filter: crossFilter, setFilter: setCrossFilter }}>
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {/* Cross-filter badge */}
-        {crossFilter && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8, padding: '8px 24px',
-            backgroundColor: '#EFF6FF', borderBottom: '1px solid #BFDBFE',
-          }}>
-            <span style={{ fontSize: 11, color: '#1D4ED8', fontWeight: 600 }}>Filtered:</span>
-            <span style={{
-              fontSize: 11, padding: '2px 8px', borderRadius: 10,
-              backgroundColor: '#DBEAFE', color: '#1E40AF', fontWeight: 500,
+    <AppVariableProvider definitions={app.variables || []}>
+      <CrossFilterContext.Provider value={{ filter: crossFilter, setFilter: setCrossFilter }}>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {/* Cross-filter badge */}
+          {crossFilter && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 24px',
+              backgroundColor: '#EFF6FF', borderBottom: '1px solid #BFDBFE',
             }}>
-              {crossFilter.field} = {crossFilter.value || '(empty)'}
-            </span>
-            <button
-              onClick={() => setCrossFilter(null)}
-              style={{
-                border: 'none', background: '#BFDBFE', borderRadius: 3,
-                width: 20, height: 20, cursor: 'pointer', fontSize: 12,
-                color: '#1D4ED8', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}
-            >×</button>
-          </div>
-        )}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(12, 1fr)',
-          gap: 16,
-          padding: 24,
-          alignItems: 'start',
-        }}>
-          {app.components.map((comp) => {
-            const defaultMin = comp.type === 'data-table' ? 320 : comp.type === 'bar-chart' ? 280 : comp.type === 'chat-widget' ? 400 : 140;
-            const fixedH = comp.gridH ? comp.gridH * 60 : undefined;
-            return (
-              <div
-                key={comp.id}
+              <span style={{ fontSize: 11, color: '#1D4ED8', fontWeight: 600 }}>Filtered:</span>
+              <span style={{
+                fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                backgroundColor: '#DBEAFE', color: '#1E40AF', fontWeight: 500,
+              }}>
+                {crossFilter.field} = {crossFilter.value || '(empty)'}
+              </span>
+              <button
+                onClick={() => setCrossFilter(null)}
                 style={{
-                  gridColumn: `span ${comp.colSpan || 6}`,
-                  height: fixedH ? fixedH : undefined,
-                  minHeight: fixedH ? undefined : defaultMin,
+                  border: 'none', background: '#BFDBFE', borderRadius: 3,
+                  width: 20, height: 20, cursor: 'pointer', fontSize: 12,
+                  color: '#1D4ED8', display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}
-              >
-                <ComponentRenderer comp={comp} />
-              </div>
-            );
-          })}
+              >×</button>
+            </div>
+          )}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(12, 1fr)',
+            gap: 16,
+            padding: 24,
+            alignItems: 'start',
+          }}>
+            {app.components.map((comp) => {
+              const defaultMin = comp.type === 'data-table' || comp.type === 'object-table' ? 320 : comp.type === 'bar-chart' ? 280 : comp.type === 'chat-widget' ? 400 : 140;
+              const fixedH = comp.gridH ? comp.gridH * 60 : undefined;
+              return (
+                <div
+                  key={comp.id}
+                  style={{
+                    gridColumn: `span ${comp.colSpan || 6}`,
+                    height: fixedH ? fixedH : undefined,
+                    minHeight: fixedH ? undefined : defaultMin,
+                  }}
+                >
+                  <ComponentRenderer comp={comp} events={app.events} />
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
-    </CrossFilterContext.Provider>
+      </CrossFilterContext.Provider>
+    </AppVariableProvider>
   );
 };
 

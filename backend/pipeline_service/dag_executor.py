@@ -222,6 +222,8 @@ class DagExecutor:
                         "raw_row_count": audit_extras.get("raw_row_count"),
                         "response_error": audit_extras.get("response_error"),
                         "error": audit_extras.get("error"),
+                        "query": audit_extras.get("query"),
+                        "_watermark_value": audit_extras.get("_watermark_value"),
                     }
 
                 # Flatten sample rows: strip large nested arrays to keep payload small
@@ -255,6 +257,15 @@ class DagExecutor:
 
             total_out = synced_rows or max((len(r) for r in node_records.values()), default=0)
             finished_at = datetime.now(timezone.utc).isoformat()
+
+            # Propagate watermark values from SOURCE node audit_extras into
+            # a top-level key so _get_last_watermark can retrieve it.
+            for _na in node_audits.values():
+                stats = _na.get("stats") or {}
+                wm = stats.get("_watermark_value")
+                if wm:
+                    node_audits["_watermark_value"] = wm
+                    break
 
             run.update({
                 "status": "COMPLETED",
@@ -328,15 +339,45 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_
     return records_in
 
 
+async def _get_last_watermark(pipeline_id: str) -> str | None:
+    """Look up the watermark_value from the most recent successful run of this pipeline."""
+    try:
+        from database import AsyncSessionLocal, PipelineRunRow
+        from sqlalchemy import select as sa_select
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                sa_select(PipelineRunRow)
+                .where(
+                    PipelineRunRow.pipeline_id == pipeline_id,
+                    PipelineRunRow.status == "COMPLETED",
+                )
+                .order_by(PipelineRunRow.started_at.desc())
+                .limit(1)
+            )
+            run_row = result.scalar_one_or_none()
+            if not run_row:
+                return None
+            # Prefer the dedicated column, fall back to node_audits JSON
+            if run_row.watermark_value:
+                return run_row.watermark_value
+            if run_row.node_audits:
+                return run_row.node_audits.get("_watermark_value")
+    except Exception:
+        pass
+    return None
+
+
 async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) -> list[dict]:
     """
     Fetch real records from the configured connector.
 
-    If the SOURCE node has an 'endpoint' config (e.g. '/users'), the pipeline
-    makes a direct HTTP GET to {base_url}{endpoint} using the connector's
-    credentials and returns all rows from the response.
+    Supports three source modes:
+    1. REST API with endpoint — direct HTTP GET with pagination
+    2. Database (POSTGRESQL / MYSQL) — SQL query via connector-service /query endpoint
+    3. Fallback — connector /schema sample_rows
 
-    Falls back to the connector's /schema sample_rows when no endpoint is set.
+    When the node config has `incremental: true` and `watermark_column`, the query
+    is augmented with a WHERE clause filtering rows newer than the last run's watermark.
     """
     cfg = node.config or {}
     connector_id = (
@@ -371,9 +412,76 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 return []
 
             conn = conn_r.json()
+            conn_type = conn.get("type", "")
             base_url = (conn.get("base_url") or "").rstrip("/")
             credentials = conn.get("credentials") or {}
             conn_config = conn.get("config") or {}
+
+            # ── Database connector path (POSTGRESQL / MYSQL) ─────────────
+            if conn_type in ("POSTGRESQL", "MYSQL"):
+                table = cfg.get("table") or conn_config.get("table", "")
+                query = cfg.get("query") or conn_config.get("query", "")
+
+                if not query and table:
+                    query = f"SELECT * FROM \"{table}\" LIMIT {batch_size}"
+
+                if not query:
+                    if audit_extras is not None:
+                        audit_extras["error"] = "Database SOURCE requires 'table' or 'query' in node config"
+                    return []
+
+                # Incremental watermark support
+                incremental = cfg.get("incremental", False)
+                watermark_column = cfg.get("watermark_column") or cfg.get("watermarkColumn", "")
+                if incremental and watermark_column:
+                    last_watermark = await _get_last_watermark(pipeline.id)
+                    if last_watermark:
+                        # Inject WHERE clause for incremental fetch
+                        if "WHERE" in query.upper():
+                            query = query + f" AND {watermark_column} > '{last_watermark}'"
+                        else:
+                            # Insert WHERE before ORDER BY / LIMIT if present
+                            import re
+                            match = re.search(r'\b(ORDER\s+BY|LIMIT|GROUP\s+BY)\b', query, re.IGNORECASE)
+                            if match:
+                                insert_pos = match.start()
+                                query = query[:insert_pos] + f"WHERE {watermark_column} > '{last_watermark}' " + query[insert_pos:]
+                            else:
+                                query = query + f" WHERE {watermark_column} > '{last_watermark}'"
+
+                if audit_extras is not None:
+                    audit_extras["url"] = f"{CONNECTOR_API}/connectors/{connector_id}/query"
+                    audit_extras["query"] = query
+
+                # Call the connector service /query endpoint
+                q_resp = await client.get(
+                    f"{CONNECTOR_API}/connectors/{connector_id}/query",
+                    params={"query": query},
+                    headers={"x-tenant-id": pipeline.tenant_id},
+                    timeout=120,
+                )
+                if audit_extras is not None:
+                    audit_extras["http_status"] = q_resp.status_code
+                if not q_resp.is_success:
+                    if audit_extras is not None:
+                        audit_extras["response_error"] = q_resp.text[:500]
+                    return []
+
+                rows = q_resp.json().get("rows", [])
+                if audit_extras is not None:
+                    audit_extras["raw_row_count"] = len(rows)
+
+                # Track watermark value for incremental
+                if incremental and watermark_column and rows:
+                    watermark_vals = [r.get(watermark_column) for r in rows if r.get(watermark_column) is not None]
+                    if watermark_vals:
+                        max_watermark = str(max(watermark_vals))
+                        if audit_extras is not None:
+                            audit_extras["_watermark_value"] = max_watermark
+
+                if rows:
+                    asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
+                return rows
 
             # Parse last_sync from connector details for template resolution
             raw_last_sync = conn.get("last_sync")

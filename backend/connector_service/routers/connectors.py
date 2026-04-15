@@ -1,9 +1,12 @@
 import time
 import asyncio
+import csv
+import io
+import json
 import os
 from typing import Optional, Any
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Header, Query, Depends
+from fastapi import APIRouter, HTTPException, Header, Query, Depends, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
@@ -14,10 +17,24 @@ from models import (
 from database import ConnectorRow, get_session
 from schema_fetcher import fetch_schema, test_credentials
 from credential_crypto import encrypt_credentials, decrypt_credentials
+from db_connector import (
+    list_tables as db_list_tables,
+    table_schema as db_table_schema,
+    preview_table as db_preview_table,
+    run_query as db_run_query,
+    test_db_connection,
+    _build_db_config,
+)
 
 router = APIRouter()
 
 EVENT_LOG_URL = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
+ONTOLOGY_API = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
+
+# In-memory staging area for file upload rows, keyed by connector_id
+_file_staging: dict[str, dict[str, Any]] = {}
+
+DB_CONNECTOR_TYPES = {"POSTGRESQL", "MYSQL"}
 
 
 async def _emit_event(payload: dict) -> None:
@@ -391,3 +408,369 @@ async def get_inference_result(
         "inference_result": row.inference_result,
         "inference_ran_at": row.inference_ran_at.isoformat() if row.inference_ran_at else None,
     }
+
+
+# ── File Upload Endpoints ─────────────────────────────────────────────────────
+
+
+def _detect_type(values: list) -> str:
+    """Heuristic type detection from a list of sample values."""
+    non_null = [v for v in values if v is not None and str(v).strip() != ""]
+    if not non_null:
+        return "string"
+    for v in non_null:
+        try:
+            int(v)
+            continue
+        except (ValueError, TypeError):
+            break
+    else:
+        return "integer"
+    for v in non_null:
+        try:
+            float(v)
+            continue
+        except (ValueError, TypeError):
+            break
+    else:
+        return "float"
+    # Check for boolean-like
+    bool_vals = {"true", "false", "yes", "no", "1", "0"}
+    if all(str(v).strip().lower() in bool_vals for v in non_null):
+        return "boolean"
+    return "string"
+
+
+def _parse_csv(content: bytes) -> list[dict]:
+    """Parse CSV content with auto-detected delimiter."""
+    text = content.decode("utf-8-sig")
+    # Auto-detect delimiter
+    sniffer = csv.Sniffer()
+    try:
+        dialect = sniffer.sniff(text[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = None
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect) if dialect else csv.DictReader(io.StringIO(text))
+    return [dict(row) for row in reader]
+
+
+def _parse_excel(content: bytes) -> list[dict]:
+    """Parse Excel .xlsx first sheet using openpyxl."""
+    from openpyxl import load_workbook
+    wb = load_workbook(filename=io.BytesIO(content), read_only=True, data_only=True)
+    ws = wb.active
+    rows_iter = ws.iter_rows(values_only=True)
+    headers = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(next(rows_iter, []))]
+    if not headers:
+        return []
+    result = []
+    for row in rows_iter:
+        record = {}
+        for i, val in enumerate(row):
+            if i < len(headers):
+                record[headers[i]] = val
+        result.append(record)
+    wb.close()
+    return result
+
+
+def _parse_json(content: bytes) -> list[dict]:
+    """Parse JSON as array of objects."""
+    data = json.loads(content)
+    if isinstance(data, list):
+        return [r for r in data if isinstance(r, dict)]
+    if isinstance(data, dict):
+        # Try common wrapper keys
+        for key in ("data", "results", "items", "records", "rows"):
+            if isinstance(data.get(key), list):
+                return [r for r in data[key] if isinstance(r, dict)]
+        # Single object
+        return [data]
+    return []
+
+
+@router.post("/{connector_id}/upload")
+async def upload_file(
+    connector_id: str,
+    file: UploadFile = File(...),
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Accept a CSV, Excel, or JSON file upload, parse it, stage the rows,
+    and return column metadata with sample values.
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    content = await file.read()
+    filename = file.filename or "unknown"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    content_type = file.content_type or ""
+
+    try:
+        if ext == "csv" or "csv" in content_type:
+            rows = _parse_csv(content)
+        elif ext in ("xlsx", "xls") or "spreadsheet" in content_type or "excel" in content_type:
+            rows = _parse_excel(content)
+        elif ext == "json" or "json" in content_type:
+            rows = _parse_json(content)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: .{ext}. Accepted: CSV, XLSX, JSON",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="File contains no parseable rows")
+
+    # Stage the rows in memory
+    _file_staging[connector_id] = {
+        "rows": rows,
+        "file_name": filename,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Build column metadata
+    all_keys = list(dict.fromkeys(k for r in rows for k in r.keys()))
+    columns = []
+    for col_name in all_keys:
+        sample_vals = [r.get(col_name) for r in rows[:3]]
+        all_vals = [r.get(col_name) for r in rows[:50]]
+        columns.append({
+            "name": col_name,
+            "detected_type": _detect_type(all_vals),
+            "sample_values": sample_vals,
+        })
+
+    return {
+        "columns": columns,
+        "row_count": len(rows),
+        "file_name": filename,
+    }
+
+
+@router.post("/{connector_id}/import")
+async def import_file(
+    connector_id: str,
+    body: dict,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Import staged file rows into the ontology service.
+    Body: { object_type_id, pk_field, field_mappings: {source: target} }
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    staged = _file_staging.get(connector_id)
+    if not staged:
+        raise HTTPException(status_code=400, detail="No staged file data. Upload a file first.")
+
+    object_type_id = body.get("object_type_id")
+    pk_field = body.get("pk_field", "id")
+    field_mappings: dict = body.get("field_mappings", {})
+
+    if not object_type_id:
+        raise HTTPException(status_code=400, detail="object_type_id is required")
+
+    # Apply field mappings to staged rows
+    mapped_rows = []
+    for src_row in staged["rows"]:
+        mapped = {}
+        for src_key, tgt_key in field_mappings.items():
+            if src_key in src_row:
+                mapped[tgt_key] = src_row[src_key]
+        # If no mappings, pass through as-is
+        if not field_mappings:
+            mapped = dict(src_row)
+        mapped_rows.append(mapped)
+
+    # POST to ontology-service ingest endpoint
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{ONTOLOGY_API}/object-types/{object_type_id}/records/ingest",
+                json={"records": mapped_rows, "pk_field": pk_field},
+                headers={"x-tenant-id": tenant_id},
+            )
+            if not resp.is_success:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Ontology ingest failed: {resp.status_code} - {resp.text[:500]}",
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach ontology service: {str(e)}")
+
+    # Clear staging after successful import
+    _file_staging.pop(connector_id, None)
+
+    # Update connector sync metadata
+    row.last_sync = datetime.now(timezone.utc)
+    row.last_sync_row_count = len(mapped_rows)
+    await db.commit()
+
+    return {"imported": len(mapped_rows), "message": f"Successfully imported {len(mapped_rows)} records"}
+
+
+# ── Database Connector Endpoints ──────────────────────────────────────────────
+
+
+def _get_db_config(row: ConnectorRow) -> dict:
+    """Build database connection config from a connector row."""
+    credentials = decrypt_credentials(row.credentials)
+    return _build_db_config(credentials, row.config)
+
+
+@router.get("/{connector_id}/tables")
+async def list_db_tables(
+    connector_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """List all user tables from a database connector."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if row.type not in DB_CONNECTOR_TYPES:
+        raise HTTPException(status_code=400, detail=f"Connector type '{row.type}' is not a database connector")
+
+    try:
+        config = _get_db_config(row)
+        tables = await db_list_tables(row.type, config)
+        return {"tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database error: {str(e)}")
+
+
+@router.get("/{connector_id}/tables/{table_name}/schema")
+async def get_table_schema(
+    connector_id: str,
+    table_name: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Return column info for a database table."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if row.type not in DB_CONNECTOR_TYPES:
+        raise HTTPException(status_code=400, detail=f"Connector type '{row.type}' is not a database connector")
+
+    try:
+        config = _get_db_config(row)
+        columns = await db_table_schema(row.type, config, table_name)
+        return {"columns": columns}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database error: {str(e)}")
+
+
+@router.get("/{connector_id}/tables/{table_name}/preview")
+async def preview_db_table(
+    connector_id: str,
+    table_name: str,
+    limit: int = Query(100, ge=1, le=10000),
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Preview rows from a database table."""
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if row.type not in DB_CONNECTOR_TYPES:
+        raise HTTPException(status_code=400, detail=f"Connector type '{row.type}' is not a database connector")
+
+    try:
+        config = _get_db_config(row)
+        preview = await db_preview_table(row.type, config, table_name, limit)
+        return preview
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database error: {str(e)}")
+
+
+@router.get("/{connector_id}/query")
+async def query_db(
+    connector_id: str,
+    query: str = Query(..., description="SQL query to execute"),
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Execute a SQL query against a database connector and return the result rows.
+    Used by the pipeline SOURCE node for database-type connectors.
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if row.type not in DB_CONNECTOR_TYPES:
+        raise HTTPException(status_code=400, detail=f"Connector type '{row.type}' is not a database connector")
+
+    try:
+        config = _get_db_config(row)
+        rows = await db_run_query(row.type, config, query)
+        # Serialize any non-JSON-serializable values (dates, decimals, etc.)
+        serialized = []
+        for r in rows:
+            clean = {}
+            for k, v in r.items():
+                if isinstance(v, (datetime,)):
+                    clean[k] = v.isoformat()
+                elif hasattr(v, '__float__'):
+                    clean[k] = float(v)
+                else:
+                    clean[k] = v
+            serialized.append(clean)
+        return {"rows": serialized, "row_count": len(serialized)}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database query error: {str(e)}")

@@ -21,6 +21,7 @@ const BLOCK_TYPES = [
   { type: 'ontology_update',  label: 'Ontology Update',  color: '#059669', desc: 'Write fields back to an ontology record' },
   { type: 'transform',        label: 'Transform',        color: '#10B981', desc: 'Transform data in memory' },
   { type: 'utility_call',     label: 'Utility Call',     color: '#0891B2', desc: 'Run a utility (OCR, scrape, geocode…)' },
+  { type: 'http_call',        label: 'HTTP Call',        color: '#E11D48', desc: 'Make an external HTTP request' },
   { type: 'conditional',      label: 'Conditional',      color: '#F97316', desc: 'Branch on a condition — if/else' },
   { type: 'foreach',          label: 'For Each',          color: '#8B5CF6', desc: 'Iterate over an array of results' },
 ];

@@ -2,18 +2,23 @@
 Records API — persisted merged records per ObjectType.
 
 POST /object-types/{ot_id}/records/sync  → pull from all source connectors, merge nested arrays, upsert
-GET  /object-types/{ot_id}/records        → list persisted merged records
+GET  /object-types/{ot_id}/records        → list persisted merged records (filter, sort, paginate)
+GET  /object-types/{ot_id}/records/{record_id}          → single record by source_id
+GET  /object-types/{ot_id}/records/{record_id}/links/{link_id}  → traverse a link
+PATCH  /object-types/{ot_id}/records/{record_id}        → partial update (merge into data)
+DELETE /object-types/{ot_id}/records/{record_id}         → delete a record
 """
+import json
 import os
 import httpx
 from typing import Optional
 from uuid import uuid4
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Header, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Header, Depends, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete, func as sa_func, text
 from sqlalchemy.orm.attributes import flag_modified
-from database import get_session, ObjectTypeRow, ObjectRecordRow
+from database import get_session, ObjectTypeRow, ObjectRecordRow, OntologyLinkRow
 from shared.auth_middleware import require_auth, AuthUser
 
 CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
@@ -49,11 +54,102 @@ def _mask_pii(records: list[dict], properties: list[dict], user_role: str) -> li
     return masked
 
 
-# ── GET records ─────────────────────────────────────────────────────────────
+# ── Filter helpers ──────────────────────────────────────────────────────────
+
+_FILTER_OPS = {
+    "eq", "neq", "gt", "gte", "lt", "lte", "in", "contains",
+    "is_null", "is_not_null",
+}
+
+
+def _build_jsonb_filters(filter_json: str) -> list:
+    """
+    Parse a JSON filter string and return a list of SQLAlchemy text() conditions.
+
+    Supported forms:
+      Simple:   {"status": "active"}                          → data->>'status' = 'active'
+      Operator: {"age": {"$gt": 30}}                          → (data->>'age')::float > 30
+      Multi:    {"status": "active", "score": {"$gte": 80}}   → AND of both
+    """
+    try:
+        raw = json.loads(filter_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    if not isinstance(raw, dict):
+        return []
+
+    conditions = []
+    bind_params: dict = {}
+
+    for idx, (field, value) in enumerate(raw.items()):
+        safe_field = field.replace("'", "''")  # prevent SQL injection in field name
+        accessor = f"data->>'{safe_field}'"
+
+        if isinstance(value, dict):
+            # Operator form: {"field": {"$op": val}}
+            for op_key, op_val in value.items():
+                op = op_key.lstrip("$")
+                if op not in _FILTER_OPS:
+                    continue
+                param = f"_fp{idx}"
+
+                if op == "eq":
+                    conditions.append(text(f"{accessor} = :{param}"))
+                    bind_params[param] = str(op_val)
+                elif op == "neq":
+                    conditions.append(text(f"{accessor} != :{param}"))
+                    bind_params[param] = str(op_val)
+                elif op == "gt":
+                    conditions.append(text(f"({accessor})::float > :{param}"))
+                    bind_params[param] = float(op_val)
+                elif op == "gte":
+                    conditions.append(text(f"({accessor})::float >= :{param}"))
+                    bind_params[param] = float(op_val)
+                elif op == "lt":
+                    conditions.append(text(f"({accessor})::float < :{param}"))
+                    bind_params[param] = float(op_val)
+                elif op == "lte":
+                    conditions.append(text(f"({accessor})::float <= :{param}"))
+                    bind_params[param] = float(op_val)
+                elif op == "in":
+                    # op_val should be a list
+                    if isinstance(op_val, list):
+                        placeholders = ", ".join(f":{param}_{i}" for i in range(len(op_val)))
+                        conditions.append(text(f"{accessor} IN ({placeholders})"))
+                        for i, v in enumerate(op_val):
+                            bind_params[f"{param}_{i}"] = str(v)
+                elif op == "contains":
+                    conditions.append(text(f"{accessor} ILIKE :{param}"))
+                    bind_params[param] = f"%{op_val}%"
+                elif op == "is_null":
+                    conditions.append(text(f"{accessor} IS NULL"))
+                elif op == "is_not_null":
+                    conditions.append(text(f"{accessor} IS NOT NULL"))
+        else:
+            # Simple equality: {"field": "value"}
+            param = f"_fp{idx}"
+            conditions.append(text(f"{accessor} = :{param}"))
+            bind_params[param] = str(value)
+
+    # Bind params to the text() clauses
+    bound = []
+    for cond in conditions:
+        relevant = {k: v for k, v in bind_params.items() if f":{k}" in str(cond)}
+        bound.append(cond.bindparams(**relevant) if relevant else cond)
+    return bound
+
+
+# ── GET records (with filter, sort, pagination) ────────────────────────────
 
 @router.get("/{ot_id}/records")
 async def list_records(
     ot_id: str,
+    filter: Optional[str] = Query(None, description="JSON filter string"),
+    sort_field: Optional[str] = Query(None, description="JSONB field to sort by"),
+    sort_dir: Optional[str] = Query("asc", description="Sort direction: asc or desc"),
+    limit: int = Query(50, ge=1, le=500, description="Page size"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_session),
     user: AuthUser = Depends(require_auth),
@@ -72,22 +168,271 @@ async def list_records(
     if ot_row and ot_row.data:
         properties = ot_row.data.get("properties", [])
 
-    result = await db.execute(
-        select(ObjectRecordRow)
-        .where(
-            ObjectRecordRow.object_type_id == ot_id,
-            ObjectRecordRow.tenant_id == tenant_id,
-        )
-        .order_by(ObjectRecordRow.updated_at.desc())
-    )
+    # Base conditions
+    base_where = [
+        ObjectRecordRow.object_type_id == ot_id,
+        ObjectRecordRow.tenant_id == tenant_id,
+    ]
+
+    # Apply JSONB filters
+    if filter:
+        jsonb_conditions = _build_jsonb_filters(filter)
+        base_where.extend(jsonb_conditions)
+
+    # Total count (before pagination)
+    count_q = select(sa_func.count(ObjectRecordRow.id)).where(*base_where)
+    total = (await db.execute(count_q)).scalar() or 0
+
+    # Build main query
+    query = select(ObjectRecordRow).where(*base_where)
+
+    # Sorting
+    if sort_field:
+        safe_sort = sort_field.replace("'", "''")
+        direction = "DESC" if sort_dir and sort_dir.lower() == "desc" else "ASC"
+        query = query.order_by(text(f"data->>'{safe_sort}' {direction}"))
+    else:
+        query = query.order_by(ObjectRecordRow.updated_at.desc())
+
+    # Pagination
+    query = query.limit(limit).offset(offset)
+
+    result = await db.execute(query)
     rows = result.scalars().all()
     raw_records = [r.data for r in rows]
     masked_records = _mask_pii(raw_records, properties, user.role)
     return {
         "records": masked_records,
-        "total": len(rows),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
         "synced_at": rows[0].updated_at.isoformat() if rows else None,
     }
+
+
+# ── GET single record ──────────────────────────────────────────────────────
+
+@router.get("/{ot_id}/records/{record_id}")
+async def get_record(
+    ot_id: str,
+    record_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """Fetch a single record by its source_id."""
+    tenant_id = x_tenant_id or "tenant-001"
+
+    # Fetch object type for PII masking
+    ot_result = await db.execute(
+        select(ObjectTypeRow).where(
+            ObjectTypeRow.id == ot_id,
+            ObjectTypeRow.tenant_id == tenant_id,
+        )
+    )
+    ot_row = ot_result.scalar_one_or_none()
+    properties: list[dict] = []
+    if ot_row and ot_row.data:
+        properties = ot_row.data.get("properties", [])
+
+    result = await db.execute(
+        select(ObjectRecordRow).where(
+            ObjectRecordRow.object_type_id == ot_id,
+            ObjectRecordRow.tenant_id == tenant_id,
+            ObjectRecordRow.source_id == record_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    masked = _mask_pii([row.data], properties, user.role)
+    return {
+        "record": masked[0],
+        "source_id": row.source_id,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+# ── GET link traversal ─────────────────────────────────────────────────────
+
+@router.get("/{ot_id}/records/{record_id}/links/{link_id}")
+async def traverse_link(
+    ot_id: str,
+    record_id: str,
+    link_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """
+    Traverse an ontology link from a source record to its linked target records.
+    Uses the link's join_keys to match the source record's field value against
+    the target records' corresponding field.
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+
+    # 1. Fetch the source record
+    src_result = await db.execute(
+        select(ObjectRecordRow).where(
+            ObjectRecordRow.object_type_id == ot_id,
+            ObjectRecordRow.tenant_id == tenant_id,
+            ObjectRecordRow.source_id == record_id,
+        )
+    )
+    src_row = src_result.scalar_one_or_none()
+    if not src_row:
+        raise HTTPException(status_code=404, detail="Source record not found")
+
+    # 2. Fetch the link definition
+    link_result = await db.execute(
+        select(OntologyLinkRow).where(
+            OntologyLinkRow.id == link_id,
+            OntologyLinkRow.tenant_id == tenant_id,
+        )
+    )
+    link_row = link_result.scalar_one_or_none()
+    if not link_row:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    link_data = link_row.data or {}
+    target_type_id = link_row.target_object_type_id
+    join_keys: list[dict] = link_data.get("join_keys", [])
+
+    if not join_keys:
+        raise HTTPException(status_code=400, detail="Link has no join_keys configured")
+
+    # Use the first join_key pair
+    source_field = join_keys[0].get("source_field", "")
+    target_field = join_keys[0].get("target_field", "")
+
+    if not source_field or not target_field:
+        raise HTTPException(status_code=400, detail="Link join_keys missing source_field or target_field")
+
+    # 3. Get the join value from the source record
+    join_value = src_row.data.get(source_field)
+    if join_value is None:
+        return {"records": [], "total": 0, "limit": limit, "offset": offset}
+
+    # 4. Query target records where data->>target_field matches the join value
+    safe_target_field = target_field.replace("'", "''")
+    match_condition = text(f"data->>'{safe_target_field}' = :join_val").bindparams(
+        join_val=str(join_value)
+    )
+
+    base_where = [
+        ObjectRecordRow.object_type_id == target_type_id,
+        ObjectRecordRow.tenant_id == tenant_id,
+        match_condition,
+    ]
+
+    count_q = select(sa_func.count(ObjectRecordRow.id)).where(*base_where)
+    total = (await db.execute(count_q)).scalar() or 0
+
+    query = (
+        select(ObjectRecordRow)
+        .where(*base_where)
+        .order_by(ObjectRecordRow.updated_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    # PII masking for target type
+    ot_result = await db.execute(
+        select(ObjectTypeRow).where(
+            ObjectTypeRow.id == target_type_id,
+            ObjectTypeRow.tenant_id == tenant_id,
+        )
+    )
+    target_ot = ot_result.scalar_one_or_none()
+    target_props: list[dict] = []
+    if target_ot and target_ot.data:
+        target_props = target_ot.data.get("properties", [])
+
+    raw_records = [r.data for r in rows]
+    masked_records = _mask_pii(raw_records, target_props, user.role)
+
+    return {
+        "records": masked_records,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "source_field": source_field,
+        "target_field": target_field,
+        "target_type_id": target_type_id,
+    }
+
+
+# ── PATCH update record ────────────────────────────────────────────────────
+
+@router.patch("/{ot_id}/records/{record_id}")
+async def update_record(
+    ot_id: str,
+    record_id: str,
+    payload: dict,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """Merge new properties into an existing record's data."""
+    tenant_id = x_tenant_id or "tenant-001"
+
+    result = await db.execute(
+        select(ObjectRecordRow).where(
+            ObjectRecordRow.object_type_id == ot_id,
+            ObjectRecordRow.tenant_id == tenant_id,
+            ObjectRecordRow.source_id == record_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    merged_data = dict(row.data)
+    merged_data.update(payload)
+    row.data = merged_data
+    flag_modified(row, "data")
+    row.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    return {
+        "record": row.data,
+        "source_id": row.source_id,
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+# ── DELETE record ───────────────────────────────────────────────────────────
+
+@router.delete("/{ot_id}/records/{record_id}")
+async def delete_record(
+    ot_id: str,
+    record_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """Delete a record by its source_id."""
+    tenant_id = x_tenant_id or "tenant-001"
+
+    result = await db.execute(
+        select(ObjectRecordRow).where(
+            ObjectRecordRow.object_type_id == ot_id,
+            ObjectRecordRow.tenant_id == tenant_id,
+            ObjectRecordRow.source_id == record_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": True, "source_id": record_id}
 
 
 # ── POST sync ───────────────────────────────────────────────────────────────
@@ -242,6 +587,7 @@ async def ingest_records(
     records: list[dict] = payload.get("records", [])
     pk_field: str = payload.get("pk_field", "id")
     pipeline_id: str = payload.get("pipeline_id", "")
+    field_mappings: dict[str, str] = payload.get("field_mappings", {})
 
     if not records:
         return {"ingested": 0, "message": "No records provided"}
@@ -255,6 +601,10 @@ async def ingest_records(
     ot_row = result.scalar_one_or_none()
     if not ot_row:
         raise HTTPException(status_code=404, detail="Object type not found")
+
+    # Apply field_mappings: rename keys before storing
+    if field_mappings:
+        records = [_apply_field_mappings(r, field_mappings) for r in records]
 
     if not records[0].get(pk_field):
         pk_field = _guess_pk(records[0])
@@ -408,6 +758,17 @@ async def array_append_records(
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+def _apply_field_mappings(record: dict, mappings: dict[str, str]) -> dict:
+    """Rename fields in a record according to a mapping dict.
+    mappings: {"original_field_name": "new_field_name", ...}
+    """
+    mapped = {}
+    for key, value in record.items():
+        new_key = mappings.get(key, key)
+        mapped[new_key] = value
+    return mapped
+
 
 def _extract_name(record: dict) -> str:
     """Extract a normalized entity name from a record for join matching."""

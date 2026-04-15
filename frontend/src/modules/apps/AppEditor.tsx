@@ -20,9 +20,9 @@ import {
   ChevronRight, RefreshCw,
   BarChart2, LineChart, Table, Hash, AlignLeft, Gauge, SlidersHorizontal,
   Database, Tag, MessageSquare, Sparkles, Loader, Braces, MapPin, Wrench,
-  PieChart, AreaChart, TrendingUp,
+  PieChart, AreaChart, TrendingUp, ListFilter, FileText, TableProperties, Variable,
 } from 'lucide-react';
-import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator } from '../../types/app';
+import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable } from '../../types/app';
 import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
 import AppCanvas from './AppCanvas';
@@ -84,6 +84,9 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'custom-code',  label: 'Custom Code',  icon: <Braces size={13} />,             defaultColSpan: 12, description: 'AI-generated custom visualization' },
   { type: 'map',           label: 'Map',           icon: <MapPin size={13} />,             defaultColSpan: 6,  description: 'Pin locations on a map using lat/lng fields' },
   { type: 'utility-output', label: 'Utility Output', icon: <Wrench size={13} />,          defaultColSpan: 6,  description: 'Run a utility and display its result' },
+  { type: 'dropdown-filter', label: 'Dropdown Filter', icon: <ListFilter size={13} />,   defaultColSpan: 3,  description: 'Dropdown that sets a variable' },
+  { type: 'form',            label: 'Form',            icon: <FileText size={13} />,      defaultColSpan: 6,  description: 'Input form with submit action' },
+  { type: 'object-table',    label: 'Object Table',    icon: <TableProperties size={13} />, defaultColSpan: 12, description: 'Sortable table with variable bindings' },
 ];
 
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -101,7 +104,9 @@ const LeftSidebar: React.FC<{
   onAddWidget: (type: ComponentType, otId?: string) => void;
   onAddWidgetFromNL: (prompt: string, otId: string, forceCode?: boolean) => Promise<void>;
   onClickField: (field: string) => void;
-}> = ({ objectTypes, onAddWidget, onAddWidgetFromNL, onClickField }) => {
+  variables: AppVariable[];
+  onVariablesChange: (vars: AppVariable[]) => void;
+}> = ({ objectTypes, onAddWidget, onAddWidgetFromNL, onClickField, variables, onVariablesChange }) => {
   const [expandedOt, setExpandedOt] = useState<string | null>(null);
   const [nlPrompt, setNlPrompt] = useState('');
   const [nlOtId, setNlOtId] = useState('');
@@ -246,6 +251,115 @@ const LeftSidebar: React.FC<{
             <span style={{ color: '#2563EB', lineHeight: 0 }}>{w.icon}</span>
             {w.label}
           </button>
+        ))}
+      </div>
+
+      <div style={{ height: 1, backgroundColor: '#E2E8F0', margin: '4px 0' }} />
+
+      {/* Variables section */}
+      <div style={{ padding: '8px 10px 6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Variable size={11} color="#7C3AED" />
+            <span style={{ fontSize: 10, fontWeight: 600, color: '#7C3AED', letterSpacing: '0.06em' }}>
+              VARIABLES
+            </span>
+          </div>
+          <button
+            onClick={() => {
+              const newVar: AppVariable = {
+                id: `var-${Date.now()}`,
+                name: `variable${variables.length + 1}`,
+                type: 'string',
+                defaultValue: '',
+              };
+              onVariablesChange([...variables, newVar]);
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 2,
+              padding: '2px 6px', border: '1px solid #DDD6FE', borderRadius: 3,
+              fontSize: 10, cursor: 'pointer', backgroundColor: '#FAF5FF', color: '#7C3AED',
+            }}
+          >
+            <Plus size={9} /> Add
+          </button>
+        </div>
+        {variables.length === 0 && (
+          <div style={{ fontSize: 10, color: '#CBD5E1', padding: '2px 0 4px' }}>
+            No variables defined
+          </div>
+        )}
+        {variables.map((v, idx) => (
+          <div key={v.id} style={{
+            marginBottom: 4, padding: '5px 6px', backgroundColor: '#FAF5FF',
+            border: '1px solid #EDE9FE', borderRadius: 4, fontSize: 10,
+          }}>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 3 }}>
+              <input
+                value={v.name}
+                onChange={(e) => {
+                  const updated = [...variables];
+                  updated[idx] = { ...v, name: e.target.value };
+                  onVariablesChange(updated);
+                }}
+                placeholder="name"
+                style={{
+                  flex: 1, height: 20, padding: '0 4px', border: '1px solid #DDD6FE',
+                  borderRadius: 3, fontSize: 10, color: '#1E1B4B', backgroundColor: '#fff',
+                  outline: 'none', fontFamily: 'var(--font-mono)',
+                }}
+              />
+              <select
+                value={v.type}
+                onChange={(e) => {
+                  const updated = [...variables];
+                  updated[idx] = { ...v, type: e.target.value as AppVariable['type'] };
+                  onVariablesChange(updated);
+                }}
+                style={{
+                  width: 70, height: 20, padding: '0 2px', border: '1px solid #DDD6FE',
+                  borderRadius: 3, fontSize: 9, color: '#1E1B4B', backgroundColor: '#fff',
+                  outline: 'none',
+                }}
+              >
+                <option value="string">string</option>
+                <option value="number">number</option>
+                <option value="boolean">boolean</option>
+                <option value="dateRange">dateRange</option>
+                <option value="stringArray">stringArray</option>
+                <option value="objectRef">objectRef</option>
+                <option value="objectSet">objectSet</option>
+              </select>
+              <button
+                onClick={() => onVariablesChange(variables.filter((_, i) => i !== idx))}
+                style={{
+                  width: 18, height: 20, border: '1px solid #FCA5A5', borderRadius: 3,
+                  backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+                  fontSize: 10,
+                }}
+              >
+                <Trash2 size={8} />
+              </button>
+            </div>
+            <input
+              value={v.defaultValue ?? ''}
+              onChange={(e) => {
+                const updated = [...variables];
+                updated[idx] = { ...v, defaultValue: e.target.value };
+                onVariablesChange(updated);
+              }}
+              placeholder="default value"
+              style={{
+                width: '100%', height: 18, padding: '0 4px', border: '1px solid #EDE9FE',
+                borderRadius: 3, fontSize: 9, color: '#64748B', backgroundColor: '#fff',
+                outline: 'none', boxSizing: 'border-box',
+              }}
+            />
+            <div style={{ fontSize: 8, color: '#A78BFA', marginTop: 2, fontFamily: 'var(--font-mono)' }}>
+              ID: {v.id}
+            </div>
+          </div>
         ))}
       </div>
 
@@ -403,7 +517,7 @@ const MiniRenderer: React.FC<{ comp: AppComponent }> = ({ comp }) => {
 const DEFAULT_GRID_H: Record<string, number> = {
   'metric-card': 3, 'kpi-banner': 2, 'filter-bar': 2, 'text-block': 2,
   'bar-chart': 5, 'line-chart': 4, 'pie-chart': 5, 'area-chart': 5, 'stat-card': 3, 'date-picker': 2,
-  'data-table': 6, 'chat-widget': 7,
+  'data-table': 6, 'chat-widget': 7, 'dropdown-filter': 2, 'form': 5, 'object-table': 6,
 };
 const ROW_HEIGHT = 60;
 const GRID_COLS = 12;
@@ -1176,6 +1290,132 @@ const ConfigPanel: React.FC<{
           </>
         )}
 
+        {/* dropdown-filter */}
+        {comp.type === 'dropdown-filter' && (
+          <>
+            <Row label="VARIABLE ID">
+              {inp(comp.variableId, (v) => set({ variableId: v }), 'e.g. selectedStatus')}
+            </Row>
+            <Row label="FILTER FIELD (FOR DYNAMIC OPTIONS)">
+              <FieldPicker value={comp.filterField} onPick={(f) => set({ filterField: f })} placeholder="Field for distinct values" />
+            </Row>
+            <Row label="STATIC OPTIONS (ONE PER LINE)">
+              <textarea
+                value={(comp.options || []).join('\n')}
+                onChange={(e) => set({ options: e.target.value.split('\n').filter(Boolean) })}
+                rows={4}
+                placeholder={"Option 1\nOption 2\nOption 3"}
+                style={{
+                  width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
+                  borderRadius: 4, fontSize: 11, color: '#0D1117',
+                  resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5,
+                  fontFamily: 'inherit', outline: 'none',
+                }}
+              />
+              <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 2 }}>
+                Leave blank to use distinct values from Filter Field
+              </div>
+            </Row>
+          </>
+        )}
+
+        {/* form */}
+        {comp.type === 'form' && (
+          <>
+            <Row label="ACTION NAME">
+              {inp(comp.actionName, (v) => set({ actionName: v }), 'e.g. create-ticket')}
+            </Row>
+            <Row label="FIELDS (JSON ARRAY)">
+              <textarea
+                value={JSON.stringify(comp.fields || [], null, 2)}
+                onChange={(e) => {
+                  try {
+                    const parsed = JSON.parse(e.target.value);
+                    if (Array.isArray(parsed)) set({ fields: parsed });
+                  } catch { /* ignore parse errors while typing */ }
+                }}
+                rows={6}
+                placeholder={'[\n  { "name": "title", "label": "Title", "type": "text" }\n]'}
+                style={{
+                  width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
+                  borderRadius: 4, fontSize: 10, color: '#0D1117',
+                  resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5,
+                  fontFamily: 'var(--font-mono)', outline: 'none',
+                }}
+              />
+            </Row>
+          </>
+        )}
+
+        {/* object-table */}
+        {comp.type === 'object-table' && (
+          <>
+            <Row label="COLUMNS">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 6 }}>
+                {fields.map((f) => {
+                  const isActive = (comp.columns || []).includes(f);
+                  return (
+                    <button key={f} onClick={() => {
+                      const cols = comp.columns || [];
+                      set({ columns: isActive ? cols.filter((c) => c !== f) : [...cols, f] });
+                    }}
+                      style={{
+                        padding: '2px 6px',
+                        border: `1px solid ${isActive ? '#2563EB' : '#E2E8F0'}`,
+                        borderRadius: 3, fontSize: 10, cursor: 'pointer',
+                        backgroundColor: isActive ? '#EFF6FF' : '#F8FAFC',
+                        color: isActive ? '#2563EB' : '#64748B',
+                      }}>
+                      {f.length > 14 ? f.slice(0, 14) + '...' : f}
+                    </button>
+                  );
+                })}
+              </div>
+            </Row>
+            <Row label="MAX ROWS">
+              {inp(comp.maxRows, (v) => set({ maxRows: Number(v) || 50 }), '50')}
+            </Row>
+            <Row label="INPUT BINDINGS (JSON)">
+              <textarea
+                value={JSON.stringify(comp.inputBindings || {}, null, 2)}
+                onChange={(e) => {
+                  try {
+                    const parsed = JSON.parse(e.target.value);
+                    if (typeof parsed === 'object' && !Array.isArray(parsed)) set({ inputBindings: parsed });
+                  } catch { /* ignore */ }
+                }}
+                rows={3}
+                placeholder={'{ "status": "varStatusId" }'}
+                style={{
+                  width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
+                  borderRadius: 4, fontSize: 10, color: '#0D1117',
+                  resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5,
+                  fontFamily: 'var(--font-mono)', outline: 'none',
+                }}
+              />
+            </Row>
+            <Row label="OUTPUT BINDINGS (JSON)">
+              <textarea
+                value={JSON.stringify(comp.outputBindings || {}, null, 2)}
+                onChange={(e) => {
+                  try {
+                    const parsed = JSON.parse(e.target.value);
+                    if (typeof parsed === 'object' && !Array.isArray(parsed)) set({ outputBindings: parsed });
+                  } catch { /* ignore */ }
+                }}
+                rows={3}
+                placeholder={'{ "onRowSelect": "varSelectedRecordId" }'}
+                style={{
+                  width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
+                  borderRadius: 4, fontSize: 10, color: '#0D1117',
+                  resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5,
+                  fontFamily: 'var(--font-mono)', outline: 'none',
+                }}
+              />
+            </Row>
+          </>
+        )}
+
         {/* ── Filters ── */}
         {comp.type !== 'text-block' && comp.type !== 'utility-output' && (
           <FilterBuilder
@@ -1476,6 +1716,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   const { updateApp } = useAppStore();
   const [mode, setMode] = useState<Mode>('edit');
   const [components, setComponents] = useState<AppComponent[]>(app.components);
+  const [variables, setVariables] = useState<AppVariable[]>(app.variables || []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -1497,11 +1738,12 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   }, []);
 
   const mark = (comps: AppComponent[]) => { setComponents(comps); setDirty(true); };
+  const markVars = (vars: AppVariable[]) => { setVariables(vars); setDirty(true); };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await updateApp(app.id, { components, updatedAt: new Date().toISOString() });
+      await updateApp(app.id, { components, variables, updatedAt: new Date().toISOString() });
       setDirty(false);
     } finally { setSaving(false); }
   };
@@ -1659,6 +1901,8 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
               onAddWidget={addWidget}
               onAddWidgetFromNL={addWidgetFromNL}
               onClickField={handleFieldClick}
+              variables={variables}
+              onVariablesChange={markVars}
             />
             <div ref={canvasRef} style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <EditCanvas

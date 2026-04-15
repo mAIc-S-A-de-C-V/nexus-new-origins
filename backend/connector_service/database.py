@@ -1,7 +1,7 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, func
+from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Boolean, func
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -41,6 +41,21 @@ class ConnectorRow(Base):
     inference_ran_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class WebhookEndpointRow(Base):
+    __tablename__ = "webhook_endpoints"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, nullable=False, unique=True)
+    secret = Column(String, nullable=True)
+    target_type = Column(String, nullable=False)  # pipeline, action, event_log
+    target_id = Column(String, nullable=False)
+    field_mappings = Column(JSON, default=dict)
+    enabled = Column(Boolean, default=True)
+    last_received_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 async def init_db():

@@ -40,6 +40,7 @@ class PipelineRunRow(Base):
     error_message = Column(String, nullable=True)
     # Per-node audit data: {node_id: {rows_in, rows_out, sample_in, sample_out, stats, ...}}
     node_audits = Column(JSON, nullable=True)
+    watermark_value = Column(String, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -60,6 +61,14 @@ class PipelineScheduleRow(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        from sqlalchemy import text as sa_text
+        for col_sql in [
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS watermark_value VARCHAR",
+        ]:
+            try:
+                await conn.execute(sa_text(col_sql))
+            except Exception:
+                pass
 
 
 async def get_session() -> AsyncSession:

@@ -377,6 +377,89 @@ def _run_transform(block: dict, context: dict) -> Any:
         return source_data
 
 
+async def _run_http_call(config: dict, context: dict) -> Any:
+    """
+    Make an external HTTP request with variable interpolation on url, headers, and body.
+
+    Config:
+      url             — target URL (supports {inputs.x}, {b1.result.field} interpolation)
+      method          — GET | POST | PUT | PATCH | DELETE (default GET)
+      headers         — dict of header key→value (interpolated)
+      body            — string or dict request body (interpolated; sent as JSON if dict)
+      auth_type       — none | bearer | basic | api_key (default none)
+      auth_config     — dict with auth details (e.g. {token}, {username, password}, {header, value})
+      timeout_seconds — request timeout (default 30)
+
+    Returns: { status_code, headers, body, elapsed_ms } or { error, elapsed_ms }
+    """
+    url = _resolve(config.get("url", ""), context)
+    method = (config.get("method", "GET") or "GET").upper()
+    headers = _resolve(config.get("headers", {}), context) or {}
+    body_raw = config.get("body")
+    auth_type = (config.get("auth_type", "none") or "none").lower()
+    auth_config = _resolve(config.get("auth_config", {}), context) or {}
+    timeout_seconds = config.get("timeout_seconds", 30) or 30
+
+    if not url:
+        return {"error": "url is required", "elapsed_ms": 0}
+
+    # Resolve body
+    if body_raw is not None:
+        body_raw = _resolve(body_raw, context)
+
+    # Apply auth
+    if auth_type == "bearer":
+        token = auth_config.get("token", "")
+        headers["Authorization"] = f"Bearer {token}"
+    elif auth_type == "basic":
+        import base64
+        username = auth_config.get("username", "")
+        password = auth_config.get("password", "")
+        encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+        headers["Authorization"] = f"Basic {encoded}"
+    elif auth_type == "api_key":
+        header_name = auth_config.get("header", "X-API-Key")
+        header_value = auth_config.get("value", "")
+        headers[header_name] = header_value
+
+    # Build request kwargs
+    kwargs: dict[str, Any] = {"method": method, "url": url, "headers": headers}
+    if body_raw is not None and method in ("POST", "PUT", "PATCH"):
+        if isinstance(body_raw, dict):
+            kwargs["json"] = body_raw
+        else:
+            # Try to parse as JSON string, otherwise send as text
+            try:
+                kwargs["json"] = json.loads(body_raw)
+            except (json.JSONDecodeError, TypeError):
+                kwargs["content"] = str(body_raw)
+
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            resp = await client.request(**kwargs)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        # Parse response body
+        try:
+            resp_body = resp.json()
+        except Exception:
+            resp_body = resp.text
+
+        return {
+            "status_code": resp.status_code,
+            "headers": dict(resp.headers),
+            "body": resp_body,
+            "elapsed_ms": elapsed_ms,
+        }
+    except httpx.TimeoutException:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {"error": "Request timed out", "status_code": None, "elapsed_ms": elapsed_ms}
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {"error": str(e), "status_code": None, "elapsed_ms": elapsed_ms}
+
+
 async def _run_ontology_update(block: dict, context: dict, tenant_id: str) -> Any:
     """
     Write one or more field values back to an ontology object type record.
@@ -479,6 +562,8 @@ async def execute_function(
                 result = await _run_utility_call(block, context, tenant_id)
             elif block_type == "ontology_update":
                 result = await _run_ontology_update(block, context, tenant_id)
+            elif block_type == "http_call":
+                result = await _run_http_call(block.get("config", {}), context)
             else:
                 result = {"error": f"Unknown block type: {block_type}"}
 

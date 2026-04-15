@@ -12,6 +12,29 @@ export interface AppFilter {
   value: string;
 }
 
+// ── Variable & Event system ──────────────────────────────────────────────
+
+export interface AppVariable {
+  id: string;
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'dateRange' | 'stringArray' | 'objectRef' | 'objectSet';
+  defaultValue: any;
+}
+
+export interface AppEventAction {
+  type: 'setVariable' | 'refreshWidget';
+  variableId?: string;
+  valueFrom?: string;
+  targetWidgetId?: string;
+}
+
+export interface AppEvent {
+  id: string;
+  sourceWidgetId: string;
+  trigger: 'onClick' | 'onBarClick' | 'onRowSelect' | 'onChange' | 'onSubmit' | 'onDateChange';
+  actions: AppEventAction[];
+}
+
 export type ComponentType =
   | 'metric-card'
   | 'data-table'
@@ -27,7 +50,10 @@ export type ComponentType =
   | 'chat-widget'
   | 'custom-code'
   | 'map'
-  | 'utility-output';
+  | 'utility-output'
+  | 'dropdown-filter'
+  | 'form'
+  | 'object-table';
 
 export interface AppComponent {
   id: string;
@@ -66,6 +92,16 @@ export interface AppComponent {
   gridX?: number;   // grid x position
   gridY?: number;   // grid y position
   gridH?: number;   // grid height in rows (1 row = 60px)
+  // variable bindings
+  inputBindings?: Record<string, string>;   // widgetProp -> variableId
+  outputBindings?: Record<string, string>;  // triggerName -> variableId
+  // dropdown-filter config
+  variableId?: string;
+  options?: string[];
+  // form config
+  fields?: { name: string; label: string; type: 'text' | 'number' | 'boolean' | 'textarea' }[];
+  actionName?: string;
+  // object-table config (reuses objectTypeId, columns)
 }
 
 export interface NexusApp {
@@ -78,4 +114,6 @@ export interface NexusApp {
   createdAt: string;
   updatedAt: string;
   syncInterval?: string;
+  variables?: AppVariable[];
+  events?: AppEvent[];
 }

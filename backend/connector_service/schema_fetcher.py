@@ -340,6 +340,12 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
             ok, msg = await _salesforce_test(base_url, creds)
         elif connector_type == "FIREFLIES":
             ok, msg = await _fireflies_test(creds)
+        elif connector_type in ("POSTGRESQL", "MYSQL"):
+            from db_connector import test_db_connection, _build_db_config
+            db_cfg = _build_db_config(creds, cfg)
+            return await test_db_connection(connector_type, db_cfg)
+        elif connector_type == "FILE_UPLOAD":
+            return True, "File upload connector — no connection test needed", int((time.time() - start) * 1000)
         elif connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return True, "Credential format accepted — live connection test not available in preview", int((time.time() - start) * 1000)
         elif connector_type == "REST_API":

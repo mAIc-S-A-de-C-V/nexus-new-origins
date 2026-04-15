@@ -12,16 +12,22 @@ import { BottleneckPanel } from './BottleneckPanel';
 import { OverviewTab } from './OverviewTab';
 import { BenchmarkTab } from './BenchmarkTab';
 import { KpiBanner } from './KpiBanner';
+import { RootCausePanel } from './RootCausePanel';
+import { PivotTable } from './PivotTable';
+import { InsightsPanel } from './InsightsPanel';
 
-type TabId = 'map' | 'overview' | 'variants' | 'bottlenecks' | 'conformance' | 'benchmark' | 'cases' | 'alerts' | 'settings';
+type TabId = 'map' | 'overview' | 'insights' | 'variants' | 'bottlenecks' | 'root-cause' | 'conformance' | 'benchmark' | 'analysis' | 'cases' | 'alerts' | 'settings';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'map', label: 'Process Map' },
   { id: 'overview', label: 'Overview' },
+  { id: 'insights', label: 'Insights' },
   { id: 'variants', label: 'Variants' },
   { id: 'bottlenecks', label: 'Bottlenecks' },
+  { id: 'root-cause', label: 'Root Cause' },
   { id: 'conformance', label: 'Conformance' },
   { id: 'benchmark', label: 'Benchmark' },
+  { id: 'analysis', label: 'Analysis' },
   { id: 'cases', label: 'Cases' },
   { id: 'alerts', label: 'Alerts' },
   { id: 'settings', label: 'Settings' },
@@ -341,6 +347,9 @@ export const ProcessMining: React.FC = () => {
           <ConformanceTab objectTypeId={selectedOtId} />
         )}
         {activeTab === 'benchmark' && <BenchmarkTab objectTypeId={selectedOtId} />}
+        {activeTab === 'root-cause' && <RootCausePanel objectTypeId={selectedOtId} />}
+        {activeTab === 'analysis' && <PivotTable objectTypeId={selectedOtId} />}
+        {activeTab === 'insights' && <InsightsPanel objectTypeId={selectedOtId} />}
         {activeTab === 'alerts' && (
           <AlertRulesPanel objectTypeId={selectedOtId} />
         )}
