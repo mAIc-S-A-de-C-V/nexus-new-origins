@@ -1,7 +1,7 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Boolean, func
+from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Boolean, func, text
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -116,6 +116,18 @@ class ActionExecutionRow(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Migrate: add object_type_ids column to apps if missing
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'object_type_ids'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN object_type_ids JSON DEFAULT '[]';
+                END IF;
+            END $$;
+        """))
 
 
 async def get_session() -> AsyncSession:
