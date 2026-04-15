@@ -75,51 +75,59 @@ class ClaudeInferenceClient:
 
     @staticmethod
     def _repair_code_json(raw: str) -> dict:
-        """Attempt to repair JSON with a broken 'code' string field."""
+        """Attempt to repair JSON with a broken 'code' string field.
+
+        Strategy: extract metadata fields before "code", extract the raw code
+        value (everything between the opening quote and the final closing of
+        the JSON), then combine them.
+        """
         import re
-        # Find "code": "..." and extract the value, handling unescaped newlines
+
+        # Find where "code": " starts
         m = re.search(r'"code"\s*:\s*"', raw)
         if not m:
             raise ValueError(f"Invalid JSON from Claude (no code field found): {raw[:200]}...")
 
-        code_start = m.end()
-        # Walk forward to find the closing quote (not preceded by \)
-        depth = 0
-        i = code_start
-        while i < len(raw):
-            ch = raw[i]
-            if ch == '\\':
-                i += 2  # skip escaped char
-                continue
-            if ch == '"':
-                # Check if this quote closes the code string
-                # It should be followed by optional whitespace + , or }
-                rest = raw[i + 1:].lstrip()
-                if rest and rest[0] in (',', '}', '\n'):
-                    break
-            i += 1
-
-        code_value = raw[code_start:i]
-        # Properly escape the code value
-        escaped = code_value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-
-        # Rebuild JSON with escaped code
-        repaired = raw[:code_start] + escaped + raw[i:]
+        # Everything before the "code" key is valid JSON fields — extract them
+        prefix = raw[:m.start()].rstrip().rstrip(',')
+        # Close it as valid JSON so we can parse the metadata
+        metadata_json = prefix.rstrip() + '}'
         try:
-            return json.loads(repaired)
+            metadata = json.loads(metadata_json)
         except json.JSONDecodeError:
-            # Last resort: parse everything except code, inject code separately
-            try:
-                # Remove the code field entirely and parse the rest
-                no_code = raw[:m.start()] + raw[i + 1:]
-                # Clean up dangling comma
-                no_code = re.sub(r',\s*}', '}', no_code)
-                no_code = re.sub(r'{\s*,', '{', no_code)
-                result = json.loads(no_code)
-                result['code'] = code_value
-                return result
-            except Exception:
-                raise ValueError(f"Could not repair JSON from Claude: {raw[:300]}...")
+            # Try harder: extract fields with regex
+            metadata = {}
+            for fm in re.finditer(r'"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|\d+)', prefix):
+                key = fm.group(1)
+                val = fm.group(2)
+                if val.startswith('"'):
+                    metadata[key] = val[1:-1]
+                else:
+                    metadata[key] = int(val)
+
+        # Extract the raw code: everything from after "code": " to the last "
+        # followed by optional whitespace and }
+        code_start = m.end()
+        # Find the final closing: the code ends at the last " before the final }
+        # Search backwards from end of string for the pattern "\n}" or "}"
+        stripped = raw.rstrip()
+        if stripped.endswith('}'):
+            # Find the quote that closes the code value — scan back from the }
+            end = len(stripped) - 1  # position of final }
+            # Walk backwards past whitespace to find the closing "
+            j = end - 1
+            while j > code_start and stripped[j] in (' ', '\t', '\n', '\r'):
+                j -= 1
+            if stripped[j] == '"':
+                code_value = raw[code_start:j]
+            else:
+                code_value = raw[code_start:end]
+        else:
+            code_value = raw[code_start:]
+
+        # The code_value is the raw JS code with real newlines — just use it as-is
+        metadata['code'] = code_value
+        return metadata
 
     def infer_schema(
         self,
