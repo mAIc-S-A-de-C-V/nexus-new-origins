@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { getTenantId } from '../../store/authStore';
+import { useProcessStore } from '../../store/processStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
 
-type Target = 'slow' | 'stuck' | 'rework';
+type Target = 'slow_cases' | 'stuck_cases' | 'rework_cases';
 
 interface Factor {
   rank: number;
@@ -20,9 +21,9 @@ interface Props {
 }
 
 const TARGET_OPTIONS: { id: Target; label: string }[] = [
-  { id: 'slow', label: 'Slow Cases' },
-  { id: 'stuck', label: 'Stuck Cases' },
-  { id: 'rework', label: 'Rework Cases' },
+  { id: 'slow_cases', label: 'Slow Cases' },
+  { id: 'stuck_cases', label: 'Stuck Cases' },
+  { id: 'rework_cases', label: 'Rework Cases' },
 ];
 
 function impactColor(score: number, maxScore: number): string {
@@ -40,16 +41,31 @@ function impactBg(score: number, maxScore: number): string {
 }
 
 export const RootCausePanel: React.FC<Props> = ({ objectTypeId }) => {
+  const { eventConfig, dateRange, attributeFilters } = useProcessStore();
   const [target, setTarget] = useState<Target | null>(null);
   const [factors, setFactors] = useState<Factor[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const buildQs = () => {
+    const params = new URLSearchParams();
+    if (eventConfig.excluded_activities.length > 0) params.set('excluded', eventConfig.excluded_activities.join(','));
+    if (eventConfig.activity_attribute) params.set('activity_attribute', eventConfig.activity_attribute);
+    if (eventConfig.case_id_attribute) params.set('case_id_attribute', eventConfig.case_id_attribute);
+    if (eventConfig.timestamp_attribute) params.set('timestamp_attribute', eventConfig.timestamp_attribute);
+    if (dateRange?.start) params.set('start_date', dateRange.start);
+    if (dateRange?.end) params.set('end_date', dateRange.end);
+    if (attributeFilters && Object.keys(attributeFilters).length > 0) params.set('attribute_filters', JSON.stringify(attributeFilters));
+    const qs = params.toString();
+    return qs ? `?${qs}` : '';
+  };
 
   const analyze = async (t: Target) => {
     setTarget(t);
     setLoading(true);
     setFactors([]);
     try {
-      const res = await fetch(`${PROCESS_API}/process/root-cause/${objectTypeId}`, {
+      const qs = buildQs();
+      const res = await fetch(`${PROCESS_API}/process/root-cause/${objectTypeId}${qs}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
         body: JSON.stringify({ target: t, top_n: 15 }),

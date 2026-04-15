@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { getTenantId } from '../../store/authStore';
+import { useProcessStore } from '../../store/processStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
 
@@ -38,6 +39,7 @@ function formatMetric(v: number, metric: string): string {
 }
 
 export const PivotTable: React.FC<Props> = ({ objectTypeId }) => {
+  const { eventConfig, dateRange, attributeFilters } = useProcessStore();
   const [selectedDims, setSelectedDims] = useState<string[]>([]);
   const [metric, setMetric] = useState('count');
   const [result, setResult] = useState<PivotResult | null>(null);
@@ -56,6 +58,13 @@ export const PivotTable: React.FC<Props> = ({ objectTypeId }) => {
       const params = new URLSearchParams();
       params.set('rows', selectedDims.join(','));
       params.set('metric', metric);
+      if (eventConfig.excluded_activities.length > 0) params.set('excluded', eventConfig.excluded_activities.join(','));
+      if (eventConfig.activity_attribute) params.set('activity_attribute', eventConfig.activity_attribute);
+      if (eventConfig.case_id_attribute) params.set('case_id_attribute', eventConfig.case_id_attribute);
+      if (eventConfig.timestamp_attribute) params.set('timestamp_attribute', eventConfig.timestamp_attribute);
+      if (dateRange?.start) params.set('start_date', dateRange.start);
+      if (dateRange?.end) params.set('end_date', dateRange.end);
+      if (attributeFilters && Object.keys(attributeFilters).length > 0) params.set('attribute_filters', JSON.stringify(attributeFilters));
       const res = await fetch(`${PROCESS_API}/process/pivot/${objectTypeId}?${params.toString()}`, {
         headers: { 'x-tenant-id': getTenantId() },
       });

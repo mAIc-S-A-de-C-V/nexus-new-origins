@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { getTenantId } from '../../store/authStore';
+import { useProcessStore } from '../../store/processStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
 
@@ -33,13 +34,28 @@ function formatVal(v: number): string {
 }
 
 export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
+  const { eventConfig, dateRange, attributeFilters } = useProcessStore();
   const [insights, setInsights] = useState<Insight[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const buildQs = () => {
+    const params = new URLSearchParams();
+    if (eventConfig.excluded_activities.length > 0) params.set('excluded', eventConfig.excluded_activities.join(','));
+    if (eventConfig.activity_attribute) params.set('activity_attribute', eventConfig.activity_attribute);
+    if (eventConfig.case_id_attribute) params.set('case_id_attribute', eventConfig.case_id_attribute);
+    if (eventConfig.timestamp_attribute) params.set('timestamp_attribute', eventConfig.timestamp_attribute);
+    if (dateRange?.start) params.set('start_date', dateRange.start);
+    if (dateRange?.end) params.set('end_date', dateRange.end);
+    if (attributeFilters && Object.keys(attributeFilters).length > 0) params.set('attribute_filters', JSON.stringify(attributeFilters));
+    const qs = params.toString();
+    return qs ? `?${qs}` : '';
+  };
 
   const fetchInsights = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${PROCESS_API}/process/insights/${objectTypeId}`, {
+      const qs = buildQs();
+      const res = await fetch(`${PROCESS_API}/process/insights/${objectTypeId}${qs}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       });
