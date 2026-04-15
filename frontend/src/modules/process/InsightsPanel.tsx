@@ -5,14 +5,16 @@ import { useProcessStore } from '../../store/processStore';
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
 
 interface Insight {
-  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  type: string;
+  severity: string;
   title: string;
   description: string;
-  baseline_value: number;
-  current_value: number;
-  delta_pct: number;
-  affected_count: number;
-  metric_label: string;
+  baseline_value?: number;
+  metric_value?: number;
+  current_value?: number;
+  delta_pct?: number;
+  affected_count?: number;
+  metric_label?: string;
 }
 
 interface Props {
@@ -27,7 +29,8 @@ const SEVERITY_COLORS: Record<string, { bg: string; border: string; text: string
 
 const SEVERITY_ORDER: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
-function formatVal(v: number): string {
+function formatVal(v: number | undefined | null): string {
+  if (v == null || isNaN(v)) return '—';
   if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(1)}k`;
   if (Number.isInteger(v)) return v.toString();
   return v.toFixed(2);
@@ -60,7 +63,12 @@ export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
         headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
       });
       const data = await res.json();
-      const sorted = (data.insights || []).sort(
+      const normalized = (data.insights || []).map((i: Insight) => ({
+        ...i,
+        severity: (i.severity || 'LOW').toUpperCase(),
+        current_value: i.current_value ?? i.metric_value,
+      }));
+      const sorted = normalized.sort(
         (a: Insight, b: Insight) => (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3)
       );
       setInsights(sorted);
@@ -129,7 +137,14 @@ export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {insights.map((insight, i) => {
               const colors = SEVERITY_COLORS[insight.severity] || SEVERITY_COLORS.LOW;
-              const deltaPositive = insight.delta_pct >= 0;
+              const currentVal = insight.current_value ?? insight.metric_value;
+              const baselineVal = insight.baseline_value;
+              const deltaPct = insight.delta_pct ??
+                (baselineVal && baselineVal > 0 && currentVal != null
+                  ? ((currentVal - baselineVal) / baselineVal) * 100
+                  : null);
+              const deltaPositive = (deltaPct ?? 0) >= 0;
+              const typeLabel = insight.metric_label || insight.type || '';
 
               return (
                 <div key={i} style={{
@@ -149,13 +164,15 @@ export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
                     <span style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', flex: 1 }}>
                       {insight.title}
                     </span>
-                    <span style={{
-                      fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-                      backgroundColor: '#FFFFFF', color: colors.text,
-                      border: `1px solid ${colors.border}`,
-                    }}>
-                      {insight.affected_count.toLocaleString()} affected
-                    </span>
+                    {insight.affected_count != null && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                        backgroundColor: '#FFFFFF', color: colors.text,
+                        border: `1px solid ${colors.border}`,
+                      }}>
+                        {insight.affected_count.toLocaleString()} affected
+                      </span>
+                    )}
                   </div>
 
                   {/* Description */}
@@ -163,27 +180,37 @@ export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
                     {insight.description}
                   </p>
 
-                  {/* Metric comparison */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 10, fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      {insight.metric_label}
-                    </span>
-                    <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: '#64748B' }}>
-                      {formatVal(insight.baseline_value)}
-                    </span>
-                    <span style={{ fontSize: 11, color: '#94A3B8' }}>
-                      {deltaPositive ? '\u2192' : '\u2192'}
-                    </span>
-                    <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', fontWeight: 700, color: colors.text }}>
-                      {formatVal(insight.current_value)}
-                    </span>
-                    <span style={{
-                      fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-mono)',
-                      color: deltaPositive ? '#DC2626' : '#16A34A',
-                    }}>
-                      {deltaPositive ? '\u25B2' : '\u25BC'} {Math.abs(insight.delta_pct).toFixed(1)}%
-                    </span>
-                  </div>
+                  {/* Metric comparison — only show if we have values */}
+                  {(currentVal != null || baselineVal != null) && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {typeLabel && (
+                        <span style={{ fontSize: 10, fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          {typeLabel}
+                        </span>
+                      )}
+                      {baselineVal != null && (
+                        <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: '#64748B' }}>
+                          {formatVal(baselineVal)}
+                        </span>
+                      )}
+                      {baselineVal != null && currentVal != null && (
+                        <span style={{ fontSize: 11, color: '#94A3B8' }}>{'\u2192'}</span>
+                      )}
+                      {currentVal != null && (
+                        <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', fontWeight: 700, color: colors.text }}>
+                          {formatVal(currentVal)}
+                        </span>
+                      )}
+                      {deltaPct != null && (
+                        <span style={{
+                          fontSize: 11, fontWeight: 700, fontFamily: 'var(--font-mono)',
+                          color: deltaPositive ? '#DC2626' : '#16A34A',
+                        }}>
+                          {deltaPositive ? '\u25B2' : '\u25BC'} {Math.abs(deltaPct).toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
