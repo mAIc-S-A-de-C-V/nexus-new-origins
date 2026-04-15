@@ -116,5 +116,22 @@ export const categoryColors: Record<string, { bg: string; text: string }> = {
   DW: { bg: '#F8FAFC', text: '#1E293B' },
 };
 
+/** Ordered palette for chart series (bars, pie slices, area fills, lines).
+ *  Derived from brand, interactive, and semantic tokens for visual cohesion. */
+export const chartPalette = [
+  '#1A3C6E', // primary navy
+  '#7C3AED', // brand violet
+  '#059669', // green
+  '#D97706', // amber/accent
+  '#DC2626', // red
+  '#0891B2', // cyan
+  '#2563EB', // interactive blue
+  '#DB2777', // pink
+  '#65A30D', // lime
+  '#6366F1', // indigo
+  '#0D9488', // teal
+  '#F97316', // orange
+] as const;
+
 export type ColorToken = keyof typeof colors;
 export type SpacingToken = keyof typeof spacing;

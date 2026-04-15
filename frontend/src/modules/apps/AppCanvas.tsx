@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { NexusApp, AppComponent, AppFilter, AppEvent } from '../../types/app';
 import { getTenantId } from '../../store/authStore';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
+import { colors as tokens, chartPalette } from '../../design-system/tokens';
 
 // ── Cross-widget filter context ───────────────────────────────────────────
 interface CrossFilter { field: string; value: string; sourceId: string }
@@ -207,7 +208,7 @@ const KpiBanner: React.FC<{ comp: AppComponent; records: Record<string, unknown>
       <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
         {kpis.map((k) => (
           <div key={k.label}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: '#2563EB' }}>{k.value}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: tokens.primary }}>{k.value}</div>
             <div style={{ fontSize: 11, color: '#94A3B8' }}>{k.label}</div>
           </div>
         ))}
@@ -415,7 +416,7 @@ const BarChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[
                     y={y + barHeight / 2 + 4}
                     textAnchor="end"
                     fontSize={10}
-                    fill={isActive ? '#2563EB' : '#64748B'}
+                    fill={isActive ? tokens.primary : tokens.textMuted}
                     fontWeight={isActive ? 700 : 400}
                   >
                     {label.length > 18 ? label.slice(0, 18) + '…' : label}
@@ -426,9 +427,9 @@ const BarChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[
                     width={Math.max(barW, 2)}
                     height={barHeight}
                     rx={3}
-                    fill={isActive ? '#1D4ED8' : '#2563EB'}
+                    fill={isActive ? tokens.primary : chartPalette[0]}
                     opacity={isActive ? 1 : 0.8}
-                    stroke={isActive ? '#1E40AF' : 'none'}
+                    stroke={isActive ? tokens.primary : 'none'}
                     strokeWidth={isActive ? 2 : 0}
                   />
                   <text
@@ -557,10 +558,10 @@ const LineChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>
               );
             })}
             {/* Line */}
-            <path d={pathD} fill="none" stroke="#2563EB" strokeWidth={2} />
+            <path d={pathD} fill="none" stroke={chartPalette[0]} strokeWidth={2} />
             {/* Dots */}
             {points.map((p, i) => (
-              <circle key={i} cx={toX(i)} cy={toY(p.y)} r={3} fill="#2563EB" />
+              <circle key={i} cx={toX(i)} cy={toY(p.y)} r={3} fill={chartPalette[0]} />
             ))}
             {/* X labels */}
             {points.filter((_, i) => i % Math.max(1, Math.floor(points.length / 5)) === 0).map((p, i) => {
@@ -600,7 +601,6 @@ const PieChartWidget: React.FC<{ comp: AppComponent; records: Record<string, unk
 
   const entries = Object.entries(grouped).sort((a, b) => b[1] - a[1]).slice(0, 12);
   const total = entries.reduce((s, [, v]) => s + v, 0);
-  const colors = ['#2563EB', '#7C3AED', '#DC2626', '#F59E0B', '#10B981', '#EC4899', '#06B6D4', '#8B5CF6', '#14B8A6', '#F97316', '#6366F1', '#84CC16'];
   const cx = 100, cy = 100, r = 80, ir = 45; // outer and inner (donut) radius
 
   // Build SVG arcs
@@ -616,7 +616,7 @@ const PieChartWidget: React.FC<{ comp: AppComponent; records: Record<string, unk
     const ix1 = cx + ir * Math.cos(endAngle), iy1 = cy + ir * Math.sin(endAngle);
     const ix2 = cx + ir * Math.cos(startAngle), iy2 = cy + ir * Math.sin(startAngle);
     const path = `M ${ix2} ${iy2} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} L ${ix1} ${iy1} A ${ir} ${ir} 0 ${largeArc} 0 ${ix2} ${iy2} Z`;
-    return { label, val, path, color: colors[i % colors.length], pct: ((val / total) * 100).toFixed(1) };
+    return { label, val, path, color: chartPalette[i % chartPalette.length], pct: ((val / total) * 100).toFixed(1) };
   });
 
   return (
@@ -703,7 +703,7 @@ const AreaChartWidget: React.FC<{ comp: AppComponent; records: Record<string, un
 
   const sortedKeys = Object.keys(buckets).sort();
   const allSeries = [...new Set(sortedKeys.flatMap(k => Object.keys(buckets[k])))].slice(0, 5);
-  const colors = ['#2563EB', '#10B981', '#F59E0B', '#DC2626', '#7C3AED'];
+  // Use design-system chart palette for series colors
 
   if (!sortedKeys.length) {
     return (
@@ -746,7 +746,7 @@ const AreaChartWidget: React.FC<{ comp: AppComponent; records: Record<string, un
             });
             const baseline = `${padL + chartW},${padT + chartH} ${padL},${padT + chartH}`;
             return (
-              <polygon key={s} points={`${points.join(' ')} ${baseline}`} fill={colors[si % colors.length]} opacity={0.25} stroke={colors[si % colors.length]} strokeWidth={1.5}
+              <polygon key={s} points={`${points.join(' ')} ${baseline}`} fill={chartPalette[si % chartPalette.length]} opacity={0.25} stroke={chartPalette[si % chartPalette.length]} strokeWidth={1.5}
                 style={{ transition: 'opacity 0.2s' }}
               />
             );
@@ -760,8 +760,8 @@ const AreaChartWidget: React.FC<{ comp: AppComponent; records: Record<string, un
           {/* Legend */}
           {allSeries.length > 1 && allSeries.map((s, i) => (
             <g key={s} transform={`translate(${padL + i * 80}, ${H - 14})`}>
-              <rect width={8} height={8} rx={1} fill={colors[i % colors.length]} />
-              <text x={11} y={7} fontSize={8} fill="#64748B">{s.slice(0, 12)}</text>
+              <rect width={8} height={8} rx={1} fill={chartPalette[i % chartPalette.length]} />
+              <text x={11} y={7} fontSize={8} fill={tokens.textMuted}>{s.slice(0, 12)}</text>
             </g>
           ))}
         </svg>
@@ -915,8 +915,8 @@ const FilterBar: React.FC<{ comp: AppComponent; records: Record<string, unknown>
           .slice(0, 12)
           .map((v) => (
             <span key={v} style={{
-              padding: '3px 8px', backgroundColor: '#EFF6FF', color: '#2563EB',
-              border: '1px solid #BFDBFE', borderRadius: 3, fontSize: 11, cursor: 'pointer',
+              padding: '3px 8px', backgroundColor: tokens.interactiveDim, color: tokens.interactive,
+              border: `1px solid ${tokens.interactiveBorder}`, borderRadius: 3, fontSize: 11, cursor: 'pointer',
             }}>
               {v}
             </span>
@@ -1140,7 +1140,7 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
               maxWidth: m.role === 'assistant' ? '95%' : '80%',
               padding: '8px 12px',
               borderRadius: m.role === 'user' ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-              backgroundColor: m.role === 'user' ? '#2563EB' : '#F8FAFC',
+              backgroundColor: m.role === 'user' ? tokens.primary : '#F8FAFC',
               color: m.role === 'user' ? '#fff' : '#0D1117',
               border: m.role === 'assistant' ? '1px solid #E2E8F0' : 'none',
               fontSize: 12, lineHeight: 1.6,
@@ -1186,7 +1186,7 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
           disabled={!input.trim() || thinking}
           style={{
             height: 32, padding: '0 14px', borderRadius: 6,
-            backgroundColor: !input.trim() || thinking ? '#E2E8F0' : '#2563EB',
+            backgroundColor: !input.trim() || thinking ? '#E2E8F0' : tokens.primary,
             color: !input.trim() || thinking ? '#94A3B8' : '#fff',
             border: 'none', cursor: !input.trim() || thinking ? 'default' : 'pointer',
             fontSize: 12, fontWeight: 600,
@@ -1489,7 +1489,7 @@ const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
           disabled={submitting}
           style={{
             marginTop: 4, padding: '7px 16px', border: 'none', borderRadius: 6,
-            backgroundColor: submitting ? '#E2E8F0' : '#2563EB',
+            backgroundColor: submitting ? '#E2E8F0' : tokens.primary,
             color: submitting ? '#94A3B8' : '#fff',
             fontSize: 12, fontWeight: 600, cursor: submitting ? 'default' : 'pointer',
             alignSelf: 'flex-start',
