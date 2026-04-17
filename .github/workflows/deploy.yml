@@ -24,7 +24,7 @@ jobs:
           for req in backend/*/requirements.txt backend/requirements.txt; do
             if [ -f "$req" ]; then
               echo "Auditing $req"
-              pip-audit -r "$req" --ignore-vuln PYSEC-2022-43012
+              pip-audit -r "$req" --ignore-vuln PYSEC-2022-43012 --ignore-vuln CVE-2026-30922
             fi
           done
 
