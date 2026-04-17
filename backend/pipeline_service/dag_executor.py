@@ -544,6 +544,17 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     and r.get("text") and str(r["text"]).strip()
                 ]
 
+                # Add standard field aliases so downstream nodes work with
+                # either raw API names (text, id, timestamp) or semantic
+                # names (message_text, message_id, sent_at).
+                for row in all_rows:
+                    if "text" in row and "message_text" not in row:
+                        row["message_text"] = row["text"]
+                    if "id" in row and "message_id" not in row:
+                        row["message_id"] = row["id"]
+                    if "timestamp" in row and "sent_at" not in row:
+                        row["sent_at"] = row["timestamp"]
+
                 if audit_extras is not None:
                     audit_extras["http_status"] = 200
                     audit_extras["raw_row_count"] = before_filter

@@ -779,7 +779,7 @@ async def execute_tool(
 
             elif tool_name == "utility_list":
                 category = tool_input.get("category")
-                r = await client.get(f"{UTILITY_URL}/utilities", timeout=10)
+                r = await client.get(f"{UTILITY_URL}/utilities", headers=headers, timeout=10)
                 utilities = r.json() if r.is_success else []
                 if category:
                     utilities = [u for u in utilities if u.get("category", "").lower() == category.lower()]
@@ -793,6 +793,7 @@ async def execute_tool(
                 r = await client.post(
                     f"{UTILITY_URL}/utilities/{utility_id}/run",
                     json={"inputs": inputs},
+                    headers=headers,
                     timeout=60,
                 )
                 data = r.json() if r.is_success else {"error": r.text}

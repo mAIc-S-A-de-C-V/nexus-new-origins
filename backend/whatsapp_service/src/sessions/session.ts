@@ -25,11 +25,17 @@ const B64_PREFIX = '::b64::';
 
 function serializeKeys(keys: Record<string, any>): string {
   return JSON.stringify(keys, (_key, value) => {
+    // Buffer.isBuffer works if the value hasn't been through toJSON() yet
     if (Buffer.isBuffer(value)) {
       return B64_PREFIX + value.toString('base64');
     }
     if (value instanceof Uint8Array) {
       return B64_PREFIX + Buffer.from(value).toString('base64');
+    }
+    // Buffer.toJSON() fires BEFORE the replacer sees the value, converting
+    // Buffers to {type:'Buffer', data:[...]} plain objects. Catch that here.
+    if (value && typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data)) {
+      return B64_PREFIX + Buffer.from(value.data).toString('base64');
     }
     return value;
   });
@@ -272,7 +278,7 @@ export class WhatsAppSession extends EventEmitter {
 
   private async handleAssistantCommand(chatJid: string, query: string): Promise<void> {
     if (!this.sock) return;
-    console.log(`[assistant] query from ${chatJid}: ${query.slice(0, 100)}`);
+    console.log(`[assistant] query from ${chatJid} (tenant=${this.tenantId}): ${query.slice(0, 100)}`);
 
     // Show "typing" indicator while the agent loop runs
     try { await this.sock.sendPresenceUpdate('composing', chatJid); } catch {}

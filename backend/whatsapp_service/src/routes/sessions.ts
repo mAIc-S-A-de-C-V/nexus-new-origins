@@ -7,7 +7,19 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     '/sessions/:connectorId/start',
     async (req, reply) => {
       const { connectorId } = req.params;
-      const tenantId = req.headers['x-tenant-id'] as string || req.body?.tenantId || 'tenant-001';
+      let tenantId = req.headers['x-tenant-id'] as string || req.body?.tenantId || '';
+      // If no tenant provided, look up the connector's tenant from connector-service
+      if (!tenantId) {
+        try {
+          const CONNECTOR_URL = process.env.CONNECTOR_SERVICE_URL || 'http://connector-service:8001';
+          const r = await fetch(`${CONNECTOR_URL}/connectors/${connectorId}`);
+          if (r.ok) {
+            const c = await r.json() as any;
+            tenantId = c.tenant_id || '';
+          }
+        } catch {}
+      }
+      if (!tenantId) tenantId = 'tenant-001';
       const session = await sessionManager.startSession(connectorId, tenantId);
       return { status: session.status, connectorId };
     }
