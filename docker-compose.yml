@@ -191,7 +191,7 @@ services:
     environment:
       - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
     depends_on:
       postgres:
         condition: service_healthy
@@ -226,6 +226,7 @@ services:
       - JWT_PRIVATE_KEY_PEM=${JWT_PRIVATE_KEY_PEM:-}
       - ADMIN_SEED_PASSWORD=${ADMIN_SEED_PASSWORD:-}
       - MJSP_ADMIN_PASSWORD=${MJSP_ADMIN_PASSWORD:-}
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
     depends_on:
       postgres:
         condition: service_healthy
@@ -322,7 +323,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
@@ -340,7 +341,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
       - AGENT_SERVICE_URL=http://agent-service:8013
       - LOGIC_SERVICE_URL=http://logic-service:8012
@@ -359,7 +360,7 @@ services:
       - "8018:8018"
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
@@ -376,7 +377,7 @@ services:
       - "8019:8019"
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
@@ -393,7 +394,7 @@ services:
       - "8020:8020"
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
@@ -410,7 +411,7 @@ services:
       - "8021:8021"
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
@@ -427,7 +428,7 @@ services:
       - "8022:8022"
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
@@ -444,7 +445,7 @@ services:
     ports:
       - "8023:8023"
     environment:
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
     volumes:
       - sepsis-data:/app/data
     networks:
@@ -457,7 +458,7 @@ services:
     ports:
       - "8017:8017"
     environment:
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
       - CONNECTOR_SERVICE_URL=http://connector-service:8001
       - PIPELINE_SERVICE_URL=http://pipeline-service:8002
