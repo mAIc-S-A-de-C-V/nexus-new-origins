@@ -536,9 +536,19 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         break
                     wa_params["offset"] = int(wa_params.get("offset", 0)) + len(page_rows)
 
+                # Drop undecryptable / empty messages at source level
+                before_filter = len(all_rows)
+                all_rows = [
+                    r for r in all_rows
+                    if str(r.get("message_type", "")).lower() != "other"
+                    and r.get("text") and str(r["text"]).strip()
+                ]
+
                 if audit_extras is not None:
                     audit_extras["http_status"] = 200
-                    audit_extras["raw_row_count"] = len(all_rows)
+                    audit_extras["raw_row_count"] = before_filter
+                    audit_extras["filtered_row_count"] = len(all_rows)
+                    audit_extras["dropped_no_text"] = before_filter - len(all_rows)
 
                 # Track watermark for incremental
                 if incremental and watermark_column and all_rows:
@@ -1647,19 +1657,22 @@ Responde SOLO con el JSON. Sin texto adicional."""
     client = anthropic.Anthropic(api_key=api_key)
     enriched: list[dict] = []
 
-    # Pre-filter: skip records with no text (reactions, read receipts, etc.)
+    # Pre-filter: DROP records with no text entirely (reactions, read receipts,
+    # decryption failures with message_type "other", etc.).  These are noise —
+    # never send them to the LLM and never include them in the output.
     classifiable = []
+    dropped = 0
     for record in records_in:
         text_val = record.get(text_field)
+        msg_type = str(record.get("message_type", "")).lower()
+        if msg_type == "other":
+            dropped += 1
+            continue
         if text_val and str(text_val).strip() and str(text_val).strip().lower() != "none":
             classifiable.append(record)
         else:
-            r = dict(record)
-            r["llm_categoria"] = "BASURA"
-            r["llm_prioridad"] = "INFORMATIVA"
-            r["llm_hecho"] = "Mensaje sin texto (reacción, multimedia, o protocolo)"
-            enriched.append(r)
-    logger.info(f"[LLM_CLASSIFY] {len(classifiable)} classifiable of {len(records_in)} total ({len(records_in) - len(classifiable)} skipped — no text)")
+            dropped += 1
+    logger.info(f"[LLM_CLASSIFY] {len(classifiable)} classifiable of {len(records_in)} total ({dropped} dropped — no text or message_type=other)")
     records_in = classifiable
 
     # Process in batches

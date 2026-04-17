@@ -9,6 +9,18 @@ import { messageRoutes } from './routes/messages.js';
 const PORT = parseInt(process.env.PORT || '8025');
 const HOST = process.env.HOST || '0.0.0.0';
 
+// Prevent corrupted signal keys from crashing the entire process
+process.on('uncaughtException', (err) => {
+  if (err.message?.includes('ERR_INVALID_ARG_TYPE') || err.message?.includes('Buffer')) {
+    console.error('[whatsapp-service] Signal key corruption (non-fatal):', err.message);
+  } else {
+    console.error('[whatsapp-service] uncaughtException:', err);
+  }
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[whatsapp-service] unhandledRejection:', reason);
+});
+
 const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: true, credentials: true });

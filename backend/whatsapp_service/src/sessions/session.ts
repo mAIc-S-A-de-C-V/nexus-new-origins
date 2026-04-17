@@ -17,37 +17,38 @@ import { extractContent, type ExtractedMessage } from '../extract.js';
 const INFERENCE_URL = process.env.INFERENCE_SERVICE_URL || 'http://inference-service:8003';
 
 /**
- * Recursively convert serialised `{type:'Buffer',data:[…]}` objects back to
- * real Buffer instances.  PostgreSQL jsonb round-trips lose the Buffer
- * prototype, which makes Baileys' crypto helpers crash.
+ * Serialize keys to JSON with Buffers encoded as base64 strings.
+ * This avoids the JSONB round-trip corruption where {type:'Buffer',data:[...]}
+ * objects lose their prototype and break libsignal's deserialization.
  */
-function bufferify(obj: any): any {
-  if (obj == null) return obj;
-  // Handle serialized Buffer: {type:'Buffer', data:[…]}
-  if (typeof obj === 'object' && obj.type === 'Buffer' && Array.isArray(obj.data)) {
-    return Buffer.from(obj.data);
-  }
-  // Handle Uint8Array-like objects: {0: n, 1: n, ...} with numeric keys
-  if (typeof obj === 'object' && !Array.isArray(obj)) {
-    const entries = Object.entries(obj);
-    if (entries.length > 0 && entries.every(([k]) => /^\d+$/.test(k))) {
-      // Looks like a serialized typed array — convert to Buffer
-      try {
-        const arr = new Uint8Array(entries.length);
-        for (const [k, v] of entries) arr[parseInt(k)] = v as number;
-        return Buffer.from(arr);
-      } catch { /* fall through to recursive handling */ }
+const B64_PREFIX = '::b64::';
+
+function serializeKeys(keys: Record<string, any>): string {
+  return JSON.stringify(keys, (_key, value) => {
+    if (Buffer.isBuffer(value)) {
+      return B64_PREFIX + value.toString('base64');
     }
-  }
-  if (Array.isArray(obj)) return obj.map(bufferify);
-  if (typeof obj === 'object') {
-    const out: Record<string, any> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      out[k] = bufferify(v);
+    if (value instanceof Uint8Array) {
+      return B64_PREFIX + Buffer.from(value).toString('base64');
     }
-    return out;
-  }
-  return obj;
+    return value;
+  });
+}
+
+function deserializeKeys(raw: any): Record<string, any> {
+  if (!raw) return {};
+  // If it's already parsed by PostgreSQL (JSONB), stringify it first
+  const str = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  return JSON.parse(str, (_key, value) => {
+    if (typeof value === 'string' && value.startsWith(B64_PREFIX)) {
+      return Buffer.from(value.slice(B64_PREFIX.length), 'base64');
+    }
+    // Legacy: handle old-style {type:'Buffer',data:[...]} from JSONB
+    if (value && typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data)) {
+      return Buffer.from(value.data);
+    }
+    return value;
+  });
 }
 
 export type SessionStatus = 'disconnected' | 'qr_pending' | 'connected' | 'error';
@@ -273,72 +274,51 @@ export class WhatsAppSession extends EventEmitter {
     if (!this.sock) return;
     console.log(`[assistant] query from ${chatJid}: ${query.slice(0, 100)}`);
 
+    // Show "typing" indicator while the agent loop runs
+    try { await this.sock.sendPresenceUpdate('composing', chatJid); } catch {}
+
     try {
-      const h = { 'x-tenant-id': this.tenantId };
-      const ONTOLOGY_URL = process.env.ONTOLOGY_SERVICE_URL || 'http://ontology-service:8004';
-      const CONNECTOR_URL = process.env.CONNECTOR_SERVICE_URL || 'http://connector-service:8001';
-      const PIPELINE_URL = process.env.PIPELINE_SERVICE_URL || 'http://pipeline-service:8002';
-      const LOGIC_URL = process.env.LOGIC_SERVICE_URL || 'http://logic-service:8012';
+      const AGENT_URL = process.env.AGENT_SERVICE_URL || 'http://agent-service:8013';
 
-      // Fetch live context from all services in parallel
-      const [otsRes, connsRes, pipsRes, fnsRes] = await Promise.allSettled([
-        fetch(`${ONTOLOGY_URL}/object-types`, { headers: h }).then(r => r.json()),
-        fetch(`${CONNECTOR_URL}/connectors`, { headers: h }).then(r => r.json()),
-        fetch(`${PIPELINE_URL}/pipelines`, { headers: h }).then(r => r.json()),
-        fetch(`${LOGIC_URL}/logic/functions`, { headers: h }).then(r => r.json()),
-      ]);
-
-      const objectTypes = otsRes.status === 'fulfilled' ? otsRes.value : [];
-      const connectors = connsRes.status === 'fulfilled' ? connsRes.value : [];
-      const pipelines = pipsRes.status === 'fulfilled' ? pipsRes.value : [];
-      const functions = fnsRes.status === 'fulfilled' ? fnsRes.value : [];
-
-      // Fetch recent records for each object type (up to first 8)
-      const otsWithRecords = await Promise.all(
-        (objectTypes as any[]).slice(0, 8).map(async (ot: any) => {
-          try {
-            const r = await fetch(`${ONTOLOGY_URL}/object-types/${ot.id}/records?limit=25`, { headers: h });
-            const d = await r.json();
-            return { ...ot, recent_records: (d.records || []).slice(0, 25), total_records: d.total || 0 };
-          } catch { return ot; }
-        })
-      );
-
-      const context = {
-        current_page: 'WhatsApp Assistant',
-        object_types: otsWithRecords,
-        connectors: (connectors as any[]).map((c: any) => ({
-          id: c.id, name: c.name, type: c.type, status: c.status,
-          base_url: c.base_url, last_sync: c.last_sync,
-        })),
-        pipelines,
-        functions,
-      };
-
-      const res = await fetch(`${INFERENCE_URL}/infer/stream-help`, {
+      const res = await fetch(`${AGENT_URL}/agents/run-inline`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-tenant-id': this.tenantId },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tenant-id': this.tenantId,
+        },
         body: JSON.stringify({
-          messages: [{ role: 'user', content: query }],
-          context,
+          message: query,
+          model: 'claude-haiku-4-5-20251001',
+          enabled_tools: [
+            'list_object_types', 'get_object_schema', 'query_records',
+            'count_records', 'logic_function_run', 'utility_list',
+            'utility_run', 'list_connectors', 'list_pipelines',
+            'create_pipeline', 'run_pipeline',
+          ],
+          max_iterations: 12,
+          dry_run: false,
         }),
+        signal: AbortSignal.timeout(120_000), // 2 min timeout for multi-tool loops
       });
 
-      // Read SSE stream and accumulate full response
-      const body = await res.text();
-      let answer = '';
-      for (const line of body.split('\n')) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') break;
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.text) answer += parsed.text;
-          } catch { /* skip malformed lines */ }
-        }
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Agent service ${res.status}: ${errText}`);
+      }
+
+      const result = await res.json() as { final_text?: string; iterations?: number; error?: string };
+      let answer = result.final_text || '';
+
+      if (result.error) {
+        console.warn(`[assistant] agent warning: ${result.error}`);
       }
 
       if (!answer) answer = 'No pude procesar tu consulta. Intenta de nuevo.';
+
+      // Truncate for WhatsApp message limit
+      if (answer.length > 3800) {
+        answer = answer.slice(0, 3800) + '\n\n_(respuesta truncada)_';
+      }
 
       // Strip markdown formatting for WhatsApp (keep bold with *)
       const waText = answer
@@ -347,12 +327,12 @@ export class WhatsAppSession extends EventEmitter {
         .replace(/`([^`]+)`/g, '$1');      // remove backticks
 
       await this.sock.sendMessage(chatJid, { text: `🤖 *Nexus Asistente*\n\n${waText}` });
-      console.log(`[assistant] replied to ${chatJid} (${answer.length} chars)`);
+      console.log(`[assistant] replied to ${chatJid} (${answer.length} chars, ${result.iterations || 0} iterations)`);
     } catch (e) {
       console.error(`[assistant] error:`, e);
       try {
         await this.sock!.sendMessage(chatJid, {
-          text: '🤖 Error al procesar tu consulta. Verifica que el servicio de inferencia esté activo.',
+          text: '🤖 Error al procesar tu consulta. Verifica que el servicio de agentes esté activo.',
         });
       } catch { /* ignore send error */ }
     }
@@ -370,8 +350,8 @@ export class WhatsAppSession extends EventEmitter {
     let keys: Record<string, any> = {};
 
     if (rows.length > 0 && rows[0].auth_creds) {
-      creds = bufferify(rows[0].auth_creds) as AuthenticationCreds;
-      keys = bufferify(rows[0].auth_keys) || {};
+      creds = deserializeKeys(rows[0].auth_creds) as AuthenticationCreds;
+      keys = deserializeKeys(rows[0].auth_keys);
     }
 
     if (!creds) {
@@ -385,7 +365,14 @@ export class WhatsAppSession extends EventEmitter {
         const result: Record<string, any> = {};
         for (const id of ids) {
           const key = `${type}-${id}`;
-          if (keys[key]) result[id] = bufferify(keys[key]);
+          if (keys[key]) {
+            try {
+              result[id] = keys[key];
+            } catch (e) {
+              console.warn(`[session:${this.connectorId}] corrupted key ${key}, skipping`);
+              delete keys[key]; // purge corrupted key
+            }
+          }
         }
         return result;
       },
@@ -416,14 +403,14 @@ export class WhatsAppSession extends EventEmitter {
     if (!creds) return;
     await pool.query(
       `UPDATE wa_sessions SET auth_creds = $1, updated_at = NOW() WHERE connector_id = $2`,
-      [JSON.stringify(creds), this.connectorId]
+      [serializeKeys(creds as any), this.connectorId]
     );
   }
 
   private async saveKeys(keys: Record<string, any>): Promise<void> {
     await pool.query(
       `UPDATE wa_sessions SET auth_keys = $1, updated_at = NOW() WHERE connector_id = $2`,
-      [JSON.stringify(keys), this.connectorId]
+      [serializeKeys(keys), this.connectorId]
     );
   }
 

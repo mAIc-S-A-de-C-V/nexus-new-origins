@@ -245,6 +245,73 @@ async def set_knowledge_scope(
     return _to_dict(row)
 
 
+# ── Inline run (no saved agent required) ─────────────────────────────────────
+
+DEFAULT_WHATSAPP_PROMPT = """Eres el Asistente Nexus en WhatsApp. Responde siempre en español.
+Tu trabajo es ayudar al usuario con datos, automatizaciones y tareas de la plataforma Nexus.
+
+PROCEDIMIENTO para cada solicitud:
+1. Primero usa list_object_types para entender qué datos existen en la plataforma
+2. Si el usuario pide datos, usa get_object_schema para ver los campos y luego query_records para buscar
+3. Si el usuario pide ejecutar algo recurrente, busca funciones lógicas existentes (logic_function_run)
+4. Si no existe una función para lo que pide, usa las herramientas directamente:
+   - utility_run con web_scrape o rss_fetch para datos externos de internet
+   - utility_run con http_request para APIs externas
+   - create_pipeline para crear flujos de datos nuevos
+   - run_pipeline para ejecutar pipelines existentes
+5. Para reportes complejos: recopila datos con query_records o utility_run, luego resume
+
+FORMATO DE RESPUESTA:
+- Máximo 3000 caracteres (límite de WhatsApp)
+- Usa *negrita* para títulos
+- Usa listas con - para enumerar datos
+- Sé conciso y directo
+- No uses bloques de código (backticks)
+- No repitas la pregunta del usuario
+- Si los datos son muchos, muestra un resumen con los más relevantes"""
+
+
+class InlineRunRequest(BaseModel):
+    message: str
+    system_prompt: str = ""
+    model: str = "claude-haiku-4-5-20251001"
+    enabled_tools: list[str] = []
+    max_iterations: int = 12
+    conversation_history: list[dict] = []
+    knowledge_scope: Optional[list[dict]] = None
+    dry_run: bool = False
+
+
+@router.post("/run-inline")
+async def run_inline(
+    body: InlineRunRequest,
+    x_tenant_id: Optional[str] = Header(None),
+):
+    """Run the agent loop without a saved agent config. Used by WhatsApp, Slack, etc."""
+    tenant_id = x_tenant_id or "tenant-001"
+    system_prompt = body.system_prompt or DEFAULT_WHATSAPP_PROMPT
+    enabled_tools = body.enabled_tools or AVAILABLE_TOOLS
+
+    outcome = await run_agent(
+        agent_id="inline",
+        system_prompt=system_prompt,
+        model=body.model,
+        enabled_tools=enabled_tools,
+        max_iterations=body.max_iterations,
+        conversation_history=body.conversation_history,
+        new_user_message=body.message,
+        tenant_id=tenant_id,
+        knowledge_scope=body.knowledge_scope,
+        dry_run=body.dry_run,
+    )
+
+    return {
+        "final_text": outcome.get("final_text", ""),
+        "iterations": outcome.get("iterations", 0),
+        "error": outcome.get("error"),
+    }
+
+
 # ── Phase 4: Test endpoint ────────────────────────────────────────────────────
 
 class TestRequest(BaseModel):
