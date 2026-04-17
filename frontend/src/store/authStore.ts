@@ -159,6 +159,9 @@ export const getAccessToken = () => _inMemoryToken;
 /** Get the current tenant_id for the logged-in user. */
 export const getTenantId = () => _tenantId;
 
+/** Get the current user ID for the logged-in user. */
+export const getUserId = (): string | undefined => useAuthStore.getState().user?.id;
+
 /** Get the current allowed modules for the logged-in user. */
 export function getModules(): string[] {
   return useAuthStore.getState().user?.modules ?? [];

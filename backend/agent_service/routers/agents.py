@@ -24,6 +24,10 @@ AVAILABLE_TOOLS = [
     "process_mining",
     "utility_list",
     "utility_run",
+    "list_connectors",
+    "list_pipelines",
+    "create_pipeline",
+    "run_pipeline",
 ]
 
 

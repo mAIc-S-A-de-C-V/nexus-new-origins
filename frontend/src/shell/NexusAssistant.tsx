@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   X, Plus, ArrowLeft, Send, Loader, Trash2, MessageSquare,
   Database, HelpCircle, GitBranch, Code, Network, AlertTriangle, BarChart2, Zap,
+  Check, XCircle, Play, Layers,
   type LucideIcon,
 } from 'lucide-react';
 import { useAssistantStore, AssistantMessage } from '../store/assistantStore';
@@ -69,8 +70,11 @@ async function fetchLiveContext(currentPage: string) {
   const objectTypesWithRecords = await Promise.all(
     object_types.slice(0, 8).map(async (ot: any) => {
       try {
-        const r = await fetchWithTimeout(`${ONTOLOGY_URL}/object-types/${ot.id}/records`, opt);
-        return { ...ot, sample_records: (r.records || []).slice(0, 2) };
+        const r = await fetchWithTimeout(
+          `${ONTOLOGY_URL}/object-types/${ot.id}/records?limit=25`,
+          opt, 8000
+        );
+        return { ...ot, recent_records: (r.records || []).slice(0, 25), total_records: r.total || 0 };
       } catch { return ot; }
     })
   );
@@ -82,6 +86,118 @@ async function fetchLiveContext(currentPage: string) {
     connectors,
     pipelines,
   };
+}
+
+// ── Action types ─────────────────────────────────────────────────────────────
+interface NexusAction {
+  type: 'create_pipeline' | 'create_logic' | 'run_pipeline';
+  name: string;
+  summary: string[];
+  payload: Record<string, unknown>;
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  create_pipeline: 'Create Pipeline',
+  create_logic: 'Create Logic Function',
+  run_pipeline: 'Run Pipeline',
+};
+
+const ACTION_ICONS: Record<string, React.ReactNode> = {
+  create_pipeline: <GitBranch size={14} />,
+  create_logic: <Code size={14} />,
+  run_pipeline: <Play size={14} />,
+};
+
+function ActionConfirmCard({
+  action,
+  onConfirm,
+  onReject,
+  status,
+}: {
+  action: NexusAction;
+  onConfirm: () => void;
+  onReject: () => void;
+  status: 'pending' | 'executing' | 'done' | 'error' | 'rejected';
+}) {
+  const label = ACTION_LABELS[action.type] || action.type;
+  const icon = ACTION_ICONS[action.type] || <Layers size={14} />;
+
+  return (
+    <div style={{
+      border: '1px solid #BFDBFE',
+      borderRadius: 8,
+      backgroundColor: '#EFF6FF',
+      padding: '12px 14px',
+      margin: '8px 0',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{
+          width: 28, height: 28, borderRadius: 6,
+          backgroundColor: '#2563EB', color: '#fff',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>{icon}</div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#1E293B' }}>{label}</div>
+          <div style={{ fontSize: 11, color: '#64748B' }}>{action.name}</div>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 10 }}>
+        {action.summary.map((s, i) => (
+          <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 2, fontSize: 12, color: '#334155' }}>
+            <span style={{ color: '#2563EB', flexShrink: 0 }}>•</span>
+            <span>{s}</span>
+          </div>
+        ))}
+      </div>
+
+      {status === 'pending' && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={onConfirm}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '6px 14px', fontSize: 12, fontWeight: 500,
+              backgroundColor: '#2563EB', color: '#fff',
+              border: 'none', borderRadius: 4, cursor: 'pointer',
+            }}
+          >
+            <Check size={13} /> Confirm
+          </button>
+          <button
+            onClick={onReject}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '6px 14px', fontSize: 12, fontWeight: 500,
+              backgroundColor: '#fff', color: '#64748B',
+              border: '1px solid #E2E8F0', borderRadius: 4, cursor: 'pointer',
+            }}
+          >
+            <XCircle size={13} /> Cancel
+          </button>
+        </div>
+      )}
+      {status === 'executing' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#2563EB' }}>
+          <Loader size={13} style={{ animation: 'spin 0.7s linear infinite' }} /> Executing…
+        </div>
+      )}
+      {status === 'done' && (
+        <div style={{ fontSize: 12, color: '#059669', fontWeight: 500 }}>
+          <Check size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+          Created successfully
+        </div>
+      )}
+      {status === 'error' && (
+        <div style={{ fontSize: 12, color: '#DC2626', fontWeight: 500 }}>
+          Failed — check logs
+        </div>
+      )}
+      {status === 'rejected' && (
+        <div style={{ fontSize: 12, color: '#64748B' }}>Cancelled</div>
+      )}
+    </div>
+  );
 }
 
 // ── Markdown-lite renderer ────────────────────────────────────────────────────
@@ -106,29 +222,94 @@ function Markdown({ text }: { text: string }) {
         </div>
       );
     } else if (line.startsWith('```')) {
+      const lang = line.slice(3).trim();
       const codeLines: string[] = [];
       i++;
       while (i < lines.length && !lines[i].startsWith('```')) {
         codeLines.push(lines[i]);
         i++;
       }
-      elements.push(
-        <pre key={i} style={{
-          backgroundColor: '#F1F5F9', border: '1px solid #E2E8F0',
-          padding: '8px 10px', fontSize: 11, fontFamily: 'monospace',
-          overflowX: 'auto', margin: '6px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-        }}>
-          {codeLines.join('\n')}
-        </pre>
-      );
+      // Hide action blocks (any format) — parent renders them as ActionConfirmCard
+      const codeText = codeLines.join('\n');
+      let isAction = lang === 'nexus-action';
+      if (!isAction) {
+        try {
+          const obj = JSON.parse(codeText);
+          if (obj?.type && obj?.summary && ['create_pipeline', 'create_logic', 'run_pipeline'].includes(obj.type)) {
+            isAction = true;
+          }
+        } catch {
+          // Try to find action JSON even if there's extra whitespace/content
+          if (codeText.includes('"create_pipeline"') || codeText.includes('"create_logic"') || codeText.includes('"run_pipeline"')) {
+            const found = extractAction(codeText);
+            if (found) isAction = true;
+          }
+        }
+      }
+      if (!isAction) {
+        elements.push(
+          <pre key={i} style={{
+            backgroundColor: '#F1F5F9', border: '1px solid #E2E8F0',
+            padding: '8px 10px', fontSize: 11, fontFamily: 'monospace',
+            overflowX: 'auto', margin: '6px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          }}>
+            {codeLines.join('\n')}
+          </pre>
+        );
+      }
     } else if (line === '') {
       if (i > 0 && lines[i - 1] !== '') elements.push(<div key={i} style={{ height: 6 }} />);
+    } else if (line.trimStart().startsWith('{"type"') && (line.includes('"create_pipeline"') || line.includes('"create_logic"') || line.includes('"run_pipeline"'))) {
+      // Bare action JSON line — skip rendering, handled by ActionConfirmCard
     } else {
       elements.push(<div key={i} style={{ marginBottom: 2 }}>{inlineFormat(line)}</div>);
     }
     i++;
   }
   return <>{elements}</>;
+}
+
+/** Extract a nexus-action JSON from a message, if present */
+function extractAction(text: string): NexusAction | null {
+  // Find the start of an action-shaped JSON anywhere in the text
+  const needle = '"type"';
+  const actionTypes = ['create_pipeline', 'create_logic', 'run_pipeline'];
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const idx = text.indexOf(needle, searchFrom);
+    if (idx === -1) break;
+    // Walk backwards to find the opening {
+    let braceStart = -1;
+    for (let j = idx - 1; j >= 0; j--) {
+      if (text[j] === '{') { braceStart = j; break; }
+      if (text[j] !== ' ' && text[j] !== '"' && text[j] !== '\n' && text[j] !== '`') break;
+    }
+    if (braceStart === -1) { searchFrom = idx + 1; continue; }
+    // Walk forward with bracket counting to find the matching }
+    let depth = 0;
+    let braceEnd = -1;
+    let inString = false;
+    let escaped = false;
+    for (let j = braceStart; j < text.length; j++) {
+      const ch = text[j];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\' && inString) { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      if (ch === '}') { depth--; if (depth === 0) { braceEnd = j; break; } }
+    }
+    if (braceEnd === -1) { searchFrom = idx + 1; continue; }
+    const candidate = text.slice(braceStart, braceEnd + 1);
+    try {
+      const obj = JSON.parse(candidate);
+      if (obj?.type && obj?.summary && actionTypes.includes(obj.type)) {
+        return obj as NexusAction;
+      }
+    } catch { /* not valid JSON */ }
+    searchFrom = idx + 1;
+  }
+  return null;
 }
 
 function inlineFormat(text: string): React.ReactNode {
@@ -209,6 +390,7 @@ const NexusAssistant: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [chatMode, setChatMode] = useState<'help' | 'data' | 'actions'>('help');
   const [selectedObjectTypeId, setSelectedObjectTypeId] = useState<string>('');
+  const [actionStatuses, setActionStatuses] = useState<Record<string, 'pending' | 'executing' | 'done' | 'error' | 'rejected'>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef  = useRef<HTMLTextAreaElement>(null);
 
@@ -235,6 +417,87 @@ const NexusAssistant: React.FC = () => {
   const openChat = (id: string) => { selectConversation(id); setView('chat'); };
 
   const startNew = () => { newConversation(); setView('chat'); };
+
+  const executeAction = async (msgId: string, action: NexusAction) => {
+    setActionStatuses(s => ({ ...s, [msgId]: 'executing' }));
+    const tenantId = getTenantId();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'x-tenant-id': tenantId };
+
+    try {
+      let url = '';
+      let body: Record<string, unknown> = {};
+
+      if (action.type === 'create_pipeline') {
+        url = `${INFERENCE_URL}/infer/create-pipeline`;
+        body = action.payload;
+      } else if (action.type === 'create_logic') {
+        url = `${INFERENCE_URL}/infer/create-logic`;
+        body = action.payload;
+      } else if (action.type === 'run_pipeline') {
+        const pid = action.payload.pipeline_id as string;
+        url = `${PIPELINE_URL}/pipelines/${pid}/run`;
+        body = {};
+      }
+
+      const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`${resp.status}: ${errText.slice(0, 200)}`);
+      }
+      const data = await resp.json();
+
+      // Check if the backend reports failure (created: false)
+      if (data.created === false) {
+        setActionStatuses(s => ({ ...s, [msgId]: 'error' }));
+        if (activeId) {
+          addMessage(activeId, {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Failed to create **${action.name}**: ${data.message || 'Unknown error'}`,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return;
+      }
+
+      setActionStatuses(s => ({ ...s, [msgId]: 'done' }));
+
+      // Add a result message
+      if (activeId) {
+        const resultText = action.type === 'run_pipeline'
+          ? `Pipeline run started.`
+          : `**${action.name}** created successfully.${data.pipeline_id ? ` ID: \`${data.pipeline_id}\`` : ''}${data.function_id ? ` ID: \`${data.function_id}\`` : ''}`;
+        addMessage(activeId, {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: resultText,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      setActionStatuses(s => ({ ...s, [msgId]: 'error' }));
+      if (activeId) {
+        addMessage(activeId, {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Action failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+  };
+
+  const rejectAction = (msgId: string) => {
+    setActionStatuses(s => ({ ...s, [msgId]: 'rejected' }));
+    if (activeId) {
+      addMessage(activeId, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Action cancelled. Let me know if you want to adjust the plan.',
+        timestamp: new Date().toISOString(),
+      });
+    }
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -556,6 +819,20 @@ const NexusAssistant: React.FC = () => {
                             verticalAlign: 'text-bottom',
                           }} />
                         )}
+                        {(() => {
+                          if (m.role !== 'assistant' || m.streaming) return null;
+                          const action = extractAction(m.content);
+                          if (!action) return null;
+                          const status = actionStatuses[m.id] || 'pending';
+                          return (
+                            <ActionConfirmCard
+                              action={action}
+                              status={status}
+                              onConfirm={() => executeAction(m.id, action)}
+                              onReject={() => rejectAction(m.id)}
+                            />
+                          );
+                        })()}
                       </div>
                       {m.role === 'assistant' && !m.streaming && (
                         <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>

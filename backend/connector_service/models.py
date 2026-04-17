@@ -25,6 +25,8 @@ class ConnectorConfig(BaseModel):
     tenant_id: str
     tags: list[str] = Field(default_factory=list)
     config: Optional[dict[str, Any]] = None
+    visibility: str = "tenant"
+    created_by: Optional[str] = None
 
 
 class ConnectorPublicView(BaseModel):
@@ -54,6 +56,8 @@ class ConnectorPublicView(BaseModel):
     tags: list[str]
     config: Optional[dict] = None
     config_metadata: Optional[dict[str, str]] = None  # non-secret credential config
+    visibility: str = "tenant"
+    created_by: Optional[str] = None
 
     @classmethod
     def from_config(cls, c: "ConnectorConfig") -> "ConnectorPublicView":
@@ -78,6 +82,7 @@ class ConnectorCreateRequest(BaseModel):
     pagination_strategy: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     config: Optional[dict[str, Any]] = None
+    visibility: str = "tenant"
 
 
 class ConnectorUpdateRequest(BaseModel):

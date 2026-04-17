@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { ConnectorConfig } from '../types/connector';
-import { getTenantId } from './authStore';
+import { getTenantId, getUserId } from './authStore';
 
 // ─── Store ──────────────────────────────────────────────────────────────────
 
@@ -25,8 +25,11 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
   fetchConnectors: async () => {
     set({ loading: true, error: null });
     try {
+      const userId = getUserId();
+      const baseHeaders: Record<string, string> = { 'x-tenant-id': getTenantId() };
+      if (userId) baseHeaders['x-user-id'] = userId;
       const [connRes, pipeRes] = await Promise.all([
-        fetch(`${API}/connectors`, { headers: { 'x-tenant-id': getTenantId() } }),
+        fetch(`${API}/connectors`, { headers: baseHeaders }),
         fetch(`${PIPELINE_API}/pipelines`, { headers: { 'x-tenant-id': getTenantId() } }).catch(() => null),
       ]);
       if (!connRes.ok) throw new Error(`HTTP ${connRes.status}`);
@@ -72,6 +75,8 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
           createdAt: c.created_at,
           updatedAt: c.updated_at,
           tenantId: c.tenant_id,
+          visibility: (c.visibility as 'tenant' | 'private') ?? 'tenant',
+          createdBy: c.created_by as string | undefined,
         };
       });
       set({ connectors, loading: false });
@@ -92,10 +97,14 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
       pagination_strategy: req.paginationStrategy,
       tags: req.tags ?? [],
       config: req.config,
+      visibility: req.visibility ?? 'tenant',
     };
+    const createHeaders: Record<string, string> = { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() };
+    const uid = getUserId();
+    if (uid) createHeaders['x-user-id'] = uid;
     const res = await fetch(`${API}/connectors`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      headers: createHeaders,
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -123,6 +132,8 @@ export const useConnectorStore = create<ConnectorStoreState>((set) => ({
       createdAt: c.created_at,
       updatedAt: c.updated_at,
       tenantId: c.tenant_id,
+      visibility: (c.visibility as 'tenant' | 'private') ?? 'tenant',
+      createdBy: c.created_by as string | undefined,
     };
     set((state) => ({ connectors: [...state.connectors, connector] }));
     return connector;

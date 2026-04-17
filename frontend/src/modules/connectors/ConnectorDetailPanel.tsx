@@ -14,7 +14,7 @@ import { ObjectType, ObjectProperty } from '../../types/ontology';
 import { getTenantId } from '../../store/authStore';
 import { Pipeline, PipelineNode, PipelineEdge } from '../../types/pipeline';
 
-type TabId = 'overview' | 'configuration' | 'pipelines' | 'schema' | 'health';
+type TabId = 'overview' | 'configuration' | 'pipelines' | 'schema' | 'health' | 'whatsapp';
 
 const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -213,7 +213,7 @@ export const ConnectorDetailPanel: React.FC<ConnectorDetailPanelProps> = ({
         backgroundColor: '#FFFFFF',
         flexShrink: 0,
       }}>
-        {TABS.map((tab) => (
+        {[...TABS, ...(connector.type === 'WHATSAPP' ? [{ id: 'whatsapp' as TabId, label: 'WhatsApp' }] : [])].map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
@@ -260,6 +260,9 @@ export const ConnectorDetailPanel: React.FC<ConnectorDetailPanelProps> = ({
         )}
         {activeTab === 'health' && (
           <HealthTab healthHistory={healthHistory} connector={connector} />
+        )}
+        {activeTab === 'whatsapp' && connector.type === 'WHATSAPP' && (
+          <WhatsAppTab connectorId={connector.id} />
         )}
       </div>
     </div>
@@ -3584,6 +3587,156 @@ const inputStyle: React.CSSProperties = {
   backgroundColor: '#FFFFFF',
   outline: 'none',
   fontFamily: 'var(--font-interface)',
+};
+
+// ── WhatsApp Tab ──────────────────────────────────────────────────────────
+
+const WhatsAppTab: React.FC<{ connectorId: string }> = ({ connectorId }) => {
+  const [status, setStatus] = React.useState<any>(null);
+  const [chats, setChats] = React.useState<any[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [search, setSearch] = React.useState('');
+
+  const tenantId = (() => {
+    try {
+      const raw = localStorage.getItem('nexus_auth');
+      if (raw) return JSON.parse(raw)?.tenantId || 'tenant-001';
+    } catch { /* */ }
+    return 'tenant-001';
+  })();
+
+  const headers = { 'x-tenant-id': tenantId, 'Content-Type': 'application/json' };
+
+  const fetchStatus = async () => {
+    try {
+      const r = await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/status`, { headers });
+      setStatus(await r.json());
+    } catch { /* */ }
+  };
+
+  const fetchChats = async () => {
+    try {
+      const r = await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/chats`, { headers });
+      const data = await r.json();
+      setChats(data.chats || []);
+    } catch { /* */ }
+  };
+
+  React.useEffect(() => {
+    (async () => {
+      await fetchStatus();
+      await fetchChats();
+      setLoading(false);
+    })();
+    const iv = setInterval(fetchStatus, 10000);
+    return () => clearInterval(iv);
+  }, [connectorId]);
+
+  const toggleMonitor = async (jid: string, monitored: boolean) => {
+    setChats(prev => prev.map(c => c.jid === jid ? { ...c, isMonitored: monitored } : c));
+    await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/chats/${encodeURIComponent(jid)}/monitor`, {
+      method: 'PATCH', headers, body: JSON.stringify({ monitored }),
+    });
+  };
+
+  const reconnect = async () => {
+    await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/start`, {
+      method: 'POST', headers, body: JSON.stringify({ tenantId }),
+    });
+    setTimeout(fetchStatus, 2000);
+  };
+
+  const disconnect = async () => {
+    await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/stop`, { method: 'DELETE', headers });
+    await fetchStatus();
+  };
+
+  if (loading) return <div style={{ padding: 20, color: '#94A3B8', fontSize: 13 }}>Loading WhatsApp status...</div>;
+
+  const isConnected = status?.status === 'connected';
+  const monitoredCount = chats.filter((c: any) => c.isMonitored).length;
+  const filtered = chats.filter((c: any) => c.name?.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Status banner */}
+      <div style={{
+        padding: 14, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        backgroundColor: isConnected ? '#F0FDF4' : '#FFF7ED',
+        border: `1px solid ${isConnected ? '#BBF7D0' : '#FED7AA'}`,
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: isConnected ? '#166534' : '#9A3412' }}>
+            {isConnected ? `Connected as ${status.phoneNumber}` : `Status: ${status?.status || 'unknown'}`}
+          </div>
+          <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+            {status?.chatCount || 0} chats discovered &middot; {monitoredCount} monitored &middot; {status?.messageCount || 0} messages
+          </div>
+        </div>
+        <button
+          onClick={isConnected ? disconnect : reconnect}
+          style={{
+            padding: '6px 14px', borderRadius: 6, border: '1px solid #E2E8F0',
+            backgroundColor: '#FFFFFF', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            color: isConnected ? '#DC2626' : '#25D366',
+          }}
+        >
+          {isConnected ? 'Disconnect' : 'Reconnect'}
+        </button>
+      </div>
+
+      {/* Chat list */}
+      {chats.length > 0 && (
+        <>
+          <input
+            placeholder="Search chats..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{
+              padding: '8px 12px', borderRadius: 6, border: '1px solid #E2E8F0',
+              fontSize: 12, outline: 'none',
+            }}
+          />
+          <div style={{ maxHeight: 400, overflow: 'auto', border: '1px solid #E2E8F0', borderRadius: 8 }}>
+            {filtered.map((chat: any) => (
+              <div
+                key={chat.jid}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                  borderBottom: '1px solid #F1F5F9',
+                  backgroundColor: chat.isMonitored ? '#F0FDF9' : '#FFF',
+                  cursor: 'pointer',
+                }}
+                onClick={() => toggleMonitor(chat.jid, !chat.isMonitored)}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#0D1117', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {chat.name}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#94A3B8' }}>
+                    {chat.chatType} &middot; {chat.participantCount || 0} members
+                    {chat.messageCount > 0 && ` · ${chat.messageCount} msgs`}
+                  </div>
+                </div>
+                <div style={{
+                  width: 32, height: 18, borderRadius: 9, padding: 2,
+                  backgroundColor: chat.isMonitored ? '#25D366' : '#E2E8F0',
+                  transition: 'background-color 0.15s ease', flexShrink: 0,
+                }}>
+                  <div style={{
+                    width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFF',
+                    transform: chat.isMonitored ? 'translateX(14px)' : 'translateX(0)',
+                    transition: 'transform 0.15s ease',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+                  }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
 };
 
 export default ConnectorDetailPanel;

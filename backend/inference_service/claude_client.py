@@ -622,6 +622,7 @@ The 'code' value must be a JSON string — escape all double quotes as \\", newl
         fields: list[str],
         records: list[dict],
         total_count: int | None = None,
+        dashboard_widgets: list[dict] | None = None,
     ) -> str:
         """Two-pass approach: Claude plans the query from 5 samples, then answers from real results."""
         if not self.client:
@@ -679,8 +680,22 @@ Rules:
                     "aggregationField": None, "sortBy": None, "sortDir": "asc",
                     "limit": 200, "selectFields": []}
 
+        import logging as _logging
+        _logging.getLogger("chat_with_data").info(f"Query plan: {json.dumps(plan)}")
+
         # ── Apply query plan ─────────────────────────────────────────────────
         result = _apply_query_plan(records, plan, fields)
+
+        # Fallback: if filtering yields 0 results but there are records, include all records
+        # so Claude can see what's actually available and give a useful answer
+        fallback_note = ""
+        if isinstance(result, list) and len(result) == 0 and len(records) > 0:
+            result = records[:50]
+            fallback_note = (
+                f"\n\nNOTE: The query filter returned 0 results, so ALL {len(result)} records are shown below. "
+                "The records DO exist — the filter may have been too restrictive. "
+                "Look at the actual data and answer based on what you see. Do NOT say 'no records found'."
+            )
 
         # ── Pass 2: Answer ────────────────────────────────────────────────────
         def _trunc(v: object, n: int = 80) -> str:
@@ -705,6 +720,34 @@ Rules:
             f"Replace OBJ_ID with \"{object_type_id}\". Field names from: {fields_json}. Max 2 widgets."
         )
 
+        # Build dashboard context section if widgets are provided
+        dashboard_section = ""
+        if dashboard_widgets:
+            widget_lines = []
+            for w in dashboard_widgets:
+                wtype = w.get("type", "unknown")
+                wtitle = w.get("title", "Untitled")
+                parts = [f"- **{wtitle}** ({wtype})"]
+                if w.get("field"):
+                    parts.append(f"field={w['field']}")
+                if w.get("aggregation"):
+                    parts.append(f"agg={w['aggregation']}")
+                if w.get("labelField"):
+                    parts.append(f"labels={w['labelField']}")
+                if w.get("valueField"):
+                    parts.append(f"values={w['valueField']}")
+                if w.get("columns"):
+                    parts.append(f"cols={','.join(w['columns'][:5])}")
+                if w.get("filterField"):
+                    parts.append(f"filter={w['filterField']}")
+                widget_lines.append(" | ".join(parts))
+            dashboard_section = (
+                "\n\nDASHBOARD CONTEXT — the user is looking at a dashboard with these widgets:\n"
+                + "\n".join(widget_lines)
+                + "\nWhen the user asks about what they see, refer to these widgets. "
+                "You can reference widget titles and explain what the data in them means."
+            )
+
         message = self.client.messages.create(
             model=MODEL,
             max_tokens=2048,
@@ -713,10 +756,11 @@ Rules:
                 "Use GFM markdown: **bold** key values, ## headers, bullet lists, pipe tables. "
                 "Be specific with numbers and examples from the data."
                 + widget_guide
+                + dashboard_section
             ),
             messages=[{
                 "role": "user",
-                "content": f"Question: {question}\n\nQuery results ({object_type_name}):\n{result_section}",
+                "content": f"Question: {question}{fallback_note}\n\nQuery results ({object_type_name}):\n{result_section}",
             }],
         )
         return message.content[0].text
@@ -743,47 +787,33 @@ Available object types (data targets):
 
 User request: {description}
 
-Generate a pipeline configuration as JSON with this exact structure:
+## Node types (use EXACTLY these uppercase values for "type"):
+- SOURCE — pull data from a connector. Config: {{"connector_id":"<id>","endpoint":"<path>","poll_frequency":"5m"}}
+- FILTER — filter records. Config: {{"field":"<name>","operator":"==","value":"<val>"}}
+- MAP — rename/transform fields. Config: {{"mappings":[{{"from":"src","to":"dst"}}]}}
+- CAST — change field types. Config: {{"casts":[{{"field":"name","toType":"string"}}]}}
+- ENRICH — add computed fields. Config: {{"enrichments":[]}}
+- FLATTEN — flatten nested arrays. Config: {{"arrayField":"items","prefix":"item"}}
+- DEDUPE — remove duplicates. Config: {{"keys":["field1"]}}
+- VALIDATE — validate records. Config: {{"rules":[]}}
+- LLM_CLASSIFY — AI classification. Config: {{"textField":"<field>","prompt":"<optional>","batchSize":10,"createActions":true}}
+- SINK_OBJECT — write to ontology object type. Config: {{"objectTypeId":"<id>","objectTypeName":"<name>"}}
+- SINK_EVENT — write to process mining event log. Config: {{"objectTypeId":"<id>","caseIdField":"<field>","activityField":"<field>","timestampField":"<field>"}}
+- AGENT_RUN — trigger an AI agent. Config: {{"agentId":"<id>"}}
+
+Generate a pipeline as JSON. Each node needs id, type (UPPERCASE), label, config, and position ({{x:0, y:N*120}}).
+Edges connect nodes sequentially via source/target node IDs.
+
 {{
-  "name": "descriptive pipeline name",
-  "description": "what this pipeline does",
-  "nodes": [
-    {{
-      "id": "node-1",
-      "type": "source",
-      "label": "Source Name",
-      "config": {{
-        "connector_id": "<connector id from available list>",
-        "endpoint": "/api/data",
-        "method": "GET"
-      }}
-    }},
-    {{
-      "id": "node-2",
-      "type": "transform",
-      "label": "Transform",
-      "config": {{
-        "operation": "map|filter|normalize",
-        "rules": []
-      }}
-    }},
-    {{
-      "id": "node-3",
-      "type": "destination",
-      "label": "Load to Object Type",
-      "config": {{
-        "object_type_id": "<object type id from available list>",
-        "mode": "upsert"
-      }}
-    }}
-  ],
-  "edges": [
-    {{"source": "node-1", "target": "node-2"}},
-    {{"source": "node-2", "target": "node-3"}}
-  ]
+  "name": "Pipeline Name",
+  "description": "what it does",
+  "status": "DRAFT",
+  "nodes": [...],
+  "edges": [...],
+  "tenant_id": "tenant-001"
 }}
 
-Return ONLY valid JSON. No explanation."""
+Return ONLY valid JSON. No markdown, no explanation."""
 
         message = await async_client.messages.create(
             model=MODEL,

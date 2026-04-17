@@ -1073,8 +1073,8 @@ const MarkdownMessage: React.FC<{
 
 interface ChatMessage { role: 'user' | 'assistant'; text: string }
 
-const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
-  comp,
+const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[]; allComponents?: AppComponent[] }> = ({
+  comp, allComponents,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -1092,14 +1092,38 @@ const ChatWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown
     setMessages((m) => [...m, { role: 'user', text: q }]);
     setThinking(true);
     try {
+      // Build dashboard widget context — only selected widgets or all non-chat siblings
+      const sourceWidgetIds = comp.widgetSourceIds;
+      const widgetContext = (allComponents || [])
+        .filter(c => c.id !== comp.id && c.type !== 'chat-widget')
+        .filter(c => !sourceWidgetIds?.length || sourceWidgetIds.includes(c.id))
+        .map(c => ({
+          type: c.type,
+          title: c.title,
+          field: c.field,
+          aggregation: c.aggregation,
+          labelField: c.labelField,
+          valueField: c.valueField,
+          columns: c.columns,
+          filterField: c.filterField,
+          objectTypeId: c.objectTypeId,
+        }));
+
+      // Support multiple object type IDs
+      const otIds = comp.objectTypeIds?.length
+        ? comp.objectTypeIds
+        : comp.objectTypeId ? [comp.objectTypeId] : [];
+
       const res = await fetch(`${INFERENCE_API}/infer/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: q,
-          object_type_id: comp.objectTypeId || '',
+          object_type_id: otIds[0] || '',
+          object_type_ids: otIds,
           object_type_name: comp.title || 'Data',
           tenant_id: getTenantId(),
+          dashboard_widgets: widgetContext.length > 0 ? widgetContext : undefined,
         }),
       });
       const data = await res.json();
@@ -1760,7 +1784,7 @@ function useEventBus(events: AppEvent[] | undefined) {
 
 // ── Component wrapper with per-type data loading ───────────────────────────
 
-const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[] }> = ({ comp, events }) => {
+const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, events, allComponents }) => {
   const { records: rawRecords, loading } = useRecords(comp.objectTypeId);
   const { filter: crossFilter } = useContext(CrossFilterContext);
   const afterCompFilters = applyFilters(rawRecords, comp.filters);
@@ -1802,7 +1826,7 @@ const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[] }> =
     case 'date-picker': return <DatePickerWidget comp={comp} records={records} />;
     case 'filter-bar': return <FilterBar comp={comp} records={records} />;
     case 'text-block': return <TextBlock comp={comp} />;
-    case 'chat-widget': return <ChatWidget comp={comp} records={records} />;
+    case 'chat-widget': return <ChatWidget comp={comp} records={records} allComponents={allComponents} />;
     case 'custom-code': return <CustomCodeWidget comp={comp} records={records} />;
     case 'map': return <MapWidget comp={comp} records={records} />;
     case 'utility-output': return <UtilityWidget comp={comp} />;
@@ -1868,7 +1892,7 @@ const AppCanvas: React.FC<Props> = ({ app }) => {
                     minHeight: fixedH ? undefined : defaultMin,
                   }}
                 >
-                  <ComponentRenderer comp={comp} events={app.events} />
+                  <ComponentRenderer comp={comp} events={app.events} allComponents={app.components} />
                 </div>
               );
             })}

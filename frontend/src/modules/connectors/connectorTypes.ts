@@ -138,6 +138,14 @@ export const CONNECTOR_TYPES: ConnectorTypeDefinition[] = [
     iconName: 'Mic',
     color: '#7C3AED',
   },
+  {
+    type: 'WHATSAPP',
+    displayName: 'WhatsApp',
+    description: 'Monitor WhatsApp chats and groups via linked device — scan QR to connect',
+    category: 'Messaging',
+    iconName: 'MessageCircle',
+    color: '#25D366',
+  },
 ];
 
 export const getConnectorTypeDef = (type: string): ConnectorTypeDefinition | undefined =>

@@ -39,6 +39,8 @@ class ConnectorRow(Base):
     config = Column(JSON, nullable=True)
     inference_result = Column(JSON, nullable=True)
     inference_ran_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(String, nullable=True)
+    visibility = Column(String, nullable=False, server_default='tenant')
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -67,6 +69,8 @@ async def init_db():
             "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS inference_result JSON",
             "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS inference_ran_at TIMESTAMPTZ",
             "ALTER TABLE connectors ALTER COLUMN credentials TYPE TEXT USING credentials::TEXT",
+            "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS created_by VARCHAR",
+            "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS visibility VARCHAR DEFAULT 'tenant'",
         ]:
             try:
                 await conn.execute(sa_text(col_sql))

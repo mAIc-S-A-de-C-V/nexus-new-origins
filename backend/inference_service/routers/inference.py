@@ -13,6 +13,7 @@ PIPELINE_SERVICE_URL = os.environ.get("PIPELINE_SERVICE_URL", "http://pipeline-s
 LOGIC_SERVICE_URL = os.environ.get("LOGIC_SERVICE_URL", "http://logic-service:8012")
 ONTOLOGY_SERVICE_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
 ANALYTICS_SERVICE_URL = os.environ.get("ANALYTICS_SERVICE_URL", "http://analytics-service:8007")
+CONNECTOR_SERVICE_URL = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
 
 router = APIRouter()
 client = ClaudeInferenceClient()
@@ -244,8 +245,37 @@ The Ontology is the unified data model. Object types have properties and records
 Records are synced from connectors via pipelines. Use the Ontology page to browse object types and their records.
 
 ## Connectors
-Connectors pull data from external systems. Supported types: HubSpot, REST_API, Fireflies.
+Connectors pull data from external systems. Supported types: HubSpot, REST_API, Fireflies, WHATSAPP.
 After connecting, run the associated pipeline to sync records into the Ontology.
+
+## Pipelines (Data Pipelines)
+Pipelines are DAGs (directed acyclic graphs) of processing nodes that ingest, transform, and write data.
+Each pipeline has a chain of nodes connected by edges. When you describe a pipeline, mention all the node steps.
+
+### Pipeline Node Types
+- **SOURCE** — Ingests raw data from a connector. Config: `connectorId`, `endpoint` (optional). Supports REST_API, HubSpot, Fireflies, WHATSAPP connectors. For WHATSAPP, pulls messages with incremental timestamp watermark.
+- **FILTER** — Filters records by a field condition. Config: `field`, `operator` (==, !=, contains, >, <, etc.), `value`.
+- **MAP** — Renames or transforms fields. Config: `mappings` array of `{from, to}` pairs.
+- **CAST** — Changes field data types. Config: `casts` array of `{field, toType}`.
+- **ENRICH** — Adds computed/looked-up fields. Config: `enrichments` array.
+- **FLATTEN** — Flattens nested arrays into rows. Config: `arrayField`, `prefix`.
+- **DEDUPE** — Removes duplicate records. Config: `keys` (fields to deduplicate on).
+- **VALIDATE** — Validates records against rules. Config: `rules` array.
+- **LLM_CLASSIFY** — Sends records through Claude for AI classification and field extraction. Config:
+  - `textField` — the field containing text to classify (e.g., "body", "message")
+  - `prompt` — optional custom classification prompt (if omitted, uses built-in PNC police report classifier)
+  - `model` — Claude model to use (default: claude-sonnet-4-6)
+  - `batchSize` — records per LLM call (default: 10)
+  - `createActions` — **if true, automatically creates Human Actions** for high-priority items (CRITICO/URGENTE). These appear in the Human Actions queue for analyst review and confirmation.
+  - The built-in PNC classifier extracts: categoria, tipo_incidente, accion_policial, prioridad, departamento, municipio, lugar, fecha_hora, hecho, involucrados, incautaciones
+  - Categories: BASURA (discard/spam), OPERATIVIDAD (routine ops), NOVEDAD RELEVANTE (significant incident)
+  - Priority levels: CRITICO, URGENTE, IMPORTANTE, INFORMATIVA
+- **SINK_OBJECT** — Writes records to an Ontology object type. Config: `objectTypeId` or `objectTypeName`.
+- **SINK_EVENT** — Writes records as events to the process mining event log. Config: `objectTypeId`, `caseIdField`, `activityField`, `timestampField`.
+- **AGENT_RUN** — Triggers an AI agent with each record as context.
+
+### Human Actions
+Human Actions are a review/approval queue. When LLM_CLASSIFY has `createActions: true`, it automatically creates pending action proposals for urgent items. Analysts see these in the Human Actions tab and can approve, reject, or modify them. This is critical for high-stakes workflows (e.g., police report triage) where AI classifies but humans confirm.
 
 ## SMTP / Email
 Set these env vars in docker-compose or .env:
@@ -253,6 +283,41 @@ Set these env vars in docker-compose or .env:
 - In .env files, escape `$` as `$$`
 - GoDaddy Workspace Email: host=smtpout.secureserver.net, port=587 or 465
 - If 2FA is enabled, generate an app password from GoDaddy Workspace Email settings
+
+## Taking Actions — CRITICAL
+When the user asks you to **create** or **run** something (a pipeline, a logic function, etc.), do NOT just give instructions.
+Instead, present a short plan, then output a fenced action block so the UI can render a confirmation card with Confirm/Cancel buttons.
+
+You MUST use EXACTLY this format — a fenced code block with the language tag `nexus-action` (not `json`, not plain):
+
+```nexus-action
+{"type":"create_pipeline","name":"WhatsApp Ingest","summary":["Pull messages from WhatsApp connector","Write records to Ontology"],"payload":{"description":"Pull messages from WhatsApp and write to ontology"}}
+```
+
+IMPORTANT: The language tag MUST be `nexus-action` — not `json`, not empty. If you use any other tag the UI will NOT render the confirmation buttons.
+
+Supported action types:
+- `create_pipeline` — payload: `{"description": "...", "connectors": [{"id":"<real-id>","name":"<name>","type":"<type>"}], "object_types": [{"id":"<real-id>","name":"<name>"}]}`
+  IMPORTANT: Include real connector IDs and object type IDs from the live context, not just names!
+- `create_logic` — payload: `{"description": "...", "object_types": [{"id":"<real-id>","name":"<name>"}], "existing_functions": [...]}`
+- `run_pipeline` — payload: `{"pipeline_id": "..."}`
+
+Rules for action blocks:
+1. Show a brief plan (bullet list) BEFORE the action block.
+2. Include a `summary` array (3-6 short bullet strings) inside the block.
+3. The `name` field appears as the card title.
+4. Only ONE action block per message.
+5. If the request is ambiguous, ask a clarifying question instead of guessing.
+6. Use the live context (connectors, object types, pipelines) to fill in real IDs and names.
+
+## Answering Data Questions
+When the user asks about data, events, records, or "what happened" (e.g., "Que ha pasado hoy?", "Show me recent incidents"),
+look at the **recent records** in the Live Platform Context below. These are REAL records from the ontology.
+- Summarize the records that match the user's question (filter by date, category, priority, etc.)
+- Use the llm_ prefixed fields (llm_categoria, llm_prioridad, llm_tipo_incidente, llm_hecho, llm_departamento, etc.) for classified data
+- Present the data in a clear, organized format (tables, bullet lists, grouped by priority/category)
+- If there are records but none match the specific filter (e.g., today's date), say so and show the most recent ones available
+- NEVER say "no records found" if the context contains records — always reference what IS available
 
 Answer the user's question about how to use Nexus. If they ask about something not covered here, be honest and helpful."""
 
@@ -302,10 +367,20 @@ def build_help_system(context: dict) -> str:
         for ot in ots:
             props = ot.get("properties", [])
             prop_names = [p.get("name", "") for p in props[:15]]
-            ctx_lines.append(f"- **{ot.get('display_name') or ot.get('name')}** (id: `{ot['id']}`, {len(props)} properties: {', '.join(prop_names)})")
-            samples = ot.get("sample_records", [])
-            if samples:
-                ctx_lines.append(f"  - Sample: `{json.dumps(samples[0])[:300]}`")
+            total = ot.get("total_records", 0)
+            ctx_lines.append(f"- **{ot.get('display_name') or ot.get('name')}** (id: `{ot['id']}`, {len(props)} properties: {', '.join(prop_names)}, total_records: {total})")
+            records = ot.get("recent_records") or ot.get("sample_records") or []
+            if records:
+                ctx_lines.append(f"  ### Recent records ({len(records)} most recent of {total} total):")
+                for i, rec in enumerate(records[:25]):
+                    # Include key fields, truncate very long values
+                    compact = {}
+                    for k, v in rec.items():
+                        if v is None:
+                            continue
+                        sv = str(v)
+                        compact[k] = sv[:150] + "..." if len(sv) > 150 else v
+                    ctx_lines.append(f"  - Record {i+1}: `{json.dumps(compact, ensure_ascii=False, default=str)[:500]}`")
     if context.get("selected_function"):
         sf = context["selected_function"]
         ctx_lines.append(f"\n## Currently Selected Function: {sf['name']}")
@@ -383,10 +458,12 @@ async def stream_help(req: HelpRequest, x_tenant_id: str = Header(default="tenan
 class ChatRequest(BaseModel):
     question: str
     object_type_id: str = ""
+    object_type_ids: list[str] = []   # multiple data sources
     object_type_name: str = ""
     fields: list[str] = []
     records: list[dict] = []
     tenant_id: str = ""
+    dashboard_widgets: list[dict] | None = None
 
 
 async def _fetch_records_server_side(
@@ -483,19 +560,36 @@ async def chat_with_data(req: ChatRequest):
         ot_name = req.object_type_name
         total = len(records)
 
+        # Resolve all object type IDs to fetch from
+        all_ot_ids = list(dict.fromkeys(
+            req.object_type_ids if req.object_type_ids else
+            ([req.object_type_id] if req.object_type_id else [])
+        ))
+
         # Server-side fetch when frontend doesn't send records
-        if not records and req.object_type_id:
-            records, fields, ot_name, total = await _fetch_records_server_side(
-                req.object_type_id, req.tenant_id
-            )
+        if not records and all_ot_ids:
+            all_records: list[dict] = []
+            all_fields: list[str] = []
+            ot_names: list[str] = []
+            total = 0
+            for ot_id in all_ot_ids:
+                r, f, name, cnt = await _fetch_records_server_side(ot_id, req.tenant_id)
+                all_records.extend(r)
+                all_fields.extend(f)
+                ot_names.append(name)
+                total += cnt
+            records = all_records
+            fields = list(dict.fromkeys(all_fields))  # dedupe preserving order
+            ot_name = ot_name or " + ".join(n for n in ot_names if n) or "Data"
 
         answer = client.chat_with_data(
             question=req.question,
-            object_type_id=req.object_type_id,
+            object_type_id=all_ot_ids[0] if all_ot_ids else "",
             object_type_name=ot_name or "Data",
             fields=fields,
             records=records,
             total_count=total,
+            dashboard_widgets=req.dashboard_widgets,
         )
         return {"answer": answer}
     except ValueError as e:
@@ -510,8 +604,8 @@ async def chat_with_data(req: ChatRequest):
 
 class CreatePipelineRequest(BaseModel):
     description: str
-    connectors: list[dict] = []       # [{id, name, type}]
-    object_types: list[dict] = []     # [{id, name}]
+    connectors: list = []             # [{id, name, type}] or ["name", ...]
+    object_types: list = []           # [{id, name}] or ["name", ...]
 
 
 @router.post("/create-pipeline")
@@ -520,19 +614,86 @@ async def create_pipeline(
     x_tenant_id: str = Header(default="tenant-001"),
 ):
     """Generate and optionally persist a pipeline from a natural language description."""
+    # Normalize: accept string lists or dict lists
+    connectors = [c if isinstance(c, dict) else {"name": c} for c in req.connectors]
+    object_types = [o if isinstance(o, dict) else {"name": o} for o in req.object_types]
+
+    # Fetch real connector/object-type lookups so we can fix IDs in the generated config
+    connector_lookup: dict[str, dict] = {}
+    ot_lookup: dict[str, dict] = {}
+    headers = {"x-tenant-id": x_tenant_id}
+    try:
+        async with httpx.AsyncClient(timeout=8) as hc:
+            cr = await hc.get(f"{CONNECTOR_SERVICE_URL}/connectors", headers=headers)
+            if cr.is_success:
+                for c in cr.json():
+                    connector_lookup[c["name"].lower()] = c
+                    connector_lookup[c["id"]] = c
+            otr = await hc.get(f"{ONTOLOGY_SERVICE_URL}/object-types", headers=headers)
+            if otr.is_success:
+                for ot in otr.json():
+                    ot_lookup[(ot.get("display_name") or ot.get("name", "")).lower()] = ot
+                    ot_lookup[ot.get("name", "").lower()] = ot
+                    ot_lookup[ot["id"]] = ot
+    except Exception:
+        pass  # best-effort lookup
+
+    # Enrich input connectors/object_types with real IDs for the LLM prompt
+    for c in connectors:
+        if "id" not in c and c.get("name"):
+            found = connector_lookup.get(c["name"].lower())
+            if found:
+                c["id"] = found["id"]
+                c["type"] = found.get("type", "REST_API")
+    for ot in object_types:
+        if "id" not in ot and ot.get("name"):
+            found = ot_lookup.get(ot["name"].lower())
+            if found:
+                ot["id"] = found["id"]
+                ot["name"] = found.get("name", ot["name"])
+
     try:
         pipeline_config = await client.create_pipeline_from_description(
             description=req.description,
-            connectors=req.connectors,
-            object_types=req.object_types,
+            connectors=connectors,
+            object_types=object_types,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline generation failed: {e}")
 
+    # Post-process: fix connector_id and objectTypeId in generated nodes
+    for node in pipeline_config.get("nodes", []):
+        cfg = node.get("config", {})
+        if node.get("type") == "SOURCE":
+            cid = cfg.get("connector_id", "")
+            if cid and cid not in connector_lookup:
+                # LLM used a name or fake ID — resolve it
+                for real in connector_lookup.values():
+                    if real.get("name", "").lower() in cid.lower() or cid.lower() in real.get("name", "").lower():
+                        cfg["connector_id"] = real["id"]
+                        break
+            # Also try from the request connectors
+            if cfg.get("connector_id", "") not in connector_lookup and connectors:
+                first = connectors[0]
+                if first.get("id"):
+                    cfg["connector_id"] = first["id"]
+        if node.get("type") in ("SINK_OBJECT", "SINK_EVENT"):
+            otid = cfg.get("objectTypeId", "")
+            if otid and otid not in ot_lookup:
+                for real in ot_lookup.values():
+                    name = real.get("display_name") or real.get("name", "")
+                    if name.lower() in otid.lower() or otid.lower() in name.lower():
+                        cfg["objectTypeId"] = real["id"]
+                        break
+            if cfg.get("objectTypeId", "") not in ot_lookup and object_types:
+                first = object_types[0]
+                if first.get("id"):
+                    cfg["objectTypeId"] = first["id"]
+
     pipeline_name = pipeline_config.get("name", "Untitled Pipeline")
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as http:
+        async with httpx.AsyncClient(timeout=15.0) as http:
             resp = await http.post(
                 f"{PIPELINE_SERVICE_URL}/pipelines",
                 json=pipeline_config,

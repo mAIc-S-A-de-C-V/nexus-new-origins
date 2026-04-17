@@ -926,9 +926,10 @@ const COLSPAN_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const ConfigPanel: React.FC<{
   comp: AppComponent;
   objectTypes: OntologyType[];
+  allComponents: AppComponent[];
   onChange: (c: AppComponent) => void;
   onDelete: () => void;
-}> = ({ comp, objectTypes, onChange, onDelete }) => {
+}> = ({ comp, objectTypes, allComponents, onChange, onDelete }) => {
   const set = (patch: Partial<AppComponent>) => onChange({ ...comp, ...patch });
   const selectedOt = objectTypes.find((o) => o.id === comp.objectTypeId);
   const fields = (selectedOt?.properties || [])
@@ -1061,7 +1062,94 @@ const ConfigPanel: React.FC<{
           </div>
         </Row>
 
-        {comp.type !== 'text-block' && comp.type !== 'utility-output' && (
+        {/* ── Chat widget: multi-select data sources + widget context ── */}
+        {comp.type === 'chat-widget' && (
+          <Row label="DATA SOURCES">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <Lbl>Object Types</Lbl>
+              <div style={{
+                maxHeight: 140, overflowY: 'auto', border: '1px solid #E2E8F0',
+                borderRadius: 6, backgroundColor: '#FAFBFC',
+              }}>
+                {objectTypes.map((o) => {
+                  const ids = comp.objectTypeIds || (comp.objectTypeId ? [comp.objectTypeId] : []);
+                  const checked = ids.includes(o.id);
+                  return (
+                    <label key={o.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '5px 8px', cursor: 'pointer', fontSize: 12,
+                      borderBottom: '1px solid #F1F5F9', color: '#0D1117',
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const next = checked ? ids.filter((x) => x !== o.id) : [...ids, o.id];
+                          set({
+                            objectTypeIds: next,
+                            objectTypeId: next[0] || '',
+                          });
+                        }}
+                        style={{ accentColor: '#2563EB' }}
+                      />
+                      {o.displayName || o.name}
+                    </label>
+                  );
+                })}
+              </div>
+
+              {/* Sibling widgets as context sources */}
+              {allComponents.filter(c => c.id !== comp.id && c.type !== 'chat-widget').length > 0 && (
+                <>
+                  <Lbl>Dashboard Widgets</Lbl>
+                  <div style={{
+                    maxHeight: 140, overflowY: 'auto', border: '1px solid #E2E8F0',
+                    borderRadius: 6, backgroundColor: '#FAFBFC',
+                  }}>
+                    {allComponents
+                      .filter(c => c.id !== comp.id && c.type !== 'chat-widget')
+                      .map((w) => {
+                        const wIds = comp.widgetSourceIds || [];
+                        const checked = wIds.includes(w.id);
+                        return (
+                          <label key={w.id} style={{
+                            display: 'flex', alignItems: 'center', gap: 6,
+                            padding: '5px 8px', cursor: 'pointer', fontSize: 12,
+                            borderBottom: '1px solid #F1F5F9', color: '#0D1117',
+                          }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = checked ? wIds.filter((x) => x !== w.id) : [...wIds, w.id];
+                                set({ widgetSourceIds: next });
+                              }}
+                              style={{ accentColor: '#7C3AED' }}
+                            />
+                            <span style={{
+                              display: 'inline-block', fontSize: 9, fontWeight: 600, padding: '1px 5px',
+                              borderRadius: 3, backgroundColor: '#F1F5F9', color: '#64748B', marginRight: 2,
+                            }}>{w.type.replace(/-/g, ' ')}</span>
+                            {w.title}
+                          </label>
+                        );
+                      })}
+                  </div>
+                </>
+              )}
+
+              {(comp.objectTypeIds?.length || 0) > 0 && (
+                <div style={{ fontSize: 10, color: '#94A3B8' }}>
+                  {comp.objectTypeIds!.length} data source{comp.objectTypeIds!.length > 1 ? 's' : ''}
+                  {(comp.widgetSourceIds?.length || 0) > 0 && ` · ${comp.widgetSourceIds!.length} widget${comp.widgetSourceIds!.length > 1 ? 's' : ''}`}
+                </div>
+              )}
+            </div>
+          </Row>
+        )}
+
+        {/* ── Single data source for non-chat widgets ── */}
+        {comp.type !== 'text-block' && comp.type !== 'utility-output' && comp.type !== 'chat-widget' && (
           <Row label="DATA SOURCE">
             <select
               value={comp.objectTypeId ?? ''}
@@ -1919,6 +2007,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
               <ConfigPanel
                 comp={selectedComp}
                 objectTypes={objectTypes}
+                allComponents={components}
                 onChange={(c) => mark(components.map((x) => x.id === c.id ? c : x))}
                 onDelete={() => del(selectedComp.id)}
               />

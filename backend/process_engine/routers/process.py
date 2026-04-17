@@ -1857,4 +1857,105 @@ async def generate_insights(
             "affected_count": int(rw.cases_with_rework),
         })
 
-    return {"insights": insights}
+    # ── 5. Automation / app suggestions ────────────────────────────────
+    # Derive actionable automation ideas from bottlenecks, rework, and
+    # resource anomalies detected above.  Each suggestion carries an
+    # estimated time-reduction percentage so the frontend can display it.
+    suggestions: list[dict] = []
+
+    # 5a — top bottleneck transitions → "Auto-route" or "SLA alert" apps
+    bn_sql = text(f"""
+        WITH ordered AS (
+            SELECT
+                {cid_expr} AS cid,
+                {act_expr} AS activity,
+                {ts_expr} AS ts,
+                lag({act_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS from_act,
+                lag({ts_expr}) OVER (PARTITION BY {cid_expr} ORDER BY {ts_expr}) AS from_ts
+            FROM events
+            WHERE object_type_id = :ot_id
+              AND tenant_id = :tenant_id
+              AND ({cid_expr}) != ''
+              {_SYSTEM_EXCL}
+              {user_excl_sql}
+              {date_sql}
+              {af_sql}
+        ),
+        transitions AS (
+            SELECT from_act, activity AS to_act,
+                   extract(epoch FROM (ts - from_ts))/3600.0 AS hours
+            FROM ordered WHERE from_act IS NOT NULL AND from_act != activity
+        ),
+        global_avg AS (SELECT avg(hours) AS g FROM transitions WHERE hours > 0)
+        SELECT from_act, to_act, avg(hours) AS avg_h, count(*) AS n,
+               (SELECT g FROM global_avg) AS global_avg_h
+        FROM transitions
+        GROUP BY from_act, to_act
+        HAVING avg(hours) > 0
+        ORDER BY avg(hours) DESC
+        LIMIT 3
+    """)
+    bn_rows = (await db.execute(bn_sql, bp)).fetchall()
+    for br in bn_rows:
+        ratio = br.avg_h / br.global_avg_h if br.global_avg_h and br.global_avg_h > 0 else 1
+        if ratio < 1.3:
+            continue
+        # Pick suggestion type based on transition character
+        avg_h = float(br.avg_h)
+        if avg_h > 48:
+            suggestions.append({
+                "type": "app",
+                "icon": "alert",
+                "label": f"SLA Watchdog: {br.from_act} → {br.to_act}",
+                "description": f"Auto-escalate when this transition exceeds {avg_h * 0.6:.0f}h. Currently averages {avg_h:.0f}h across {br.n} cases.",
+                "est_reduction_pct": min(round(ratio * 12), 40),
+                "category": "alert",
+            })
+        else:
+            suggestions.append({
+                "type": "automation",
+                "icon": "zap",
+                "label": f"Auto-Route: {br.from_act} → {br.to_act}",
+                "description": f"Automatically assign the next handler when '{br.from_act}' completes. Avg wait: {avg_h:.1f}h.",
+                "est_reduction_pct": min(round(ratio * 15), 50),
+                "category": "routing",
+            })
+
+    # 5b — rework hotspots → "Validation gate" or "Checklist" apps
+    for rw in rework_rows[:2]:
+        pct = float(rw.rework_pct)
+        if pct > 25:
+            suggestions.append({
+                "type": "app",
+                "icon": "check",
+                "label": f"Quality Gate: {rw.activity}",
+                "description": f"Add a pre-submit checklist before '{rw.activity}' to reduce rework ({pct:.0f}% of cases repeat this step).",
+                "est_reduction_pct": min(round(pct * 0.4), 35),
+                "category": "quality",
+            })
+
+    # 5c — resource correlation → "Workload balancer" app
+    if len(resource_rows) >= 2:
+        top = resource_rows[0]
+        ratio_top = top.avg_duration / top.global_avg_duration if top.global_avg_duration else 1
+        suggestions.append({
+            "type": "automation",
+            "icon": "users",
+            "label": "Workload Balancer",
+            "description": f"Redistribute cases from overloaded resources (e.g. '{top.resource}' is {ratio_top:.1f}x slower). Balancing across {len(resource_rows)} flagged resources.",
+            "est_reduction_pct": min(round((ratio_top - 1) * 20), 30),
+            "category": "resource",
+        })
+
+    # 5d — general high-value suggestions when process has significant volume
+    if len(trend_rows) >= 1 and trend_rows[0].case_count > 50:
+        suggestions.append({
+            "type": "app",
+            "icon": "bot",
+            "label": "AI Case Triage",
+            "description": "Use an AI agent to auto-classify incoming cases and route to the right team, reducing initial processing time.",
+            "est_reduction_pct": 25,
+            "category": "ai",
+        })
+
+    return {"insights": insights, "suggestions": suggestions}

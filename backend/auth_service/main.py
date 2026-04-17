@@ -115,6 +115,32 @@ async def _seed_defaults():
             "ON CONFLICT (tenant_id, email) DO NOTHING"
         ), {"pw": mjsp_hash})
 
+        # ── Demo users — each on its own isolated tenant ──────────────────
+        _demo_users = [
+            # (tenant_id, domain, email, name, password)
+            ("tenant-finance",       "finance.demo",       "ana@finance.demo",       "Ana Torres — Finance",         "Finance2024!demo"),
+            ("tenant-procurement",   "procurement.demo",   "carlos@procurement.demo","Carlos Reyes — Procurement",   "Procure2024!demo"),
+            ("tenant-healthcare",    "healthcare.demo",    "laura@healthcare.demo",  "Dr. Laura Mendez — Healthcare","Health2024!demo"),
+            ("tenant-itsm",          "itsm.demo",          "diego@itsm.demo",        "Diego Vargas — ITSM",          "Service2024!demo"),
+            ("tenant-government",    "government.demo",    "sofia@government.demo",  "Sofia Castillo — Government",  "GovComp2024!demo"),
+            ("tenant-manufacturing", "manufacturing.demo", "miguel@manufacturing.demo","Miguel Ortega — Manufacturing","Factory2024!demo"),
+            ("tenant-travel",        "travel.demo",        "elena@travel.demo",      "Elena Rios — Travel",          "Travel2024!demo"),
+            ("tenant-demo",          "demo.nexus",         "demo@demo.nexus",        "Demo User",                    "NexusDemo2024!x"),
+        ]
+        for _tid, _domain, _email, _name, _pw in _demo_users:
+            # Register domain → tenant mapping
+            await db.execute(text(
+                "INSERT INTO auth_tenant_domains (domain, tenant_id) "
+                "VALUES (:domain, :tid) ON CONFLICT (domain) DO NOTHING"
+            ), {"domain": _domain, "tid": _tid})
+            # Create admin user for the tenant
+            _hash = hash_password(_pw)
+            await db.execute(text(
+                "INSERT INTO auth_users (tenant_id, email, name, role, password_hash) "
+                "VALUES (:tid, :email, :name, 'admin', :pw) "
+                "ON CONFLICT (tenant_id, email) DO NOTHING"
+            ), {"tid": _tid, "email": _email, "name": _name, "pw": _hash})
+
         await db.commit()
 
 

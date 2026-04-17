@@ -153,4 +153,18 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'runAlways', label: 'Run even when no new records', type: 'boolean', default: false },
     ],
   },
+  {
+    type: 'LLM_CLASSIFY',
+    label: 'LLM Classify',
+    description: 'Send each record through Claude to extract structured fields — classification, priority, entities, summaries. Includes built-in PNC (El Salvador police) report classification. Creates Human Actions for critical/urgent items.',
+    color: '#DC2626',
+    iconName: 'Brain',
+    configFields: [
+      { key: 'textField', label: 'Text Field', type: 'text', placeholder: 'text', required: true, default: 'text' },
+      { key: 'prompt', label: 'System Prompt (leave empty for PNC default)', type: 'textarea', placeholder: 'Custom classification prompt... Leave empty to use built-in PNC police report classifier.' },
+      { key: 'model', label: 'Model', type: 'select', options: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-6'], default: 'claude-haiku-4-5-20251001' },
+      { key: 'batchSize', label: 'Messages per LLM Call', type: 'number', default: 5 },
+      { key: 'createActions', label: 'Create Actions for CRITICO/URGENTE', type: 'boolean', default: true },
+    ],
+  },
 ];

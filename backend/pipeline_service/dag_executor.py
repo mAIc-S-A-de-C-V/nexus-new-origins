@@ -17,12 +17,15 @@ AGENT_RUN  → fires a configured AI agent with the batch of records as context;
               can call action_propose which lands proposals in the Human Actions queue
 """
 import asyncio
+import logging
 import os
 import re
 import httpx
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any
+
+logger = logging.getLogger("dag_executor")
 from shared.models import Pipeline
 from shared.enums import PipelineStatus, NodeType
 
@@ -212,6 +215,19 @@ class DagExecutor:
                     stats = {"object_type_id": cfg.get("objectTypeId") or node.object_type_id or pipeline.target_object_type_id, "write_mode": cfg.get("write_mode", "upsert")}
                 elif node.type == NodeType.SINK_EVENT:
                     stats = {"activity_field": cfg.get("activityField", ""), "case_id_field": cfg.get("caseIdField", "id"), "events_emitted": len(records_out)}
+                elif node.type == NodeType.LLM_CLASSIFY:
+                    critico = len([r for r in records_out if r.get("llm_prioridad") == "CRITICO"])
+                    urgente = len([r for r in records_out if r.get("llm_prioridad") == "URGENTE"])
+                    basura = len([r for r in records_out if r.get("llm_categoria") == "BASURA"])
+                    operatividad = len([r for r in records_out if r.get("llm_categoria") == "OPERATIVIDAD"])
+                    novedad = len([r for r in records_out if r.get("llm_categoria") == "NOVEDAD RELEVANTE"])
+                    stats = {
+                        "model": cfg.get("model", "claude-haiku-4-5-20251001"),
+                        "text_field": cfg.get("textField", "text"),
+                        "classified": len(records_out),
+                        "critico": critico, "urgente": urgente,
+                        "basura": basura, "operatividad": operatividad, "novedad_relevante": novedad,
+                    }
                 elif node.type == NodeType.SOURCE:
                     stats = {
                         "connector_id": cfg.get("connectorId", ""),
@@ -288,6 +304,7 @@ class DagExecutor:
                 rows_in=source_row_count,
                 rows_out=total_out,
                 status="COMPLETED",
+                tenant_id=pipeline.tenant_id or "tenant-001",
             ))
 
         except Exception as e:
@@ -308,6 +325,7 @@ class DagExecutor:
                 rows_out=0,
                 status="FAILED",
                 error=str(e),
+                tenant_id=pipeline.tenant_id or "tenant-001",
             ))
 
 
@@ -336,6 +354,8 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_
         return await _sink_event(node, records_in, pipeline)
     if node.type == NodeType.AGENT_RUN:
         return await _agent_run(node, records_in, pipeline)
+    if node.type == NodeType.LLM_CLASSIFY:
+        return await _llm_classify(node, records_in, pipeline)
     return records_in
 
 
@@ -482,6 +502,54 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 if rows:
                     asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
                 return rows
+
+            # ── WhatsApp connector path ────────────────────────────────
+            if conn_type == "WHATSAPP":
+                wa_api = os.environ.get("WHATSAPP_SERVICE_URL", "http://whatsapp-service:8025")
+                wa_params: dict[str, str | int] = {"limit": batch_size, "offset": 0}
+                # Support incremental fetch via timestamp watermark
+                incremental = cfg.get("incremental", False)
+                watermark_column = cfg.get("watermark_column") or cfg.get("watermarkColumn", "timestamp")
+                if incremental and watermark_column:
+                    last_watermark = await _get_last_watermark(pipeline.id)
+                    if last_watermark:
+                        wa_params["since"] = last_watermark
+
+                wa_url = f"{wa_api}/api/v1/sessions/{connector_id}/messages"
+                if audit_extras is not None:
+                    audit_extras["url"] = wa_url
+
+                all_rows: list[dict] = []
+                while True:
+                    r = await client.get(wa_url, params=wa_params, timeout=60)
+                    if not r.is_success:
+                        if audit_extras is not None:
+                            audit_extras["http_status"] = r.status_code
+                            audit_extras["response_error"] = r.text[:500]
+                        break
+                    data = r.json()
+                    page_rows = data.get("rows", [])
+                    if not page_rows:
+                        break
+                    all_rows.extend(page_rows)
+                    if len(page_rows) < batch_size:
+                        break
+                    wa_params["offset"] = int(wa_params.get("offset", 0)) + len(page_rows)
+
+                if audit_extras is not None:
+                    audit_extras["http_status"] = 200
+                    audit_extras["raw_row_count"] = len(all_rows)
+
+                # Track watermark for incremental
+                if incremental and watermark_column and all_rows:
+                    wm_vals = [r.get(watermark_column) for r in all_rows if r.get(watermark_column)]
+                    if wm_vals:
+                        if audit_extras is not None:
+                            audit_extras["_watermark_value"] = str(max(wm_vals))
+
+                if all_rows:
+                    asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
+                return all_rows
 
             # Parse last_sync from connector details for template resolution
             raw_last_sync = conn.get("last_sync")
@@ -640,7 +708,7 @@ async def _enrich(node, records_in: list[dict]) -> list[dict]:
                 r = await client.post(
                     f"{CONNECTOR_API}/connectors/{lookup_connector_id}/fetch-row",
                     json={"params": {lookup_field: str(join_val)}},
-                    headers={"x-tenant-id": "tenant-001"},
+                    headers={"x-tenant-id": pipeline.tenant_id or "tenant-001"},
                 )
                 if r.is_success:
                     detail = r.json().get("row", {})
@@ -1347,6 +1415,7 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
             case_id_field=case_id_field,
             activity_field=activity_field,
             timestamp_field=timestamp_field,
+            tenant_id=pipeline.tenant_id or "tenant-001",
         )
         return [{}] * written
 
@@ -1391,7 +1460,7 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
             "object_id": case_id,
             "pipeline_id": pipeline.id,
             "connector_id": connector_id,
-            "tenant_id": "tenant-001",
+            "tenant_id": pipeline.tenant_id or "tenant-001",
             "attributes": {
                 k: v for k, v in record.items()
                 if k not in (case_id_field, activity_field, timestamp_field)
@@ -1407,13 +1476,16 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
                 resp = await client.post(
                     f"{EVENT_LOG_API}/events/batch",
                     json={"events": chunk},
-                    headers={"x-tenant-id": "tenant-001"},
+                    headers={"x-tenant-id": pipeline.tenant_id or "tenant-001"},
                 )
                 if resp.is_success:
                     written += len(chunk)
-    except Exception:
-        pass
+                else:
+                    logger.error("SINK_EVENT batch POST failed: status=%s body=%s", resp.status_code, resp.text[:500])
+    except Exception as exc:
+        logger.error("SINK_EVENT error writing events to event-log-service: %s", exc, exc_info=True)
 
+    logger.info("SINK_EVENT wrote %d / %d events for pipeline %s (tenant %s)", written, len(events), pipeline.id, pipeline.tenant_id)
     return records
 
 
@@ -1490,6 +1562,294 @@ async def _agent_run(node, records_in: list[dict], pipeline: Pipeline) -> list[d
     asyncio.create_task(_fire())
     print(f"[AGENT_RUN] Agent task dispatched (non-blocking)")
     return records_in
+
+
+async def _llm_classify(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+    """
+    LLM_CLASSIFY — sends each record's text through Claude to extract structured
+    fields and merges them back onto the record.
+
+    Supports two modes:
+      1. Custom prompt + output schema (general purpose)
+      2. Built-in PNC police report classification (Salvadoran police reports)
+
+    Config fields:
+      textField     — field containing the text to classify (default: "text")
+      prompt        — system prompt for the LLM (has a default for PNC classification)
+      outputFields  — comma-separated list of fields to extract (default: PNC fields)
+      model         — Claude model to use (default: claude-haiku-4-5-20251001)
+      batchSize     — records per LLM call (default: 5, max 10)
+      createActions — if true, create Human Actions for CRITICO/URGENTE items (default: true)
+    """
+    import json as _json
+    import anthropic
+
+    cfg = node.config or {}
+    text_field = cfg.get("textField") or cfg.get("text_field") or "text"
+    model = cfg.get("model") or "claude-haiku-4-5-20251001"
+    batch_size = min(int(cfg.get("batchSize") or cfg.get("batch_size") or 5), 10)
+    create_actions = cfg.get("createActions", cfg.get("create_actions", True))
+    if isinstance(create_actions, str):
+        create_actions = create_actions.lower() in ("true", "1", "yes")
+
+    custom_prompt = cfg.get("prompt") or ""
+
+    # Default PNC system prompt (El Salvador police report classification)
+    system_prompt = custom_prompt or """Eres un analista de inteligencia policial de El Salvador. Tu tarea es clasificar mensajes de WhatsApp de grupos policiales y extraer información estructurada.
+
+Para cada mensaje, devuelve un objeto JSON con estos campos:
+
+{
+  "categoria": "NOVEDAD RELEVANTE" | "OPERATIVIDAD" | "BASURA",
+  "tipo_incidente": "<tipo o null si no aplica>",
+  "accion_policial": "<acción>",
+  "prioridad": "CRITICO" | "URGENTE" | "IMPORTANTE" | "INFORMATIVA",
+  "departamento": "<departamento de El Salvador o null>",
+  "municipio": "<municipio o null>",
+  "lugar": "<dirección específica o null>",
+  "fecha_hora": "<fecha/hora del evento en ISO 8601 o null>",
+  "involucrados": {
+    "responsables": [{"nombre": "<nombre>", "edad": <edad o null>, "rol": "<rol>"}],
+    "victimas": [{"nombre": "<nombre>", "edad": <edad o null>, "sexo": "<M/F o null>"}]
+  },
+  "hecho": "<resumen en máximo 2 oraciones, sin hora/fecha/lugar, usando 'el imputado', 'la víctima', etc.>",
+  "incautaciones": {"droga": null, "arma_fuego": null, "arma_blanca": null, "vehiculo": null, "otros": null}
+}
+
+Valores válidos para tipo_incidente:
+- Fallecidos: HOMICIDIO, HOMICIDIO AGRAVADO, FEMINICIDIO, PERSONA FALLECIDA (ACCIDENTE DE TRÁNSITO), PERSONA FALLECIDA (SUICIDIO), PERSONA FALLECIDA (AHOGADO), PERSONA FALLECIDA (MUERTE NATURAL), PERSONA FALLECIDA (CAUSA POR DETERMINAR)
+- Delitos contra la persona: LESIONES, LESIONES GRAVES, VIOLENCIA INTRAFAMILIAR, VIOLACIÓN, AGRESIÓN SEXUAL, AMENAZAS, SECUESTRO, PRIVACIÓN DE LIBERTAD
+- Delitos patrimoniales: ROBO, ROBO DE VEHÍCULO, HURTO, ESTAFA
+- Armas y drogas: PORTACIÓN ILÍCITA DE ARMA DE FUEGO, PORTACIÓN ILÍCITA DE ARMA BLANCA, POSESIÓN DE DROGA, TRÁFICO DE DROGA
+- Orden público: AGRUPACIONES ILÍCITAS, EXTORSIÓN
+- Emergencias: INCENDIO, DERRUMBE, INUNDACIÓN
+- Rescates: ACCIDENTE DE TRÁNSITO (SIN FALLECIDOS), TRASLADO DE LESIONADO
+
+Valores para accion_policial: DETENCIÓN, DECOMISO, INSPECCIÓN, PATRULLAJE, CHARLA PREVENTIVA, FORMACIÓN, SEGURIDAD EN CENTRO EDUCATIVO, CONTROL VEHICULAR, RESCATE, TRASLADO, VERIFICACIÓN, OPERACIÓN EXTRACCIÓN, OTROS
+
+Prioridad:
+- CRITICO: homicidio, feminicidio, secuestro, masacre, persona fallecida (cualquier causa excepto muerte natural)
+- URGENTE: detenciones, lesiones graves, robo con violencia, extorsión, armas, drogas, suicidio, persona fallecida (causa por determinar), ahogado, accidente de tránsito con fallecidos
+- IMPORTANTE: hurtos, lesiones leves, accidente sin fallecidos
+- INFORMATIVA: patrullajes, charlas, control vehicular, fallecidos por muerte natural confirmada
+
+BASURA: SOLO si el mensaje completo es un saludo sin contenido policial (ej: solo "buenos días", "reportándome", "ok", "recibido").
+IMPORTANTE: Si un mensaje COMIENZA con un saludo ("Buen día", "Buenos días") pero CONTIENE un reporte policial (homicidio, detención, operatividad, etc.), NO es BASURA — clasifícalo según su contenido real. Lee el mensaje COMPLETO antes de clasificar.
+Si es OPERATIVIDAD (patrullaje, charla, seguridad escolar sin incidentes): devuelve categoria="OPERATIVIDAD" y solo los campos relevantes.
+
+Responde SOLO con el JSON. Sin texto adicional."""
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        logger.error("[LLM_CLASSIFY] ANTHROPIC_API_KEY not set — skipping classification")
+        return records_in
+
+    client = anthropic.Anthropic(api_key=api_key)
+    enriched: list[dict] = []
+
+    # Pre-filter: skip records with no text (reactions, read receipts, etc.)
+    classifiable = []
+    for record in records_in:
+        text_val = record.get(text_field)
+        if text_val and str(text_val).strip() and str(text_val).strip().lower() != "none":
+            classifiable.append(record)
+        else:
+            r = dict(record)
+            r["llm_categoria"] = "BASURA"
+            r["llm_prioridad"] = "INFORMATIVA"
+            r["llm_hecho"] = "Mensaje sin texto (reacción, multimedia, o protocolo)"
+            enriched.append(r)
+    logger.info(f"[LLM_CLASSIFY] {len(classifiable)} classifiable of {len(records_in)} total ({len(records_in) - len(classifiable)} skipped — no text)")
+    records_in = classifiable
+
+    # Process in batches
+    for i in range(0, len(records_in), batch_size):
+        batch = records_in[i:i + batch_size]
+
+        # Build the user message with numbered messages
+        parts = []
+        for idx, record in enumerate(batch):
+            text = str(record.get(text_field, ""))
+            sender = record.get("sender_name") or record.get("sender_jid") or "unknown"
+            chat = record.get("chat_name") or record.get("chat_jid") or "unknown"
+            parts.append(f"--- MENSAJE {idx + 1} ---\nGrupo: {chat}\nDe: {sender}\n\n{text}\n")
+
+        user_msg = (
+            f"Clasifica los siguientes {len(batch)} mensajes de WhatsApp policial. "
+            f"Devuelve un array JSON con exactamente {len(batch)} objetos, uno por mensaje, en el mismo orden.\n\n"
+            + "\n".join(parts)
+        )
+
+        try:
+            resp = client.messages.create(
+                model=model,
+                max_tokens=4096,
+                temperature=0.1,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+
+            raw_text = resp.content[0].text.strip()
+            # Extract JSON array from response (handle markdown code blocks)
+            json_text = raw_text
+            if "```" in json_text:
+                match = re.search(r"```(?:json)?\s*([\s\S]*?)```", json_text)
+                if match:
+                    json_text = match.group(1).strip()
+
+            parsed = _json.loads(json_text)
+            if isinstance(parsed, dict) and not isinstance(parsed, list):
+                parsed = [parsed]
+
+            for idx, record in enumerate(batch):
+                enriched_record = dict(record)
+                if idx < len(parsed):
+                    classification = parsed[idx]
+                    # Merge classification fields onto the record with llm_ prefix
+                    enriched_record["llm_categoria"] = classification.get("categoria")
+                    enriched_record["llm_tipo_incidente"] = classification.get("tipo_incidente")
+                    enriched_record["llm_accion_policial"] = classification.get("accion_policial")
+                    enriched_record["llm_prioridad"] = classification.get("prioridad")
+                    enriched_record["llm_departamento"] = classification.get("departamento")
+                    enriched_record["llm_municipio"] = classification.get("municipio")
+                    enriched_record["llm_lugar"] = classification.get("lugar")
+                    enriched_record["llm_fecha_hora"] = classification.get("fecha_hora")
+                    enriched_record["llm_hecho"] = classification.get("hecho")
+
+                    # Flatten involucrados
+                    inv = classification.get("involucrados") or {}
+                    responsables = inv.get("responsables") or []
+                    victimas = inv.get("victimas") or []
+                    enriched_record["llm_responsables"] = _json.dumps(responsables, ensure_ascii=False) if responsables else None
+                    enriched_record["llm_victimas"] = _json.dumps(victimas, ensure_ascii=False) if victimas else None
+
+                    # Flatten incautaciones
+                    inc = classification.get("incautaciones") or {}
+                    for k, v in inc.items():
+                        if v is not None:
+                            enriched_record[f"llm_incautacion_{k}"] = v
+
+                enriched.append(enriched_record)
+
+            logger.info(f"[LLM_CLASSIFY] Batch {i // batch_size + 1}: classified {len(batch)} records")
+
+        except Exception as e:
+            logger.error(f"[LLM_CLASSIFY] Batch {i // batch_size + 1} failed: {e}")
+            # Pass through unclassified records
+            for record in batch:
+                r = dict(record)
+                r["llm_categoria"] = "ERROR"
+                r["llm_error"] = str(e)[:200]
+                enriched.append(r)
+
+    # Create Human Actions for CRITICO/URGENTE items
+    if create_actions:
+        urgent_records = [r for r in enriched if r.get("llm_prioridad") in ("CRITICO", "URGENTE")]
+        if urgent_records:
+            asyncio.create_task(
+                _create_urgent_actions(urgent_records, pipeline)
+            )
+
+    return enriched
+
+
+async def _create_urgent_actions(records: list[dict], pipeline: Pipeline):
+    """Create Human Action proposals for CRITICO/URGENTE classified records."""
+    import json as _json
+    headers = {"x-tenant-id": pipeline.tenant_id, "Content-Type": "application/json"}
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Ensure the pnc_alert action definition exists (idempotent)
+            check = await client.get(f"{ONTOLOGY_API}/actions/pnc_alert", headers=headers)
+            if check.status_code == 404:
+                await client.post(
+                    f"{ONTOLOGY_API}/actions",
+                    json={
+                        "name": "pnc_alert",
+                        "description": "Alerta policial clasificada por IA desde WhatsApp — requiere revisión humana",
+                        "requires_confirmation": True,
+                        "enabled": True,
+                        "input_schema": {
+                            "titulo": "string",
+                            "prioridad": "string",
+                            "tipo_incidente": "string",
+                            "departamento": "string",
+                            "hecho": "string",
+                            "detalles": "string",
+                        },
+                    },
+                    headers=headers,
+                )
+
+            # Fetch existing executions to deduplicate — skip records that already have an action
+            existing_source_ids: set[str] = set()
+            try:
+                ex_resp = await client.get(
+                    f"{ONTOLOGY_API}/actions/pnc_alert/executions",
+                    params={"limit": 500},
+                    headers=headers,
+                )
+                if ex_resp.status_code == 200:
+                    for ex in ex_resp.json():
+                        sid = ex.get("source_id")
+                        if sid:
+                            existing_source_ids.add(sid)
+            except Exception as ex_err:
+                logger.warning(f"[LLM_CLASSIFY] Could not fetch existing executions for dedup: {ex_err}")
+
+            created = 0
+            skipped = 0
+            for record in records:
+                # Use the record's unique id (message_id) as the dedup key
+                record_id = str(record.get("id") or record.get("message_id") or "")
+                if record_id and record_id in existing_source_ids:
+                    skipped += 1
+                    continue
+
+                prioridad = record.get("llm_prioridad", "URGENTE")
+                tipo = record.get("llm_tipo_incidente", "Desconocido")
+                hecho = record.get("llm_hecho", record.get("text", "")[:200])
+                sender = record.get("sender_name") or record.get("sender_jid") or "desconocido"
+                chat = record.get("chat_name") or record.get("chat_jid") or "desconocido"
+                depto = record.get("llm_departamento") or "N/D"
+
+                title = f"[{prioridad}] {tipo} — {depto}"
+                details = (
+                    f"Municipio: {record.get('llm_municipio', 'N/D')}\n"
+                    f"Lugar: {record.get('llm_lugar', 'N/D')}\n"
+                    f"Grupo: {chat}\n"
+                    f"Reportó: {sender}\n"
+                    f"Responsables: {record.get('llm_responsables', 'N/D')}\n"
+                    f"Víctimas: {record.get('llm_victimas', 'N/D')}"
+                )
+
+                resp = await client.post(
+                    f"{ONTOLOGY_API}/actions/pnc_alert/execute",
+                    json={
+                        "inputs": {
+                            "titulo": title,
+                            "prioridad": prioridad,
+                            "tipo_incidente": tipo,
+                            "departamento": depto,
+                            "hecho": hecho,
+                            "detalles": details,
+                        },
+                        "executed_by": f"pipeline:{pipeline.id}",
+                        "source": "llm_classify",
+                        "source_id": record_id or pipeline.id,
+                        "reasoning": f"Clasificación automática de mensaje WhatsApp: {tipo} ({prioridad})",
+                    },
+                    headers=headers,
+                )
+                if resp.status_code >= 400:
+                    logger.error(f"[LLM_CLASSIFY] Action execute failed ({resp.status_code}): {resp.text[:300]}")
+                else:
+                    created += 1
+
+            logger.info(f"[LLM_CLASSIFY] Actions: {created} created, {skipped} skipped (already exist)")
+    except Exception as e:
+        logger.error(f"[LLM_CLASSIFY] Failed to create actions: {e}")
 
 
 # ── Shared Helpers ────────────────────────────────────────────────────────────
@@ -1873,7 +2233,7 @@ async def _execute_array_append(
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.get(
                 f"{CONNECTOR_API}/connectors/{source_connector_id}/schema",
-                headers={"x-tenant-id": "tenant-001"},
+                headers={"x-tenant-id": pipeline.tenant_id or "tenant-001"},
             )
             if not r.is_success:
                 return 0
@@ -1904,7 +2264,7 @@ async def _execute_array_append(
                     "join_key": "__join_key__",
                     "records": transformed_records,
                 },
-                headers={"x-tenant-id": "tenant-001"},
+                headers={"x-tenant-id": pipeline.tenant_id or "tenant-001"},
             )
             if resp.is_success:
                 return resp.json().get("appended", 0)
@@ -1923,6 +2283,7 @@ async def _emit_events_from_records(
     case_id_field: str,
     activity_field: str,
     timestamp_field: str,
+    tenant_id: str = "tenant-001",
 ) -> int:
     connector_id = connector_ids[0] if connector_ids else ""
 
@@ -1930,7 +2291,7 @@ async def _emit_events_from_records(
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(
                 f"{ONTOLOGY_API}/object-types/{object_type_id}/records",
-                headers={"x-tenant-id": "tenant-001"},
+                headers={"x-tenant-id": tenant_id},
             )
             if not resp.is_success:
                 return 0
@@ -1981,7 +2342,7 @@ async def _emit_events_from_records(
             "object_id": case_id,
             "pipeline_id": pipeline_id,
             "connector_id": connector_id,
-            "tenant_id": "tenant-001",
+            "tenant_id": tenant_id,
             "attributes": {
                 k: v for k, v in record.items()
                 if k not in (case_id_field, activity_field, timestamp_field)
@@ -2000,12 +2361,14 @@ async def _emit_events_from_records(
                 resp = await client.post(
                     f"{EVENT_LOG_API}/events/batch",
                     json={"events": chunk},
-                    headers={"x-tenant-id": "tenant-001"},
+                    headers={"x-tenant-id": tenant_id},
                 )
                 if resp.is_success:
                     written += len(chunk)
-    except Exception:
-        pass
+                else:
+                    logger.error("_emit_events_from_records batch POST failed: %s %s", resp.status_code, resp.text[:500])
+    except Exception as exc:
+        logger.error("_emit_events_from_records error: %s", exc, exc_info=True)
 
     return written
 
@@ -2021,6 +2384,7 @@ async def _emit_pipeline_event(
     rows_out: int,
     status: str,
     error: str = "",
+    tenant_id: str = "tenant-001",
 ) -> None:
     """Emit a pipeline-level event to the event log so run history is visible."""
     try:
@@ -2036,7 +2400,7 @@ async def _emit_pipeline_event(
                     "object_id": pipeline_id,
                     "pipeline_id": pipeline_id,
                     "connector_id": "",
-                    "tenant_id": "tenant-001",
+                    "tenant_id": tenant_id,
                     "attributes": {
                         "pipeline_name": pipeline_name,
                         "rows_in": rows_in,

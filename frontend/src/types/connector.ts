@@ -1,4 +1,4 @@
-export type ConnectorCategory = 'REST' | 'GraphQL' | 'Stream' | 'ERP' | 'CRM' | 'DB' | 'File' | 'Doc' | 'HTTP' | 'DW' | 'Productivity';
+export type ConnectorCategory = 'REST' | 'GraphQL' | 'Stream' | 'ERP' | 'CRM' | 'DB' | 'File' | 'Doc' | 'HTTP' | 'DW' | 'Productivity' | 'Messaging';
 
 export type ConnectorStatus = 'live' | 'active' | 'idle' | 'error' | 'warning';
 
@@ -27,6 +27,8 @@ export interface ConnectorConfig {
   tenantId: string;
   tags?: string[];
   config?: Record<string, unknown>;
+  visibility?: 'tenant' | 'private';
+  createdBy?: string;
 }
 
 export interface ConnectorHealth {

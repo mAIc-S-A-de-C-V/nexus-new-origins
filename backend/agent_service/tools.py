@@ -12,6 +12,8 @@ ANALYTICS_URL  = os.environ.get("ANALYTICS_SERVICE_URL",  "http://analytics-serv
 LOGIC_URL      = os.environ.get("LOGIC_SERVICE_URL",      "http://logic-service:8012")
 AGENT_URL      = os.environ.get("AGENT_SERVICE_URL",      "http://agent-service:8013")
 UTILITY_URL    = os.environ.get("UTILITY_SERVICE_URL",    "http://utility-service:8014")
+PIPELINE_URL   = os.environ.get("PIPELINE_SERVICE_URL",   "http://pipeline-service:8002")
+CONNECTOR_URL  = os.environ.get("CONNECTOR_SERVICE_URL",  "http://connector-service:8001")
 
 
 # ── Tool definitions (sent to Claude as tools=[...]) ─────────────────────────
@@ -275,6 +277,110 @@ TOOL_DEFINITIONS = {
                 },
             },
             "required": [],
+        },
+    },
+    "list_connectors": {
+        "name": "list_connectors",
+        "description": "List all configured connectors (data sources) in the platform. Returns id, name, type, status, category for each connector. Use this to find connector IDs when building pipelines.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "list_pipelines": {
+        "name": "list_pipelines",
+        "description": "List all existing pipelines. Returns id, name, status, node count, last run info for each pipeline.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    "create_pipeline": {
+        "name": "create_pipeline",
+        "description": (
+            "Create a new data pipeline with a chain of processing nodes. "
+            "IMPORTANT: Before calling this tool, ALWAYS present the pipeline plan to the user and ask for confirmation. "
+            "Only call this tool after the user explicitly confirms. "
+            "Available node types: SOURCE, FILTER, MAP, CAST, ENRICH, FLATTEN, DEDUPE, VALIDATE, LLM_CLASSIFY, SINK_OBJECT, SINK_EVENT, AGENT_RUN. "
+            "Each node needs a type, label, and config object. Edges connect nodes in order (source→target by node ID)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Pipeline name",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this pipeline does",
+                },
+                "nodes": {
+                    "type": "array",
+                    "description": "Ordered list of pipeline nodes",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "description": "Node type: SOURCE, FILTER, MAP, LLM_CLASSIFY, SINK_OBJECT, SINK_EVENT, AGENT_RUN, etc.",
+                            },
+                            "label": {
+                                "type": "string",
+                                "description": "Human-readable node label",
+                            },
+                            "config": {
+                                "type": "object",
+                                "description": (
+                                    "Node configuration. Key fields per type: "
+                                    "SOURCE: {connectorId}. "
+                                    "FILTER: {field, operator, value}. "
+                                    "MAP: {mappings: {from: to}}. "
+                                    "LLM_CLASSIFY: {textField, prompt (optional), model, batchSize, createActions}. "
+                                    "SINK_OBJECT: {objectTypeId}. "
+                                    "SINK_EVENT: {activityField, caseIdField, timestampField, objectTypeId}. "
+                                    "AGENT_RUN: {agentId, prompt}."
+                                ),
+                            },
+                            "connector_id": {
+                                "type": "string",
+                                "description": "Connector ID (for SOURCE nodes)",
+                            },
+                            "object_type_id": {
+                                "type": "string",
+                                "description": "Object type ID (for SINK nodes)",
+                            },
+                        },
+                        "required": ["type", "label"],
+                    },
+                },
+                "connector_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of connector IDs used by this pipeline",
+                },
+                "target_object_type_id": {
+                    "type": "string",
+                    "description": "Target object type ID for the pipeline output",
+                },
+            },
+            "required": ["name", "nodes"],
+        },
+    },
+    "run_pipeline": {
+        "name": "run_pipeline",
+        "description": "Run/execute an existing pipeline by ID. Returns the run status. IMPORTANT: Ask for user confirmation before running.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pipeline_id": {
+                    "type": "string",
+                    "description": "The pipeline ID to run",
+                },
+            },
+            "required": ["pipeline_id"],
         },
     },
 }
@@ -691,6 +797,126 @@ async def execute_tool(
                 )
                 data = r.json() if r.is_success else {"error": r.text}
                 return data.get("result", data) if isinstance(data, dict) else data
+
+            elif tool_name == "list_connectors":
+                r = await client.get(f"{CONNECTOR_URL}/connectors", headers=headers)
+                connectors = r.json() if r.is_success else []
+                return {
+                    "connectors": [
+                        {
+                            "id": c.get("id"),
+                            "name": c.get("name"),
+                            "type": c.get("type"),
+                            "category": c.get("category"),
+                            "status": c.get("status"),
+                            "description": c.get("description", ""),
+                        }
+                        for c in connectors
+                    ],
+                    "count": len(connectors),
+                }
+
+            elif tool_name == "list_pipelines":
+                r = await client.get(f"{PIPELINE_URL}/pipelines", headers=headers)
+                pipelines = r.json() if r.is_success else []
+                return {
+                    "pipelines": [
+                        {
+                            "id": p.get("id"),
+                            "name": p.get("name"),
+                            "status": p.get("status"),
+                            "node_count": len(p.get("nodes", [])),
+                            "last_run_at": p.get("last_run_at"),
+                            "last_run_row_count": p.get("last_run_row_count"),
+                        }
+                        for p in pipelines
+                    ],
+                    "count": len(pipelines),
+                }
+
+            elif tool_name == "create_pipeline":
+                from uuid import uuid4 as _uuid4
+                name = tool_input.get("name", "Untitled Pipeline")
+                description = tool_input.get("description", "")
+                raw_nodes = tool_input.get("nodes", [])
+                connector_ids = tool_input.get("connector_ids", [])
+                target_ot_id = tool_input.get("target_object_type_id")
+
+                # Build node objects with IDs and positions
+                nodes = []
+                for i, n in enumerate(raw_nodes):
+                    node_id = str(_uuid4())
+                    nodes.append({
+                        "id": node_id,
+                        "type": n.get("type", "SOURCE"),
+                        "label": n.get("label", n.get("type", "Node")),
+                        "config": n.get("config", {}),
+                        "position": {"x": 100 + i * 260, "y": 200},
+                        "connector_id": n.get("connector_id"),
+                        "object_type_id": n.get("object_type_id"),
+                    })
+
+                # Auto-generate edges connecting nodes in sequence
+                edges = []
+                for i in range(len(nodes) - 1):
+                    edges.append({
+                        "id": str(_uuid4()),
+                        "source": nodes[i]["id"],
+                        "target": nodes[i + 1]["id"],
+                        "animated": False,
+                    })
+
+                # Infer connector_ids from SOURCE nodes if not provided
+                if not connector_ids:
+                    connector_ids = [
+                        n["config"].get("connectorId") or n.get("connector_id", "")
+                        for n in nodes
+                        if n["type"] == "SOURCE" and (n["config"].get("connectorId") or n.get("connector_id"))
+                    ]
+
+                pipeline_body = {
+                    "name": name,
+                    "description": description,
+                    "status": "DRAFT",
+                    "nodes": nodes,
+                    "edges": edges,
+                    "connector_ids": connector_ids,
+                    "target_object_type_id": target_ot_id,
+                    "tenant_id": tenant_id,
+                }
+
+                r = await client.post(
+                    f"{PIPELINE_URL}/pipelines",
+                    json=pipeline_body,
+                    headers=headers,
+                    timeout=15,
+                )
+                if r.is_success:
+                    created = r.json()
+                    return {
+                        "success": True,
+                        "pipeline_id": created.get("id"),
+                        "name": created.get("name"),
+                        "status": created.get("status"),
+                        "node_count": len(nodes),
+                        "message": f"Pipeline '{name}' created successfully with {len(nodes)} nodes. Go to Pipelines to review and run it.",
+                    }
+                else:
+                    return {"error": f"Failed to create pipeline: {r.text[:300]}"}
+
+            elif tool_name == "run_pipeline":
+                pipeline_id = tool_input.get("pipeline_id", "")
+                if not pipeline_id:
+                    return {"error": "pipeline_id is required"}
+                r = await client.post(
+                    f"{PIPELINE_URL}/pipelines/{pipeline_id}/run",
+                    headers=headers,
+                    timeout=30,
+                )
+                if r.is_success:
+                    return {"success": True, "message": f"Pipeline {pipeline_id} started", "result": r.json()}
+                else:
+                    return {"error": f"Failed to run pipeline: {r.text[:300]}"}
 
             else:
                 return {"error": f"Unknown tool: {tool_name}"}

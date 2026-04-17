@@ -60,6 +60,8 @@ export interface AppComponent {
   type: ComponentType;
   title: string;
   objectTypeId?: string;
+  objectTypeIds?: string[];     // chat-widget: multiple data sources
+  widgetSourceIds?: string[];   // chat-widget: sibling widget IDs as context
   // metric-card / kpi-banner
   field?: string;
   aggregation?: 'count' | 'sum' | 'avg' | 'max' | 'min';

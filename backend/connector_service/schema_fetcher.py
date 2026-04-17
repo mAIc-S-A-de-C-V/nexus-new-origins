@@ -110,6 +110,8 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
             return await _fireflies(creds)
         if connector_type == "REST_API":
             return await _rest_api(base_url, creds, cfg, db=db, last_sync=last_sync)
+        if connector_type == "WHATSAPP":
+            return await _whatsapp_schema(cfg)
         if connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return {}, [], "Schema preview not supported for database connectors — connect directly via your DB client."
         return {}, [], f"Schema fetch not yet supported for {connector_type}."
@@ -348,6 +350,8 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
             return True, "File upload connector — no connection test needed", int((time.time() - start) * 1000)
         elif connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return True, "Credential format accepted — live connection test not available in preview", int((time.time() - start) * 1000)
+        elif connector_type == "WHATSAPP":
+            ok, msg = await _whatsapp_test(cfg)
         elif connector_type == "REST_API":
             ok, msg = await _rest_api_test(base_url, creds, cfg, db=db)
         else:
@@ -791,3 +795,37 @@ async def _generic_bearer_test(base_url: Optional[str], creds: dict) -> tuple[bo
         if r.status_code in (401, 403):
             return False, f"Returned {r.status_code} — invalid credentials"
         return r.is_success, f"Returned {r.status_code}"
+
+
+# ── WhatsApp ──────────────────────────────────────────────────────────────
+
+import os as _os
+_WHATSAPP_API = _os.environ.get("WHATSAPP_SERVICE_URL", "http://whatsapp-service:8025")
+
+
+async def _whatsapp_test(cfg: dict) -> tuple[bool, str]:
+    connector_id = cfg.get("connectorId") or cfg.get("connector_id", "")
+    if not connector_id:
+        return False, "WhatsApp connector ID not available for status check"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(f"{_WHATSAPP_API}/api/v1/sessions/{connector_id}/status")
+        if not r.is_success:
+            return False, f"WhatsApp service returned {r.status_code}"
+        data = r.json()
+        status = data.get("status", "disconnected")
+        if status == "connected":
+            phone = data.get("phoneNumber", "unknown")
+            return True, f"WhatsApp connected — linked to {phone}, {data.get('monitoredCount', 0)} chats monitored"
+        return False, f"WhatsApp session is {status} — please scan QR code to connect"
+
+
+async def _whatsapp_schema(cfg: dict) -> tuple[dict, list, Optional[str]]:
+    connector_id = cfg.get("connectorId") or cfg.get("connector_id", "")
+    if not connector_id:
+        return {}, [], "WhatsApp connector ID not available"
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(f"{_WHATSAPP_API}/api/v1/sessions/{connector_id}/schema")
+        if not r.is_success:
+            return {}, [], f"WhatsApp service returned {r.status_code}"
+        data = r.json()
+        return data.get("schema", {}), data.get("sample_rows", []), None

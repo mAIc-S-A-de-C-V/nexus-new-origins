@@ -17,6 +17,15 @@ interface Insight {
   metric_label?: string;
 }
 
+interface Suggestion {
+  type: string;
+  icon: string;
+  label: string;
+  description: string;
+  est_reduction_pct: number;
+  category: string;
+}
+
 interface Props {
   objectTypeId: string;
 }
@@ -39,7 +48,9 @@ function formatVal(v: number | undefined | null): string {
 export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
   const { eventConfig, dateRange, attributeFilters } = useProcessStore();
   const [insights, setInsights] = useState<Insight[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [loading, setLoading] = useState(false);
+  const [expandedSuggestion, setExpandedSuggestion] = useState<number | null>(null);
 
   const buildQs = () => {
     const params = new URLSearchParams();
@@ -72,8 +83,10 @@ export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
         (a: Insight, b: Insight) => (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3)
       );
       setInsights(sorted);
+      setSuggestions(data.suggestions || []);
     } catch {
       setInsights([]);
+      setSuggestions([]);
     } finally {
       setLoading(false);
     }
@@ -130,6 +143,112 @@ export const InsightsPanel: React.FC<Props> = ({ objectTypeId }) => {
         {!loading && insights.length === 0 && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94A3B8', fontSize: 13 }}>
             No insights available
+          </div>
+        )}
+
+        {/* ── Suggested Automations ────────────────────────────────── */}
+        {!loading && suggestions.length > 0 && (
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+            }}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7C3AED" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M13 1l-1.5 4.5L7 7l4.5 1.5L13 13l1.5-4.5L19 7l-4.5-1.5z" transform="scale(0.75) translate(1,1)" />
+                <path d="M5 3V1M3 5H1M5 13v2M1 11h2" transform="scale(0.9)" />
+              </svg>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#0D1117', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Suggested Automations
+              </span>
+              <span style={{
+                fontSize: 10, fontWeight: 600, color: '#7C3AED', backgroundColor: '#F3F0FF',
+                padding: '2px 8px', borderRadius: 10,
+              }}>
+                {suggestions.length} idea{suggestions.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {suggestions.map((s, i) => {
+                const isExpanded = expandedSuggestion === i;
+                const catColors: Record<string, { bg: string; border: string; accent: string }> = {
+                  alert:    { bg: '#FFF7ED', border: '#FED7AA', accent: '#EA580C' },
+                  routing:  { bg: '#EFF6FF', border: '#BFDBFE', accent: '#2563EB' },
+                  quality:  { bg: '#F0FDF4', border: '#BBF7D0', accent: '#16A34A' },
+                  resource: { bg: '#FDF4FF', border: '#E9D5FF', accent: '#9333EA' },
+                  ai:       { bg: '#F8FAFC', border: '#CBD5E1', accent: '#0F172A' },
+                };
+                const c = catColors[s.category] || catColors.ai;
+                const iconMap: Record<string, React.ReactNode> = {
+                  alert: (
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={c.accent} strokeWidth="1.8" strokeLinecap="round">
+                      <path d="M8 1L1 14h14L8 1zM8 6v4M8 12h.01" />
+                    </svg>
+                  ),
+                  zap: (
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={c.accent} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M9 1L3 9h5l-1 6 6-8H8l1-6z" />
+                    </svg>
+                  ),
+                  check: (
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={c.accent} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2 8.5l3.5 3.5L14 4" />
+                    </svg>
+                  ),
+                  users: (
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={c.accent} strokeWidth="1.5" strokeLinecap="round">
+                      <circle cx="6" cy="5" r="2.5" /><path d="M1 14c0-2.5 2-4.5 5-4.5s5 2 5 4.5" /><circle cx="12" cy="5" r="2" /><path d="M12 9.5c2 0 3.5 1.5 3.5 3.5" />
+                    </svg>
+                  ),
+                  bot: (
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={c.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="5" width="10" height="8" rx="2" /><circle cx="6" cy="9" r="1" fill={c.accent} /><circle cx="10" cy="9" r="1" fill={c.accent} /><path d="M8 2v3M4 2h8" />
+                    </svg>
+                  ),
+                };
+                return (
+                  <div
+                    key={i}
+                    onClick={() => setExpandedSuggestion(isExpanded ? null : i)}
+                    style={{
+                      display: 'inline-flex', gap: 6,
+                      padding: isExpanded ? '10px 14px' : '6px 12px',
+                      borderRadius: isExpanded ? 10 : 20,
+                      border: `1px solid ${c.border}`,
+                      backgroundColor: c.bg,
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                      maxWidth: isExpanded ? '100%' : undefined,
+                      flexDirection: isExpanded ? 'column' : 'row',
+                      alignItems: isExpanded ? 'flex-start' : 'center',
+                      flexBasis: isExpanded ? '100%' : undefined,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+                      {iconMap[s.icon] || iconMap.bot}
+                      <span style={{ fontSize: 11, fontWeight: 600, color: '#0D1117', whiteSpace: 'nowrap' }}>
+                        {s.label}
+                      </span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, color: '#16A34A',
+                        backgroundColor: '#F0FDF4', border: '1px solid #BBF7D0',
+                        padding: '1px 7px', borderRadius: 10, whiteSpace: 'nowrap',
+                        marginLeft: isExpanded ? 'auto' : 0,
+                        fontFamily: 'var(--font-mono, monospace)',
+                      }}>
+                        -{s.est_reduction_pct}% time
+                      </span>
+                    </div>
+                    {isExpanded && (
+                      <p style={{
+                        fontSize: 11, color: '#64748B', margin: '6px 0 0',
+                        lineHeight: 1.5, paddingLeft: 18,
+                      }}>
+                        {s.description}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

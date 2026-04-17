@@ -169,6 +169,7 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
   const [clientSecret, setClientSecret] = useState('');
   const [hubspotObject, setHubspotObject] = useState('contacts');
   const [guideOpen, setGuideOpen] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -222,6 +223,7 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
         paginationStrategy: authType === 'None' ? 'none' : pagination,
         tags: [connectorType.category.toLowerCase()],
         config: Object.keys(extraConfig).length > 0 ? extraConfig : undefined,
+        visibility: isPrivate ? 'private' : 'tenant',
       });
       onClose();
     } catch (err: unknown) {
@@ -606,6 +608,20 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
               </div>
             </>
           )}
+
+          {/* Private toggle */}
+          <div style={{ ...fieldStyle, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <input
+              type="checkbox"
+              id="private-toggle"
+              checked={isPrivate}
+              onChange={(e) => setIsPrivate(e.target.checked)}
+              style={{ accentColor: '#2563EB', width: '14px', height: '14px', cursor: 'pointer' }}
+            />
+            <label htmlFor="private-toggle" style={{ fontSize: '12px', color: '#374151', cursor: 'pointer' }}>
+              Private connector — only visible to you
+            </label>
+          </div>
 
           {/* Footer */}
           {saveError && (
