@@ -28,6 +28,7 @@ from typing import Any
 logger = logging.getLogger("dag_executor")
 from shared.models import Pipeline
 from shared.enums import PipelineStatus, NodeType
+from shared.token_tracker import track_token_usage
 
 ONTOLOGY_API = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
 EVENT_LOG_API = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
@@ -1712,6 +1713,8 @@ Responde SOLO con el JSON. Sin texto adicional."""
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_msg}],
             )
+            track_token_usage(pipeline.tenant_id or "unknown", "pipeline_service", model,
+                              resp.usage.input_tokens, resp.usage.output_tokens)
 
             raw_text = resp.content[0].text.strip()
             # Extract JSON array from response (handle markdown code blocks)

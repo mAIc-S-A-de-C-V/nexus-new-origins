@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import anthropic
 from database import get_session
 from query_engine import run_explore_query, sample_fields
+from shared.token_tracker import track_token_usage
 
 router = APIRouter()
 
@@ -128,6 +129,8 @@ async def analyst_query(
             tools=ANALYST_TOOLS,
             messages=messages,
         )
+        track_token_usage(tenant_id, "analytics_service", "claude-opus-4-6",
+                          response.usage.input_tokens, response.usage.output_tokens)
 
         if response.stop_reason == "end_turn":
             # Extract text answer

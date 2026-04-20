@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException
+from shared.token_tracker import track_token_usage
 
 router = APIRouter()
 
@@ -99,6 +100,8 @@ Reply with a single JSON object only:
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_token_usage("unknown", "inference_service", "claude-haiku-4-5-20251001",
+                          msg.usage.input_tokens, msg.usage.output_tokens)
         text = msg.content[0].text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]

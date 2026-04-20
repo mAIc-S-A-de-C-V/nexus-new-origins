@@ -5,7 +5,7 @@ import {
   Check, XCircle, Play, Layers,
   type LucideIcon,
 } from 'lucide-react';
-import { useAssistantStore, AssistantMessage } from '../store/assistantStore';
+import { useAssistantStore, useTenantConversations, AssistantMessage } from '../store/assistantStore';
 import { useNavigationStore } from '../store/navigationStore';
 import { useOntologyStore } from '../store/ontologyStore';
 import { getTenantId } from '../store/authStore';
@@ -379,10 +379,11 @@ function ActionCard({ title, description, prefill, Icon, onSelect }: ActionCardP
 const NexusAssistant: React.FC = () => {
   const { currentPage } = useNavigationStore();
   const {
-    open, setOpen, activeId, conversations,
+    open, setOpen, activeId,
     newConversation, selectConversation, deleteConversation, addMessage,
     updateMessageContent, updateMessageStreaming, setMessageFeedback, setStreamingMessageId,
   } = useAssistantStore();
+  const conversations = useTenantConversations();
   const { objectTypes, fetchObjectTypes } = useOntologyStore();
 
   const [view, setView]     = useState<'list' | 'chat'>('list');

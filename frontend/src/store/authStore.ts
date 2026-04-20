@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 const AUTH_API = import.meta.env.VITE_AUTH_SERVICE_URL || 'http://localhost:8011';
 
-export type UserRole = 'admin' | 'analyst' | 'viewer';
+export type UserRole = 'superadmin' | 'admin' | 'analyst' | 'viewer';
 
 export interface AuthUser {
   id: string;
@@ -11,6 +11,7 @@ export interface AuthUser {
   role: UserRole;
   tenant_id: string;
   modules: string[];
+  impersonated_by?: string;
 }
 
 interface AuthState {
@@ -85,6 +86,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           role: payload.role as UserRole,
           tenant_id: payload.tenant_id,
           modules: (payload.modules as string[]) || [],
+          impersonated_by: payload.impersonated_by,
         },
       });
     } catch {
@@ -122,6 +124,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             role: payload.role as UserRole,
             tenant_id: payload.tenant_id,
             modules: (payload.modules as string[]) || [],
+            impersonated_by: payload.impersonated_by,
           },
         });
       } catch {
@@ -152,6 +155,32 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+// ── Restore impersonation token on page load ──────────────────────────────
+(() => {
+  const impToken = sessionStorage.getItem('_nexus_impersonation_token');
+  if (impToken) {
+    try {
+      const payload = JSON.parse(atob(impToken.split('.')[1]));
+      _inMemoryToken = impToken;
+      _tenantId = payload.tenant_id || 'tenant-001';
+      useAuthStore.setState({
+        accessToken: impToken,
+        user: {
+          id: payload.sub,
+          email: payload.email,
+          name: payload.name || payload.email,
+          role: payload.role as UserRole,
+          tenant_id: payload.tenant_id,
+          modules: (payload.modules as string[]) || [],
+          impersonated_by: payload.impersonated_by,
+        },
+      });
+    } catch {
+      sessionStorage.removeItem('_nexus_impersonation_token');
+    }
+  }
+})();
 
 /** Get the current in-memory access token for API calls. */
 export const getAccessToken = () => _inMemoryToken;

@@ -3,7 +3,7 @@ import { useAuthStore, getAccessToken, getTenantId } from '../store/authStore';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export type UserRole = 'ADMIN' | 'DATA_ENGINEER' | 'ANALYST' | 'VIEWER';
+export type UserRole = 'SUPERADMIN' | 'ADMIN' | 'DATA_ENGINEER' | 'ANALYST' | 'VIEWER';
 
 export interface MaicUser {
   id: string;
@@ -46,6 +46,7 @@ const AUTH_API = import.meta.env.VITE_AUTH_SERVICE_URL || 'http://localhost:8011
 
 function mapRole(role: string): UserRole {
   switch (role) {
+    case 'superadmin': return 'SUPERADMIN';
     case 'admin': return 'ADMIN';
     case 'analyst': return 'ANALYST';
     case 'viewer': return 'VIEWER';
@@ -55,6 +56,7 @@ function mapRole(role: string): UserRole {
 
 function mapRoleToApi(role: UserRole): string {
   switch (role) {
+    case 'SUPERADMIN': return 'superadmin';
     case 'ADMIN': return 'admin';
     case 'DATA_ENGINEER': return 'analyst';
     case 'ANALYST': return 'analyst';
@@ -141,8 +143,13 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const tenant: Tenant = { id: tenantId, name: tenantId, plan: 'enterprise' };
 
   // On mount: try to restore session via refresh token cookie
+  // Skip refresh if we have an impersonation token — it would overwrite the impersonated session
   useEffect(() => {
-    authState.refresh().then(() => setLoaded(true));
+    if (sessionStorage.getItem('_nexus_impersonation_token')) {
+      setLoaded(true);
+    } else {
+      authState.refresh().then(() => setLoaded(true));
+    }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When user changes (login → new tenant, or logout), reload users list

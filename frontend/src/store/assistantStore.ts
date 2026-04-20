@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getTenantId } from './authStore';
 
 export interface AssistantMessage {
   id: string;
@@ -16,6 +17,7 @@ export interface AssistantConversation {
   messages: AssistantMessage[];
   createdAt: string;
   updatedAt: string;
+  tenantId?: string;
 }
 
 interface AssistantStore {
@@ -58,6 +60,7 @@ export const useAssistantStore = create<AssistantStore>()(
           messages: [],
           createdAt: now,
           updatedAt: now,
+          tenantId: getTenantId(),
         };
         set((s) => ({ conversations: [convo, ...s.conversations], activeId: id, open: true }));
         return id;
@@ -139,3 +142,10 @@ export const useAssistantStore = create<AssistantStore>()(
     { name: 'nexus-assistant' }
   )
 );
+
+/** Conversations filtered to the current tenant. Unstamped legacy ones default to tenant-001. */
+export function useTenantConversations() {
+  const conversations = useAssistantStore(s => s.conversations);
+  const tid = getTenantId();
+  return conversations.filter(c => (c.tenantId || 'tenant-001') === tid);
+}

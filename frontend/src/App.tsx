@@ -23,6 +23,7 @@ const ActivityPage    = lazy(() => import('./modules/activity/ActivityPage'));
 const DataHubPage     = lazy(() => import('./modules/data/DataHubPage'));
 const AdminHubPage    = lazy(() => import('./modules/admin/AdminHubPage'));
 const ValuePage       = lazy(() => import('./modules/value/ValuePage'));
+const SuperAdminPage  = lazy(() => import('./modules/superadmin/SuperAdminPage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -106,6 +107,8 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading Data..." />}><DataHubPage /></Suspense>;
     case 'admin':
       return <Suspense fallback={<LoadingSpinner message="Loading Admin..." />}><AdminHubPage /></Suspense>;
+    case 'platform':
+      return <Suspense fallback={<LoadingSpinner message="Loading Platform..." />}><SuperAdminPage /></Suspense>;
     default:
       return <Suspense fallback={<LoadingSpinner />}><ConnectorGrid /></Suspense>;
   }

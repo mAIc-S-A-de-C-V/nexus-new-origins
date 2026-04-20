@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select
 from database import get_session, ScenarioRow
 import anthropic
+from shared.token_tracker import track_token_usage
 
 _anthropic = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
@@ -105,6 +106,8 @@ For metrics: one metric per distinct value you want to count."""
             system=system_prompt,
             messages=[{"role": "user", "content": user_msg}],
         )
+        track_token_usage(tenant_id, "analytics_service", "claude-opus-4-6",
+                          response.usage.input_tokens, response.usage.output_tokens)
         raw = response.content[0].text.strip()
         # Strip markdown code fences if present
         if raw.startswith("```"):

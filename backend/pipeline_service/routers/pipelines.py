@@ -11,6 +11,7 @@ from sqlalchemy import select
 import httpx
 from shared.models import Pipeline, PipelineNode, PipelineEdge, EventLogQualityScore
 from shared.enums import PipelineStatus
+from shared.token_tracker import track_token_usage
 from database import PipelineRow, PipelineRunRow, get_session
 from dag_executor import DagExecutor
 
@@ -499,6 +500,8 @@ Respond with ONLY valid JSON in this exact format:
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_token_usage(tenant_id, "pipeline_service", "claude-haiku-4-5-20251001",
+                          message.usage.input_tokens, message.usage.output_tokens)
         raw = message.content[0].text.strip()
         # Strip markdown code fences if present
         if raw.startswith("```"):

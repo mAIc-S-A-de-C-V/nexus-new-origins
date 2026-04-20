@@ -28,6 +28,7 @@ const ROLES: { value: UserRole; label: string; description: string; color: strin
 ];
 
 const ROLE_ICON: Record<UserRole, React.ReactNode> = {
+  SUPERADMIN:    <ShieldCheck size={12} />,
   ADMIN:         <ShieldCheck size={12} />,
   DATA_ENGINEER: <Wrench size={12} />,
   ANALYST:       <BarChart2 size={12} />,

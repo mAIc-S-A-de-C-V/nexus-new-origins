@@ -10,7 +10,8 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from './TenantContext';
 import { usePermission } from '../hooks/usePermission';
 import { useAppStore } from '../store/appStore';
-import { useAssistantStore } from '../store/assistantStore';
+import { useAssistantStore, useTenantConversations } from '../store/assistantStore';
+import { useAuthStore } from '../store/authStore';
 import { useHumanActionsStore } from '../store/humanActionsStore';
 
 const LANGUAGES = [
@@ -47,6 +48,7 @@ interface NavItem {
   comingSoon?: boolean;
   path: string;
   adminOnly?: boolean;
+  superadminOnly?: boolean;
   alwaysVisible?: boolean;
 }
 
@@ -64,6 +66,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'utilities',     label: 'Utilities',    i18nKey: 'nav.utilities',   icon: <Wrench size={16} />,          active: true, path: 'utilities' },
   { id: 'human-actions', label: 'Actions',      i18nKey: 'nav.actions',     icon: <ShieldCheck size={16} />,     active: true, path: 'human-actions', alwaysVisible: true },
   { id: 'admin',         label: 'Admin',        i18nKey: 'nav.admin',       icon: <Shield size={16} />,          active: true, path: 'admin', adminOnly: true },
+  { id: 'platform',      label: 'Platform',     i18nKey: 'nav.platform',    icon: <Globe size={16} />,           active: true, path: 'platform', superadminOnly: true },
   { id: 'settings',      label: 'Settings',     i18nKey: 'nav.settings',    icon: <Settings size={16} />,        active: true, path: 'settings', alwaysVisible: true },
 ];
 
@@ -85,10 +88,12 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
   const [maicExpanded, setMaicExpanded] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { currentUser, logout } = useAuth();
-  const { isAdmin: isAdminNew, canAccess, modules } = usePermission();
+  const { isAdmin: isAdminNew, isSuperAdmin, canAccess, modules } = usePermission();
   const { t, i18n } = useTranslation();
   const { apps } = useAppStore();
-  const { toggle: toggleAssistant, open: assistantOpen, conversations } = useAssistantStore();
+  const { toggle: toggleAssistant, open: assistantOpen } = useAssistantStore();
+  const conversations = useTenantConversations();
+  const isImpersonating = !!useAuthStore(s => s.user?.impersonated_by);
   const { pendingCount, fetchPending } = useHumanActionsStore();
 
   // Poll for pending actions every 30s
@@ -175,11 +180,11 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
   return (
     <nav style={{
       width, minWidth: width, height: '100vh',
-      backgroundColor: '#080E18',
+      backgroundColor: isImpersonating ? '#0E0708' : '#080E18',
       display: 'flex', flexDirection: 'column',
       transition: 'width 120ms ease-out, min-width 120ms ease-out',
       overflow: 'hidden',
-      borderRight: '1px solid #131C2E',
+      borderRight: isImpersonating ? '2px solid #DC2626' : '1px solid #131C2E',
       flexShrink: 0, position: 'relative', zIndex: 10,
     }}>
       {/* Logo */}
@@ -201,6 +206,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
         {NAV_ITEMS
           .filter((item) => {
             if (item.alwaysVisible) return item.active;
+            if (item.superadminOnly) return isSuperAdmin;
             if (item.adminOnly && !isAdmin) return false;
             if (modules.length > 0 && !canAccess(item.path)) return false;
             // Legacy TenantContext module check when no JWT modules present
@@ -227,8 +233,8 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
             return btn;
           })}
 
-        {/* ── maic group ───────────────────────────────────────────────── */}
-        {(canSee('projects') || canSee('finance')) && (
+        {/* ── maic group — only visible to @maic.ai users ────────────── */}
+        {currentUser?.email?.endsWith('@maic.ai') && (canSee('projects') || canSee('finance')) && (
           <>
             <button
               onClick={() => expanded ? setMaicExpanded((v) => !v) : onNavigate('projects')}
@@ -417,9 +423,19 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
                   <div style={{ fontSize: 12, fontWeight: 500, color: '#E2E8F0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {currentUser.name}
                   </div>
-                  <div style={{ fontSize: 10, color: '#334155', letterSpacing: '0.04em' }}>
-                    {currentUser.role}
-                  </div>
+                  {isImpersonating ? (
+                    <div style={{
+                      fontSize: 9, color: '#fff', backgroundColor: '#DC2626',
+                      padding: '1px 6px', borderRadius: 3, fontWeight: 700,
+                      letterSpacing: '0.05em', display: 'inline-block', marginTop: 1,
+                    }}>
+                      IMPERSONATING
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: '#334155', letterSpacing: '0.04em' }}>
+                      {currentUser.role}
+                    </div>
+                  )}
                 </div>
                 <ChevronDown size={11} style={{ color: '#334155', flexShrink: 0, transform: userMenuOpen ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
               </>

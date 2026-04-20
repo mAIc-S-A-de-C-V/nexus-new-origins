@@ -88,6 +88,7 @@ services:
       - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
       - WHATSAPP_SERVICE_URL=http://whatsapp-service:8025
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ADMIN_SERVICE_URL=http://admin-service:8022
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
     depends_on:
       postgres:
@@ -107,6 +108,7 @@ services:
       - "8003:8003"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ADMIN_SERVICE_URL=http://admin-service:8022
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
     networks:
       - nexus-net
@@ -220,7 +222,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - JWT_ISSUER=https://nexus.internal/auth
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
-      - SKIP_AUTH=true
+      - SKIP_AUTH=false
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - OKTA_CLIENT_ID=${OKTA_CLIENT_ID:-}
@@ -233,7 +235,7 @@ services:
       - AUTH_SERVICE_URL=http://auth-service:8011
       - COOKIE_SECURE=false
       - JWT_PRIVATE_KEY_PEM=${JWT_PRIVATE_KEY_PEM:-}
-      - ADMIN_SEED_PASSWORD=${ADMIN_SEED_PASSWORD:-}
+      - ADMIN_SEED_PASSWORD=${ADMIN_SEED_PASSWORD:-NexusSuperAdmin2026!}
       - MJSP_ADMIN_PASSWORD=${MJSP_ADMIN_PASSWORD:-}
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
     depends_on:
@@ -255,6 +257,7 @@ services:
       - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
       - UTILITY_SERVICE_URL=http://utility-service:8014
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ADMIN_SERVICE_URL=http://admin-service:8022
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-587}
       - SMTP_USER=${SMTP_USER:-}
@@ -281,6 +284,7 @@ services:
       - LOGIC_SERVICE_URL=http://logic-service:8012
       - UTILITY_SERVICE_URL=http://utility-service:8014
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ADMIN_SERVICE_URL=http://admin-service:8022
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
     depends_on:
       postgres:
@@ -336,6 +340,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ADMIN_SERVICE_URL=http://admin-service:8022
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
@@ -354,6 +359,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ADMIN_SERVICE_URL=http://admin-service:8022
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
       - SKIP_AUTH=${SKIP_AUTH:-true}
       - AGENT_SERVICE_URL=http://agent-service:8013
@@ -441,8 +447,9 @@ services:
       - "8022:8022"
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
+      - AUTH_SERVICE_URL=http://auth-service:8011
+      - SKIP_AUTH=${SKIP_AUTH:-false}
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://13.221.101.212:3000
-      - SKIP_AUTH=${SKIP_AUTH:-true}
     depends_on:
       postgres:
         condition: service_healthy

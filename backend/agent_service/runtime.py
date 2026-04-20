@@ -7,6 +7,7 @@ import json
 from typing import Any, AsyncGenerator
 import anthropic
 from tools import get_tool_definitions, execute_tool
+from shared.token_tracker import track_token_usage
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
@@ -49,6 +50,8 @@ async def run_agent(
             kwargs["tools"] = tool_defs
 
         response = client.messages.create(**kwargs)
+        track_token_usage(tenant_id, "agent_service", model,
+                          response.usage.input_tokens, response.usage.output_tokens)
 
         # Collect all content blocks from the response
         assistant_content = []
@@ -199,6 +202,8 @@ async def stream_agent(
 
                 final_msg = stream.get_final_message()
                 stop_reason = final_msg.stop_reason
+                track_token_usage(tenant_id, "agent_service", model,
+                                  final_msg.usage.input_tokens, final_msg.usage.output_tokens)
 
         except Exception as exc:
             yield _sse({"type": "error", "error": str(exc), "iterations": iterations})

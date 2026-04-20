@@ -19,6 +19,7 @@ from shared.models import (
     FieldConflict, NewObjectProposal, ObjectProperty, OntologyLink
 )
 from shared.enums import SemanticType, PiiLevel, ConflictType, ConflictResolution
+from shared.token_tracker import track_token_usage
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class ClaudeInferenceClient:
         if not api_key:
             logger.warning("ANTHROPIC_API_KEY not set — inference will use mock responses")
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
+        self.tenant_id: str = "unknown"
 
     def _call(self, prompt: str) -> dict:
         """Make a Claude API call and parse JSON response."""
@@ -54,6 +56,8 @@ class ClaudeInferenceClient:
                 "valid JSON only — no markdown, no explanations outside the JSON structure."
             ),
         )
+        track_token_usage(self.tenant_id, "inference_service", MODEL,
+                          message.usage.input_tokens, message.usage.output_tokens)
 
         content = message.content[0].text.strip()
         # Strip markdown code fences robustly (handles ```json, ``` json, trailing newlines, etc.)
@@ -667,6 +671,8 @@ Rules:
             system="You are a data query planner. Output only valid JSON.",
             messages=[{"role": "user", "content": plan_prompt}],
         )
+        track_token_usage(self.tenant_id, "inference_service", MODEL,
+                          plan_response.usage.input_tokens, plan_response.usage.output_tokens)
         plan_text = plan_response.content[0].text.strip()
         # Strip markdown code fences if present
         if plan_text.startswith("```"):
@@ -763,6 +769,8 @@ Rules:
                 "content": f"Question: {question}{fallback_note}\n\nQuery results ({object_type_name}):\n{result_section}",
             }],
         )
+        track_token_usage(self.tenant_id, "inference_service", MODEL,
+                          message.usage.input_tokens, message.usage.output_tokens)
         return message.content[0].text
 
     # ------------------------------------------------------------------
@@ -824,6 +832,8 @@ Return ONLY valid JSON. No markdown, no explanation."""
             ),
             messages=[{"role": "user", "content": prompt}],
         )
+        track_token_usage(self.tenant_id, "inference_service", MODEL,
+                          message.usage.input_tokens, message.usage.output_tokens)
         content = message.content[0].text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]
@@ -897,6 +907,8 @@ Return ONLY valid JSON."""
             ),
             messages=[{"role": "user", "content": prompt}],
         )
+        track_token_usage(self.tenant_id, "inference_service", MODEL,
+                          message.usage.input_tokens, message.usage.output_tokens)
         content = message.content[0].text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]
@@ -961,6 +973,8 @@ Return JSON:
             ),
             messages=[{"role": "user", "content": prompt}],
         )
+        track_token_usage(self.tenant_id, "inference_service", MODEL,
+                          message.usage.input_tokens, message.usage.output_tokens)
         content = message.content[0].text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]
@@ -1032,6 +1046,8 @@ Return ONLY valid JSON."""
             ),
             messages=[{"role": "user", "content": prompt}],
         )
+        track_token_usage(self.tenant_id, "inference_service", MODEL,
+                          message.usage.input_tokens, message.usage.output_tokens)
         content = message.content[0].text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]

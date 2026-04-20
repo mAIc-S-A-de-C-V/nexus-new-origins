@@ -28,7 +28,10 @@ class _AuthUser:
         self.tenant_id = tenant_id
 
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        return self.role in ("admin", "superadmin")
+
+    def is_superadmin(self) -> bool:
+        return self.role == "superadmin"
 
 
 _SKIP_USER = _AuthUser("skip-user", "dev@nexus.internal", "admin", "tenant-001")
@@ -53,7 +56,7 @@ async def require_auth(
         tenant_id=payload["tenant_id"],
     )
 
-VALID_ROLES = {"admin", "analyst", "viewer"}
+VALID_ROLES = {"superadmin", "admin", "analyst", "viewer"}
 
 
 def _validate_password(password: str) -> None:
@@ -124,9 +127,12 @@ async def create_user(
 ):
     if not auth_user.is_admin():
         raise HTTPException(403, "Admin only")
-    # Derive tenant_id from email domain so users always land in the right tenant
     email_lower = body.email.lower().strip()
-    if "@" in email_lower:
+    # Superadmin with explicit x-tenant-id: place user in the requested tenant
+    if auth_user.is_superadmin() and x_tenant_id:
+        tenant_id = x_tenant_id
+    elif "@" in email_lower:
+        # Derive tenant_id from email domain so users always land in the right tenant
         domain = email_lower.split("@")[1]
         tenant_id = await get_or_create_tenant_for_domain(db, domain)
         await db.commit()
@@ -140,22 +146,28 @@ async def create_user(
         _validate_password(body.password)
     pw_hash = hash_password(body.password) if body.password else None
 
-    row = await db.execute(
-        text(
-            "INSERT INTO auth_users (tenant_id, email, name, role, password_hash) "
-            "VALUES (:tid, :email, :name, :role, :pw) "
-            "RETURNING id, tenant_id, email, name, role, oidc_provider, is_active, "
-            "allowed_modules, created_at, updated_at"
-        ),
-        {
-            "tid": tenant_id,
-            "email": email_lower,
-            "name": body.name,
-            "role": body.role,
-            "pw": pw_hash,
-        },
-    )
-    await db.commit()
+    try:
+        row = await db.execute(
+            text(
+                "INSERT INTO auth_users (tenant_id, email, name, role, password_hash) "
+                "VALUES (:tid, :email, :name, :role, :pw) "
+                "RETURNING id, tenant_id, email, name, role, oidc_provider, is_active, "
+                "allowed_modules, created_at, updated_at"
+            ),
+            {
+                "tid": tenant_id,
+                "email": email_lower,
+                "name": body.name,
+                "role": body.role,
+                "pw": pw_hash,
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            raise HTTPException(409, f"User {email_lower} already exists in tenant {tenant_id}")
+        raise HTTPException(500, f"Failed to create user: {exc}")
     return _row_to_dict(row.fetchone())
 
 

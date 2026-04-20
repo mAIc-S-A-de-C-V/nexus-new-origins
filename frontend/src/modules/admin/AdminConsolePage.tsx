@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, RefreshCw, Shield, Users, Database, Activity, Trash2, Building2 } from 'lucide-react';
 import { usePermission } from '../../hooks/usePermission';
+import { getAccessToken } from '../../store/authStore';
 
 const ADMIN_API = import.meta.env.VITE_ADMIN_SERVICE_URL || 'http://localhost:8022';
 
@@ -52,7 +53,9 @@ const AdminConsolePage: React.FC = () => {
   const [editStatus, setEditStatus] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const h = { 'Content-Type': 'application/json' };
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = getAccessToken();
+  if (token) h['Authorization'] = `Bearer ${token}`;
 
   const load = async () => {
     setLoading(true);

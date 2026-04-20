@@ -20,6 +20,7 @@ from email.mime.multipart import MIMEMultipart
 from typing import Any
 import httpx
 import anthropic
+from shared.token_tracker import track_token_usage
 
 ONTOLOGY_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
 UTILITY_URL = os.environ.get("UTILITY_SERVICE_URL", "http://utility-service:8014")
@@ -186,7 +187,7 @@ async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> An
             return {"error": str(e), "records": []}
 
 
-async def _run_llm_call(block: dict, context: dict) -> Any:
+async def _run_llm_call(block: dict, context: dict, tenant_id: str = "unknown") -> Any:
     """Call Claude with resolved prompt template and parse structured output."""
     prompt_template = block.get("prompt_template", "")
     system_prompt = block.get("system_prompt", "You are a helpful AI assistant.")
@@ -209,6 +210,8 @@ async def _run_llm_call(block: dict, context: dict) -> Any:
             system=system_prompt + schema_instruction,
             messages=[{"role": "user", "content": resolved_prompt}],
         )
+        track_token_usage(tenant_id, "logic_service", model,
+                          message.usage.input_tokens, message.usage.output_tokens)
         raw = message.content[0].text.strip()
 
         # Try to parse as JSON if output_schema defined
@@ -551,7 +554,7 @@ async def execute_function(
             if block_type == "ontology_query":
                 result = await _run_ontology_query(block.get("config", {}), context, tenant_id)
             elif block_type == "llm_call":
-                result = await _run_llm_call(block, context)
+                result = await _run_llm_call(block, context, tenant_id)
             elif block_type == "action":
                 result = await _run_action(block, context, tenant_id)
             elif block_type == "send_email":

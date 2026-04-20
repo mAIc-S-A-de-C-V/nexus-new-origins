@@ -96,6 +96,7 @@ def create_access_token(
     tenant_id: str,
     name: str = "",
     modules: list | None = None,
+    impersonated_by: str | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -109,6 +110,8 @@ def create_access_token(
         "iat": now,
         "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
+    if impersonated_by:
+        payload["impersonated_by"] = impersonated_by
     return jwt.encode(payload, PRIVATE_KEY_PEM, algorithm=ALGORITHM, headers={"kid": KID})
 
 

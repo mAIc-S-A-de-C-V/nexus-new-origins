@@ -19,9 +19,10 @@ export function usePermission() {
   const modules = user?.modules ?? [];  // empty = access to ALL (backward compat)
 
   return {
-    isAdmin: role === 'admin',
-    canWrite: role === 'admin' || role === 'analyst',
-    canDelete: role === 'admin',
+    isSuperAdmin: role === 'superadmin',
+    isAdmin: role === 'admin' || role === 'superadmin',
+    canWrite: role === 'admin' || role === 'superadmin' || role === 'analyst',
+    canDelete: role === 'admin' || role === 'superadmin',
     canRead: true,
     // Module access: if modules array is empty, allow all (default for existing users)
     canAccess: (module: string) => modules.length === 0 || modules.includes(module),

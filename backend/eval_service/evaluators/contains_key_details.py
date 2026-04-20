@@ -8,6 +8,7 @@ import os
 import json
 import anthropic
 from .base import EvalResult
+from shared.token_tracker import track_token_usage
 
 _client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
@@ -39,6 +40,8 @@ Score 1.0 = all details present, 0.0 = none present, partial credit for partial 
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
+        track_token_usage("unknown", "eval_service", "claude-haiku-4-5-20251001",
+                          response.usage.input_tokens, response.usage.output_tokens)
         raw = response.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]

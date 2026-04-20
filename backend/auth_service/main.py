@@ -94,8 +94,8 @@ async def _seed_defaults():
             )
         await db.execute(text(
             "INSERT INTO auth_users (tenant_id, email, name, role, password_hash) "
-            "VALUES ('tenant-001', 'admin@maic.ai', 'Admin', 'admin', :pw) "
-            "ON CONFLICT (tenant_id, email) DO NOTHING"
+            "VALUES ('tenant-001', 'admin@maic.ai', 'Admin', 'superadmin', :pw) "
+            "ON CONFLICT (tenant_id, email) DO UPDATE SET role = 'superadmin', password_hash = :pw"
         ), {"pw": pw_hash})
 
         # ── admin@mjsp.sv ─────────────────────────────────────────────────────

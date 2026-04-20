@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from anthropic import AsyncAnthropic
 import httpx
 from shared.models import InferenceResult, SimilarityScore, FieldConflict
+from shared.token_tracker import track_token_usage
 from claude_client import ClaudeInferenceClient
 
 PIPELINE_SERVICE_URL = os.environ.get("PIPELINE_SERVICE_URL", "http://pipeline-service:8002")
@@ -415,6 +416,8 @@ async def platform_help(req: HelpRequest):
             system=system,
             messages=req.messages,
         )
+        track_token_usage("unknown", "inference_service", "claude-sonnet-4-6",
+                          msg.usage.input_tokens, msg.usage.output_tokens)
         return {"answer": msg.content[0].text}
     except Exception as e:
         return {"answer": f"Error: {e}"}
@@ -444,6 +447,9 @@ async def stream_help(req: HelpRequest, x_tenant_id: str = Header(default="tenan
             ) as stream:
                 async for text in stream.text_stream:
                     yield f"data: {json.dumps({'text': text})}\n\n"
+                final_msg = await stream.get_final_message()
+                track_token_usage(x_tenant_id, "inference_service", "claude-sonnet-4-6",
+                                  final_msg.usage.input_tokens, final_msg.usage.output_tokens)
             yield "data: [DONE]\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -548,6 +554,7 @@ async def _run_query_server_side(
 
 @router.post("/chat")
 async def chat_with_data(req: ChatRequest):
+    client.tenant_id = req.tenant_id or "unknown"
     """
     Answer a natural language question about data.
     If records are provided, uses them directly (legacy).
@@ -614,6 +621,7 @@ async def create_pipeline(
     x_tenant_id: str = Header(default="tenant-001"),
 ):
     """Generate and optionally persist a pipeline from a natural language description."""
+    client.tenant_id = x_tenant_id
     # Normalize: accept string lists or dict lists
     connectors = [c if isinstance(c, dict) else {"name": c} for c in req.connectors]
     object_types = [o if isinstance(o, dict) else {"name": o} for o in req.object_types]
@@ -730,6 +738,7 @@ async def create_logic(
     x_tenant_id: str = Header(default="tenant-001"),
 ):
     """Generate and optionally persist a logic function from a natural language description."""
+    client.tenant_id = x_tenant_id
     try:
         logic_config = await client.create_logic_function(
             description=req.description,
@@ -782,6 +791,7 @@ async def explain_lineage(
     x_tenant_id: str = Header(default="tenant-001"),
 ):
     """Explain a data lineage graph in plain English and surface any anomalies."""
+    client.tenant_id = x_tenant_id
     try:
         result = await client.explain_lineage(
             nodes=req.nodes,
@@ -809,6 +819,7 @@ async def surface_anomalies(
     x_tenant_id: str = Header(default="tenant-001"),
 ):
     """Detect data quality anomalies in a set of records."""
+    client.tenant_id = x_tenant_id
     try:
         result = await client.surface_anomalies(
             object_type_name=req.object_type_name,

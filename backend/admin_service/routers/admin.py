@@ -1,13 +1,17 @@
 import json
+import asyncio
 from typing import Optional
 from uuid import uuid4
 from datetime import datetime, timezone
 import asyncpg
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from database import get_pool
+from shared.auth_middleware import require_auth, require_superadmin, AuthUser
 
 router = APIRouter()
+
+INTERNAL_SECRET = "nexus-internal"
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict:
@@ -38,15 +42,26 @@ class TenantUpdate(BaseModel):
     allowed_modules: Optional[list[str]] = None
 
 
+class TokenUsageRecord(BaseModel):
+    tenant_id: str
+    service: str
+    model: str = "unknown"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    user_id: Optional[str] = None
+
+
+# ── Tenant CRUD (superadmin only) ────────────────────────────────────────────
+
 @router.get("/tenants")
-async def list_tenants():
+async def list_tenants(user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
     rows = await pool.fetch("SELECT * FROM tenants ORDER BY created_at DESC")
     return [_row_to_dict(r) for r in rows]
 
 
 @router.post("/tenants", status_code=201)
-async def create_tenant(body: TenantCreate):
+async def create_tenant(body: TenantCreate, user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
     tenant_id = f"tenant-{str(uuid4())[:8]}"
     try:
@@ -64,7 +79,7 @@ async def create_tenant(body: TenantCreate):
 
 
 @router.patch("/tenants/{tenant_id}")
-async def update_tenant(tenant_id: str, body: TenantUpdate):
+async def update_tenant(tenant_id: str, body: TenantUpdate, user: AuthUser = Depends(require_superadmin)):
     pool = await get_pool()
     row = await pool.fetchrow("SELECT * FROM tenants WHERE id = $1", tenant_id)
     if not row:
@@ -86,7 +101,7 @@ async def update_tenant(tenant_id: str, body: TenantUpdate):
 
 
 @router.delete("/tenants/{tenant_id}", status_code=204)
-async def delete_tenant(tenant_id: str):
+async def delete_tenant(tenant_id: str, user: AuthUser = Depends(require_superadmin)):
     if tenant_id == "tenant-001":
         raise HTTPException(status_code=400, detail="Cannot delete the default tenant")
     pool = await get_pool()
@@ -96,8 +111,8 @@ async def delete_tenant(tenant_id: str):
 
 
 @router.get("/tenants/{tenant_id}/usage")
-async def get_tenant_usage(tenant_id: str):
-    """Cross-table usage statistics for a tenant."""
+async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_superadmin)):
+    """Cross-table usage statistics for a tenant, including LLM token consumption."""
     pool = await get_pool()
 
     async def count(table: str, col: str = "tenant_id") -> int:
@@ -106,8 +121,15 @@ async def get_tenant_usage(tenant_id: str):
         )
         return val or 0
 
-    # Run all counts in parallel
-    import asyncio
+    async def token_totals() -> dict:
+        row = await pool.fetchrow(
+            "SELECT COALESCE(SUM(input_tokens), 0) AS total_input, "
+            "COALESCE(SUM(output_tokens), 0) AS total_output "
+            "FROM token_usage WHERE tenant_id = $1",
+            tenant_id,
+        )
+        return {"total_input_tokens": row["total_input"], "total_output_tokens": row["total_output"]}
+
     results = await asyncio.gather(
         count("object_types"),
         count("object_records"),
@@ -118,12 +140,97 @@ async def get_tenant_usage(tenant_id: str):
         count("logic_functions"),
         count("comments"),
         count("api_keys"),
+        token_totals(),
         return_exceptions=True,
     )
 
-    labels = ["object_types", "records", "pipelines", "pipeline_runs", "connectors", "agents", "logic_functions", "comments", "api_keys"]
+    labels = ["object_types", "records", "pipelines", "pipeline_runs", "connectors",
+              "agents", "logic_functions", "comments", "api_keys"]
     usage = {}
-    for label, val in zip(labels, results):
+    for label, val in zip(labels, results[:9]):
         usage[label] = val if isinstance(val, int) else 0
 
+    tokens = results[9] if isinstance(results[9], dict) else {"total_input_tokens": 0, "total_output_tokens": 0}
+    usage.update(tokens)
+
     return usage
+
+
+# ── Token Usage (service-to-service + superadmin query) ──────────────────────
+
+@router.post("/token-usage", status_code=201)
+async def record_token_usage(body: TokenUsageRecord, x_internal: Optional[str] = Header(None)):
+    """Internal endpoint for services to report LLM token usage."""
+    if x_internal != INTERNAL_SECRET:
+        raise HTTPException(403, "Internal only")
+    pool = await get_pool()
+    await pool.execute(
+        "INSERT INTO token_usage (tenant_id, service, model, input_tokens, output_tokens, user_id) "
+        "VALUES ($1, $2, $3, $4, $5, $6)",
+        body.tenant_id, body.service, body.model, body.input_tokens, body.output_tokens, body.user_id,
+    )
+    return {"ok": True}
+
+
+@router.get("/token-usage/summary")
+async def token_usage_summary(
+    tenant_id: Optional[str] = None,
+    days: int = 30,
+    user: AuthUser = Depends(require_superadmin),
+):
+    """Aggregated token usage for superadmin dashboard."""
+    pool = await get_pool()
+
+    # By tenant
+    tenant_filter = "AND tenant_id = $2" if tenant_id else ""
+    params_by_tenant: list = [days]
+    if tenant_id:
+        params_by_tenant.append(tenant_id)
+
+    by_tenant = await pool.fetch(
+        f"SELECT tenant_id, "
+        f"SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
+        f"COUNT(*) AS calls "
+        f"FROM token_usage WHERE created_at > NOW() - ($1 || ' days')::interval {tenant_filter} "
+        f"GROUP BY tenant_id ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC",
+        *params_by_tenant,
+    )
+
+    by_service = await pool.fetch(
+        f"SELECT service, "
+        f"SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
+        f"COUNT(*) AS calls "
+        f"FROM token_usage WHERE created_at > NOW() - ($1 || ' days')::interval {tenant_filter} "
+        f"GROUP BY service ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC",
+        *params_by_tenant,
+    )
+
+    by_model = await pool.fetch(
+        f"SELECT model, "
+        f"SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
+        f"COUNT(*) AS calls "
+        f"FROM token_usage WHERE created_at > NOW() - ($1 || ' days')::interval {tenant_filter} "
+        f"GROUP BY model ORDER BY (SUM(input_tokens) + SUM(output_tokens)) DESC",
+        *params_by_tenant,
+    )
+
+    # Daily time series
+    daily = await pool.fetch(
+        f"SELECT DATE(created_at) AS day, "
+        f"SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, "
+        f"COUNT(*) AS calls "
+        f"FROM token_usage WHERE created_at > NOW() - ($1 || ' days')::interval {tenant_filter} "
+        f"GROUP BY DATE(created_at) ORDER BY day",
+        *params_by_tenant,
+    )
+
+    def rows_to_list(rows):
+        return [dict(r) for r in rows]
+
+    return {
+        "by_tenant": rows_to_list(by_tenant),
+        "by_service": rows_to_list(by_service),
+        "by_model": rows_to_list(by_model),
+        "daily": [{"day": r["day"].isoformat(), "input_tokens": r["input_tokens"],
+                    "output_tokens": r["output_tokens"], "calls": r["calls"]} for r in daily],
+    }

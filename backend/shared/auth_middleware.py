@@ -71,17 +71,22 @@ async def _fetch_public_key() -> str:
 
 
 class AuthUser:
-    def __init__(self, user_id: str, email: str, role: str, tenant_id: str):
+    def __init__(self, user_id: str, email: str, role: str, tenant_id: str,
+                 impersonated_by: str | None = None):
         self.id = user_id
         self.email = email
         self.role = role
         self.tenant_id = tenant_id
+        self.impersonated_by = impersonated_by
 
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        return self.role in ("admin", "superadmin")
+
+    def is_superadmin(self) -> bool:
+        return self.role == "superadmin"
 
     def is_at_least_analyst(self) -> bool:
-        return self.role in ("admin", "analyst")
+        return self.role in ("superadmin", "admin", "analyst")
 
     def __repr__(self):
         return f"<AuthUser {self.email} role={self.role}>"
@@ -106,17 +111,23 @@ async def require_auth(
     try:
         public_key = await _fetch_public_key()
         payload = jwt.decode(token, public_key, algorithms=[ALGORITHM], issuer=ISSUER)
-    except JWTError as exc:
-        # Invalidate cache on key error (key may have rotated)
+    except JWTError:
+        # Key may have rotated — clear cache, re-fetch, and retry once
         global _cached_public_key
         _cached_public_key = None
-        raise HTTPException(401, f"Invalid token: {exc}")
+        try:
+            public_key = await _fetch_public_key()
+            payload = jwt.decode(token, public_key, algorithms=[ALGORITHM], issuer=ISSUER)
+        except JWTError as exc:
+            _cached_public_key = None
+            raise HTTPException(401, f"Invalid token: {exc}")
 
     return AuthUser(
         user_id=payload["sub"],
         email=payload["email"],
         role=payload["role"],
         tenant_id=payload["tenant_id"],
+        impersonated_by=payload.get("impersonated_by"),
     )
 
 
@@ -130,3 +141,10 @@ def require_role(*roles: str):
             raise HTTPException(403, f"Requires role: {' or '.join(roles)}")
         return user
     return _dep
+
+
+async def require_superadmin(user: AuthUser = Depends(require_auth)) -> AuthUser:
+    """Dependency that enforces superadmin role."""
+    if not user.is_superadmin():
+        raise HTTPException(403, "Superadmin access required")
+    return user

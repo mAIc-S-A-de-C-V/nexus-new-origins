@@ -1,12 +1,13 @@
 """
 Email/password login + token refresh endpoints.
 """
+import json as _json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx as _httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db, get_or_create_tenant_for_domain
 from jwt_utils import (
     create_access_token, create_refresh_token,
-    hash_refresh_token, REFRESH_TOKEN_EXPIRE_DAYS, JWKS,
+    hash_refresh_token, decode_access_token, REFRESH_TOKEN_EXPIRE_DAYS, JWKS,
 )
 from password_utils import verify_password
 
@@ -322,3 +323,68 @@ async def verify_mfa(req_body: MFAVerifyRequest, db: AsyncSession = Depends(get_
         raise HTTPException(401, "Invalid MFA code")
 
     return {"verified": True}
+
+
+# ── Impersonation (superadmin only) ──────────────────────────────────────────
+
+class ImpersonateRequest(BaseModel):
+    target_user_id: str
+    target_tenant_id: str
+
+
+@router.post("/impersonate")
+async def impersonate(
+    body: ImpersonateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create an impersonation JWT for a target user. Requires superadmin."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing authorization")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        payload = decode_access_token(token)
+    except Exception as exc:
+        raise HTTPException(401, f"Invalid token: {exc}")
+
+    if payload.get("role") != "superadmin":
+        raise HTTPException(403, "Superadmin access required")
+
+    # Look up target user
+    row = await db.execute(
+        text("SELECT * FROM auth_users WHERE id = :uid AND tenant_id = :tid AND is_active = TRUE"),
+        {"uid": body.target_user_id, "tid": body.target_tenant_id},
+    )
+    target = row.fetchone()
+    if not target:
+        raise HTTPException(404, "Target user not found")
+
+    t = target._mapping
+    modules = _json.loads(t.get("allowed_modules") or "[]")
+    access_token = create_access_token(
+        t["id"], t["email"], t["role"], t["tenant_id"],
+        name=t["name"], modules=modules,
+        impersonated_by=payload["email"],
+    )
+
+    await _audit(
+        "impersonation.start", payload["sub"], payload["email"],
+        body.target_tenant_id, f"user:{body.target_user_id}",
+        ip=request.client.host if request.client else "",
+        detail=f"impersonating {t['email']} in {body.target_tenant_id}",
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": 900,
+        "impersonating": {
+            "id": t["id"],
+            "email": t["email"],
+            "name": t["name"],
+            "role": t["role"],
+            "tenant_id": t["tenant_id"],
+        },
+    }
