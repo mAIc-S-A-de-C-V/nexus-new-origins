@@ -1,0 +1,10 @@
+# picomatch ReDoS - only used at build time for glob matching, not user-facing
+CVE-2026-33671
+
+# axios SSRF + prototype pollution - frontend-only, no server-side axios usage
+CVE-2025-62718
+CVE-2026-40175
+
+# python-multipart - pinned in per-service requirements, base requirements.txt is not deployed
+CVE-2024-53981
+CVE-2026-24486
