@@ -660,10 +660,29 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     if isinstance(data, list):
                         page_rows = data
                     elif isinstance(data, dict):
+                        # Check well-known wrapper keys first
                         for key in ("data", "results", "items", "records", "value", "rows"):
                             if isinstance(data.get(key), list):
                                 page_rows = data[key]
                                 break
+                        # If none matched, check node config for a custom records_path
+                        if page_rows is None and cfg.get("records_path"):
+                            rp = cfg["records_path"]
+                            obj = data
+                            for part in rp.split("."):
+                                if isinstance(obj, dict):
+                                    obj = obj.get(part)
+                                else:
+                                    obj = None
+                                    break
+                            if isinstance(obj, list):
+                                page_rows = obj
+                        # Last resort: find the first list value in the response
+                        if page_rows is None:
+                            for v in data.values():
+                                if isinstance(v, list):
+                                    page_rows = v
+                                    break
                         total_declared = data.get("total")
                         has_more = data.get("has_more")
                     if not page_rows:
