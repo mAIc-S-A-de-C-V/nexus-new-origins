@@ -127,7 +127,7 @@ class ObjectType(BaseModel):
     schema_health: str = "healthy"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
-    tenant_id: str
+    tenant_id: str = ""
     position: Optional[dict[str, float]] = None
 
 
