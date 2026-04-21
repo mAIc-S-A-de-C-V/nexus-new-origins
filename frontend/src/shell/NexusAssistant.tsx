@@ -469,6 +469,8 @@ const NexusAssistant: React.FC = () => {
           display_name: action.payload.display_name || toDisplayName(String(action.payload.name || '')),
           description: action.payload.description || '',
           properties: props,
+          tenant_id: tenantId,
+          source_connector_ids: [],
         };
       } else if (action.type === 'create_pipeline') {
         url = `${INFERENCE_URL}/infer/create-pipeline`;
