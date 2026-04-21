@@ -688,6 +688,13 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     if not page_rows:
                         break
                     all_rows.extend(page_rows)
+                    # Hard cap: never hold more than max_rows in memory (default 10k)
+                    max_rows = int(cfg.get("max_rows") or 10000)
+                    if len(all_rows) >= max_rows:
+                        all_rows = all_rows[:max_rows]
+                        if audit_extras is not None:
+                            audit_extras["truncated_at"] = max_rows
+                        break
                     # Stop if the API signals no more pages
                     if has_more is False:
                         break
@@ -1055,20 +1062,25 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     )
 
     # ── Fetch existing records to diff (Celonis-style record-level events) ──
+    # Only fetch existing records if we have a small enough batch to diff safely.
+    # For large ingestions (>2000 records), skip diffing to avoid OOM.
     existing_by_pk: dict[str, dict] = {}
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(
-                f"{ONTOLOGY_API}/object-types/{ot_id}/records",
-                headers={"x-tenant-id": pipeline.tenant_id},
-            )
-            if r.is_success:
-                for rec in r.json().get("records", []):
-                    key = str(rec.get(pk_field, ""))
-                    if key:
-                        existing_by_pk[key] = rec
-    except Exception:
-        pass
+    skip_diff = len(records_in) > 2000
+    if not skip_diff:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
+                    f"{ONTOLOGY_API}/object-types/{ot_id}/records",
+                    params={"limit": 5000},
+                    headers={"x-tenant-id": pipeline.tenant_id},
+                )
+                if r.is_success:
+                    for rec in r.json().get("records", []):
+                        key = str(rec.get(pk_field, ""))
+                        if key:
+                            existing_by_pk[key] = rec
+        except Exception:
+            pass
 
     # ── Skip diff-based events if a SINK_EVENT node already handles process events ──
     has_sink_event_node = pipeline.nodes and any(
@@ -1079,11 +1091,15 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
         # SINK_EVENT node will emit proper stage-transition events — don't double-emit from SINK_OBJECT
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(
-                    f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
-                    json={"records": records_in, "pk_field": pk_field, "pipeline_id": pipeline.id},
-                    headers={"x-tenant-id": pipeline.tenant_id},
-                )
+                # Batch ingest in chunks of 500 to avoid overwhelming the ontology service
+                batch_sz = 500
+                for i in range(0, len(records_in), batch_sz):
+                    batch = records_in[i:i + batch_sz]
+                    resp = await client.post(
+                        f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
+                        json={"records": batch, "pk_field": pk_field, "pipeline_id": pipeline.id},
+                        headers={"x-tenant-id": pipeline.tenant_id},
+                    )
         except Exception:
             pass
         return records_in
@@ -1301,24 +1317,31 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                 preserved.append(rec)
         records_in = preserved
 
-    # ── Ingest records into ontology ──
+    # ── Ingest records into ontology (batched to avoid OOM) ──
     new_source_ids: set[str] = set()
+    total_ingested = 0
+    total_new = 0
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
-                json={
-                    "records": records_in,
-                    "pk_field": pk_field,
-                    "pipeline_id": pipeline.id,
-                },
-                headers={"x-tenant-id": pipeline.tenant_id},
-            )
-            if resp.is_success:
-                ingest_data = resp.json()
-                new_source_ids = set(ingest_data.get("new_source_ids", []))
-                new_count = ingest_data.get("new_count", len(records_in))
-                print(f"[SINK_OBJECT] Ingested {ingest_data.get('ingested', '?')} records ({new_count} new)")
+            batch_sz = 500
+            for i in range(0, len(records_in), batch_sz):
+                batch = records_in[i:i + batch_sz]
+                resp = await client.post(
+                    f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
+                    json={
+                        "records": batch,
+                        "pk_field": pk_field,
+                        "pipeline_id": pipeline.id,
+                    },
+                    headers={"x-tenant-id": pipeline.tenant_id},
+                )
+                if resp.is_success:
+                    ingest_data = resp.json()
+                    new_source_ids.update(ingest_data.get("new_source_ids", []))
+                    total_new += ingest_data.get("new_count", len(batch))
+                    total_ingested += ingest_data.get("ingested", len(batch))
+            if total_ingested:
+                print(f"[SINK_OBJECT] Ingested {total_ingested} records ({total_new} new) in {(len(records_in) + batch_sz - 1) // batch_sz} batches")
     except Exception:
         pass
 

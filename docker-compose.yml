@@ -8,6 +8,7 @@ x-logging: &default-logging
     labels: "service"
     tag: "{{.Name}}"
 
+
 services:
   # ─── Frontend ───────────────────────────────────────────────────────────────
   frontend:
@@ -40,6 +41,7 @@ services:
         VITE_ADMIN_SERVICE_URL: ${VITE_ADMIN_SERVICE_URL:-http://localhost:8022}
     ports:
       - "3000:3000"
+    mem_limit: 384m
     depends_on:
       - connector-service
       - ontology-service
@@ -56,6 +58,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8001:8001"
+    mem_limit: 512m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - REDIS_URL=redis://redis:6379/0
@@ -81,6 +84,7 @@ services:
       dockerfile: pipeline_service/Dockerfile
     ports:
       - "8002:8002"
+    mem_limit: 1g
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - REDIS_URL=redis://redis:6379/0
@@ -106,6 +110,7 @@ services:
       dockerfile: inference_service/Dockerfile
     ports:
       - "8003:8003"
+    mem_limit: 512m
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ADMIN_SERVICE_URL=http://admin-service:8022
@@ -120,6 +125,7 @@ services:
       dockerfile: ontology_service/Dockerfile
     ports:
       - "8004:8004"
+    mem_limit: 1g
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - CONNECTOR_SERVICE_URL=http://connector-service:8001
@@ -138,6 +144,7 @@ services:
       dockerfile: event_log_service/Dockerfile
     ports:
       - "8005:8005"
+    mem_limit: 384m
     environment:
       - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -154,6 +161,7 @@ services:
       dockerfile: audit_service/Dockerfile
     ports:
       - "8006:8006"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -171,6 +179,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8007:8007"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -187,6 +196,7 @@ services:
       dockerfile: correlation_engine/Dockerfile
     ports:
       - "8008:8008"
+    mem_limit: 384m
     environment:
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
     networks:
@@ -199,6 +209,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8009:8009"
+    mem_limit: 384m
     environment:
       - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
@@ -218,6 +229,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8011:8011"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - JWT_ISSUER=https://nexus.internal/auth
@@ -252,6 +264,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8012:8012"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
@@ -278,6 +291,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8013:8013"
+    mem_limit: 512m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
@@ -302,6 +316,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8014:8014"
+    mem_limit: 384m
     environment:
       - AUTH_SERVICE_URL=http://auth-service:8011
       - SKIP_AUTH=${SKIP_AUTH:-true}
@@ -316,6 +331,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8010:8010"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - TIMESCALE_URL=postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events
@@ -337,6 +353,7 @@ services:
       dockerfile: analytics_service/Dockerfile
     ports:
       - "8015:8015"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -356,6 +373,7 @@ services:
       dockerfile: eval_service/Dockerfile
     ports:
       - "8016:8016"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -377,6 +395,7 @@ services:
       dockerfile: search_service/Dockerfile
     ports:
       - "8018:8018"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -394,6 +413,7 @@ services:
       dockerfile: data_quality_service/Dockerfile
     ports:
       - "8019:8019"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -411,6 +431,7 @@ services:
       dockerfile: collaboration_service/Dockerfile
     ports:
       - "8020:8020"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -428,6 +449,7 @@ services:
       dockerfile: api_gateway_service/Dockerfile
     ports:
       - "8021:8021"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -445,6 +467,7 @@ services:
       dockerfile: admin_service/Dockerfile
     ports:
       - "8022:8022"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
       - AUTH_SERVICE_URL=http://auth-service:8011
@@ -464,6 +487,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8023:8023"
+    mem_limit: 384m
     environment:
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
     volumes:
@@ -477,6 +501,7 @@ services:
       dockerfile: lineage_service/Dockerfile
     ports:
       - "8017:8017"
+    mem_limit: 384m
     environment:
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
       - SKIP_AUTH=${SKIP_AUTH:-true}
@@ -500,6 +525,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "9000:9000"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
@@ -517,6 +543,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "9001:9001"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -532,6 +559,7 @@ services:
     image: postgres:16-alpine
     ports:
       - "5432:5432"
+    mem_limit: 1g
     environment:
       POSTGRES_USER: nexus
       POSTGRES_PASSWORD: nexus_pass
@@ -550,6 +578,7 @@ services:
     image: timescale/timescaledb:latest-pg16
     ports:
       - "5434:5432"
+    mem_limit: 768m
     environment:
       POSTGRES_USER: nexus
       POSTGRES_PASSWORD: nexus_pass
@@ -568,6 +597,7 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    mem_limit: 256m
     volumes:
       - redis_data:/data
     healthcheck:
@@ -612,6 +642,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8024:8024"
+    mem_limit: 384m
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8024 --reload
@@ -623,6 +654,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8025:8025"
+    mem_limit: 384m
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
       - PORT=8025
