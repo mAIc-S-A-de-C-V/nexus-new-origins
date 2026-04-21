@@ -30,6 +30,7 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'connectorId', label: 'Connector', type: 'select', options: [], required: true },
       { key: 'pollFrequency', label: 'Sync Frequency', type: 'select', required: true, default: '1h', options: ['on_demand', '5m', '15m', '30m', '1h', '6h', '12h', '1d'] },
       { key: 'endpoint', label: 'Endpoint / Table', type: 'text', placeholder: '/api/contacts' },
+      { key: 'method', label: 'HTTP Method', type: 'select', default: 'GET', options: ['GET', 'POST', 'PUT'] },
       { key: 'batchSize', label: 'Batch Size', type: 'number', default: 100 },
       { key: 'incrementalKey', label: 'Incremental Key', type: 'text', placeholder: 'updated_at' },
     ],

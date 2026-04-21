@@ -796,7 +796,7 @@ Available object types (data targets):
 User request: {description}
 
 ## Node types (use EXACTLY these uppercase values for "type"):
-- SOURCE — pull data from a connector. Config: {{"connector_id":"<id>","endpoint":"<path>","poll_frequency":"5m"}}
+- SOURCE — pull data from a connector. Config: {{"connector_id":"<id>","endpoint":"<path>","method":"GET","poll_frequency":"5m"}}. Use "method":"POST" when the endpoint requires POST (e.g. scrape triggers). Default is GET.
 - FILTER — filter records. Config: {{"field":"<name>","operator":"==","value":"<val>"}}
 - MAP — rename/transform fields. Config: {{"mappings":[{{"from":"src","to":"dst"}}]}}
 - CAST — change field types. Config: {{"casts":[{{"field":"name","toType":"string"}}]}}

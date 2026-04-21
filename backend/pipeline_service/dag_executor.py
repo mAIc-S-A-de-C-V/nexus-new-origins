@@ -284,27 +284,35 @@ class DagExecutor:
                     node_audits["_watermark_value"] = wm
                     break
 
+            # Check if any node reported an error (e.g. HTTP 4xx/5xx on SOURCE)
+            has_node_error = any(
+                (na.get("stats") or {}).get("error") or (na.get("stats") or {}).get("response_error")
+                for na in node_audits.values()
+                if isinstance(na, dict) and "node_id" in na
+            )
+            final_status = "FAILED" if has_node_error else "COMPLETED"
+
             run.update({
-                "status": "COMPLETED",
+                "status": final_status,
                 "finished_at": finished_at,
                 "rows_in": source_row_count,
                 "rows_out": total_out,
                 "node_audits": node_audits,
             })
 
-            pipeline.status = PipelineStatus.IDLE
+            pipeline.status = PipelineStatus.FAILED if has_node_error else PipelineStatus.IDLE
             pipeline.last_run_at = datetime.now(timezone.utc)
             pipeline.last_run_row_count = total_out
 
-            # Emit PIPELINE_COMPLETED event so it appears in the Event Log
+            # Emit pipeline event so it appears in the Event Log
             asyncio.create_task(_emit_pipeline_event(
                 pipeline_id=pipeline.id,
                 pipeline_name=pipeline.name,
-                activity="PIPELINE_COMPLETED",
+                activity=f"PIPELINE_{final_status}",
                 timestamp=finished_at,
                 rows_in=source_row_count,
                 rows_out=total_out,
-                status="COMPLETED",
+                status=final_status,
                 tenant_id=pipeline.tenant_id or "tenant-001",
             ))
 
@@ -627,11 +635,15 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 page_limit = batch_size  # rows per page request
                 offset = 0
                 first_call = True
+                http_method = (cfg.get("method") or cfg.get("http_method") or "GET").upper()
                 while True:
                     page_params = dict(params)
                     page_params["limit"] = page_limit
                     page_params["offset"] = offset
-                    r = await client.get(url, headers=headers, params=page_params, timeout=60)
+                    if http_method == "POST":
+                        r = await client.post(url, headers=headers, params=page_params, timeout=60)
+                    else:
+                        r = await client.get(url, headers=headers, params=page_params, timeout=60)
                     if first_call and audit_extras is not None:
                         audit_extras["url"] = str(r.url)
                         audit_extras["http_status"] = r.status_code
