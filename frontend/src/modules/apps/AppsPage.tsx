@@ -5,19 +5,10 @@ import { useNavigationStore } from '../../store/navigationStore';
 import { NexusApp, AppComponent } from '../../types/app';
 import { getTenantId } from '../../store/authStore';
 import AppEditor from './AppEditor';
+import { uuid as genId } from '../../lib/uuid';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
-
-function genId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-  });
-}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

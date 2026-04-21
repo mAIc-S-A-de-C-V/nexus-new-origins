@@ -13,6 +13,7 @@ import { useGraphStore } from '../../store/graphStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { getTenantId } from '../../store/authStore';
 import { CheckpointGate } from '../audit/CheckpointGate';
+import { uuid } from '../../lib/uuid';
 
 const ANALYTICS_API = import.meta.env.VITE_ANALYTICS_SERVICE_URL || 'http://localhost:8015';
 
@@ -122,7 +123,7 @@ const FilterBuilder: React.FC<{
   onChange: (filters: FilterRow[]) => void;
 }> = ({ filters, fields, onChange }) => {
   const addFilter = () => {
-    onChange([...filters, { id: crypto.randomUUID(), field: fields[0] || '', op: 'eq', value: '' }]);
+    onChange([...filters, { id: uuid(), field: fields[0] || '', op: 'eq', value: '' }]);
   };
   const removeFilter = (id: string) => onChange(filters.filter((f) => f.id !== id));
   const updateFilter = (id: string, patch: Partial<FilterRow>) =>
@@ -694,14 +695,14 @@ const ScenarioPanel: React.FC<{
   }).filter(Boolean);
 
   const addOverride = () => {
-    setOverrides((v) => [...v, { id: crypto.randomUUID(), object_id: sampleIds[0] || '', property: fields[0] || '', simulated_value: '' }]);
+    setOverrides((v) => [...v, { id: uuid(), object_id: sampleIds[0] || '', property: fields[0] || '', simulated_value: '' }]);
   };
   const removeOverride = (id: string) => setOverrides((v) => v.filter((o) => o.id !== id));
   const updateOverride = (id: string, patch: Partial<Override>) =>
     setOverrides((v) => v.map((o) => o.id === id ? { ...o, ...patch } : o));
 
   const addMetric = () => {
-    setMetrics((v) => [...v, { id: crypto.randomUUID(), name: '', function: 'SUM', field: fields[0] || '' }]);
+    setMetrics((v) => [...v, { id: uuid(), name: '', function: 'SUM', field: fields[0] || '' }]);
   };
   const removeMetric = (id: string) => setMetrics((v) => v.filter((m) => m.id !== id));
   const updateMetric = (id: string, patch: Partial<Metric>) =>
@@ -1371,7 +1372,7 @@ const DataExplorer: React.FC = () => {
                 onClick={() => {
                   const exists = filters.some((fr) => fr.field === f);
                   if (!exists) {
-                    setFilters([...filters, { id: crypto.randomUUID(), field: f, op: 'eq', value: '' }]);
+                    setFilters([...filters, { id: uuid(), field: f, op: 'eq', value: '' }]);
                   }
                 }}
               />

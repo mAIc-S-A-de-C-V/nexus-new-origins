@@ -9,6 +9,7 @@ import {
 import { useAuth } from '../../shell/TenantContext';
 import { getTenantId } from '../../store/authStore';
 import { useAlertStore, ChannelConfig } from '../../store/alertStore';
+import { uuid } from '../../lib/uuid';
 
 const AlertsPage         = React.lazy(() => import('../alerts/AlertsPage'));
 const ApiGatewayPage     = React.lazy(() => import('../gateway/ApiGatewayPage'));
@@ -313,7 +314,7 @@ const ApiKeysTab: React.FC = () => {
     const key = generateKey();
     await new Promise(r => setTimeout(r, 400));
     const newK: ApiKey = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       name: newKeyName.trim(),
       prefix: key.slice(0, 12) + '…',
       created_at: new Date().toISOString(),

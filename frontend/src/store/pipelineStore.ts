@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Pipeline, PipelineNode, PipelineEdge } from '../types/pipeline';
 import { useRunLogStore } from './runLogStore';
 import { getTenantId } from './authStore';
+import { uuid } from '../lib/uuid';
 
 const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
 
@@ -185,7 +186,7 @@ export const usePipelineStore = create<PipelineStoreState>((set, get) => ({
         pipelines: state.pipelines.map((p) => p.id === id ? { ...p, status: status as any } : p),
       }));
       useRunLogStore.getState().addLog({
-        id: crypto.randomUUID(),
+        id: uuid(),
         pipeline_id: id,
         pipeline_name: pipeline?.name || id,
         status,

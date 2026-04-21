@@ -9,6 +9,7 @@ import { useAssistantStore, useTenantConversations, AssistantMessage } from '../
 import { useNavigationStore } from '../store/navigationStore';
 import { useOntologyStore } from '../store/ontologyStore';
 import { getTenantId } from '../store/authStore';
+import { uuid } from '../lib/uuid';
 
 const INFERENCE_URL  = import.meta.env.VITE_INFERENCE_SERVICE_URL  || 'http://localhost:8003';
 const LOGIC_URL      = import.meta.env.VITE_LOGIC_SERVICE_URL      || 'http://localhost:8012';
@@ -452,7 +453,7 @@ const NexusAssistant: React.FC = () => {
         setActionStatuses(s => ({ ...s, [msgId]: 'error' }));
         if (activeId) {
           addMessage(activeId, {
-            id: crypto.randomUUID(),
+            id: uuid(),
             role: 'assistant',
             content: `Failed to create **${action.name}**: ${data.message || 'Unknown error'}`,
             timestamp: new Date().toISOString(),
@@ -469,7 +470,7 @@ const NexusAssistant: React.FC = () => {
           ? `Pipeline run started.`
           : `**${action.name}** created successfully.${data.pipeline_id ? ` ID: \`${data.pipeline_id}\`` : ''}${data.function_id ? ` ID: \`${data.function_id}\`` : ''}`;
         addMessage(activeId, {
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'assistant',
           content: resultText,
           timestamp: new Date().toISOString(),
@@ -479,7 +480,7 @@ const NexusAssistant: React.FC = () => {
       setActionStatuses(s => ({ ...s, [msgId]: 'error' }));
       if (activeId) {
         addMessage(activeId, {
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'assistant',
           content: `Action failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
           timestamp: new Date().toISOString(),
@@ -492,7 +493,7 @@ const NexusAssistant: React.FC = () => {
     setActionStatuses(s => ({ ...s, [msgId]: 'rejected' }));
     if (activeId) {
       addMessage(activeId, {
-        id: crypto.randomUUID(),
+        id: uuid(),
         role: 'assistant',
         content: 'Action cancelled. Let me know if you want to adjust the plan.',
         timestamp: new Date().toISOString(),
@@ -507,7 +508,7 @@ const NexusAssistant: React.FC = () => {
 
     const now = new Date().toISOString();
     const userMsg: AssistantMessage = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       role: 'user',
       content: text,
       timestamp: now,
@@ -543,7 +544,7 @@ const NexusAssistant: React.FC = () => {
         });
         const data = await res.json();
         addMessage(activeId, {
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'assistant',
           content: data.answer || 'No response.',
           timestamp: new Date().toISOString(),
@@ -557,7 +558,7 @@ const NexusAssistant: React.FC = () => {
           body: JSON.stringify({ messages: history, context }),
         });
 
-        const assistantMsgId = crypto.randomUUID();
+        const assistantMsgId = uuid();
         addMessage(activeId, {
           id: assistantMsgId,
           role: 'assistant',
@@ -599,7 +600,7 @@ const NexusAssistant: React.FC = () => {
       }
     } catch {
       addMessage(activeId, {
-        id: crypto.randomUUID(),
+        id: uuid(),
         role: 'assistant',
         content: "Couldn't reach the inference service.",
         timestamp: new Date().toISOString(),

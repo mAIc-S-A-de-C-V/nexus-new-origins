@@ -20,16 +20,7 @@ import { useConnectorStore } from '../../store/connectorStore';
 import { usePipelineStore } from '../../store/pipelineStore';
 import { getTenantId } from '../../store/authStore';
 import { ObjectType } from '../../types/ontology';
-
-function genId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return genId();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-  });
-}
+import { uuid as genId } from '../../lib/uuid';
 
 // ── Pipeline expand modal ─────────────────────────────────────────────────
 
