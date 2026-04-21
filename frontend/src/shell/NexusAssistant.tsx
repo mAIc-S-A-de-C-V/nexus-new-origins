@@ -449,9 +449,20 @@ const NexusAssistant: React.FC = () => {
       } else if (action.type === 'create_object_type') {
         url = `${ONTOLOGY_URL}/object-types`;
         const toDisplayName = (s: string) => s.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const typeToSemantic: Record<string, string> = {
+          string: 'TEXT', text: 'TEXT', number: 'QUANTITY', integer: 'QUANTITY',
+          float: 'QUANTITY', boolean: 'BOOLEAN', date: 'DATE', datetime: 'DATETIME',
+          url: 'URL', email: 'EMAIL', phone: 'PHONE', currency: 'CURRENCY',
+          percentage: 'PERCENTAGE', id: 'IDENTIFIER', identifier: 'IDENTIFIER',
+        };
         const props = ((action.payload.properties || []) as Record<string, unknown>[]).map(p => ({
-          ...p,
+          name: p.name,
           display_name: p.display_name || toDisplayName(String(p.name || '')),
+          semantic_type: p.semantic_type || typeToSemantic[String(p.type || 'string').toLowerCase()] || 'TEXT',
+          data_type: p.data_type || String(p.type || 'string'),
+          pii_level: p.pii_level || 'NONE',
+          required: p.required ?? false,
+          description: p.description || '',
         }));
         body = {
           name: action.payload.name,
