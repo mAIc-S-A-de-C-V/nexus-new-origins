@@ -91,19 +91,23 @@ async function fetchLiveContext(currentPage: string) {
 
 // ── Action types ─────────────────────────────────────────────────────────────
 interface NexusAction {
-  type: 'create_pipeline' | 'create_logic' | 'run_pipeline';
+  type: 'create_connector' | 'create_object_type' | 'create_pipeline' | 'create_logic' | 'run_pipeline';
   name: string;
   summary: string[];
   payload: Record<string, unknown>;
 }
 
 const ACTION_LABELS: Record<string, string> = {
+  create_connector: 'Create Connector',
+  create_object_type: 'Create Object Type',
   create_pipeline: 'Create Pipeline',
   create_logic: 'Create Logic Function',
   run_pipeline: 'Run Pipeline',
 };
 
 const ACTION_ICONS: Record<string, React.ReactNode> = {
+  create_connector: <Database size={14} />,
+  create_object_type: <Layers size={14} />,
   create_pipeline: <GitBranch size={14} />,
   create_logic: <Code size={14} />,
   run_pipeline: <Play size={14} />,
@@ -274,7 +278,7 @@ function Markdown({ text }: { text: string }) {
 function extractAction(text: string): NexusAction | null {
   // Find the start of an action-shaped JSON anywhere in the text
   const needle = '"type"';
-  const actionTypes = ['create_pipeline', 'create_logic', 'run_pipeline'];
+  const actionTypes = ['create_connector', 'create_object_type', 'create_pipeline', 'create_logic', 'run_pipeline'];
   let searchFrom = 0;
   while (searchFrom < text.length) {
     const idx = text.indexOf(needle, searchFrom);
@@ -429,7 +433,28 @@ const NexusAssistant: React.FC = () => {
       let url = '';
       let body: Record<string, unknown> = {};
 
-      if (action.type === 'create_pipeline') {
+      if (action.type === 'create_connector') {
+        url = `${CONNECTOR_URL}/connectors`;
+        body = {
+          name: action.payload.name,
+          type: action.payload.type || 'REST_API',
+          category: action.payload.category || 'API',
+          description: action.payload.description || '',
+          base_url: action.payload.base_url || '',
+          auth_type: action.payload.auth_type || 'None',
+          credentials: action.payload.credentials || null,
+          headers: action.payload.headers || null,
+          config: action.payload.endpoints ? { endpoints: action.payload.endpoints } : action.payload.config || null,
+        };
+      } else if (action.type === 'create_object_type') {
+        url = `${ONTOLOGY_URL}/object-types`;
+        body = {
+          name: action.payload.name,
+          display_name: action.payload.display_name || action.payload.name,
+          description: action.payload.description || '',
+          properties: action.payload.properties || [],
+        };
+      } else if (action.type === 'create_pipeline') {
         url = `${INFERENCE_URL}/infer/create-pipeline`;
         body = action.payload;
       } else if (action.type === 'create_logic') {
@@ -466,9 +491,10 @@ const NexusAssistant: React.FC = () => {
 
       // Add a result message
       if (activeId) {
+        const idStr = data.id ? ` ID: \`${data.id}\`` : data.pipeline_id ? ` ID: \`${data.pipeline_id}\`` : data.function_id ? ` ID: \`${data.function_id}\`` : '';
         const resultText = action.type === 'run_pipeline'
           ? `Pipeline run started.`
-          : `**${action.name}** created successfully.${data.pipeline_id ? ` ID: \`${data.pipeline_id}\`` : ''}${data.function_id ? ` ID: \`${data.function_id}\`` : ''}`;
+          : `**${action.name}** created successfully.${idStr}`;
         addMessage(activeId, {
           id: uuid(),
           role: 'assistant',
