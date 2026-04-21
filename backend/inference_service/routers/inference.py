@@ -300,8 +300,8 @@ IMPORTANT: The language tag MUST be `nexus-action` — not `json`, not empty. If
 Supported action types:
 - `create_connector` — payload: `{"name": "...", "type": "REST_API", "category": "API", "description": "...", "base_url": "https://...", "auth_type": "None", "endpoints": [{"path":"/path","method":"GET","label":"..."}]}`
   Use type `REST_API` and category `API` for HTTP endpoints. Include `endpoints` array with the specific paths to call.
-- `create_object_type` — payload: `{"name": "snake_case_name", "display_name": "Human Name", "description": "...", "properties": [{"name":"field_name","type":"string","description":"..."}]}`
-  Properties should reflect the expected data shape from the connectors/sources.
+- `create_object_type` — payload: `{"name": "snake_case_name", "display_name": "Human Name", "description": "...", "properties": [{"name":"field_name","display_name":"Field Name","type":"string","description":"..."}]}`
+  IMPORTANT: Every property MUST include `display_name` (human-readable label). Properties should reflect the expected data shape.
 - `create_pipeline` — payload: `{"description": "...", "connectors": [{"id":"<real-id>","name":"<name>","type":"<type>"}], "object_types": [{"id":"<real-id>","name":"<name>"}]}`
   IMPORTANT: Include real connector IDs and object type IDs from the live context, not just names!
 - `create_logic` — payload: `{"description": "...", "object_types": [{"id":"<real-id>","name":"<name>"}], "existing_functions": [...]}`

@@ -448,11 +448,16 @@ const NexusAssistant: React.FC = () => {
         };
       } else if (action.type === 'create_object_type') {
         url = `${ONTOLOGY_URL}/object-types`;
+        const toDisplayName = (s: string) => s.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const props = ((action.payload.properties || []) as Record<string, unknown>[]).map(p => ({
+          ...p,
+          display_name: p.display_name || toDisplayName(String(p.name || '')),
+        }));
         body = {
           name: action.payload.name,
-          display_name: action.payload.display_name || action.payload.name,
+          display_name: action.payload.display_name || toDisplayName(String(action.payload.name || '')),
           description: action.payload.description || '',
-          properties: action.payload.properties || [],
+          properties: props,
         };
       } else if (action.type === 'create_pipeline') {
         url = `${INFERENCE_URL}/infer/create-pipeline`;
