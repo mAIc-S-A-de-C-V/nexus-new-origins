@@ -657,6 +657,13 @@ async def create_pipeline(
             if found:
                 c["id"] = found["id"]
                 c["type"] = found.get("type", "REST_API")
+        # Always enrich with base_url and endpoints from connector config
+        found = connector_lookup.get(c.get("id", "")) or connector_lookup.get((c.get("name") or "").lower())
+        if found:
+            c["base_url"] = found.get("base_url", "")
+            cfg = found.get("config") or {}
+            if cfg.get("endpoints"):
+                c["endpoints"] = cfg["endpoints"]
     for ot in object_types:
         if "id" not in ot and ot.get("name"):
             found = ot_lookup.get(ot["name"].lower())
