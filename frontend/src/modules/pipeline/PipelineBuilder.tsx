@@ -67,7 +67,8 @@ const FieldInput: React.FC<FieldProps> = ({
   stepId, fieldKey, fieldType, placeholder, options, defaultVal,
   value, connectors, objectTypes, agents, onChange,
 }) => {
-  const strVal = String(value ?? defaultVal ?? '');
+  const raw = value ?? defaultVal ?? '';
+  const strVal = (typeof raw === 'object' && raw !== null) ? JSON.stringify(raw, null, 2) : String(raw);
   const inputStyle: React.CSSProperties = {
     width: '100%', height: '30px', border: '1px solid #E2E8F0',
     borderRadius: '4px', padding: '0 8px', fontSize: '12px',
@@ -142,7 +143,10 @@ const FieldInput: React.FC<FieldProps> = ({
   return (
     <textarea
       value={strVal}
-      onChange={e => onChange(stepId, fieldKey, e.target.value)}
+      onChange={e => {
+        const v = e.target.value;
+        try { onChange(stepId, fieldKey, JSON.parse(v)); } catch { onChange(stepId, fieldKey, v); }
+      }}
       placeholder={placeholder}
       rows={4}
       style={taStyle}
