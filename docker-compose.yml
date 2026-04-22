@@ -39,6 +39,7 @@ services:
         VITE_COLLABORATION_SERVICE_URL: ${VITE_COLLABORATION_SERVICE_URL:-http://localhost:8020}
         VITE_API_GATEWAY_URL: ${VITE_API_GATEWAY_URL:-http://localhost:8021}
         VITE_ADMIN_SERVICE_URL: ${VITE_ADMIN_SERVICE_URL:-http://localhost:8022}
+        VITE_KERNEL_SERVICE_URL: ${VITE_KERNEL_SERVICE_URL:-http://localhost:8026}
     ports:
       - "3000:3000"
     mem_limit: 384m
@@ -646,6 +647,26 @@ services:
     networks:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8024 --reload
+    logging: *default-logging
+
+  # ─── Workbench kernel (Jupyter-style notebook execution) ────────────────────
+  kernel-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.kernel
+    ports:
+      - "8026:8026"
+    mem_limit: 1g
+    environment:
+      - ANALYTICS_URL=http://analytics-service:8015
+      - ONTOLOGY_URL=http://ontology-service:8004
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
+      - SKIP_AUTH=${SKIP_AUTH:-true}
+    depends_on:
+      - analytics-service
+      - ontology-service
+    networks:
+      - nexus-net
     logging: *default-logging
 
   whatsapp-service:

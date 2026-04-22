@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
   FolderKanban, Users, LogOut, DollarSign, Briefcase,
   BrainCircuit, Bot, MessageSquare, ShieldCheck, Wrench, Globe, FlaskConical,
-  Database, Shield, TrendingUp,
+  Database, Shield, TrendingUp, BookOpen,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from './TenantContext';
@@ -54,6 +54,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'apps',          label: 'Dashboards',   i18nKey: 'nav.dashboards',  icon: <LayoutDashboard size={16} />, active: true, path: 'apps' },
+  { id: 'workbench',     label: 'Workbench',    i18nKey: 'nav.workbench',   icon: <BookOpen size={16} />,        active: true, path: 'workbench', alwaysVisible: true },
   { id: 'connectors',    label: 'Connectors',   i18nKey: 'nav.connectors',  icon: <Plug size={16} />,            active: true, path: 'connectors' },
   { id: 'ontology',      label: 'Ontology',     i18nKey: 'nav.ontology',    icon: <Network size={16} />,         active: true, path: 'ontology' },
   { id: 'data',          label: 'Data',         i18nKey: 'nav.data',        icon: <Database size={16} />,        active: true, path: 'data' },

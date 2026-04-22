@@ -1056,6 +1056,99 @@ Return ONLY valid JSON."""
         return json.loads(content)
 
 
+WORKBENCH_SYSTEM_PROMPT = """You are the Nexus Workbench agent — a data analyst that responds to every user question by producing a SHORT Jupyter-style notebook that answers it.
+
+You MUST respond with valid JSON only:
+{ "cells": [ Cell, Cell, ... ] }
+
+Each Cell is one of:
+  { "kind": "markdown", "source": "..." }
+  { "kind": "python",   "source": "..." }
+
+Rules:
+1. Always interleave one short markdown cell (1-3 sentences) with the code that follows. Use markdown for narration; keep it tight.
+2. Python cells can use these pre-imported names: `nexus`, `pd` (pandas), `np` (numpy), `px` (plotly.express), `go` (plotly.graph_objects), `plt` (matplotlib.pyplot).
+3. To read data, always call `nexus.query(object_type_id, filters=..., limit=...)` or `nexus.records(object_type_id, limit=...)`. Never use `requests` / `httpx` directly. Never call `pip install`.
+4. For charts, PREFER plotly.express (e.g. `fig = px.scatter(df, x=..., y=..., color=...)`). The last expression in the cell must be the Plotly figure (`fig`) so it is rendered as an interactive chart. Only fall back to matplotlib when plotly can't express it.
+5. For tables, end the cell with the DataFrame itself (e.g. `df.head(20)`) — Jupyter will render its HTML table.
+6. Keep the answer short — usually 2 to 5 cells total. Don't echo the schema, don't print dozens of debug lines.
+7. Use the provided object types / fields to ground your code. If the user's request is ambiguous, pick the most plausible object type + fields and go.
+8. Field names in the ontology may be snake_case or arbitrary — respect what is actually in the schema list. Never invent a field.
+9. If the user's request is just conversational ("what can you do?"), answer with a single markdown cell and stop.
+
+Output format: ONLY the JSON object. No prose, no markdown fences, no trailing commas.
+"""
+
+
+def generate_workbench_cells(
+    client: "ClaudeInferenceClient",
+    prompt: str,
+    prior_cells: list[dict],
+    ontology_context: list[dict],
+) -> list[dict]:
+    """Ask Claude to produce the next batch of notebook cells to append."""
+    if not client.client:
+        raise ValueError("Anthropic API key not configured")
+
+    # Compact ontology context: object_type_id -> name + up-to-25 field names
+    compact_ot = []
+    for ot in ontology_context[:12]:
+        fields = ot.get("fields") or ot.get("properties") or []
+        if fields and isinstance(fields[0], dict):
+            fields = [f.get("name") for f in fields if f.get("name")]
+        compact_ot.append({
+            "id": ot.get("id"),
+            "name": ot.get("name") or ot.get("display_name") or ot.get("displayName"),
+            "fields": fields[:25],
+        })
+
+    # Trim prior cell outputs to stay within context
+    trimmed_prior = []
+    for c in prior_cells[-12:]:
+        trimmed_prior.append({
+            "kind": c.get("kind"),
+            "source": (c.get("source") or "")[:800],
+        })
+
+    user_msg = json.dumps({
+        "user_prompt": prompt,
+        "object_types": compact_ot,
+        "prior_cells": trimmed_prior,
+    })
+
+    message = client.client.messages.create(
+        model=MODEL,
+        max_tokens=3500,
+        system=WORKBENCH_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    track_token_usage(client.tenant_id, "inference_service", MODEL,
+                      message.usage.input_tokens, message.usage.output_tokens)
+
+    content = message.content[0].text.strip()
+    if content.startswith("```"):
+        content = content[content.index("\n") + 1:]
+        if content.rstrip().endswith("```"):
+            content = content.rstrip()[:-3].rstrip()
+
+    data = json.loads(content)
+    cells = data.get("cells", [])
+
+    # Normalize: every cell is either markdown or python (executable via kernel).
+    # SQL-ish prompts are expected to be expressed as python cells using nexus.query().
+    out = []
+    for i, cell in enumerate(cells):
+        kind = cell.get("kind", "markdown")
+        if kind not in ("markdown", "python"):
+            kind = "markdown"
+        out.append({
+            "id": f"{uuid4().hex[:8]}-{i}",
+            "kind": kind,
+            "source": cell.get("source", ""),
+        })
+    return out
+
+
 def _safe_floats(values) -> list[float]:
     """Convert an iterable of values to floats, silently skipping non-numeric ones (e.g. datetimes)."""
     result = []

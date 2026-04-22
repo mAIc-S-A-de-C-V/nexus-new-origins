@@ -73,6 +73,17 @@ class AppRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class NotebookRow(Base):
+    """Persisted Workbench notebooks — Jupyter-style cells + outputs."""
+    __tablename__ = "notebooks"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    cells = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
 
 class ActionDefinitionRow(Base):
     """Typed, permissioned write operations that AI agents and Logic Functions can propose."""

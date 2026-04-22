@@ -8,7 +8,7 @@ from anthropic import AsyncAnthropic
 import httpx
 from shared.models import InferenceResult, SimilarityScore, FieldConflict
 from shared.token_tracker import track_token_usage
-from claude_client import ClaudeInferenceClient
+from claude_client import ClaudeInferenceClient, generate_workbench_cells
 
 PIPELINE_SERVICE_URL = os.environ.get("PIPELINE_SERVICE_URL", "http://pipeline-service:8002")
 LOGIC_SERVICE_URL = os.environ.get("LOGIC_SERVICE_URL", "http://logic-service:8012")
@@ -843,3 +843,52 @@ async def surface_anomalies(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Anomaly detection failed: {e}")
+
+
+# ── Workbench (conversational notebook generation) ──────────────────────────
+
+class WorkbenchRequest(BaseModel):
+    prompt: str
+    cells: list[dict] = []
+    object_type_ids: list[str] = []
+
+
+@router.post("/workbench")
+async def workbench_cells(
+    req: WorkbenchRequest,
+    x_tenant_id: str = Header(default="tenant-001"),
+):
+    """Generate a batch of notebook cells that answer the user's prompt.
+
+    Returns {"cells": [ {id, kind, source}, ... ]} — append these to the open
+    notebook, then execute any non-markdown cells via the kernel service.
+    """
+    client.tenant_id = x_tenant_id
+
+    # Pull ontology context: object types + field names for the tenant.
+    ontology_ctx: list[dict] = []
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as http:
+            resp = await http.get(
+                f"{ONTOLOGY_SERVICE_URL}/object-types",
+                headers={"x-tenant-id": x_tenant_id},
+            )
+            if resp.status_code == 200:
+                payload = resp.json()
+                ots = payload.get("object_types") if isinstance(payload, dict) else payload
+                if req.object_type_ids:
+                    ots = [o for o in (ots or []) if o.get("id") in req.object_type_ids]
+                ontology_ctx = ots or []
+    except Exception:
+        ontology_ctx = []
+
+    try:
+        cells = generate_workbench_cells(
+            client=client,
+            prompt=req.prompt,
+            prior_cells=req.cells,
+            ontology_context=ontology_ctx,
+        )
+        return {"cells": cells}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Workbench generation failed: {e}")

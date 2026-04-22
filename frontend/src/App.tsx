@@ -11,6 +11,7 @@ const ConnectorGrid   = lazy(() => import('./modules/connectors/ConnectorGrid'))
 const OntologyGraph   = lazy(() => import('./modules/ontology/OntologyGraph'));
 const PipelineBuilder = lazy(() => import('./modules/pipeline/PipelineBuilder'));
 const AppsPage        = lazy(() => import('./modules/apps/AppsPage'));
+const WorkbenchPage   = lazy(() => import('./modules/workbench/WorkbenchPage'));
 const ProjectsModule  = lazy(() => import('./modules/projects/ProjectsModule'));
 const FinanceModule   = lazy(() => import('./modules/finance/FinanceModule'));
 const LogicStudio     = lazy(() => import('./modules/logic/LogicStudio'));
@@ -83,6 +84,8 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading pipelines..." />}><PipelineBuilder /></Suspense>;
     case 'apps':
       return <Suspense fallback={<LoadingSpinner message="Loading apps..." />}><AppsPage /></Suspense>;
+    case 'workbench':
+      return <Suspense fallback={<LoadingSpinner message="Loading workbench..." />}><WorkbenchPage /></Suspense>;
     case 'projects':
       return <Suspense fallback={<LoadingSpinner message="Loading projects..." />}><ProjectsModule /></Suspense>;
     case 'finance':

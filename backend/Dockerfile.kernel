@@ -1,0 +1,18 @@
+FROM python:3.12.9-slim
+
+WORKDIR /app
+
+# build deps for scientific Python wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc g++ libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY kernel_service/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+ && python -m ipykernel install --sys-prefix --name python3
+
+COPY kernel_service/ .
+
+EXPOSE 8026
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8026"]
