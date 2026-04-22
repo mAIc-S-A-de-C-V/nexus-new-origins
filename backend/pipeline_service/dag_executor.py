@@ -1839,7 +1839,16 @@ Responde SOLO con el JSON. Sin texto adicional."""
 
     # Create Human Actions for CRITICO/URGENTE items
     if create_actions:
-        urgent_records = [r for r in enriched if r.get("llm_prioridad") in ("CRITICO", "URGENTE")]
+        def _is_urgent(r: dict) -> bool:
+            p = (r.get("llm_prioridad") or "").upper()
+            u = (r.get("llm_urgencia") or "").upper()
+            c = (r.get("llm_categoria") or "").lower()
+            return (
+                p in ("CRITICO", "URGENTE")
+                or u in ("CRITICA", "ALTA")
+                or c in ("delito_calle", "muerte")
+            )
+        urgent_records = [r for r in enriched if _is_urgent(r)]
         if urgent_records:
             asyncio.create_task(
                 _create_urgent_actions(urgent_records, pipeline)
