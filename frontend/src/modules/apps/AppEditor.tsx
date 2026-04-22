@@ -1802,7 +1802,7 @@ type Mode = 'view' | 'edit' | 'code' | 'sync';
 
 const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   const { updateApp } = useAppStore();
-  const [mode, setMode] = useState<Mode>('edit');
+  const [mode, setMode] = useState<Mode>(app.components.length > 0 ? 'view' : 'edit');
   const [components, setComponents] = useState<AppComponent[]>(app.components);
   const [variables, setVariables] = useState<AppVariable[]>(app.variables || []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -1833,6 +1833,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
     try {
       await updateApp(app.id, { components, variables, updatedAt: new Date().toISOString() });
       setDirty(false);
+      setMode('view');
     } finally { setSaving(false); }
   };
 
