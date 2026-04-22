@@ -628,18 +628,29 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     if extra_h.get("key"):
                         headers[extra_h["key"]] = str(extra_h.get("value", ""))
 
-                # ── Paginated fetch ───────────────────────────────────────
-                # Keeps fetching pages until has_more is False, total is
-                # reached, or no new rows are returned.
+                # ── Fetch (single call or paginated) ─────────────────────
+                # If pagination is disabled or the connector has no pagination
+                # strategy, make a single request without injecting limit/offset.
                 all_rows: list[dict] = []
                 page_limit = batch_size  # rows per page request
                 offset = 0
                 first_call = True
                 http_method = (cfg.get("method") or cfg.get("http_method") or "GET").upper()
+                paginate = cfg.get("paginate", True)
+                # Auto-detect: if connector has no pagination strategy or is set to "none", skip pagination
+                pagination_strategy = (
+                    conn_config.get("paginationStrategy")
+                    or conn_config.get("pagination_strategy")
+                    or conn.get("pagination_strategy")
+                    or ""
+                ).lower()
+                if pagination_strategy in ("none", ""):
+                    paginate = False
                 while True:
                     page_params = dict(params)
-                    page_params["limit"] = page_limit
-                    page_params["offset"] = offset
+                    if paginate:
+                        page_params["limit"] = page_limit
+                        page_params["offset"] = offset
                     if http_method == "POST":
                         r = await client.post(url, headers=headers, params=page_params, timeout=60)
                     else:
@@ -694,6 +705,9 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         all_rows = all_rows[:max_rows]
                         if audit_extras is not None:
                             audit_extras["truncated_at"] = max_rows
+                        break
+                    # No pagination — single request only
+                    if not paginate:
                         break
                     # Stop if the API signals no more pages
                     if has_more is False:
