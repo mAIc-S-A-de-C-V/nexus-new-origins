@@ -186,8 +186,17 @@ async def run_explore_query(
                 d["_created_at"] = r.created_at.isoformat() if r.created_at else None
                 rows.append(d)
 
-        # Infer columns from first non-empty row
-        columns = list(rows[0].keys()) if rows else []
+        # Infer columns as union of all row keys (preserves order from first row)
+        if rows:
+            seen: set[str] = set()
+            columns: list[str] = []
+            for row in rows:
+                for k in row.keys():
+                    if k not in seen:
+                        seen.add(k)
+                        columns.append(k)
+        else:
+            columns = []
 
     elapsed_ms = round((time.monotonic() - start) * 1000)
     return {

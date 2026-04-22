@@ -20,13 +20,27 @@ TICK_INTERVAL = 60
 async def fire_pipeline_schedule(pipeline_id: str, schedule_id: str, tenant_id: str) -> None:
     """Trigger a single pipeline run for a schedule (also used by run-now endpoint)."""
     from scheduler import _run_pipeline
+
+    # Check if pipeline is already running — don't update last_run_at if we can't actually run
+    async with AsyncSessionLocal() as db:
+        p_result = await db.execute(
+            select(PipelineRow).where(
+                PipelineRow.id == pipeline_id,
+                PipelineRow.tenant_id == tenant_id,
+            )
+        )
+        p_row = p_result.scalar_one_or_none()
+        if p_row and p_row.status == "RUNNING":
+            logger.info("Pipeline %s already running, skipping scheduled fire", pipeline_id)
+            return
+
+    # Pipeline is not running — update last_run_at and fire
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(PipelineScheduleRow).where(PipelineScheduleRow.id == schedule_id)
         )
         sched = result.scalar_one_or_none()
         if sched:
-            from datetime import datetime, timezone
             sched.last_run_at = datetime.now(timezone.utc)
             await db.commit()
     await _run_pipeline(pipeline_id, tenant_id)

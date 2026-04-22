@@ -196,7 +196,7 @@ const ResultsTable: React.FC<{
   onPageChange: (p: number) => void;
 }> = ({ columns, rows, total, queryMs, page, pageSize, onPageChange }) => {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const visibleCols = columns.slice(0, 12);
+  const visibleCols = columns;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
