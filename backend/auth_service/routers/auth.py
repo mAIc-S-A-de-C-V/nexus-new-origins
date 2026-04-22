@@ -86,6 +86,18 @@ async def login(request: Request, body: LoginRequest, response: Response, db: As
     )
     user = row.fetchone()
 
+    # Fallback: if no user found with derived tenant, search by email only.
+    # This handles users placed in a specific tenant by superadmin whose
+    # email domain doesn't match the tenant's domain mapping.
+    if not user:
+        row2 = await db.execute(
+            text("SELECT * FROM auth_users WHERE email = :email AND is_active = TRUE"),
+            {"email": email},
+        )
+        user = row2.fetchone()
+        if user:
+            tenant_id = user._mapping["tenant_id"]
+
     # Account lockout check
     if user:
         u_map = user._mapping
