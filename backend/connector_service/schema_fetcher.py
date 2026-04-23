@@ -315,7 +315,10 @@ async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None, la
             req_kwargs["content"] = body_raw.encode()
             req_kwargs.setdefault("headers", {})["Content-Type"] = "application/json"
 
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+    verify_ssl = cfg.get("verify_ssl", True)
+    if isinstance(verify_ssl, str):
+        verify_ssl = verify_ssl.lower() not in ("false", "0", "no")
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True, verify=bool(verify_ssl)) as client:
         fn = getattr(client, method)
         r = await fn(url, **req_kwargs)
         if r.status_code in (401, 403):
@@ -765,8 +768,11 @@ async def _rest_api_test(base_url: Optional[str], creds: dict, cfg: dict, db=Non
             req_kwargs["json"] = _json2.loads(body_raw)
         except Exception:
             req_kwargs["content"] = body_raw.encode()
+    verify_ssl = cfg.get("verify_ssl", True)
+    if isinstance(verify_ssl, str):
+        verify_ssl = verify_ssl.lower() not in ("false", "0", "no")
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True, verify=bool(verify_ssl)) as client:
             fn = getattr(client, endpoint_method)
             r = await fn(url, **req_kwargs)
         ok = r.is_success
