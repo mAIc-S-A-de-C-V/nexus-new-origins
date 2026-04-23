@@ -288,8 +288,8 @@ services:
 
   agent-service:
     build:
-      context: ./backend/agent_service
-      dockerfile: Dockerfile
+      context: ./backend
+      dockerfile: agent_service/Dockerfile
     ports:
       - "8013:8013"
     mem_limit: 512m
