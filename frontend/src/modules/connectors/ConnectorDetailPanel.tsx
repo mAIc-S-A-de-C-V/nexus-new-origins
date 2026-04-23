@@ -278,6 +278,143 @@ const SYNC_OPTIONS = [
   { value: '7d', label: 'Every 7 days (weekly)' },
 ];
 
+const EditConnectorCard: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
+  const { updateConnector } = useConnectorStore();
+  const [open, setOpen] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [saved, setSaved] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+
+  const cfg = (connector.config as Record<string, any>) || {};
+  const [name, setName] = React.useState(connector.name);
+  const [description, setDescription] = React.useState(connector.description || '');
+  const [baseUrl, setBaseUrl] = React.useState(connector.baseUrl || '');
+  const [token, setToken] = React.useState('');
+  const [owner, setOwner] = React.useState(cfg.owner || '');
+  const [repo, setRepo] = React.useState(cfg.repo || '');
+  const [org, setOrg] = React.useState(cfg.org || '');
+
+  const isGithub = connector.type === 'GITHUB';
+
+  const save = async () => {
+    setSaving(true); setErr(null); setSaved(false);
+    try {
+      const patch: any = {
+        name: name.trim(),
+        description: description.trim(),
+      };
+      if (baseUrl.trim()) patch.baseUrl = baseUrl.trim();
+      // Only send credentials if user actually typed a new token
+      if (token.trim()) patch.credentials = { ...(connector.credentials || {}), token: token.trim() };
+      // Merge config with scope fields for GitHub
+      if (isGithub) {
+        patch.config = { ...cfg };
+        if (owner.trim()) patch.config.owner = owner.trim(); else delete patch.config.owner;
+        if (repo.trim()) patch.config.repo = repo.trim(); else delete patch.config.repo;
+        if (org.trim()) patch.config.org = org.trim(); else delete patch.config.org;
+      }
+      await updateConnector(connector.id, patch);
+      setSaved(true);
+      setToken('');
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const input: React.CSSProperties = {
+    width: '100%', height: 32, padding: '0 10px',
+    border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none',
+  };
+  const label: React.CSSProperties = { fontSize: 11, color: '#64748B', marginBottom: 4, display: 'block' };
+
+  return (
+    <div style={{ border: '1px solid #E2E8F0', borderRadius: 6, backgroundColor: '#FFF' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          width: '100%', textAlign: 'left', padding: '10px 14px', cursor: 'pointer',
+          border: 'none', background: 'transparent', display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between', fontSize: 13, fontWeight: 500, color: '#0D1117',
+        }}
+      >
+        Edit connector
+        <span style={{ fontSize: 11, color: '#64748B' }}>{open ? '▼' : '▶'}</span>
+      </button>
+      {open && (
+        <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={label}>Name</label>
+              <input style={input} value={name} onChange={e => setName(e.target.value)} />
+            </div>
+            <div>
+              <label style={label}>Description</label>
+              <input style={input} value={description} onChange={e => setDescription(e.target.value)} />
+            </div>
+          </div>
+
+          {isGithub && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={label}>owner</label>
+                <input style={input} value={owner} onChange={e => setOwner(e.target.value)} placeholder="user or org" />
+              </div>
+              <div>
+                <label style={label}>repo</label>
+                <input style={input} value={repo} onChange={e => setRepo(e.target.value)} placeholder="repo name" />
+              </div>
+              <div>
+                <label style={label}>org</label>
+                <input style={input} value={org} onChange={e => setOrg(e.target.value)} placeholder="for /orgs/{org}/..." />
+              </div>
+            </div>
+          )}
+
+          {!isGithub && connector.baseUrl !== undefined && (
+            <div>
+              <label style={label}>Base URL</label>
+              <input style={input} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+            </div>
+          )}
+
+          <div>
+            <label style={label}>
+              {isGithub ? 'Personal Access Token' : 'Token / API key'}
+              <span style={{ marginLeft: 6, color: '#94A3B8' }}>(leave blank to keep current)</span>
+            </label>
+            <input
+              type="password"
+              style={input}
+              value={token}
+              onChange={e => setToken(e.target.value)}
+              placeholder={isGithub ? 'github_pat_... (paste a fresh one to rotate)' : 'Paste to rotate token'}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+            <button
+              onClick={save}
+              disabled={saving}
+              style={{
+                height: 32, padding: '0 14px', borderRadius: 4, border: 'none',
+                backgroundColor: saved ? '#16A34A' : '#2563EB', color: '#fff',
+                fontSize: 12, fontWeight: 500, cursor: saving ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {saving ? 'Saving…' : saved ? 'Saved ✓' : 'Save changes'}
+            </button>
+            {err && <span style={{ fontSize: 11, color: '#DC2626' }}>{err}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
 const OverviewTab: React.FC<{ connector: ConnectorConfig; formatDate: (ts?: string) => string }> = ({
   connector, formatDate,
 }) => {
@@ -352,6 +489,8 @@ const OverviewTab: React.FC<{ connector: ConnectorConfig; formatDate: (ts?: stri
         </tbody>
       </table>
     </div>
+
+    <EditConnectorCard connector={connector} />
 
     {/* Sync Schedule */}
     <div>
