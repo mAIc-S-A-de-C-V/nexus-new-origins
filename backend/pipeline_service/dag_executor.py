@@ -1734,7 +1734,8 @@ Responde SOLO con el JSON. Sin texto adicional."""
         logger.error("[LLM_CLASSIFY] ANTHROPIC_API_KEY not set — skipping classification")
         return records_in
 
-    client = anthropic.Anthropic(api_key=api_key)
+    llm_timeout_s = float(os.environ.get("LLM_CLASSIFY_TIMEOUT_S", "120"))
+    client = anthropic.AsyncAnthropic(api_key=api_key, timeout=llm_timeout_s)
     enriched: list[dict] = []
 
     # Pre-filter: DROP records with no text entirely (reactions, read receipts,
@@ -1774,12 +1775,15 @@ Responde SOLO con el JSON. Sin texto adicional."""
         )
 
         try:
-            resp = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                temperature=0.1,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_msg}],
+            resp = await asyncio.wait_for(
+                client.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    temperature=0.1,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_msg}],
+                ),
+                timeout=llm_timeout_s + 5,
             )
             track_token_usage(pipeline.tenant_id or "unknown", "pipeline_service", model,
                               resp.usage.input_tokens, resp.usage.output_tokens)
