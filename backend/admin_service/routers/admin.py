@@ -183,7 +183,7 @@ async def token_usage_summary(
 
     # By tenant
     tenant_filter = "AND tenant_id = $2" if tenant_id else ""
-    params_by_tenant: list = [days]
+    params_by_tenant: list = [str(days)]
     if tenant_id:
         params_by_tenant.append(tenant_id)
 
