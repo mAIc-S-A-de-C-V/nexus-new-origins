@@ -122,10 +122,42 @@ async def _run_pipeline(pipeline_id: str, tenant_id: str) -> None:
     logger.info("Scheduled run started: pipeline=%s run=%s", pipeline_id, run_id)
 
 
+async def _reset_orphaned_on_boot() -> None:
+    """At service startup, any RUNNING run is orphaned (its task didn't survive the restart)."""
+    async with AsyncSessionLocal() as db:
+        run_result = await db.execute(
+            select(PipelineRunRow).where(PipelineRunRow.status == "RUNNING")
+        )
+        orphaned = run_result.scalars().all()
+        if not orphaned:
+            return
+
+        pipeline_ids = set()
+        for run in orphaned:
+            run.status = "FAILED"
+            run.finished_at = datetime.now(timezone.utc)
+            run.error_message = "Process restarted — run orphaned"
+            pipeline_ids.add(run.pipeline_id)
+
+        p_result = await db.execute(select(PipelineRow).where(PipelineRow.id.in_(pipeline_ids)))
+        for p_row in p_result.scalars().all():
+            if p_row.status == "RUNNING":
+                p_row.status = "IDLE"
+                p_row.data = {**p_row.data, "status": "IDLE"}
+
+        await db.commit()
+        logger.warning("Boot cleanup: reset %d orphaned run(s) across %d pipeline(s)",
+                       len(orphaned), len(pipeline_ids))
+
+
 async def scheduler_loop() -> None:
     """Main scheduler loop. Runs forever, waking up every TICK_INTERVAL seconds."""
     # Give the DB/other services a moment to initialise on cold start
     await asyncio.sleep(10)
+    try:
+        await _reset_orphaned_on_boot()
+    except Exception:
+        logger.exception("Boot cleanup failed")
     logger.info("Pipeline scheduler started (tick=%ds)", TICK_INTERVAL)
 
     while True:
