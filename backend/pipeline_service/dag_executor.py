@@ -1075,6 +1075,35 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
         or (_guess_pk(records_in[0]) if records_in else "id")
     )
 
+    # ── Skip diff-based events if a SINK_EVENT node already handles process events ──
+    has_sink_event_node = pipeline.nodes and any(
+        (getattr(_n, "type", None) or (_n.get("type") if isinstance(_n, dict) else None)) == "SINK_EVENT"
+        for _n in pipeline.nodes
+    )
+    if has_sink_event_node:
+        # SINK_EVENT emits stage-transition events — no per-field diffs needed here,
+        # so skip the existing-records pre-fetch entirely.
+        ingest_concurrency = max(1, int(os.environ.get("SINK_OBJECT_CONCURRENCY", "4")))
+        batch_sz = 500
+        batches = [records_in[i:i + batch_sz] for i in range(0, len(records_in), batch_sz)]
+        sem = asyncio.Semaphore(ingest_concurrency)
+
+        async def _ingest(batch: list[dict]) -> None:
+            async with sem:
+                try:
+                    async with httpx.AsyncClient(timeout=120) as client:
+                        await client.post(
+                            f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
+                            json={"records": batch, "pk_field": pk_field, "pipeline_id": pipeline.id},
+                            headers={"x-tenant-id": pipeline.tenant_id},
+                        )
+                except Exception:
+                    pass
+
+        if batches:
+            await asyncio.gather(*(_ingest(b) for b in batches))
+        return records_in
+
     # ── Fetch existing records to diff (Celonis-style record-level events) ──
     # Only fetch existing records if we have a small enough batch to diff safely.
     # For large ingestions (>2000 records), skip diffing to avoid OOM.
@@ -1095,28 +1124,6 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                             existing_by_pk[key] = rec
         except Exception:
             pass
-
-    # ── Skip diff-based events if a SINK_EVENT node already handles process events ──
-    has_sink_event_node = pipeline.nodes and any(
-        (getattr(_n, "type", None) or (_n.get("type") if isinstance(_n, dict) else None)) == "SINK_EVENT"
-        for _n in pipeline.nodes
-    )
-    if has_sink_event_node:
-        # SINK_EVENT node will emit proper stage-transition events — don't double-emit from SINK_OBJECT
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                # Batch ingest in chunks of 500 to avoid overwhelming the ontology service
-                batch_sz = 500
-                for i in range(0, len(records_in), batch_sz):
-                    batch = records_in[i:i + batch_sz]
-                    resp = await client.post(
-                        f"{ONTOLOGY_API}/object-types/{ot_id}/records/ingest",
-                        json={"records": batch, "pk_field": pk_field, "pipeline_id": pipeline.id},
-                        headers={"x-tenant-id": pipeline.tenant_id},
-                    )
-        except Exception:
-            pass
-        return records_in
 
     # ── Build per-record events with field-level diffs ──
     connector_id = pipeline.connector_ids[0] if pipeline.connector_ids else ""
@@ -1735,8 +1742,8 @@ Responde SOLO con el JSON. Sin texto adicional."""
         return records_in
 
     llm_timeout_s = float(os.environ.get("LLM_CLASSIFY_TIMEOUT_S", "120"))
+    concurrency = max(1, int(os.environ.get("LLM_CLASSIFY_CONCURRENCY", "8")))
     client = anthropic.AsyncAnthropic(api_key=api_key, timeout=llm_timeout_s)
-    enriched: list[dict] = []
 
     # Pre-filter: DROP records with no text entirely (reactions, read receipts,
     # decryption failures with message_type "other", etc.).  These are noise —
@@ -1753,14 +1760,17 @@ Responde SOLO con el JSON. Sin texto adicional."""
             classifiable.append(record)
         else:
             dropped += 1
-    logger.info(f"[LLM_CLASSIFY] {len(classifiable)} classifiable of {len(records_in)} total ({dropped} dropped — no text or message_type=other)")
+    logger.info(
+        f"[LLM_CLASSIFY] {len(classifiable)} classifiable of {len(records_in)} total "
+        f"({dropped} dropped — no text or message_type=other). "
+        f"batch_size={batch_size} concurrency={concurrency}"
+    )
     records_in = classifiable
 
-    # Process in batches
-    for i in range(0, len(records_in), batch_size):
-        batch = records_in[i:i + batch_size]
+    batches: list[list[dict]] = [records_in[i:i + batch_size] for i in range(0, len(records_in), batch_size)]
+    semaphore = asyncio.Semaphore(concurrency)
 
-        # Build the user message with numbered messages
+    async def _run_batch(batch_idx: int, batch: list[dict]) -> list[dict]:
         parts = []
         for idx, record in enumerate(batch):
             text = str(record.get(text_field, ""))
@@ -1775,21 +1785,23 @@ Responde SOLO con el JSON. Sin texto adicional."""
         )
 
         try:
-            resp = await asyncio.wait_for(
-                client.messages.create(
-                    model=model,
-                    max_tokens=4096,
-                    temperature=0.1,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_msg}],
-                ),
-                timeout=llm_timeout_s + 5,
+            async with semaphore:
+                resp = await asyncio.wait_for(
+                    client.messages.create(
+                        model=model,
+                        max_tokens=4096,
+                        temperature=0.1,
+                        system=system_prompt,
+                        messages=[{"role": "user", "content": user_msg}],
+                    ),
+                    timeout=llm_timeout_s + 5,
+                )
+            track_token_usage(
+                pipeline.tenant_id or "unknown", "pipeline_service", model,
+                resp.usage.input_tokens, resp.usage.output_tokens,
             )
-            track_token_usage(pipeline.tenant_id or "unknown", "pipeline_service", model,
-                              resp.usage.input_tokens, resp.usage.output_tokens)
 
             raw_text = resp.content[0].text.strip()
-            # Extract JSON array from response (handle markdown code blocks)
             json_text = raw_text
             if "```" in json_text:
                 match = re.search(r"```(?:json)?\s*([\s\S]*?)```", json_text)
@@ -1800,11 +1812,11 @@ Responde SOLO con el JSON. Sin texto adicional."""
             if isinstance(parsed, dict) and not isinstance(parsed, list):
                 parsed = [parsed]
 
+            out: list[dict] = []
             for idx, record in enumerate(batch):
                 enriched_record = dict(record)
                 if idx < len(parsed):
                     classification = parsed[idx]
-                    # Merge classification fields onto the record with llm_ prefix
                     enriched_record["llm_categoria"] = classification.get("categoria")
                     enriched_record["llm_tipo_incidente"] = classification.get("tipo_incidente")
                     enriched_record["llm_accion_policial"] = classification.get("accion_policial")
@@ -1815,31 +1827,34 @@ Responde SOLO con el JSON. Sin texto adicional."""
                     enriched_record["llm_fecha_hora"] = classification.get("fecha_hora")
                     enriched_record["llm_hecho"] = classification.get("hecho")
 
-                    # Flatten involucrados
                     inv = classification.get("involucrados") or {}
                     responsables = inv.get("responsables") or []
                     victimas = inv.get("victimas") or []
                     enriched_record["llm_responsables"] = _json.dumps(responsables, ensure_ascii=False) if responsables else None
                     enriched_record["llm_victimas"] = _json.dumps(victimas, ensure_ascii=False) if victimas else None
 
-                    # Flatten incautaciones
                     inc = classification.get("incautaciones") or {}
                     for k, v in inc.items():
                         if v is not None:
                             enriched_record[f"llm_incautacion_{k}"] = v
+                out.append(enriched_record)
 
-                enriched.append(enriched_record)
-
-            logger.info(f"[LLM_CLASSIFY] Batch {i // batch_size + 1}: classified {len(batch)} records")
+            logger.info(f"[LLM_CLASSIFY] Batch {batch_idx + 1}/{len(batches)}: classified {len(batch)} records")
+            return out
 
         except Exception as e:
-            logger.error(f"[LLM_CLASSIFY] Batch {i // batch_size + 1} failed: {e}")
-            # Pass through unclassified records
+            logger.error(f"[LLM_CLASSIFY] Batch {batch_idx + 1}/{len(batches)} failed: {e}")
+            out = []
             for record in batch:
                 r = dict(record)
                 r["llm_categoria"] = "ERROR"
                 r["llm_error"] = str(e)[:200]
-                enriched.append(r)
+                out.append(r)
+            return out
+
+    # asyncio.gather preserves input order → output order matches input order
+    batch_results = await asyncio.gather(*[_run_batch(i, b) for i, b in enumerate(batches)])
+    enriched: list[dict] = [r for batch in batch_results for r in batch]
 
     # Create Human Actions for CRITICO/URGENTE items
     if create_actions:
