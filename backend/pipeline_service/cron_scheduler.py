@@ -56,12 +56,21 @@ async def _cron_tick() -> None:
 
     for sched in schedules:
         try:
-            cron = croniter(sched.cron_expression, start_time=sched.last_run_at or now)
-            next_run = cron.get_next(datetime)
-            if next_run.tzinfo is None:
-                next_run = next_run.replace(tzinfo=timezone.utc)
-            if next_run <= now:
-                logger.info("Firing cron schedule %s for pipeline %s", sched.id, sched.pipeline_id)
+            should_fire = False
+            if sched.last_run_at is None:
+                # Never run before — fire on first tick so the schedule gets bootstrapped.
+                should_fire = True
+                logger.info("Firing cron schedule %s for pipeline %s (first run)", sched.id, sched.pipeline_id)
+            else:
+                cron = croniter(sched.cron_expression, start_time=sched.last_run_at)
+                next_run = cron.get_next(datetime)
+                if next_run.tzinfo is None:
+                    next_run = next_run.replace(tzinfo=timezone.utc)
+                if next_run <= now:
+                    should_fire = True
+                    logger.info("Firing cron schedule %s for pipeline %s", sched.id, sched.pipeline_id)
+
+            if should_fire:
                 asyncio.create_task(fire_pipeline_schedule(sched.pipeline_id, sched.id, sched.tenant_id))
         except Exception:
             logger.exception("Error evaluating schedule %s", sched.id)
