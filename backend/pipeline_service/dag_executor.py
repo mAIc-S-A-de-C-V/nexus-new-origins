@@ -461,10 +461,13 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            # Fetch connector details (base_url + credentials)
+            # Fetch connector details (base_url + decrypted credentials) via internal endpoint
             conn_r = await client.get(
-                f"{CONNECTOR_API}/connectors/{connector_id}",
-                headers={"x-tenant-id": pipeline.tenant_id},
+                f"{CONNECTOR_API}/connectors/{connector_id}/internal",
+                headers={
+                    "x-tenant-id": pipeline.tenant_id,
+                    "x-internal": os.environ.get("INTERNAL_SECRET", "nexus-internal"),
+                },
             )
             if not conn_r.is_success:
                 if audit_extras is not None:

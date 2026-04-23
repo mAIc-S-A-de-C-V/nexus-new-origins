@@ -136,6 +136,34 @@ async def create_connector(
     return ConnectorPublicView.from_config(_row_to_model(row))
 
 
+INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "nexus-internal")
+
+
+@router.get("/{connector_id}/internal")
+async def get_connector_internal(
+    connector_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    x_internal: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Service-to-service: returns the full connector including decrypted credentials.
+    Guarded by x-internal header. Only for pipeline-service / agent-service / etc."""
+    if x_internal != INTERNAL_SECRET:
+        raise HTTPException(status_code=403, detail="Internal endpoint — missing x-internal header")
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    model = _row_to_model(row)
+    return model.model_dump()
+
+
 @router.get("/{connector_id}", response_model=ConnectorPublicView)
 async def get_connector(
     connector_id: str,
