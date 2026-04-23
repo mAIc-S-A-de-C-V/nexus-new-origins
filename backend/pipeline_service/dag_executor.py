@@ -1812,20 +1812,29 @@ Responde SOLO con el JSON. Sin texto adicional."""
             if isinstance(parsed, dict) and not isinstance(parsed, list):
                 parsed = [parsed]
 
+            def _scalar(v):
+                if v is None:
+                    return None
+                if isinstance(v, list):
+                    return ", ".join(str(x) for x in v) if v else None
+                if isinstance(v, dict):
+                    return _json.dumps(v, ensure_ascii=False)
+                return v
+
             out: list[dict] = []
             for idx, record in enumerate(batch):
                 enriched_record = dict(record)
                 if idx < len(parsed):
                     classification = parsed[idx]
-                    enriched_record["llm_categoria"] = classification.get("categoria")
-                    enriched_record["llm_tipo_incidente"] = classification.get("tipo_incidente")
-                    enriched_record["llm_accion_policial"] = classification.get("accion_policial")
-                    enriched_record["llm_prioridad"] = classification.get("prioridad")
-                    enriched_record["llm_departamento"] = classification.get("departamento")
-                    enriched_record["llm_municipio"] = classification.get("municipio")
-                    enriched_record["llm_lugar"] = classification.get("lugar")
-                    enriched_record["llm_fecha_hora"] = classification.get("fecha_hora")
-                    enriched_record["llm_hecho"] = classification.get("hecho")
+                    enriched_record["llm_categoria"] = _scalar(classification.get("categoria"))
+                    enriched_record["llm_tipo_incidente"] = _scalar(classification.get("tipo_incidente"))
+                    enriched_record["llm_accion_policial"] = _scalar(classification.get("accion_policial"))
+                    enriched_record["llm_prioridad"] = _scalar(classification.get("prioridad"))
+                    enriched_record["llm_departamento"] = _scalar(classification.get("departamento"))
+                    enriched_record["llm_municipio"] = _scalar(classification.get("municipio"))
+                    enriched_record["llm_lugar"] = _scalar(classification.get("lugar"))
+                    enriched_record["llm_fecha_hora"] = _scalar(classification.get("fecha_hora"))
+                    enriched_record["llm_hecho"] = _scalar(classification.get("hecho"))
 
                     inv = classification.get("involucrados") or {}
                     responsables = inv.get("responsables") or []
@@ -1858,10 +1867,19 @@ Responde SOLO con el JSON. Sin texto adicional."""
 
     # Create Human Actions for CRITICO/URGENTE items
     if create_actions:
+        def _as_str(v) -> str:
+            if v is None:
+                return ""
+            if isinstance(v, (list, tuple)):
+                return ", ".join(str(x) for x in v)
+            if isinstance(v, dict):
+                return _json.dumps(v, ensure_ascii=False)
+            return str(v)
+
         def _is_urgent(r: dict) -> bool:
-            p = (r.get("llm_prioridad") or "").upper()
-            u = (r.get("llm_urgencia") or "").upper()
-            c = (r.get("llm_categoria") or "").lower()
+            p = _as_str(r.get("llm_prioridad")).upper()
+            u = _as_str(r.get("llm_urgencia")).upper()
+            c = _as_str(r.get("llm_categoria")).lower()
             return (
                 p in ("CRITICO", "URGENTE")
                 or u in ("CRITICA", "ALTA")
