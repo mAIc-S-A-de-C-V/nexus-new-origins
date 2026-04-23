@@ -2,13 +2,17 @@ import hashlib
 import secrets
 from typing import Optional
 from uuid import uuid4
-from datetime import datetime, timezone
+
 import asyncpg
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
+
 from database import get_pool
 
 router = APIRouter()
+
+
+VALID_SCOPES = {"read:records", "read:events", "read:all"}
 
 
 def _hash_key(raw: str) -> str:
@@ -23,14 +27,35 @@ def _row_to_dict(row: asyncpg.Record) -> dict:
         "key_prefix": row["key_prefix"],
         "scopes": list(row["scopes"]),
         "enabled": row["enabled"],
+        "rate_limit_per_min": row["rate_limit_per_min"],
+        "ip_allowlist": list(row["ip_allowlist"] or []),
         "last_used_at": row["last_used_at"].isoformat() if row["last_used_at"] else None,
         "created_at": row["created_at"].isoformat(),
     }
 
 
+def _validate_scopes(scopes: list[str]) -> list[str]:
+    if not scopes:
+        return ["read:records"]
+    normalized = ["read:records" if s == "read" else s for s in scopes]
+    bad = [s for s in normalized if s not in VALID_SCOPES]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Invalid scope(s): {bad}. Allowed: {sorted(VALID_SCOPES)}")
+    return normalized
+
+
 class KeyCreate(BaseModel):
     name: str
-    scopes: list[str] = ["read"]
+    scopes: list[str] = ["read:records"]
+    rate_limit_per_min: int = 60
+    ip_allowlist: list[str] = []
+
+
+class KeyUpdate(BaseModel):
+    name: str | None = None
+    scopes: list[str] | None = None
+    rate_limit_per_min: int | None = None
+    ip_allowlist: list[str] | None = None
 
 
 @router.get("")
@@ -47,6 +72,7 @@ async def list_keys(x_tenant_id: Optional[str] = Header(None)):
 @router.post("", status_code=201)
 async def create_key(body: KeyCreate, x_tenant_id: Optional[str] = Header(None)):
     tenant_id = x_tenant_id or "tenant-001"
+    scopes = _validate_scopes(body.scopes)
     pool = await get_pool()
     raw = f"nxk_{secrets.token_urlsafe(32)}"
     key_hash = _hash_key(raw)
@@ -54,13 +80,52 @@ async def create_key(body: KeyCreate, x_tenant_id: Optional[str] = Header(None))
     key_id = str(uuid4())
     await pool.execute(
         """
-        INSERT INTO api_keys (id, tenant_id, name, key_hash, key_prefix, scopes, enabled, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, TRUE, NOW())
+        INSERT INTO api_keys (id, tenant_id, name, key_hash, key_prefix, scopes, enabled, rate_limit_per_min, ip_allowlist, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, NOW())
         """,
-        key_id, tenant_id, body.name, key_hash, key_prefix, body.scopes,
+        key_id, tenant_id, body.name, key_hash, key_prefix, scopes, body.rate_limit_per_min, body.ip_allowlist,
     )
-    # Return the raw key ONCE — never stored again
-    return {"id": key_id, "key": raw, "key_prefix": key_prefix, "name": body.name, "scopes": body.scopes}
+    return {
+        "id": key_id,
+        "key": raw,
+        "key_prefix": key_prefix,
+        "name": body.name,
+        "scopes": scopes,
+        "rate_limit_per_min": body.rate_limit_per_min,
+        "ip_allowlist": body.ip_allowlist,
+    }
+
+
+@router.patch("/{key_id}")
+async def update_key(key_id: str, body: KeyUpdate, x_tenant_id: Optional[str] = Header(None)):
+    tenant_id = x_tenant_id or "tenant-001"
+    pool = await get_pool()
+    row = await pool.fetchrow("SELECT * FROM api_keys WHERE id = $1 AND tenant_id = $2", key_id, tenant_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Key not found")
+
+    sets: list[str] = []
+    params: list = []
+    idx = 1
+    if body.name is not None:
+        sets.append(f"name = ${idx}"); params.append(body.name); idx += 1
+    if body.scopes is not None:
+        sets.append(f"scopes = ${idx}"); params.append(_validate_scopes(body.scopes)); idx += 1
+    if body.rate_limit_per_min is not None:
+        sets.append(f"rate_limit_per_min = ${idx}"); params.append(body.rate_limit_per_min); idx += 1
+    if body.ip_allowlist is not None:
+        sets.append(f"ip_allowlist = ${idx}"); params.append(body.ip_allowlist); idx += 1
+
+    if not sets:
+        return _row_to_dict(row)
+
+    params.extend([key_id, tenant_id])
+    await pool.execute(
+        f"UPDATE api_keys SET {', '.join(sets)} WHERE id = ${idx} AND tenant_id = ${idx + 1}",
+        *params,
+    )
+    updated = await pool.fetchrow("SELECT * FROM api_keys WHERE id = $1", key_id)
+    return _row_to_dict(updated)
 
 
 @router.delete("/{key_id}", status_code=204)
