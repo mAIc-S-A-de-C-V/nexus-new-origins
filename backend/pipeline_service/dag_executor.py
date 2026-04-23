@@ -94,6 +94,67 @@ def _resolve_path_templates(path: str, last_sync=None) -> str:
     return path
 
 
+def _flatten_github_record(record: dict) -> dict:
+    """Promote common nested GitHub fields to top-level scalars so Sink nodes
+    don't store {login, avatar_url, ...} dicts that render as [object Object]."""
+    if not isinstance(record, dict):
+        return record
+    out = dict(record)
+
+    def _login(obj):
+        return obj.get("login") if isinstance(obj, dict) else obj
+
+    # User-like fields → replace dict with login string; keep id/avatar as _id/_avatar
+    for field in ("user", "author", "committer", "assignee", "merged_by", "requested_reviewers"):
+        v = out.get(field)
+        if isinstance(v, dict):
+            out[f"{field}_id"] = v.get("id")
+            out[f"{field}_avatar_url"] = v.get("avatar_url")
+            out[field] = _login(v)
+        elif isinstance(v, list):
+            out[field] = ", ".join(str(_login(x) or "") for x in v if x) or None
+
+    # Labels: list of {name, color} → comma-joined names
+    if isinstance(out.get("labels"), list):
+        out["labels"] = ", ".join(l.get("name", "") for l in out["labels"] if isinstance(l, dict))
+
+    # PR head/base: refs + sha
+    for side in ("head", "base"):
+        v = out.get(side)
+        if isinstance(v, dict):
+            out[f"{side}_ref"] = v.get("ref")
+            out[f"{side}_sha"] = v.get("sha")
+            out[f"{side}_repo"] = (v.get("repo") or {}).get("full_name") if isinstance(v.get("repo"), dict) else None
+            out.pop(side, None)
+
+    # /repos/.../commits returns a nested commit {message, author:{name,email,date}, ...}
+    commit = out.get("commit")
+    if isinstance(commit, dict):
+        out["commit_message"] = commit.get("message")
+        ca = commit.get("author") or {}
+        cc = commit.get("committer") or {}
+        if isinstance(ca, dict):
+            out["commit_author_name"] = ca.get("name")
+            out["commit_author_email"] = ca.get("email")
+            out["commit_author_date"] = ca.get("date")
+        if isinstance(cc, dict):
+            out["commit_committer_name"] = cc.get("name")
+            out["commit_committer_date"] = cc.get("date")
+        out.pop("commit", None)
+
+    # milestone: {title, state, ...} → milestone_title
+    m = out.get("milestone")
+    if isinstance(m, dict):
+        out["milestone_title"] = m.get("title")
+        out["milestone"] = m.get("title")
+
+    # Drop deep URL maps that clutter the output
+    for junk in ("_links", "pull_request"):
+        out.pop(junk, None)
+
+    return out
+
+
 async def _touch_connector_last_sync(connector_id: str, tenant_id: str):
     """Fire-and-forget: mark the connector's last_sync = now after a successful pipeline run."""
     try:
@@ -801,6 +862,8 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 if all_rows:
                     if audit_extras is not None:
                         audit_extras["raw_row_count"] = len(all_rows)
+                    if conn_type == "GITHUB":
+                        all_rows = [_flatten_github_record(r) for r in all_rows]
                     asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
                     return all_rows
                 return []
