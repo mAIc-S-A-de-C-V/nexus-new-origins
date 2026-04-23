@@ -807,11 +807,38 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     if isinstance(data, list):
                         page_rows = data
                     elif isinstance(data, dict):
-                        # Check well-known wrapper keys first
-                        for key in ("data", "results", "items", "records", "value", "rows"):
-                            if isinstance(data.get(key), list):
-                                page_rows = data[key]
-                                break
+                        # dict_unwrap_path: takes a dict-of-arrays at the given path and
+                        # flattens it into a single array, injecting each key as a field.
+                        # e.g. {sensors: {A: [{t,v}], B: [{t,v}]}} with
+                        #      dict_unwrap_path=sensors, group_key_field=sensor_name →
+                        #      [{sensor_name: A, t, v}, {sensor_name: B, t, v}]
+                        dict_path = cfg.get("dict_unwrap_path") or cfg.get("dictUnwrapPath")
+                        if dict_path:
+                            group_key_field = cfg.get("group_key_field") or cfg.get("groupKeyField", "group_key")
+                            obj = data
+                            for part in str(dict_path).split("."):
+                                if isinstance(obj, dict):
+                                    obj = obj.get(part)
+                                else:
+                                    obj = None
+                                    break
+                            if isinstance(obj, dict):
+                                flat: list[dict] = []
+                                for k, v in obj.items():
+                                    if isinstance(v, list):
+                                        for row in v:
+                                            if isinstance(row, dict):
+                                                flat.append({group_key_field: k, **row})
+                                    elif isinstance(v, dict):
+                                        flat.append({group_key_field: k, **v})
+                                page_rows = flat
+
+                        # Check well-known wrapper keys next
+                        if page_rows is None:
+                            for key in ("data", "results", "items", "records", "value", "rows"):
+                                if isinstance(data.get(key), list):
+                                    page_rows = data[key]
+                                    break
                         # If none matched, check node config for a custom records_path
                         if page_rows is None and cfg.get("records_path"):
                             rp = cfg["records_path"]
