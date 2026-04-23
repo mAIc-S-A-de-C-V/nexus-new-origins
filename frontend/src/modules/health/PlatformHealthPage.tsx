@@ -49,7 +49,8 @@ interface ServiceState {
 async function checkService(svc: ServiceDef): Promise<ServiceState> {
   const start = performance.now();
   try {
-    const res = await fetch(`http://localhost:${svc.port}/health`, {
+    const host = window.location.hostname || 'localhost';
+    const res = await fetch(`${window.location.protocol}//${host}:${svc.port}/health`, {
       signal: AbortSignal.timeout(4000),
     });
     const latency = Math.round(performance.now() - start);
