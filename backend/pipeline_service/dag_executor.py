@@ -63,6 +63,37 @@ def _resolve_date_templates(params: dict, last_sync=None) -> dict:
     return result
 
 
+def _resolve_path_templates(path: str, last_sync=None) -> str:
+    """Resolve {{$lastRun}}, {{$lastRun:FORMAT}}, {{$today:FORMAT}}, {{$daysAgo:N:FORMAT}}
+    placeholders anywhere in a URL path or query string. Plain {{$lastRun}} defaults to
+    ISO 8601 (e.g. 2026-04-23T00:00:00Z), which is what GitHub/Jira/etc expect."""
+    from datetime import timedelta
+    if not path or "{{" not in path:
+        return path
+    now = datetime.now(timezone.utc)
+    default_fmt = "YYYY-MM-DDTHH:mm:ssZ"
+
+    def fmt(dt, f):
+        return (f.replace('YYYY', dt.strftime('%Y')).replace('MM', dt.strftime('%m'))
+                 .replace('DD', dt.strftime('%d')).replace('HH', dt.strftime('%H'))
+                 .replace('mm', dt.strftime('%M')).replace('ss', dt.strftime('%S'))
+                 .replace('Z', 'Z'))
+
+    def sub_today(m):
+        return fmt(now, m.group(1))
+    def sub_days_ago(m):
+        return fmt(now - timedelta(days=int(m.group(1))), m.group(2))
+    def sub_last_run(m):
+        dt = last_sync if last_sync else (now - timedelta(days=7))
+        f = m.group(1) or default_fmt
+        return fmt(dt, f)
+
+    path = re.sub(r'\{\{\$today:([^}]+)\}\}', sub_today, path)
+    path = re.sub(r'\{\{\$daysAgo:(\d+):([^}]+)\}\}', sub_days_ago, path)
+    path = re.sub(r'\{\{\$lastRun(?::([^}]+))?\}\}', sub_last_run, path)
+    return path
+
+
 async def _touch_connector_last_sync(connector_id: str, tenant_id: str):
     """Fire-and-forget: mark the connector's last_sync = now after a successful pipeline run."""
     try:
@@ -619,6 +650,11 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     ph_val = conn_config.get(ph_key) or credentials.get(ph_key)
                     if ph_val:
                         resolved_endpoint = resolved_endpoint.replace("{" + ph_key + "}", str(ph_val))
+
+                # Resolve date templates in the endpoint path itself
+                # (supports {{$lastRun}}, {{$lastRun:FORMAT}}, {{$today:FORMAT}}, {{$daysAgo:N:FORMAT}})
+                resolved_endpoint = _resolve_path_templates(resolved_endpoint, last_sync=last_sync_dt)
+
                 # Build the URL and auth headers from the connector's credentials
                 url = f"{base_url}{resolved_endpoint}"
                 headers: dict[str, str] = {"Accept": "application/json"}
