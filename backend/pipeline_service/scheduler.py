@@ -13,6 +13,7 @@ checks every 60 s whether any pipeline is overdue for a run.
 """
 import asyncio
 import logging
+import os
 import re
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
@@ -26,6 +27,10 @@ logger = logging.getLogger("scheduler")
 
 # How often the scheduler wakes up to check pipelines (seconds)
 TICK_INTERVAL = 60
+
+# Any pipeline in RUNNING state longer than this is considered hung and auto-reset.
+# Can be overridden per-deployment via env.
+STUCK_RUN_TIMEOUT_S = int(os.environ.get("PIPELINE_STUCK_TIMEOUT_S", "1800"))
 
 
 def _parse_frequency(freq: str) -> int | None:
@@ -131,9 +136,52 @@ async def scheduler_loop() -> None:
         await asyncio.sleep(TICK_INTERVAL)
 
 
+async def _reset_stuck_runs() -> int:
+    """Detect pipelines stuck in RUNNING beyond STUCK_RUN_TIMEOUT_S and auto-fail them."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=STUCK_RUN_TIMEOUT_S)
+    reset_count = 0
+    async with AsyncSessionLocal() as db:
+        run_result = await db.execute(
+            select(PipelineRunRow).where(
+                PipelineRunRow.status == "RUNNING",
+                PipelineRunRow.started_at < cutoff,
+            )
+        )
+        stuck_runs = run_result.scalars().all()
+        stuck_pipeline_ids = set()
+        for run in stuck_runs:
+            run.status = "FAILED"
+            run.finished_at = datetime.now(timezone.utc)
+            run.error_message = f"Watchdog: run exceeded {STUCK_RUN_TIMEOUT_S}s, auto-reset"
+            stuck_pipeline_ids.add(run.pipeline_id)
+            reset_count += 1
+
+        if stuck_pipeline_ids:
+            p_result = await db.execute(
+                select(PipelineRow).where(PipelineRow.id.in_(stuck_pipeline_ids))
+            )
+            for p_row in p_result.scalars().all():
+                if p_row.status == "RUNNING":
+                    p_row.status = "IDLE"
+                    p_row.data = {**p_row.data, "status": "IDLE"}
+                    logger.warning("Watchdog reset stuck pipeline %s", p_row.id)
+
+        if reset_count:
+            await db.commit()
+    return reset_count
+
+
 async def _tick() -> None:
     """Check every non-DRAFT pipeline and trigger any that are overdue."""
     now = datetime.now(timezone.utc)
+
+    # Watchdog first so stuck pipelines don't block their own next tick
+    try:
+        reset = await _reset_stuck_runs()
+        if reset:
+            logger.info("Watchdog auto-reset %d stuck run(s)", reset)
+    except Exception:
+        logger.exception("Watchdog error")
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(PipelineRow))
