@@ -108,6 +108,8 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
             return await _salesforce(base_url, creds)
         if connector_type == "FIREFLIES":
             return await _fireflies(creds)
+        if connector_type == "GITHUB":
+            return await _github(creds, cfg)
         if connector_type == "REST_API":
             return await _rest_api(base_url, creds, cfg, db=db, last_sync=last_sync)
         if connector_type == "WHATSAPP":
@@ -342,6 +344,8 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
             ok, msg = await _salesforce_test(base_url, creds)
         elif connector_type == "FIREFLIES":
             ok, msg = await _fireflies_test(creds)
+        elif connector_type == "GITHUB":
+            ok, msg = await _github_test(creds)
         elif connector_type in ("POSTGRESQL", "MYSQL"):
             from db_connector import test_db_connection, _build_db_config
             db_cfg = _build_db_config(creds, cfg)
@@ -829,3 +833,99 @@ async def _whatsapp_schema(cfg: dict) -> tuple[dict, list, Optional[str]]:
             return {}, [], f"WhatsApp service returned {r.status_code}"
         data = r.json()
         return data.get("schema", {}), data.get("sample_rows", []), None
+
+
+# ── GitHub ────────────────────────────────────────────────────────────────
+
+GITHUB_API = "https://api.github.com"
+GITHUB_DEFAULT_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+
+# Supported entity presets — user can pick a path via the pipeline Source node,
+# or override with a custom path.
+GITHUB_PRESETS = {
+    "commits": "/repos/{owner}/{repo}/commits",
+    "pulls": "/repos/{owner}/{repo}/pulls?state=all",
+    "pull_reviews": "/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    "issues": "/repos/{owner}/{repo}/issues?state=all",
+    "repo_contributors": "/repos/{owner}/{repo}/contributors",
+    "org_repos": "/orgs/{org}/repos",
+    "org_members": "/orgs/{org}/members",
+    "user_repos": "/users/{username}/repos",
+    "org_events": "/orgs/{org}/events",
+}
+
+
+def _github_headers(token: str) -> dict:
+    return {**GITHUB_DEFAULT_HEADERS, "Authorization": f"Bearer {token}"}
+
+
+def _resolve_github_path(path: str, cfg: dict) -> str:
+    """Substitute {owner}, {repo}, {org}, {username} placeholders from config."""
+    for key in ("owner", "repo", "org", "username", "pull_number"):
+        v = cfg.get(key) or cfg.get(key.upper())
+        if v:
+            path = path.replace("{" + key + "}", str(v))
+    return path
+
+
+async def _github_test(creds: dict) -> tuple[bool, str]:
+    token = creds.get("token") or creds.get("api_key")
+    if not token:
+        return False, "No Personal Access Token configured"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(f"{GITHUB_API}/user", headers=_github_headers(token))
+        if r.status_code == 401:
+            return False, "Invalid PAT — GitHub returned 401 Unauthorized"
+        if r.status_code == 403:
+            return False, f"PAT rejected ({r.status_code}) — check token scopes. {r.text[:200]}"
+        if not r.is_success:
+            return False, f"GitHub returned {r.status_code}: {r.text[:200]}"
+        data = r.json()
+        login = data.get("login", "unknown")
+        rate_remaining = r.headers.get("x-ratelimit-remaining", "?")
+        return True, f"GitHub PAT verified — connected as @{login} ({rate_remaining} req remaining this hour)"
+
+
+async def _github(creds: dict, cfg: dict) -> tuple[dict, list, Optional[str]]:
+    token = creds.get("token") or creds.get("api_key")
+    if not token:
+        return {}, [], "No Personal Access Token configured"
+
+    # Pick path: explicit cfg.path > preset name > default to /user for verification
+    path = cfg.get("path") or ""
+    preset = cfg.get("preset") or cfg.get("entity")
+    if not path and preset and preset in GITHUB_PRESETS:
+        path = GITHUB_PRESETS[preset]
+    if not path:
+        path = "/user"
+
+    path = _resolve_github_path(path, cfg)
+    if "{" in path:
+        return {}, [], f"Unresolved placeholder in path: {path} — set owner/repo/org in connector config"
+
+    url = GITHUB_API.rstrip("/") + (path if path.startswith("/") else f"/{path}")
+    # Preview: ask for 5 rows max to keep schema fetch light
+    if "?" in url:
+        url += "&per_page=5"
+    else:
+        url += "?per_page=5"
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        r = await client.get(url, headers=_github_headers(token))
+        if r.status_code in (401, 403):
+            return {}, [], f"Auth failed ({r.status_code}) — {r.text[:200]}"
+        if r.status_code == 404:
+            return {}, [], f"Not found: {path} — check owner/repo/org values"
+        if not r.is_success:
+            return {}, [], f"GitHub returned {r.status_code}: {r.text[:300]}"
+        try:
+            data = r.json()
+        except Exception:
+            return {}, [], "Response is not JSON"
+
+    schema, rows = _infer_schema_from_response(data)
+    schema["_github_rate_remaining"] = r.headers.get("x-ratelimit-remaining", "?")
+    return schema, rows, None

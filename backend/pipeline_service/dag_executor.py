@@ -446,6 +446,26 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
             credentials = conn.get("credentials") or {}
             conn_config = conn.get("config") or {}
 
+            # ── GitHub: auto-wire base_url + default headers + auth ───────
+            if conn_type == "GITHUB":
+                if not base_url:
+                    base_url = "https://api.github.com"
+                existing_header_keys = {h.get("key", "").lower() for h in conn_config.get("headers", []) if isinstance(h, dict)}
+                gh_defaults = [
+                    {"key": "Accept", "value": "application/vnd.github+json"},
+                    {"key": "X-GitHub-Api-Version", "value": "2022-11-28"},
+                ]
+                conn_config = {
+                    **conn_config,
+                    "headers": [
+                        *(conn_config.get("headers") or []),
+                        *(h for h in gh_defaults if h["key"].lower() not in existing_header_keys),
+                    ],
+                }
+                # GitHub token → bearer
+                if credentials.get("token") and not credentials.get("auth_type"):
+                    credentials = {**credentials, "auth_type": "bearer_token"}
+
             # ── Database connector path (POSTGRESQL / MYSQL) ─────────────
             if conn_type in ("POSTGRESQL", "MYSQL"):
                 table = cfg.get("table") or conn_config.get("table", "")
@@ -592,8 +612,15 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     pass
 
             if endpoint and base_url:
+                # Substitute connector-level placeholders in the endpoint path
+                # (e.g. {owner}/{repo}/{org}/{username}) from conn_config.
+                resolved_endpoint = endpoint
+                for ph_key in ("owner", "repo", "org", "username"):
+                    ph_val = conn_config.get(ph_key) or credentials.get(ph_key)
+                    if ph_val:
+                        resolved_endpoint = resolved_endpoint.replace("{" + ph_key + "}", str(ph_val))
                 # Build the URL and auth headers from the connector's credentials
-                url = f"{base_url}{endpoint}"
+                url = f"{base_url}{resolved_endpoint}"
                 headers: dict[str, str] = {"Accept": "application/json"}
 
                 # Resolve connector's configured queryParams (supports {{$lastRun}}, {{$today}}, etc.)
@@ -634,6 +661,7 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 all_rows: list[dict] = []
                 page_limit = batch_size  # rows per page request
                 offset = 0
+                page_num = 1  # used when pagination_strategy == "page"
                 first_call = True
                 http_method = (cfg.get("method") or cfg.get("http_method") or "GET").upper()
                 paginate = cfg.get("paginate", True)
@@ -646,11 +674,19 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 ).lower()
                 if pagination_strategy in ("none", ""):
                     paginate = False
+                # GitHub defaults to page-based pagination, capped at 100 per page
+                if conn_type == "GITHUB" and paginate:
+                    pagination_strategy = "page"
+                    page_limit = min(page_limit, 100)
                 while True:
                     page_params = dict(params)
                     if paginate:
-                        page_params["limit"] = page_limit
-                        page_params["offset"] = offset
+                        if pagination_strategy == "page":
+                            page_params["page"] = page_num
+                            page_params["per_page"] = page_limit
+                        else:
+                            page_params["limit"] = page_limit
+                            page_params["offset"] = offset
                     if http_method == "POST":
                         r = await client.post(url, headers=headers, params=page_params, timeout=60)
                     else:
@@ -718,7 +754,10 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     # Stop if this page was smaller than requested (last page)
                     if len(page_rows) < page_limit:
                         break
-                    offset += len(page_rows)
+                    if pagination_strategy == "page":
+                        page_num += 1
+                    else:
+                        offset += len(page_rows)
 
                 if all_rows:
                     if audit_extras is not None:

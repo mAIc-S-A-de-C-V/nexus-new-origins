@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
   Globe, Code2, Zap, Building2, Users, Cloud, Database,
-  FileText, FileSearch, Table, Activity, Webhook, Layers, Snowflake, Trash2
+  FileText, FileSearch, Table, Activity, Webhook, Layers, Snowflake, Trash2,
+  GitBranch, MessageCircle, Mic, PackageOpen
 } from 'lucide-react';
 import { ConnectorConfig } from '../../types/connector';
 import { Badge } from '../../design-system/components/Badge';
@@ -23,6 +24,10 @@ const ICON_MAP: Record<string, React.ReactNode> = {
   Webhook: <Webhook size={24} />,
   Layers: <Layers size={24} />,
   Snowflake: <Snowflake size={24} />,
+  GitBranch: <GitBranch size={24} />,
+  MessageCircle: <MessageCircle size={24} />,
+  Mic: <Mic size={24} />,
+  PackageOpen: <PackageOpen size={24} />,
 };
 
 interface ConnectorCardProps {

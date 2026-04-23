@@ -16,7 +16,7 @@ const NEEDS_URL = new Set([
   'REST_API', 'GRAPHQL_API', 'WEBSOCKET', 'SAP_ERP', 'HUBSPOT',
   'SALESFORCE', 'RELATIONAL_DB', 'GOOGLE_SHEETS', 'KAFKA',
   'WEBHOOK', 'MONGODB', 'DATA_WAREHOUSE',
-  // FIREFLIES uses a fixed URL — pre-filled, not user-entered
+  // FIREFLIES and GITHUB use fixed URLs — pre-filled on the backend
 ]);
 
 const DEFAULT_AUTH: Record<string, AuthType> = {
@@ -35,6 +35,7 @@ const DEFAULT_AUTH: Record<string, AuthType> = {
   MONGODB: 'Basic',
   DATA_WAREHOUSE: 'Basic',
   FIREFLIES: 'Bearer',
+  GITHUB: 'Bearer',
 };
 
 const URL_PLACEHOLDER: Record<string, string> = {
@@ -150,6 +151,17 @@ const CREDENTIAL_GUIDES: Record<string, { title: string; steps: GuideStep[] }> =
       { step: 'Paste below', detail: 'Paste it in the API Token field. The base URL is fixed at https://api.fireflies.ai/graphql.' },
     ],
   },
+  GITHUB: {
+    title: 'How to get your GitHub Personal Access Token',
+    steps: [
+      { step: 'Open GitHub Settings', detail: 'Log in → click your avatar (top right) → Settings → Developer settings (bottom of left sidebar).' },
+      { step: 'Create a token', detail: 'Click "Personal access tokens" → "Fine-grained tokens" → "Generate new token". Name it e.g. "nexus".' },
+      { step: 'Set access', detail: 'Resource owner = your org or user. Repository access = "All repositories" (or pick specific).' },
+      { step: 'Set permissions', detail: 'Repository permissions: Contents (read), Pull requests (read), Issues (read), Metadata (read). Organization: Members (read) if you need org-level data.' },
+      { step: 'Copy the token', detail: 'Click Generate → copy the github_pat_... token. You will not see it again.' },
+      { step: 'Paste below', detail: 'Paste it in the API Token field. Base URL is fixed at https://api.github.com. Set owner/repo/org in the connector config after creating.' },
+    ],
+  },
 };
 
 
@@ -168,6 +180,9 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   const [hubspotObject, setHubspotObject] = useState('contacts');
+  const [githubOwner, setGithubOwner] = useState('');
+  const [githubRepo, setGithubRepo] = useState('');
+  const [githubOrg, setGithubOrg] = useState('');
   const [guideOpen, setGuideOpen] = useState(false);
   const [isPrivate, setIsPrivate] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -203,13 +218,19 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
     if (authType === 'OAuth2') { credentials.clientId = clientId; credentials.clientSecret = clientSecret; }
 
     const pagination: PaginationStrategy =
-      connectorType.type === 'RELATIONAL_DB' || connectorType.type === 'DATA_WAREHOUSE' ? 'offset' : 'cursor';
+      connectorType.type === 'RELATIONAL_DB' || connectorType.type === 'DATA_WAREHOUSE' ? 'offset' :
+      connectorType.type === 'GITHUB' ? 'page' : 'cursor';
 
     setSaving(true);
     setSaveError(null);
     try {
       const extraConfig: Record<string, string> = {};
       if (connectorType.type === 'HUBSPOT') extraConfig.hubspotObject = hubspotObject;
+      if (connectorType.type === 'GITHUB') {
+        if (githubOwner.trim()) extraConfig.owner = githubOwner.trim();
+        if (githubRepo.trim()) extraConfig.repo = githubRepo.trim();
+        if (githubOrg.trim()) extraConfig.org = githubOrg.trim();
+      }
 
       await addConnector({
         name: name.trim(),
@@ -439,6 +460,38 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
               </select>
               <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
                 Each object hits a different HubSpot endpoint: <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px' }}>/crm/v3/objects/{hubspotObject}</code>
+              </div>
+            </div>
+          )}
+
+          {connectorType.type === 'GITHUB' && (
+            <div style={fieldStyle}>
+              <label style={labelStyle}>GitHub Scope</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <input
+                  style={inputStyle}
+                  value={githubOwner}
+                  onChange={(e) => setGithubOwner(e.target.value)}
+                  placeholder="owner (user or org)"
+                />
+                <input
+                  style={inputStyle}
+                  value={githubRepo}
+                  onChange={(e) => setGithubRepo(e.target.value)}
+                  placeholder="repo (optional)"
+                />
+              </div>
+              <input
+                style={{ ...inputStyle, marginTop: 8 }}
+                value={githubOrg}
+                onChange={(e) => setGithubOrg(e.target.value)}
+                placeholder="org (optional — for /orgs/{org}/… endpoints)"
+              />
+              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
+                These fill <code>{'{owner}'}</code>, <code>{'{repo}'}</code>, <code>{'{org}'}</code> placeholders in pipeline Source paths. Examples:
+                <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px', marginLeft: 4 }}>/repos/&#123;owner&#125;/&#123;repo&#125;/commits</code>,
+                <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px', marginLeft: 4 }}>/repos/&#123;owner&#125;/&#123;repo&#125;/pulls?state=all</code>,
+                <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px', marginLeft: 4 }}>/orgs/&#123;org&#125;/members</code>.
               </div>
             </div>
           )}

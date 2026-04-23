@@ -146,6 +146,14 @@ export const CONNECTOR_TYPES: ConnectorTypeDefinition[] = [
     iconName: 'MessageCircle',
     color: '#25D366',
   },
+  {
+    type: 'GITHUB',
+    displayName: 'GitHub',
+    description: 'Pull commits, pull requests, reviews, and issues from GitHub repos or orgs',
+    category: 'Productivity',
+    iconName: 'GitBranch',
+    color: '#24292F',
+  },
 ];
 
 export const getConnectorTypeDef = (type: string): ConnectorTypeDefinition | undefined =>
