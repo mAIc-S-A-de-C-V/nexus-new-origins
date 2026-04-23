@@ -706,10 +706,13 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 except Exception:
                     pass
 
-            if endpoint and base_url:
+            # Accept REST path if base_url alone is a full URL (host+path+query),
+            # even when endpoint is blank. That's the natural case for connectors
+            # whose Base URL already points at the resource.
+            if base_url:
                 # Substitute connector-level placeholders in the endpoint path
                 # (e.g. {owner}/{repo}/{org}/{username}) from conn_config.
-                resolved_endpoint = endpoint
+                resolved_endpoint = endpoint or ""
                 for ph_key in ("owner", "repo", "org", "username"):
                     ph_val = conn_config.get(ph_key) or credentials.get(ph_key)
                     if ph_val:
@@ -778,6 +781,12 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 if conn_type == "GITHUB" and paginate:
                     pagination_strategy = "page"
                     page_limit = min(page_limit, 100)
+
+                # Honor the connector's verify_ssl flag for the outbound REST call
+                _verify_ssl = conn_config.get("verify_ssl", True)
+                if isinstance(_verify_ssl, str):
+                    _verify_ssl = _verify_ssl.lower() not in ("false", "0", "no")
+                rest_client = httpx.AsyncClient(timeout=60, verify=bool(_verify_ssl))
                 while True:
                     page_params = dict(params)
                     if paginate:
@@ -788,9 +797,9 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                             page_params["limit"] = page_limit
                             page_params["offset"] = offset
                     if http_method == "POST":
-                        r = await client.post(url, headers=headers, params=page_params, timeout=60)
+                        r = await rest_client.post(url, headers=headers, params=page_params, timeout=60)
                     else:
-                        r = await client.get(url, headers=headers, params=page_params, timeout=60)
+                        r = await rest_client.get(url, headers=headers, params=page_params, timeout=60)
                     if first_call and audit_extras is not None:
                         audit_extras["url"] = str(r.url)
                         audit_extras["http_status"] = r.status_code
@@ -886,6 +895,7 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     else:
                         offset += len(page_rows)
 
+                await rest_client.aclose()
                 if all_rows:
                     if audit_extras is not None:
                         audit_extras["raw_row_count"] = len(all_rows)
