@@ -9,6 +9,7 @@ import PlatformHealthPage from '../health/PlatformHealthPage';
 
 const ADMIN_API = import.meta.env.VITE_ADMIN_SERVICE_URL || 'http://localhost:8022';
 const AUTH_API = import.meta.env.VITE_AUTH_SERVICE_URL || 'http://localhost:8011';
+const GW_API = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:8021';
 
 type Tab = 'tenants' | 'tokens' | 'health' | 'impersonate';
 
@@ -298,14 +299,20 @@ const TenantsTab: React.FC = () => {
 
 const TokenUsageTab: React.FC = () => {
   const [summary, setSummary] = useState<TokenSummary | null>(null);
+  const [gwSummary, setGwSummary] = useState<{ totals: { calls: number; errors: number; bytes_out: number } } | null>(null);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${ADMIN_API}/admin/token-usage/summary?days=${days}`, { headers: authHeaders() });
-      if (res.ok) setSummary(await res.json());
+      const range = days <= 7 ? '7d' : days <= 30 ? '30d' : '90d';
+      const [tokenRes, gwRes] = await Promise.all([
+        fetch(`${ADMIN_API}/admin/token-usage/summary?days=${days}`, { headers: authHeaders() }),
+        fetch(`${GW_API}/gateway/usage/summary?range=${range}`, { headers: authHeaders() }),
+      ]);
+      if (tokenRes.ok) setSummary(await tokenRes.json());
+      if (gwRes.ok) setGwSummary(await gwRes.json());
     } finally { setLoading(false); }
   }, [days]);
 
@@ -330,8 +337,12 @@ const TokenUsageTab: React.FC = () => {
             <div style={S.metricValue}>{fmtTokens(totalOutput)}</div>
           </div>
           <div style={S.metric}>
-            <div style={S.metricLabel}>Total API Calls</div>
+            <div style={S.metricLabel}>Total LLM Calls</div>
             <div style={S.metricValue}>{fmtNum(totalCalls)}</div>
+          </div>
+          <div style={S.metric}>
+            <div style={S.metricLabel}>Gateway Data Pulls</div>
+            <div style={S.metricValue}>{fmtNum(gwSummary?.totals?.calls || 0)}</div>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

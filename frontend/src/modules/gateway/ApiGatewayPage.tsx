@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Copy, Eye, EyeOff, Globe, Key, RefreshCw, Activity, BarChart3, AlertTriangle } from 'lucide-react';
 import { getTenantId } from '../../store/authStore';
 
-const GW_API = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:8021';
-const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
+const GW_API = import.meta.env.VITE_API_GATEWAY_URL || `${window.location.protocol}//${window.location.hostname}:8021`;
+const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || `${window.location.protocol}//${window.location.hostname}:8004`;
 
 type Scope = 'read:records' | 'read:events' | 'read:all';
 
