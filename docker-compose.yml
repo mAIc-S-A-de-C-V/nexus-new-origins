@@ -477,6 +477,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://nexus:nexus_pass@postgres:5432/nexus
       - AUTH_SERVICE_URL=http://auth-service:8011
+      - EVENT_LOG_URL=http://event-log-service:8005
       - SKIP_AUTH=${SKIP_AUTH:-false}
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
     depends_on:

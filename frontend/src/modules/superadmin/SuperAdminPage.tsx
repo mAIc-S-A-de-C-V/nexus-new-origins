@@ -9,7 +9,6 @@ import PlatformHealthPage from '../health/PlatformHealthPage';
 
 const ADMIN_API = import.meta.env.VITE_ADMIN_SERVICE_URL || 'http://localhost:8022';
 const AUTH_API = import.meta.env.VITE_AUTH_SERVICE_URL || 'http://localhost:8011';
-const GW_API = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:8021';
 
 type Tab = 'tenants' | 'tokens' | 'health' | 'impersonate';
 
@@ -297,22 +296,42 @@ const TenantsTab: React.FC = () => {
 
 // ── Token Usage Tab ───────────────────────────────────────────────────────────
 
+interface PlatformUsage {
+  range_days: number;
+  llm: { input_tokens: number; output_tokens: number; calls: number };
+  gateway: { calls: number; errors: number; bytes_out: number; avg_ms: number; p95_ms: number; active_keys: number; keys_used_in_window: number; keys_total: number };
+  pipelines: { runs: number; errors: number; rows_in: number; rows_out: number; avg_ms: number; p95_ms: number; currently_running: number };
+  records: { total: number; bytes: number };
+  agents: { runs: number; errors: number; iterations: number; chars_out: number };
+  logic: { runs: number; errors: number; avg_ms: number; p95_ms: number };
+  correlation_scans: number;
+  logins: number;
+  events: number;
+}
+
+function fmtBytes(n: number): string {
+  if (!n) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 const TokenUsageTab: React.FC = () => {
   const [summary, setSummary] = useState<TokenSummary | null>(null);
-  const [gwSummary, setGwSummary] = useState<{ totals: { calls: number; errors: number; bytes_out: number } } | null>(null);
+  const [platform, setPlatform] = useState<PlatformUsage | null>(null);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const range = days <= 7 ? '7d' : days <= 30 ? '30d' : '90d';
-      const [tokenRes, gwRes] = await Promise.all([
+      const [tokenRes, platformRes] = await Promise.all([
         fetch(`${ADMIN_API}/admin/token-usage/summary?days=${days}`, { headers: authHeaders() }),
-        fetch(`${GW_API}/gateway/usage/summary?range=${range}`, { headers: authHeaders() }),
+        fetch(`${ADMIN_API}/admin/platform-usage/summary?days=${days}`, { headers: authHeaders() }),
       ]);
       if (tokenRes.ok) setSummary(await tokenRes.json());
-      if (gwRes.ok) setGwSummary(await gwRes.json());
+      if (platformRes.ok) setPlatform(await platformRes.json());
     } finally { setLoading(false); }
   }, [days]);
 
@@ -324,27 +343,27 @@ const TokenUsageTab: React.FC = () => {
   const totalOutput = summary.by_tenant.reduce((s, t) => s + t.output_tokens, 0);
   const totalCalls = summary.by_tenant.reduce((s, t) => s + t.calls, 0);
 
+  const tiles: { label: string; value: string; sub?: string; tone?: 'error' | 'warn' | undefined }[] = [
+    { label: 'Input Tokens', value: fmtTokens(totalInput) },
+    { label: 'Output Tokens', value: fmtTokens(totalOutput) },
+    { label: 'LLM Calls', value: fmtNum(totalCalls) },
+    { label: 'Gateway Pulls', value: fmtNum(platform?.gateway.calls || 0), sub: platform ? `${platform.gateway.errors} errors · p95 ${platform.gateway.p95_ms}ms` : undefined },
+    { label: 'Pipeline Runs', value: fmtNum(platform?.pipelines.runs || 0), sub: platform ? `${platform.pipelines.errors} failed · ${platform.pipelines.currently_running} running` : undefined },
+    { label: 'Records Ingested', value: fmtNum(platform?.pipelines.rows_out || 0) },
+    { label: 'Events Logged', value: fmtNum(platform?.events || 0) },
+    { label: 'Records Stored', value: fmtNum(platform?.records.total || 0), sub: platform ? fmtBytes(platform.records.bytes) : undefined },
+    { label: 'Agent Runs', value: fmtNum(platform?.agents.runs || 0), sub: platform ? `${platform.agents.iterations} iterations · ${platform.agents.errors} errors` : undefined },
+    { label: 'Logic Runs', value: fmtNum(platform?.logic.runs || 0), sub: platform ? `p95 ${platform.logic.p95_ms}ms · ${platform.logic.errors} errors` : undefined },
+    { label: 'Correlation Scans', value: fmtNum(platform?.correlation_scans || 0) },
+    { label: 'Logins', value: fmtNum(platform?.logins || 0) },
+    { label: 'Active API Keys', value: `${platform?.gateway.keys_used_in_window || 0} / ${platform?.gateway.keys_total || 0}`, sub: 'used this window / total' },
+    { label: 'Gateway Bytes Out', value: fmtBytes(platform?.gateway.bytes_out || 0) },
+  ];
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <div style={S.metric}>
-            <div style={S.metricLabel}>Total Input Tokens</div>
-            <div style={S.metricValue}>{fmtTokens(totalInput)}</div>
-          </div>
-          <div style={S.metric}>
-            <div style={S.metricLabel}>Total Output Tokens</div>
-            <div style={S.metricValue}>{fmtTokens(totalOutput)}</div>
-          </div>
-          <div style={S.metric}>
-            <div style={S.metricLabel}>Total LLM Calls</div>
-            <div style={S.metricValue}>{fmtNum(totalCalls)}</div>
-          </div>
-          <div style={S.metric}>
-            <div style={S.metricLabel}>Gateway Data Pulls</div>
-            <div style={S.metricValue}>{fmtNum(gwSummary?.totals?.calls || 0)}</div>
-          </div>
-        </div>
+        <div style={{ fontSize: 13, color: '#64748B' }}>Platform-wide activity over the last {days} day{days === 1 ? '' : 's'}</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <select
             value={days}
@@ -359,6 +378,16 @@ const TokenUsageTab: React.FC = () => {
             <RefreshCw size={12} />
           </button>
         </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginBottom: 20 }}>
+        {tiles.map(t => (
+          <div key={t.label} style={{ padding: '12px 14px', backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 6 }}>
+            <div style={{ fontSize: 11, color: '#64748B', textTransform: 'uppercase', letterSpacing: 0.5 }}>{t.label}</div>
+            <div style={{ fontSize: 20, fontWeight: 600, color: '#0D1117', marginTop: 4 }}>{t.value}</div>
+            {t.sub && <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 3 }}>{t.sub}</div>}
+          </div>
+        ))}
       </div>
 
       {/* By Tenant */}

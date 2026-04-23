@@ -234,3 +234,211 @@ async def token_usage_summary(
         "daily": [{"day": r["day"].isoformat(), "input_tokens": r["input_tokens"],
                     "output_tokens": r["output_tokens"], "calls": r["calls"]} for r in daily],
     }
+
+
+# ── Platform-wide usage summary ──────────────────────────────────────────────
+
+import os
+import httpx
+
+EVENT_LOG_URL = os.environ.get("EVENT_LOG_URL", "http://event-log-service:8005")
+
+
+async def _safe_scalar(pool, sql, *args, default=0):
+    try:
+        val = await pool.fetchval(sql, *args)
+        return val if val is not None else default
+    except Exception:
+        return default
+
+
+async def _safe_fetchrow(pool, sql, *args, default=None):
+    try:
+        row = await pool.fetchrow(sql, *args)
+        return dict(row) if row else (default or {})
+    except Exception:
+        return default or {}
+
+
+async def _event_log_count(tenant_id: Optional[str], days: int) -> int:
+    """Count events in the given range via event-log-service HTTP (TimescaleDB lives there)."""
+    headers = {}
+    if tenant_id:
+        headers["x-tenant-id"] = tenant_id
+    params = {"limit": 1, "since_days": days}
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{EVENT_LOG_URL}/events/timeseries/summary", params=params, headers=headers)
+            if r.status_code == 200:
+                data = r.json()
+                return int(data.get("total") or data.get("count") or 0)
+    except Exception:
+        pass
+    # Fallback: ask for any recent events to confirm service is reachable
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{EVENT_LOG_URL}/events", params={"limit": 1}, headers=headers)
+            if r.status_code == 200:
+                payload = r.json()
+                if isinstance(payload, dict):
+                    return int(payload.get("total") or 0)
+    except Exception:
+        pass
+    return 0
+
+
+@router.get("/platform-usage/summary")
+async def platform_usage_summary(
+    tenant_id: Optional[str] = None,
+    days: int = 30,
+    user: AuthUser = Depends(require_superadmin),
+):
+    """Aggregated platform-wide activity for the superadmin dashboard."""
+    pool = await get_pool()
+    tf = f"AND tenant_id = '{tenant_id}'" if tenant_id and tenant_id.replace("-", "").replace("_", "").isalnum() else ""
+    days_int = int(days)
+
+    # Fan out all queries in parallel
+    (
+        llm_totals,
+        gw_totals, gw_by_key, active_keys_total, api_keys_total,
+        pipeline_totals, pipeline_recent,
+        records_count, records_bytes,
+        agent_totals,
+        logic_totals,
+        correlation_total,
+        logins_total,
+        events_count,
+    ) = await asyncio.gather(
+        _safe_fetchrow(pool, f"""
+            SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,
+                   COALESCE(SUM(output_tokens),0) AS output_tokens,
+                   COUNT(*) AS calls
+            FROM token_usage
+            WHERE created_at > NOW() - ($1 || ' days')::interval {tf}
+        """, str(days_int)),
+
+        _safe_fetchrow(pool, f"""
+            SELECT COUNT(*) AS calls,
+                   COUNT(*) FILTER (WHERE status_code >= 400) AS errors,
+                   COALESCE(SUM(bytes_out),0) AS bytes_out,
+                   COALESCE(AVG(duration_ms),0)::int AS avg_ms,
+                   COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms),0)::int AS p95_ms
+            FROM api_key_usage_log
+            WHERE ts > NOW() - ($1 || ' days')::interval {tf}
+        """, str(days_int)),
+
+        _safe_scalar(pool, f"""
+            SELECT COUNT(DISTINCT key_id) FROM api_key_usage_log
+            WHERE ts > NOW() - ($1 || ' days')::interval {tf}
+        """, str(days_int)),
+
+        _safe_scalar(pool, f"""
+            SELECT COUNT(*) FROM api_keys WHERE enabled = TRUE AND last_used_at > NOW() - ($1 || ' days')::interval {tf}
+        """, str(days_int)),
+
+        _safe_scalar(pool, f"SELECT COUNT(*) FROM api_keys WHERE enabled = TRUE {tf}"),
+
+        _safe_fetchrow(pool, f"""
+            SELECT COUNT(*) AS runs,
+                   COUNT(*) FILTER (WHERE status IN ('FAILED','ERROR')) AS errors,
+                   COALESCE(SUM(rows_out),0) AS rows_out,
+                   COALESCE(SUM(rows_in),0) AS rows_in,
+                   COALESCE(AVG(EXTRACT(EPOCH FROM (finished_at - started_at))*1000),0)::int AS avg_ms,
+                   COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (finished_at - started_at))*1000),0)::int AS p95_ms
+            FROM pipeline_runs
+            WHERE started_at > NOW() - ($1 || ' days')::interval AND finished_at IS NOT NULL {tf}
+        """, str(days_int)),
+
+        _safe_scalar(pool, f"""
+            SELECT COUNT(*) FROM pipeline_runs
+            WHERE status = 'RUNNING' {tf}
+        """),
+
+        _safe_scalar(pool, f"SELECT COUNT(*) FROM object_records WHERE 1=1 {tf}"),
+
+        _safe_scalar(pool, f"""
+            SELECT COALESCE(SUM(pg_column_size(data)),0) FROM object_records
+            WHERE 1=1 {tf}
+        """),
+
+        _safe_fetchrow(pool, f"""
+            SELECT COUNT(*) AS runs,
+                   COUNT(*) FILTER (WHERE error IS NOT NULL) AS errors,
+                   COALESCE(SUM(iterations),0) AS iterations,
+                   COALESCE(SUM(final_text_len),0) AS chars_out
+            FROM agent_runs
+            WHERE created_at > NOW() - ($1 || ' days')::interval {tf}
+        """, str(days_int)),
+
+        _safe_fetchrow(pool, f"""
+            SELECT COUNT(*) AS runs,
+                   COUNT(*) FILTER (WHERE status IN ('FAILED','ERROR')) AS errors,
+                   COALESCE(AVG(EXTRACT(EPOCH FROM (finished_at - started_at))*1000),0)::int AS avg_ms,
+                   COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (finished_at - started_at))*1000),0)::int AS p95_ms
+            FROM logic_runs
+            WHERE started_at > NOW() - ($1 || ' days')::interval AND finished_at IS NOT NULL {tf}
+        """, str(days_int)),
+
+        _safe_scalar(pool, f"""
+            SELECT COUNT(*) FROM audit_events
+            WHERE created_at > NOW() - ($1 || ' days')::interval
+              AND (activity ILIKE '%correlat%' OR action ILIKE '%correlat%') {tf}
+        """, str(days_int)),
+
+        _safe_scalar(pool, f"""
+            SELECT COUNT(*) FROM audit_events
+            WHERE created_at > NOW() - ($1 || ' days')::interval
+              AND (activity ILIKE '%login%' OR action ILIKE '%login%') {tf}
+        """, str(days_int)),
+
+        _event_log_count(tenant_id, days_int),
+    )
+
+    return {
+        "range_days": days_int,
+        "tenant_id": tenant_id,
+        "llm": {
+            "input_tokens": int(llm_totals.get("input_tokens", 0)),
+            "output_tokens": int(llm_totals.get("output_tokens", 0)),
+            "calls": int(llm_totals.get("calls", 0)),
+        },
+        "gateway": {
+            "calls": int(gw_totals.get("calls", 0)),
+            "errors": int(gw_totals.get("errors", 0)),
+            "bytes_out": int(gw_totals.get("bytes_out", 0)),
+            "avg_ms": int(gw_totals.get("avg_ms", 0)),
+            "p95_ms": int(gw_totals.get("p95_ms", 0)),
+            "active_keys": int(gw_by_key),
+            "keys_used_in_window": int(active_keys_total),
+            "keys_total": int(api_keys_total),
+        },
+        "pipelines": {
+            "runs": int(pipeline_totals.get("runs", 0)),
+            "errors": int(pipeline_totals.get("errors", 0)),
+            "rows_in": int(pipeline_totals.get("rows_in", 0)),
+            "rows_out": int(pipeline_totals.get("rows_out", 0)),
+            "avg_ms": int(pipeline_totals.get("avg_ms", 0)),
+            "p95_ms": int(pipeline_totals.get("p95_ms", 0)),
+            "currently_running": int(pipeline_recent),
+        },
+        "records": {
+            "total": int(records_count),
+            "bytes": int(records_bytes),
+        },
+        "agents": {
+            "runs": int(agent_totals.get("runs", 0)),
+            "errors": int(agent_totals.get("errors", 0)),
+            "iterations": int(agent_totals.get("iterations", 0)),
+            "chars_out": int(agent_totals.get("chars_out", 0)),
+        },
+        "logic": {
+            "runs": int(logic_totals.get("runs", 0)),
+            "errors": int(logic_totals.get("errors", 0)),
+            "avg_ms": int(logic_totals.get("avg_ms", 0)),
+            "p95_ms": int(logic_totals.get("p95_ms", 0)),
+        },
+        "correlation_scans": int(correlation_total),
+        "logins": int(logins_total),
+        "events": int(events_count),
+    }
