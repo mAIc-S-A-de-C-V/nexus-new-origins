@@ -32,6 +32,7 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'endpoint', label: 'Endpoint / Table', type: 'text', placeholder: '/api/contacts' },
       { key: 'method', label: 'HTTP Method', type: 'select', default: 'GET', options: ['GET', 'POST', 'PUT'] },
       { key: 'batchSize', label: 'Batch Size', type: 'number', default: 100 },
+      { key: 'maxRows', label: 'Max Rows (memory cap)', type: 'number', default: 10000 },
       { key: 'incrementalKey', label: 'Incremental Key', type: 'text', placeholder: 'updated_at' },
       { key: 'recordsPath', label: 'Records Path (optional)', type: 'text', placeholder: 'data.items' },
       { key: 'dictUnwrapPath', label: 'Dict Unwrap Path (optional)', type: 'text', placeholder: 'sensors' },

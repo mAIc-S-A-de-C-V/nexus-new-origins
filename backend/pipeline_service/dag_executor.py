@@ -873,7 +873,7 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         break
                     all_rows.extend(page_rows)
                     # Hard cap: never hold more than max_rows in memory (default 10k)
-                    max_rows = int(cfg.get("max_rows") or 10000)
+                    max_rows = int(cfg.get("max_rows") or cfg.get("maxRows") or 10000)
                     if len(all_rows) >= max_rows:
                         all_rows = all_rows[:max_rows]
                         if audit_extras is not None:
