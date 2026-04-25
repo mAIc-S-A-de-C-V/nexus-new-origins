@@ -849,8 +849,9 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                                     page_rows = data[key]
                                     break
                         # If none matched, check node config for a custom records_path
-                        if page_rows is None and cfg.get("records_path"):
-                            rp = cfg["records_path"]
+                        records_path_cfg = cfg.get("records_path") or cfg.get("recordsPath")
+                        if page_rows is None and records_path_cfg:
+                            rp = records_path_cfg
                             obj = data
                             for part in rp.split("."):
                                 if isinstance(obj, dict):

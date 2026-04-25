@@ -33,9 +33,9 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'method', label: 'HTTP Method', type: 'select', default: 'GET', options: ['GET', 'POST', 'PUT'] },
       { key: 'batchSize', label: 'Batch Size', type: 'number', default: 100 },
       { key: 'incrementalKey', label: 'Incremental Key', type: 'text', placeholder: 'updated_at' },
-      { key: 'records_path', label: 'Records Path (optional)', type: 'text', placeholder: 'data.items' },
-      { key: 'dict_unwrap_path', label: 'Dict Unwrap Path (optional)', type: 'text', placeholder: 'sensors' },
-      { key: 'group_key_field', label: 'Group Key Field Name', type: 'text', placeholder: 'sensor_name', default: 'group_key' },
+      { key: 'recordsPath', label: 'Records Path (optional)', type: 'text', placeholder: 'data.items' },
+      { key: 'dictUnwrapPath', label: 'Dict Unwrap Path (optional)', type: 'text', placeholder: 'sensors' },
+      { key: 'groupKeyField', label: 'Group Key Field Name', type: 'text', placeholder: 'sensor_name' },
     ],
   },
   {
