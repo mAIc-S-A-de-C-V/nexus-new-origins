@@ -1117,15 +1117,32 @@ def _filter(node, records_in: list[dict]) -> list[dict]:
 
 
 def _dedupe(node, records_in: list[dict]) -> list[dict]:
-    """Deduplicate records by primary key field."""
+    """Deduplicate by one or more key fields.
+
+    Reads `keys` (comma- or newline-separated list — what the UI exposes as
+    "Dedupe Keys"), or falls back to legacy `pkField`/`pk_field`, or guesses.
+    """
     if not records_in:
         return records_in
     cfg = node.config or {}
-    pk_field = cfg.get("pkField") or cfg.get("pk_field") or _guess_pk(records_in[0])
-    seen: set[str] = set()
+
+    raw_keys = cfg.get("keys") or cfg.get("dedupe_keys") or ""
+    if isinstance(raw_keys, list):
+        key_fields = [str(k).strip() for k in raw_keys if str(k).strip()]
+    else:
+        key_fields = [k.strip() for k in str(raw_keys).replace("\n", ",").split(",") if k.strip()]
+
+    if not key_fields:
+        legacy = cfg.get("pkField") or cfg.get("pk_field")
+        if legacy:
+            key_fields = [legacy]
+        else:
+            key_fields = [_guess_pk(records_in[0])]
+
+    seen: set[tuple] = set()
     result = []
     for rec in records_in:
-        key = str(rec.get(pk_field, id(rec)))
+        key = tuple(str(rec.get(f, "")) for f in key_fields)
         if key not in seen:
             seen.add(key)
             result.append(rec)
