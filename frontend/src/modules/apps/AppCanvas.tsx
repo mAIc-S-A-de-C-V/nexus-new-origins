@@ -28,25 +28,52 @@ function useRecords(objectTypeId?: string) {
     let cancelled = false;
     setLoading(true);
 
-    // Fetch all records by paginating through pages of 500
-    const PAGE = 500;
+    // Fetch first page to learn the total, then fan out remaining pages in parallel.
+    // Server caps limit at 10000; we use a chunky page so the request count stays small.
+    const PAGE = 5000;
+    const MAX_CONCURRENCY = 6;
     async function fetchAll() {
-      const all: Record<string, unknown>[] = [];
-      let offset = 0;
-      let total = Infinity;
-      while (offset < total) {
-        const res = await fetch(
-          `${ONTOLOGY_API}/object-types/${objectTypeId}/records?limit=${PAGE}&offset=${offset}`,
-          { headers: { 'x-tenant-id': getTenantId() } },
-        );
-        const d = await res.json();
-        const rows = d.records || [];
-        total = d.total ?? rows.length;
-        all.push(...rows);
-        offset += PAGE;
-        if (rows.length < PAGE) break; // no more pages
+      const headers = { 'x-tenant-id': getTenantId() };
+      const firstRes = await fetch(
+        `${ONTOLOGY_API}/object-types/${objectTypeId}/records?limit=${PAGE}&offset=0`,
+        { headers },
+      );
+      const firstData = await firstRes.json();
+      const firstRows: Record<string, unknown>[] = firstData.records || [];
+      const total: number = firstData.total ?? firstRows.length;
+
+      if (cancelled) return;
+      if (total <= firstRows.length) {
+        setRecords(firstRows);
+        return;
       }
-      if (!cancelled) setRecords(all);
+
+      const offsets: number[] = [];
+      for (let off = PAGE; off < total; off += PAGE) offsets.push(off);
+
+      // Bounded concurrency so we don't fire 200 fetches at once on huge datasets.
+      const buckets: number[][] = Array.from({ length: MAX_CONCURRENCY }, () => []);
+      offsets.forEach((off, i) => buckets[i % MAX_CONCURRENCY].push(off));
+
+      const chunks = await Promise.all(
+        buckets.map(async (bucket) => {
+          const out: Record<string, unknown>[] = [];
+          for (const off of bucket) {
+            if (cancelled) return out;
+            const r = await fetch(
+              `${ONTOLOGY_API}/object-types/${objectTypeId}/records?limit=${PAGE}&offset=${off}`,
+              { headers },
+            );
+            const d = await r.json();
+            if (Array.isArray(d.records)) out.push(...d.records);
+          }
+          return out;
+        }),
+      );
+
+      if (cancelled) return;
+      const all = firstRows.concat(...chunks);
+      setRecords(all);
     }
 
     fetchAll().catch(() => { if (!cancelled) setRecords([]); }).finally(() => { if (!cancelled) setLoading(false); });
@@ -54,6 +81,64 @@ function useRecords(objectTypeId?: string) {
   }, [objectTypeId]);
 
   return { records, loading };
+}
+
+// ── Server-side aggregation hook ──────────────────────────────────────────
+// Calls POST /object-types/{id}/aggregate. Returns one or more aggregated
+// numbers (and group keys when group_by / time_bucket is set).
+
+interface AggregateSpec {
+  field?: string;
+  method: 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct';
+}
+
+interface AggregateOptions {
+  groupBy?: string;
+  timeBucket?: { field: string; interval: 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year' };
+  aggregations: AggregateSpec[];
+  filters?: Record<string, unknown>;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+  limit?: number;
+}
+
+interface AggregateRow {
+  group: string | null;
+  [agg: string]: number | string | null;
+}
+
+function useAggregate(objectTypeId: string | undefined, opts: AggregateOptions | null) {
+  const [rows, setRows] = useState<AggregateRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const key = JSON.stringify(opts ?? null);
+
+  useEffect(() => {
+    if (!objectTypeId || !opts) { setRows([]); return; }
+    let cancelled = false;
+    setLoading(true);
+    const body = {
+      filters: opts.filters ? JSON.stringify(opts.filters) : null,
+      group_by: opts.groupBy ?? null,
+      time_bucket: opts.timeBucket ?? null,
+      aggregations: opts.aggregations,
+      sort_by: opts.sortBy ?? null,
+      sort_dir: opts.sortDir ?? 'desc',
+      limit: opts.limit ?? 200,
+    };
+    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      body: JSON.stringify(body),
+    })
+      .then((r) => r.ok ? r.json() : { rows: [] })
+      .then((d) => { if (!cancelled) setRows(d.rows || []); })
+      .catch(() => { if (!cancelled) setRows([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objectTypeId, key]);
+
+  return { rows, loading };
 }
 
 // ── Aggregation helpers ────────────────────────────────────────────────────
@@ -152,11 +237,18 @@ function applyFilters(
 
 // ── Individual Components ──────────────────────────────────────────────────
 
-const MetricCard: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
+const MetricCard: React.FC<{ comp: AppComponent; records?: Record<string, unknown>[]; serverValue?: number | null }> = ({
   comp,
   records,
+  serverValue,
 }) => {
-  const value = aggregate(records, comp.field, comp.aggregation || 'count');
+  const formatServer = (v: number, method: string | undefined): string => {
+    if (method === 'avg') return v.toFixed(1);
+    return v.toLocaleString();
+  };
+  const value = serverValue != null
+    ? formatServer(serverValue, comp.aggregation)
+    : aggregate(records || [], comp.field, comp.aggregation || 'count');
   return (
     <div style={{
       backgroundColor: '#fff',
@@ -181,17 +273,25 @@ const MetricCard: React.FC<{ comp: AppComponent; records: Record<string, unknown
   );
 };
 
-const KpiBanner: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
+const KpiBanner: React.FC<{ comp: AppComponent; records?: Record<string, unknown>[]; serverKpis?: { count: number; avg: number | null } }> = ({
   comp,
   records,
+  serverKpis,
 }) => {
-  const kpis = [
-    { label: 'Total Records', value: records.length.toLocaleString() },
-    { label: comp.field ? `Avg ${comp.field}` : 'Fields', value: comp.field
-      ? aggregate(records, comp.field, 'avg')
-      : (records[0] ? Object.keys(records[0]).length : 0).toString() },
-    { label: 'Last Updated', value: 'Live' },
-  ];
+  const recs = records || [];
+  const kpis = serverKpis
+    ? [
+        { label: 'Total Records', value: serverKpis.count.toLocaleString() },
+        { label: comp.field ? `Avg ${comp.field}` : 'Fields', value: comp.field && serverKpis.avg != null ? serverKpis.avg.toFixed(1) : '—' },
+        { label: 'Last Updated', value: 'Live' },
+      ]
+    : [
+        { label: 'Total Records', value: recs.length.toLocaleString() },
+        { label: comp.field ? `Avg ${comp.field}` : 'Fields', value: comp.field
+          ? aggregate(recs, comp.field, 'avg')
+          : (recs[0] ? Object.keys(recs[0]).length : 0).toString() },
+        { label: 'Last Updated', value: 'Live' },
+      ];
 
   return (
     <div style={{
@@ -771,9 +871,11 @@ const AreaChartWidget: React.FC<{ comp: AppComponent; records: Record<string, un
 };
 
 // ── Stat Card ────────────────────────────────────────────────────────────
-const StatCard: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
-  comp, records,
-}) => {
+const StatCard: React.FC<{
+  comp: AppComponent;
+  records?: Record<string, unknown>[];
+  serverStat?: { current: number; recent?: number | null; prior?: number | null };
+}> = ({ comp, records, serverStat }) => {
   const field = comp.field || '';
   const agg = comp.aggregation || 'count';
   const dateField = comp.comparisonField || '';
@@ -792,12 +894,17 @@ const StatCard: React.FC<{ comp: AppComponent; records: Record<string, unknown>[
     }
   };
 
-  const currentVal = computeValue(records);
+  const currentVal = serverStat ? serverStat.current : computeValue(records || []);
 
   // Compute trend if dateField is set — compare last 30 days vs prior 30 days
   let trendPct: number | null = null;
   let trendDirection: 'up' | 'down' | 'flat' = 'flat';
-  if (dateField && records.length > 0) {
+  if (serverStat && serverStat.recent != null && serverStat.prior != null) {
+    if (serverStat.prior > 0) {
+      trendPct = ((serverStat.recent - serverStat.prior) / serverStat.prior) * 100;
+      trendDirection = trendPct > 1 ? 'up' : trendPct < -1 ? 'down' : 'flat';
+    }
+  } else if (!serverStat && dateField && records && records.length > 0) {
     const now = Date.now();
     const d30 = 30 * 86400000;
     const recent = records.filter(r => {
@@ -1784,7 +1891,131 @@ function useEventBus(events: AppEvent[] | undefined) {
 
 // ── Component wrapper with per-type data loading ───────────────────────────
 
+// Build the JSON filter dict the aggregate endpoint expects, combining the
+// widget's own filters with the active cross-filter (if any, and we're not the
+// widget that emitted it).
+function buildServerFilters(
+  filters: AppFilter[] | undefined,
+  crossFilter: CrossFilter | null,
+  ownId: string,
+): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  for (const f of filters || []) {
+    if (!f.field) continue;
+    const isUnaryOp = f.operator === 'is_empty' || f.operator === 'is_not_empty';
+    if (!isUnaryOp && (f.value == null || f.value === '')) continue;
+    switch (f.operator) {
+      case 'eq': out[f.field] = f.value; break;
+      case 'neq': out[f.field] = { $neq: f.value }; break;
+      case 'gt': out[f.field] = { $gt: parseFloat(f.value) }; break;
+      case 'gte': out[f.field] = { $gte: parseFloat(f.value) }; break;
+      case 'lt': out[f.field] = { $lt: parseFloat(f.value) }; break;
+      case 'lte': out[f.field] = { $lte: parseFloat(f.value) }; break;
+      case 'after': out[f.field] = { $gte: f.value }; break;
+      case 'before': out[f.field] = { $lte: f.value }; break;
+      case 'contains': out[f.field] = { $contains: f.value }; break;
+      case 'is_empty': out[f.field] = { $is_null: true }; break;
+      case 'is_not_empty': out[f.field] = { $is_not_null: true }; break;
+      default: break;
+    }
+  }
+  if (crossFilter && crossFilter.sourceId !== ownId) {
+    out[crossFilter.field] = crossFilter.value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+// Aggregate-only widgets that can short-circuit the full-records fetch.
+const SERVER_AGG_TYPES = new Set(['metric-card', 'kpi-banner', 'stat-card']);
+
+const ServerAggMetricCard: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const { rows, loading } = useAggregate(comp.objectTypeId, {
+    aggregations: [{ field: comp.aggregation === 'count' ? undefined : comp.field, method: comp.aggregation || 'count' }],
+    filters: serverFilters,
+    limit: 1,
+  });
+  if (loading) return <LoadingTile />;
+  const v = rows[0]?.agg_0;
+  return <MetricCard comp={comp} serverValue={typeof v === 'number' ? v : null} />;
+};
+
+const ServerAggKpiBanner: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const aggregations: AggregateSpec[] = [{ method: 'count' }];
+  if (comp.field) aggregations.push({ field: comp.field, method: 'avg' });
+  const { rows, loading } = useAggregate(comp.objectTypeId, {
+    aggregations,
+    filters: serverFilters,
+    limit: 1,
+  });
+  if (loading) return <LoadingTile />;
+  const r = rows[0] || {};
+  const count = typeof r.agg_0 === 'number' ? r.agg_0 : 0;
+  const avg = typeof r.agg_1 === 'number' ? r.agg_1 : null;
+  return <KpiBanner comp={comp} serverKpis={{ count, avg }} />;
+};
+
+const ServerAggStatCard: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const method = (comp.aggregation || 'count') as AggregateSpec['method'];
+  const baseAgg: AggregateSpec = { field: method === 'count' ? undefined : comp.field, method };
+  const { rows: currentRows, loading: l1 } = useAggregate(comp.objectTypeId, {
+    aggregations: [baseAgg],
+    filters: serverFilters,
+    limit: 1,
+  });
+
+  // Period comparison via comparisonField if configured
+  const dateField = comp.comparisonField;
+  const now = Date.now();
+  const d30 = 30 * 86400000;
+  const recentSince = new Date(now - d30).toISOString();
+  const priorSince = new Date(now - d30 * 2).toISOString();
+  const priorBefore = new Date(now - d30).toISOString();
+
+  const recentFilters = dateField ? { ...(serverFilters || {}), [dateField]: { $gte: recentSince } } : null;
+  const priorFilters = dateField ? { ...(serverFilters || {}), [dateField]: { $gte: priorSince, $lte: priorBefore } } : null;
+
+  const { rows: recentRows, loading: l2 } = useAggregate(
+    dateField ? comp.objectTypeId : undefined,
+    recentFilters ? { aggregations: [baseAgg], filters: recentFilters as Record<string, unknown>, limit: 1 } : null,
+  );
+  const { rows: priorRows, loading: l3 } = useAggregate(
+    dateField ? comp.objectTypeId : undefined,
+    priorFilters ? { aggregations: [baseAgg], filters: priorFilters as Record<string, unknown>, limit: 1 } : null,
+  );
+
+  if (l1 || l2 || l3) return <LoadingTile />;
+  const current = (currentRows[0]?.agg_0 as number | undefined) ?? 0;
+  const recent = (recentRows[0]?.agg_0 as number | undefined) ?? null;
+  const prior = (priorRows[0]?.agg_0 as number | undefined) ?? null;
+  return <StatCard comp={comp} serverStat={{ current, recent, prior }} />;
+};
+
+const LoadingTile: React.FC = () => (
+  <div style={{
+    backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    height: '100%', color: '#94A3B8', fontSize: 12,
+  }}>
+    Loading…
+  </div>
+);
+
 const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, events, allComponents }) => {
+  const { filter: crossFilter } = useContext(CrossFilterContext);
+
+  // For pure-aggregate widgets, skip the full pagination — fetch only the
+  // aggregated values from the server. Eliminates the per-widget 100k pull.
+  if (comp.objectTypeId && SERVER_AGG_TYPES.has(comp.type)) {
+    const serverFilters = buildServerFilters(comp.filters, crossFilter, comp.id);
+    if (comp.type === 'metric-card') return <ServerAggMetricCard comp={comp} serverFilters={serverFilters} />;
+    if (comp.type === 'kpi-banner') return <ServerAggKpiBanner comp={comp} serverFilters={serverFilters} />;
+    if (comp.type === 'stat-card') return <ServerAggStatCard comp={comp} serverFilters={serverFilters} />;
+  }
+
+  return <ComponentRendererRaw comp={comp} events={events} allComponents={allComponents} />;
+};
+
+const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, allComponents }) => {
   const { records: rawRecords, loading } = useRecords(comp.objectTypeId);
   const { filter: crossFilter } = useContext(CrossFilterContext);
   const afterCompFilters = applyFilters(rawRecords, comp.filters);

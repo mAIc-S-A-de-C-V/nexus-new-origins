@@ -8,18 +8,24 @@ GET  /object-types/{ot_id}/records/{record_id}/links/{link_id}  → traverse a l
 PATCH  /object-types/{ot_id}/records/{record_id}        → partial update (merge into data)
 DELETE /object-types/{ot_id}/records/{record_id}         → delete a record
 """
+import asyncio
 import json
+import logging
 import os
+import re
 import httpx
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Header, Depends, BackgroundTasks, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func as sa_func, text
 from sqlalchemy.orm.attributes import flag_modified
 from database import get_session, ObjectTypeRow, ObjectRecordRow, OntologyLinkRow
 from shared.auth_middleware import require_auth, AuthUser
+
+logger = logging.getLogger(__name__)
 
 CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
 
@@ -148,7 +154,7 @@ async def list_records(
     filter: Optional[str] = Query(None, description="JSON filter string"),
     sort_field: Optional[str] = Query(None, description="JSONB field to sort by"),
     sort_dir: Optional[str] = Query("asc", description="Sort direction: asc or desc"),
-    limit: int = Query(50, ge=1, le=500, description="Page size"),
+    limit: int = Query(50, ge=1, le=10000, description="Page size (max 10000)"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     x_tenant_id: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_session),
@@ -208,6 +214,289 @@ async def list_records(
         "offset": offset,
         "synced_at": rows[0].updated_at.isoformat() if rows else None,
     }
+
+
+# ── Aggregate (server-side rollup for dashboard widgets) ───────────────────
+
+_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+_AGG_METHODS = {"count", "sum", "avg", "min", "max", "count_distinct"}
+_BUCKETS = {"hour", "day", "week", "month", "quarter", "year"}
+
+
+def _safe_field(name: str) -> str:
+    """Return name if it matches our identifier whitelist, else raise."""
+    if not name or not _FIELD_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail=f"Invalid field name: {name!r}")
+    return name
+
+
+class AggregationSpec(BaseModel):
+    field: Optional[str] = None
+    method: str = "count"
+
+
+class TimeBucketSpec(BaseModel):
+    field: str
+    interval: str = "day"
+
+
+class AggregateRequest(BaseModel):
+    filters: Optional[str] = None
+    group_by: Optional[str] = None
+    time_bucket: Optional[TimeBucketSpec] = None
+    aggregations: list[AggregationSpec] = [AggregationSpec(method="count")]
+    sort_by: Optional[str] = None
+    sort_dir: str = "desc"
+    limit: int = 200
+
+
+@router.post("/{ot_id}/aggregate")
+async def aggregate_records(
+    ot_id: str,
+    body: AggregateRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """
+    Server-side aggregation over object records.
+
+    Body:
+      {
+        "filters": "{\"status\": \"active\"}",      // optional, same syntax as GET /records
+        "group_by": "department",                    // optional
+        "time_bucket": {                             // optional, mutually exclusive with group_by
+          "field": "created_at",
+          "interval": "day"                          // hour | day | week | month | quarter | year
+        },
+        "aggregations": [
+          {"method": "count"},
+          {"field": "amount", "method": "sum"}
+        ],
+        "sort_by": "agg_0",                          // "agg_0".."agg_N" or "group"
+        "sort_dir": "desc",
+        "limit": 200
+      }
+
+    Response:
+      {
+        "rows": [
+          {"group": "Sales", "agg_0": 1234, "agg_1": 56789.5},
+          ...
+        ],
+        "total_groups": 12
+      }
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+
+    if body.group_by and body.time_bucket:
+        raise HTTPException(status_code=400, detail="Specify either group_by or time_bucket, not both.")
+
+    if not body.aggregations:
+        raise HTTPException(status_code=400, detail="At least one aggregation is required.")
+
+    if body.time_bucket and body.time_bucket.interval not in _BUCKETS:
+        raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(_BUCKETS)}")
+
+    # Validate aggregations
+    for agg in body.aggregations:
+        if agg.method not in _AGG_METHODS:
+            raise HTTPException(status_code=400, detail=f"Unknown aggregation method: {agg.method}")
+        if agg.method != "count" and not agg.field:
+            raise HTTPException(status_code=400, detail=f"Aggregation '{agg.method}' requires a field")
+        if agg.field:
+            _safe_field(agg.field)
+
+    # Build SELECT projections
+    select_parts: list[str] = []
+    bind_params: dict[str, Any] = {"tid": tenant_id, "otid": ot_id}
+
+    if body.group_by:
+        gb = _safe_field(body.group_by)
+        select_parts.append(f"data->>'{gb}' AS grp")
+        group_clause = f"data->>'{gb}'"
+    elif body.time_bucket:
+        tb_field = _safe_field(body.time_bucket.field)
+        interval = body.time_bucket.interval
+        # Cast JSONB string to timestamptz, then truncate to bucket
+        select_parts.append(
+            f"to_char(date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz), 'YYYY-MM-DD\"T\"HH24:MI:SS') AS grp"
+        )
+        group_clause = f"date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz)"
+    else:
+        select_parts.append("'_total' AS grp")
+        group_clause = None
+
+    for i, agg in enumerate(body.aggregations):
+        alias = f"agg_{i}"
+        if agg.method == "count":
+            select_parts.append(f"COUNT(*) AS {alias}")
+        elif agg.method == "count_distinct":
+            f = _safe_field(agg.field)  # type: ignore[arg-type]
+            select_parts.append(f"COUNT(DISTINCT data->>'{f}') AS {alias}")
+        else:
+            f = _safe_field(agg.field)  # type: ignore[arg-type]
+            # NULLIF empty strings, fail-safe cast to numeric
+            value_expr = f"NULLIF(data->>'{f}', '')::numeric"
+            sql_fn = agg.method.upper()
+            select_parts.append(f"{sql_fn}({value_expr}) AS {alias}")
+
+    # WHERE clause
+    where_parts = ["tenant_id = :tid", "object_type_id = :otid"]
+    if body.filters:
+        # Reuse the JSONB filter parser; bind params get merged below
+        try:
+            parsed = json.loads(body.filters) if body.filters else {}
+        except (json.JSONDecodeError, TypeError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            for idx, (field, value) in enumerate(parsed.items()):
+                fkey = field.replace("'", "''")
+                accessor = f"data->>'{fkey}'"
+                if isinstance(value, dict):
+                    for op_key, op_val in value.items():
+                        op = op_key.lstrip("$")
+                        pname = f"flt{idx}"
+                        if op == "eq":
+                            where_parts.append(f"{accessor} = :{pname}")
+                            bind_params[pname] = str(op_val)
+                        elif op == "neq":
+                            where_parts.append(f"{accessor} != :{pname}")
+                            bind_params[pname] = str(op_val)
+                        elif op in ("gt", "gte", "lt", "lte"):
+                            cmp = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
+                            where_parts.append(f"({accessor})::numeric {cmp} :{pname}")
+                            bind_params[pname] = float(op_val)
+                        elif op == "contains":
+                            where_parts.append(f"{accessor} ILIKE :{pname}")
+                            bind_params[pname] = f"%{op_val}%"
+                        elif op == "is_null":
+                            where_parts.append(f"{accessor} IS NULL")
+                        elif op == "is_not_null":
+                            where_parts.append(f"{accessor} IS NOT NULL")
+                        elif op == "in" and isinstance(op_val, list):
+                            placeholders = []
+                            for j, v in enumerate(op_val):
+                                k = f"{pname}_{j}"
+                                placeholders.append(f":{k}")
+                                bind_params[k] = str(v)
+                            where_parts.append(f"{accessor} IN ({', '.join(placeholders)})")
+                else:
+                    pname = f"flt{idx}"
+                    where_parts.append(f"{accessor} = :{pname}")
+                    bind_params[pname] = str(value)
+
+    where_sql = " AND ".join(where_parts)
+
+    # ORDER BY
+    order_sql = ""
+    if body.sort_by:
+        sb = body.sort_by
+        direction = "DESC" if body.sort_dir.lower() == "desc" else "ASC"
+        if sb == "group":
+            order_sql = f"ORDER BY grp {direction}"
+        elif re.match(r"^agg_\d+$", sb):
+            agg_idx = int(sb.split("_")[1])
+            if 0 <= agg_idx < len(body.aggregations):
+                order_sql = f"ORDER BY {sb} {direction} NULLS LAST"
+    elif group_clause:
+        order_sql = "ORDER BY agg_0 DESC NULLS LAST"
+
+    # LIMIT
+    safe_limit = max(1, min(int(body.limit or 200), 5000))
+
+    if group_clause:
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM object_records "
+            f"WHERE {where_sql} AND {group_clause} IS NOT NULL "
+            f"GROUP BY grp "
+            f"{order_sql} "
+            f"LIMIT {safe_limit}"
+        )
+    else:
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM object_records "
+            f"WHERE {where_sql}"
+        )
+
+    try:
+        result = await db.execute(text(sql), bind_params)
+        rows = result.mappings().all()
+    except Exception as exc:
+        logger.warning("aggregate failed for ot=%s tenant=%s: %s", ot_id, tenant_id, exc)
+        raise HTTPException(status_code=400, detail=f"Aggregation failed: {exc}")
+
+    serialized = []
+    for r in rows:
+        d: dict[str, Any] = {"group": r.get("grp")}
+        for i in range(len(body.aggregations)):
+            v = r.get(f"agg_{i}")
+            d[f"agg_{i}"] = float(v) if v is not None else None
+        serialized.append(d)
+
+    return {"rows": serialized, "total_groups": len(serialized)}
+
+
+# ── Indexes (on-demand JSONB expression indexes for hot fields) ────────────
+
+
+class IndexRequest(BaseModel):
+    fields: list[str]
+
+
+@router.post("/{ot_id}/indexes")
+async def create_indexes(
+    ot_id: str,
+    body: IndexRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """
+    Create CONCURRENT JSONB expression indexes on `data->>'<field>'` for the records table.
+
+    These indexes accelerate filters and group-by aggregations on the named fields.
+    The index is global (across tenants/object types) since the JSONB column is shared,
+    which is fine — Postgres uses the same expression index whatever the tenant.
+
+    Use this for hot fields: `status`, `amount`, `created_at`, `category`, etc.
+    """
+    if user.role not in ("admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="Admin role required to create indexes.")
+
+    if not body.fields:
+        raise HTTPException(status_code=400, detail="No fields specified")
+
+    safe_fields = []
+    for f in body.fields:
+        try:
+            safe_fields.append(_safe_field(f))
+        except HTTPException:
+            continue
+
+    if not safe_fields:
+        raise HTTPException(status_code=400, detail="No valid field names")
+
+    # CREATE INDEX CONCURRENTLY can't run inside a transaction.
+    # Use a dedicated autocommit connection.
+    engine = db.get_bind()
+    created = []
+    failed: dict[str, str] = {}
+
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        for f in safe_fields:
+            idx_name = f"idx_or_data_{f.lower()}"[:63]
+            sql = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {idx_name} ON object_records ((data->>'{f}'))"
+            try:
+                await conn.execute(text(sql))
+                created.append({"field": f, "index": idx_name})
+            except Exception as exc:
+                failed[f] = str(exc)
+
+    return {"created": created, "failed": failed}
 
 
 # ── GET single record ──────────────────────────────────────────────────────
