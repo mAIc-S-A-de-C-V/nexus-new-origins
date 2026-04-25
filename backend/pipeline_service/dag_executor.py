@@ -1265,11 +1265,25 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
     if not records_in:
         return []
 
-    pk_field = (
+    pk_field_raw = (
         cfg.get("mergeKey") or cfg.get("merge_key")
         or cfg.get("pkField") or cfg.get("pk_field")
         or (_guess_pk(records_in[0]) if records_in else "id")
     )
+
+    # Composite PK support: if merge key is comma-separated, synthesize a
+    # _composite_pk field on each record by joining values, and use that as
+    # the upsert key. e.g. "sensor_name,time,field" → "Afelpadora|2026-..|heap"
+    if isinstance(pk_field_raw, str) and "," in pk_field_raw:
+        pk_parts = [p.strip() for p in pk_field_raw.split(",") if p.strip()]
+        if pk_parts:
+            for rec in records_in:
+                rec["_composite_pk"] = "|".join(str(rec.get(p, "")) for p in pk_parts)
+            pk_field = "_composite_pk"
+        else:
+            pk_field = pk_field_raw
+    else:
+        pk_field = pk_field_raw
 
     # ── Skip diff-based events if a SINK_EVENT node already handles process events ──
     has_sink_event_node = pipeline.nodes and any(
