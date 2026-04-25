@@ -20,6 +20,14 @@ from shared.models import (
 )
 from shared.enums import SemanticType, PiiLevel, ConflictType, ConflictResolution
 from shared.token_tracker import track_token_usage
+from shared.llm_router import (
+    resolve_provider,
+    resolve_provider_sync,
+    make_anthropic_client,
+    make_async_anthropic_client,
+    chat_text_sync,
+    chat_text_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,33 +41,89 @@ class ClaudeInferenceClient:
     def __init__(self):
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set — inference will use mock responses")
+            logger.warning("ANTHROPIC_API_KEY not set — inference will use mock responses unless tenant has a provider configured")
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
         self.tenant_id: str = "unknown"
 
+    def _resolve_sync(self) -> tuple:
+        """Resolve per-tenant Anthropic client + model for legacy sync paths.
+        Falls back to env-based Anthropic when the resolved provider isn't Anthropic.
+        Prefer _chat_sync for new code so non-Anthropic providers route correctly.
+        """
+        try:
+            cfg = resolve_provider_sync(self.tenant_id)
+            if cfg.provider_type == "anthropic" and cfg.api_key:
+                return make_anthropic_client(cfg), cfg.model
+        except Exception as exc:
+            logger.warning("Sync provider resolve failed for %s: %s", self.tenant_id, exc)
+        return self.client, MODEL
+
+    async def _resolve_async(self) -> tuple:
+        """Async variant — see _resolve_sync caveat."""
+        try:
+            cfg = await resolve_provider(self.tenant_id)
+            if cfg.provider_type == "anthropic" and cfg.api_key:
+                return make_async_anthropic_client(cfg), cfg.model
+        except Exception as exc:
+            logger.warning("Async provider resolve failed for %s: %s", self.tenant_id, exc)
+        from anthropic import AsyncAnthropic
+        return AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", "")), MODEL
+
+    def _chat_sync(self, system: str, user_content: str, max_tokens: int = MAX_TOKENS) -> tuple[str, str]:
+        """Cross-provider synchronous text chat. Returns (text, model_name)."""
+        try:
+            cfg = resolve_provider_sync(self.tenant_id)
+        except Exception:
+            cfg = None
+        if cfg is None or not cfg.api_key and cfg.provider_type != "local":
+            if not self.client:
+                raise ValueError("No LLM provider configured for this tenant and ANTHROPIC_API_KEY is unset")
+            msg = self.client.messages.create(
+                model=MODEL, max_tokens=max_tokens, system=system,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            track_token_usage(self.tenant_id, "inference_service", MODEL,
+                              msg.usage.input_tokens, msg.usage.output_tokens)
+            return msg.content[0].text, MODEL
+
+        result = chat_text_sync(cfg, system, user_content, max_tokens=max_tokens)
+        track_token_usage(self.tenant_id, "inference_service", result["model"],
+                          result["input_tokens"], result["output_tokens"])
+        return result["text"], result["model"]
+
+    async def _chat_async(self, system: str, user_content: str, max_tokens: int = MAX_TOKENS) -> tuple[str, str]:
+        """Cross-provider async text chat. Returns (text, model_name)."""
+        try:
+            cfg = await resolve_provider(self.tenant_id)
+        except Exception:
+            cfg = None
+        if cfg is None or (not cfg.api_key and cfg.provider_type != "local"):
+            from anthropic import AsyncAnthropic
+            client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+            msg = await client.messages.create(
+                model=MODEL, max_tokens=max_tokens, system=system,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            track_token_usage(self.tenant_id, "inference_service", MODEL,
+                              msg.usage.input_tokens, msg.usage.output_tokens)
+            return msg.content[0].text, MODEL
+
+        result = await chat_text_async(cfg, system, user_content, max_tokens=max_tokens)
+        track_token_usage(self.tenant_id, "inference_service", result["model"],
+                          result["input_tokens"], result["output_tokens"])
+        return result["text"], result["model"]
+
     def _call(self, prompt: str) -> dict:
         """Make a Claude API call and parse JSON response."""
-        if not self.client:
-            raise ValueError("Anthropic API key not configured")
-
-        message = self.client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+        text, _model = self._chat_sync(
             system=(
                 "You are a precise data engineering assistant. Always respond with "
                 "valid JSON only — no markdown, no explanations outside the JSON structure."
             ),
+            user_content=prompt,
         )
-        track_token_usage(self.tenant_id, "inference_service", MODEL,
-                          message.usage.input_tokens, message.usage.output_tokens)
 
-        content = message.content[0].text.strip()
+        content = text.strip()
         # Strip markdown code fences robustly (handles ```json, ``` json, trailing newlines, etc.)
         if content.startswith("```"):
             # Remove opening fence line (e.g. ```json or ```)
@@ -629,9 +693,6 @@ The 'code' value must be a JSON string — escape all double quotes as \\", newl
         dashboard_widgets: list[dict] | None = None,
     ) -> str:
         """Two-pass approach: Claude plans the query from 5 samples, then answers from real results."""
-        if not self.client:
-            raise ValueError("Anthropic API key not configured")
-
         today = datetime.now().strftime("%Y-%m-%d")
         total = total_count if total_count is not None else len(records)
         sample = records[:5]
@@ -665,15 +726,12 @@ Rules:
 - selectFields: list the fields the user cares about. Empty array = all fields.
 - limit: max records to return after filtering (default 200)
 """
-        plan_response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=512,
+        plan_text_raw, _ = self._chat_sync(
             system="You are a data query planner. Output only valid JSON.",
-            messages=[{"role": "user", "content": plan_prompt}],
+            user_content=plan_prompt,
+            max_tokens=512,
         )
-        track_token_usage(self.tenant_id, "inference_service", MODEL,
-                          plan_response.usage.input_tokens, plan_response.usage.output_tokens)
-        plan_text = plan_response.content[0].text.strip()
+        plan_text = plan_text_raw.strip()
         # Strip markdown code fences if present
         if plan_text.startswith("```"):
             plan_text = "\n".join(plan_text.split("\n")[1:])
@@ -754,9 +812,7 @@ Rules:
                 "You can reference widget titles and explain what the data in them means."
             )
 
-        message = self.client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
+        text, _ = self._chat_sync(
             system=(
                 f"You are a data analyst. Today is {today}. Dataset: {object_type_name} ({total} total records). "
                 "Use GFM markdown: **bold** key values, ## headers, bullet lists, pipe tables. "
@@ -764,14 +820,10 @@ Rules:
                 + widget_guide
                 + dashboard_section
             ),
-            messages=[{
-                "role": "user",
-                "content": f"Question: {question}{fallback_note}\n\nQuery results ({object_type_name}):\n{result_section}",
-            }],
+            user_content=f"Question: {question}{fallback_note}\n\nQuery results ({object_type_name}):\n{result_section}",
+            max_tokens=2048,
         )
-        track_token_usage(self.tenant_id, "inference_service", MODEL,
-                          message.usage.input_tokens, message.usage.output_tokens)
-        return message.content[0].text
+        return text
 
     # ------------------------------------------------------------------
     # Async AI Copilot methods (Phase 8)
@@ -781,10 +833,6 @@ Rules:
         self, description: str, connectors: list, object_types: list
     ) -> dict:
         """Generate a pipeline config from natural language description."""
-        from anthropic import AsyncAnthropic
-
-        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
         prompt = f"""You are building a data pipeline configuration for Nexus platform.
 
 Available connectors:
@@ -823,18 +871,15 @@ Edges connect nodes sequentially via source/target node IDs.
 
 Return ONLY valid JSON. No markdown, no explanation."""
 
-        message = await async_client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
+        text, _resolved_model = await self._chat_async(
             system=(
                 "You are a precise data engineering assistant. Always respond with "
                 "valid JSON only — no markdown, no explanations outside the JSON structure."
             ),
-            messages=[{"role": "user", "content": prompt}],
+            user_content=prompt,
+            max_tokens=2048,
         )
-        track_token_usage(self.tenant_id, "inference_service", MODEL,
-                          message.usage.input_tokens, message.usage.output_tokens)
-        content = message.content[0].text.strip()
+        content = text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]
             if content.rstrip().endswith("```"):
@@ -845,10 +890,6 @@ Return ONLY valid JSON. No markdown, no explanation."""
         self, description: str, object_types: list, existing_functions: list
     ) -> dict:
         """Generate a logic function config from natural language description."""
-        from anthropic import AsyncAnthropic
-
-        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
         prompt = f"""You are building a Logic Function for Nexus platform. Logic Functions are automated workflows composed of blocks.
 
 Available object types and their fields:
@@ -898,18 +939,15 @@ Generate a logic function as JSON:
 Available block types: ontology_query, llm, condition, http_request, transform, notification, email
 Return ONLY valid JSON."""
 
-        message = await async_client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
+        text, _resolved_model = await self._chat_async(
             system=(
                 "You are a precise data engineering assistant. Always respond with "
                 "valid JSON only — no markdown, no explanations outside the JSON structure."
             ),
-            messages=[{"role": "user", "content": prompt}],
+            user_content=prompt,
+            max_tokens=2048,
         )
-        track_token_usage(self.tenant_id, "inference_service", MODEL,
-                          message.usage.input_tokens, message.usage.output_tokens)
-        content = message.content[0].text.strip()
+        content = text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]
             if content.rstrip().endswith("```"):
@@ -920,10 +958,6 @@ Return ONLY valid JSON."""
         self, nodes: list, edges: list, focus_node_id: str | None
     ) -> dict:
         """Analyze a data lineage graph and explain it in plain English."""
-        from anthropic import AsyncAnthropic
-
-        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
         node_map = {n["id"]: n for n in nodes}
         graph_lines = []
         for edge in edges:
@@ -964,18 +998,15 @@ Return JSON:
   ]
 }}"""
 
-        message = await async_client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
+        text, _resolved_model = await self._chat_async(
             system=(
                 "You are a precise data engineering assistant. Always respond with "
                 "valid JSON only — no markdown, no explanations outside the JSON structure."
             ),
-            messages=[{"role": "user", "content": prompt}],
+            user_content=prompt,
+            max_tokens=2048,
         )
-        track_token_usage(self.tenant_id, "inference_service", MODEL,
-                          message.usage.input_tokens, message.usage.output_tokens)
-        content = message.content[0].text.strip()
+        content = text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]
             if content.rstrip().endswith("```"):
@@ -986,10 +1017,6 @@ Return JSON:
         self, object_type_name: str, fields: list, records: list
     ) -> dict:
         """Analyze a dataset for anomalies and data quality issues."""
-        from anthropic import AsyncAnthropic
-
-        async_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
         stats = {}
         for field in fields:
             values = [r.get(field) for r in records if r.get(field) is not None]
@@ -1037,18 +1064,15 @@ Return JSON:
 
 Return ONLY valid JSON."""
 
-        message = await async_client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
+        text, _resolved_model = await self._chat_async(
             system=(
                 "You are a precise data engineering assistant. Always respond with "
                 "valid JSON only — no markdown, no explanations outside the JSON structure."
             ),
-            messages=[{"role": "user", "content": prompt}],
+            user_content=prompt,
+            max_tokens=2048,
         )
-        track_token_usage(self.tenant_id, "inference_service", MODEL,
-                          message.usage.input_tokens, message.usage.output_tokens)
-        content = message.content[0].text.strip()
+        content = text.strip()
         if content.startswith("```"):
             content = content[content.index("\n") + 1:]
             if content.rstrip().endswith("```"):
@@ -1087,9 +1111,6 @@ def generate_workbench_cells(
     ontology_context: list[dict],
 ) -> list[dict]:
     """Ask Claude to produce the next batch of notebook cells to append."""
-    if not client.client:
-        raise ValueError("Anthropic API key not configured")
-
     # Compact ontology context: object_type_id -> name + up-to-25 field names
     compact_ot = []
     for ot in ontology_context[:12]:
@@ -1116,16 +1137,13 @@ def generate_workbench_cells(
         "prior_cells": trimmed_prior,
     })
 
-    message = client.client.messages.create(
-        model=MODEL,
-        max_tokens=3500,
+    text, _resolved_model = client._chat_sync(
         system=WORKBENCH_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
+        user_content=user_msg,
+        max_tokens=3500,
     )
-    track_token_usage(client.tenant_id, "inference_service", MODEL,
-                      message.usage.input_tokens, message.usage.output_tokens)
 
-    content = message.content[0].text.strip()
+    content = text.strip()
     if content.startswith("```"):
         content = content[content.index("\n") + 1:]
         if content.rstrip().endswith("```"):

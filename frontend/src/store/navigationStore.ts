@@ -17,7 +17,7 @@ interface NavigationStore {
 }
 
 export const useNavigationStore = create<NavigationStore>((set, get) => ({
-  currentPage: 'connectors',
+  currentPage: 'apps',
   pendingPipeline: null,
   breadcrumbs: [],
 

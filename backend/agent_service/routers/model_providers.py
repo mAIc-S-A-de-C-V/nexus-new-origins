@@ -41,13 +41,22 @@ class ProviderUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
+def _mask_key(key: Optional[str]) -> Optional[str]:
+    if not key:
+        return None
+    if len(key) <= 8:
+        return "•" * len(key)
+    return f"{key[:4]}{'•' * 8}{key[-4:]}"
+
+
 def _to_dict(row: ModelProviderRow) -> dict:
     return {
         "id": row.id,
         "tenant_id": row.tenant_id,
         "name": row.name,
         "provider_type": row.provider_type,
-        "api_key_encrypted": row.api_key_encrypted,
+        "api_key_encrypted": _mask_key(row.api_key_encrypted),
+        "has_api_key": bool(row.api_key_encrypted),
         "base_url": row.base_url,
         "models": row.models or [],
         "is_default": row.is_default,
@@ -115,7 +124,7 @@ async def update_provider(
         row.name = body.name
     if body.provider_type is not None:
         row.provider_type = body.provider_type
-    if body.api_key_encrypted is not None:
+    if body.api_key_encrypted is not None and "•" not in body.api_key_encrypted:
         row.api_key_encrypted = body.api_key_encrypted
     if body.base_url is not None:
         row.base_url = body.base_url
