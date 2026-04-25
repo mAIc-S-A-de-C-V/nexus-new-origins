@@ -1,8 +1,8 @@
 # Nexus Platform — Complete Documentation
 
-> **Version:** 1.0
-> **Last Updated:** 2026-04-14
-> **Architecture:** 23 microservices, React/TypeScript frontend, PostgreSQL + TimescaleDB, Redis
+> **Version:** 1.1
+> **Last Updated:** 2026-04-20
+> **Architecture:** 25+ microservices, React/TypeScript frontend, PostgreSQL + TimescaleDB, Redis
 
 ---
 
@@ -33,11 +33,14 @@
 23. [Projects](#23-projects)
 24. [Finance](#24-finance)
 25. [Admin Hub](#25-admin-hub)
-26. [Settings & Health](#26-settings--health)
-27. [Lineage](#27-lineage)
-28. [Backend Services Reference](#28-backend-services-reference)
-29. [Frontend Architecture](#29-frontend-architecture)
-30. [Deployment](#30-deployment)
+26. [Superadmin Management](#26-superadmin-management)
+27. [Nexus Assistant](#27-nexus-assistant)
+28. [Settings & Health](#28-settings--health)
+29. [Lineage](#29-lineage)
+30. [Token Tracking](#30-token-tracking)
+31. [Backend Services Reference](#31-backend-services-reference)
+32. [Frontend Architecture](#32-frontend-architecture)
+33. [Deployment](#33-deployment)
 
 ---
 
@@ -85,14 +88,14 @@ Nexus is an enterprise data operations platform — a unified system for modelin
     ┌─────────────────┼──────────────────┐
     │                 │                  │
 ┌───▼───┐     ┌──────▼──────┐    ┌──────▼──────┐
-│Frontend│     │ 23 Backend  │    │  Databases  │
+│Frontend│     │ 25+ Backend │    │  Databases  │
 │ React  │     │ Microsvcs   │    │ Postgres    │
-│ :3000  │     │ :8001-8023  │    │ TimescaleDB │
+│ :3000  │     │ :8001-9001  │    │ TimescaleDB │
 └────────┘     └─────────────┘    │ Redis       │
                                   └─────────────┘
 ```
 
-### Backend Services (23 total)
+### Backend Services (25+)
 
 | Port | Service | Purpose |
 |------|---------|---------|
@@ -117,8 +120,12 @@ Nexus is an enterprise data operations platform — a unified system for modelin
 | 8019 | data-quality-service | Data profiling, completeness scoring |
 | 8020 | collaboration-service | Comments and threaded discussions |
 | 8021 | api-gateway-service | External API exposure with key authentication |
-| 8022 | admin-service | Tenant provisioning and usage tracking |
-| 8023 | sepsis-service | Sample clinical dataset for QA testing |
+| 8022 | admin-service | Tenant management, token usage tracking |
+| 8023 | sepsis-service | Sample clinical dataset for sepsis demo |
+| 8024 | demo-service | Multi-industry demo datasets |
+| 8025 | whatsapp-service | WhatsApp Business API integration |
+| 9000 | project-management | Project tracking, Gantt charts, team management |
+| 9001 | finance-service | Expense, revenue, and accounts receivable tracking |
 
 ### Database Layer
 
@@ -134,8 +141,10 @@ Nexus is an enterprise data operations platform — a unified system for modelin
 |--------|---------|
 | `auth_middleware.py` | Reusable FastAPI dependency for JWT validation and role-based access |
 | `models.py` | Shared Pydantic schemas: pipelines, events, properties, scores |
-| `enums.py` | SemanticType (14 types), NodeType (10 types), PipelineStatus, PiiLevel, Role |
+| `enums.py` | SemanticType (14 types), NodeType (13 types), PipelineStatus, PiiLevel, Role |
 | `nexus_logging.py` | Structured JSON logging setup |
+| `token_tracker.py` | Fire-and-forget token usage reporting to admin service |
+| `llm_router.py` | Per-tenant LLM provider resolution + unified chat / agentic-loop adapters that work across Anthropic, OpenAI, Azure OpenAI, and OpenAI-compatible local endpoints (Ollama, vLLM, LM Studio). Both async and sync variants. Falls back to `ANTHROPIC_API_KEY` env when no provider is configured. |
 
 ### Key Architectural Patterns
 
@@ -157,6 +166,7 @@ Nexus is an enterprise data operations platform — a unified system for modelin
 3. Auth service validates credentials, returns JWT access + refresh tokens
 4. Tokens stored in `localStorage` via `authStore`
 5. All subsequent API requests include `x-tenant-id` header
+6. Default landing page on fresh sign-in: **Dashboards** (`apps` module). Returning users resume the last page they viewed (persisted in the navigation store).
 
 ### Authentication Methods
 
@@ -170,6 +180,7 @@ Nexus is an enterprise data operations platform — a unified system for modelin
 
 | Role | Access |
 |------|--------|
+| `SUPERADMIN` | Platform-wide operator — cross-tenant visibility, impersonation, health monitoring. Reserved for @maic.ai accounts. |
 | `ADMIN` | Full access — all modules, user management, tenant configuration |
 | `DATA_ENGINEER` | Connectors, pipelines, ontology, logic, utilities |
 | `ANALYST` | Data explorer, agents, apps, process mining, evals |
@@ -184,6 +195,15 @@ Users may also have `allowed_modules[]` restrictions that limit navigation to sp
 - All database queries filter by tenant
 - Tenant provisioning and usage tracking are managed in the Admin Hub
 
+### JWKS Key Rotation
+
+The auth service publishes a JWKS endpoint for key discovery. All backend services validate JWTs against the JWKS keys. On key rotation, services automatically retry key fetching — if the current key ID (`kid`) is not found in the cached key set, the JWKS is re-fetched before failing.
+
+### Rate Limiting
+
+- Login endpoint: **10 attempts per minute** per IP (slowapi)
+- Account lockout after 5 failed attempts (15-minute cooldown)
+
 ### API Endpoints (auth-service :8011)
 
 ```
@@ -194,6 +214,7 @@ GET  /auth/me                 — Current user profile
 POST /auth/mfa/setup          — Enable TOTP 2FA
 POST /auth/mfa/verify         — Verify MFA code
 GET  /auth/oidc/{provider}    — OIDC redirect (google, okta, azure)
+POST /auth/impersonate        — Impersonate a user (superadmin only)
 GET  /auth/users              — List users (admin only)
 POST /auth/users              — Create user
 PATCH /auth/users/{id}        — Update user (role, status)
@@ -319,11 +340,11 @@ POST   /object-types/{id}/records/sync        — Sync from source
 
 Pipelines are DAG-based (directed acyclic graph) workflows that move data from connectors into the ontology. Each pipeline is a chain of processing steps — source extraction, field mapping, filtering, validation, and sinking into an object type.
 
-### Node Types (10)
+### Node Types (13)
 
 | Node Type | Purpose |
 |-----------|---------|
-| `SOURCE` | Fetch data from a connector endpoint |
+| `SOURCE` | Fetch data from a connector endpoint. Supports HTTP method selection (GET/POST/PUT). |
 | `FILTER` | Apply conditional filters (field, operator, value) |
 | `MAP` | Rename/transform fields from source schema to ontology schema |
 | `CAST` | Convert data types (string → integer, date parsing) |
@@ -331,8 +352,11 @@ Pipelines are DAG-based (directed acyclic graph) workflows that move data from c
 | `FLATTEN` | Flatten nested JSON structures |
 | `DEDUPE` | Remove duplicate records by key |
 | `VALIDATE` | Apply validation rules (required fields, ranges) |
+| `LLM_CLASSIFY` | Claude-powered classification of records into categories |
 | `SINK_OBJECT` | Write records to an ontology object type (PostgreSQL) |
 | `SINK_EVENT` | Write events to TimescaleDB for process mining |
+| `AGENT_RUN` | Trigger an agent execution within the pipeline |
+| `LOOKUP` | Cross-reference records against another object type |
 
 ### Pipeline Execution
 
@@ -341,7 +365,8 @@ Pipelines are DAG-based (directed acyclic graph) workflows that move data from c
 3. DAG executor processes nodes in topological order
 4. Each node logs: rows_in, rows_out, errors, duration
 5. Final status: `COMPLETED` or `FAILED`
-6. Results queryable via the run audit endpoint
+6. Pipeline marks `FAILED` on HTTP errors (not just exceptions) — any non-2xx response from a SOURCE node triggers failure
+7. Results queryable via the run audit endpoint
 
 ### Scheduling
 
@@ -633,7 +658,7 @@ Agent Studio is the AI analyst layer. Users configure Claude-powered agents with
 |---------|-------------|
 | **Name** | Display name for the agent |
 | **System Prompt** | Instructions defining the agent's persona and behavior |
-| **Model** | Claude model selection: `Haiku 4.5`, `Sonnet 4.6`, `Opus 4.6` |
+| **Model** | Model picker. Lists Claude defaults plus any model the tenant has registered in Settings → AI Models (OpenAI, Azure OpenAI, local Ollama / vLLM / LM Studio model IDs). Resolution at run-time consults the tenant's default provider unless a `provider_id` is overridden on the agent or schedule. |
 | **Max Iterations** | Maximum tool-use loops per message (prevents runaway) |
 | **Enabled Tools** | Which tools the agent can call |
 | **Knowledge Scope** | Restrict the agent to specific object types and/or filters |
@@ -1252,11 +1277,112 @@ DELETE /admin/tenants/{id}                       — Deactivate tenant
 
 ---
 
-## 26. Settings & Health
+## 26. Superadmin Management
+
+### What It Does
+
+Superadmin Management provides platform-wide operational controls for @maic.ai operators. The `SUPERADMIN` role grants cross-tenant visibility, health monitoring, token usage tracking, and the ability to impersonate any user for debugging and support.
+
+### Platform Page
+
+The Platform page is accessible only to superadmin users and contains four tabs:
+
+| Tab | Description |
+|-----|-------------|
+| **Tenants** | Cross-tenant list with usage stats, record counts, and active user counts |
+| **Token Usage** | Aggregated LLM token consumption by tenant, service, and model |
+| **Health** | Platform-wide service health dashboard with latency metrics |
+| **Impersonation** | Browse and impersonate any user across any tenant |
+
+### Token Usage Tracking
+
+- All LLM call sites across the platform report token usage via fire-and-forget POST to the admin service
+- Uses the shared `token_tracker.py` utility (see [Section 30](#30-token-tracking))
+- Dashboard shows aggregation by tenant, service, and model
+- Supports date range filtering and CSV export
+
+### Account Impersonation
+
+Superadmins can impersonate any user to debug tenant-specific issues:
+
+1. Superadmin selects a user from the Impersonation tab
+2. `POST /auth/impersonate` issues a new JWT with an `impersonated_by` claim containing the superadmin's user ID
+3. The frontend switches to the impersonated user's tenant and role
+4. A **red impersonation banner** is displayed at the top of the screen with an exit button
+5. Impersonation state is persisted in `sessionStorage` to survive page reloads
+6. Clicking "Exit Impersonation" restores the superadmin's original session
+
+### Security
+
+- Impersonation is restricted to the `SUPERADMIN` role
+- The `impersonated_by` claim is included in all audit log entries during an impersonation session
+- All impersonation events (start/end) are logged in the audit service
+
+---
+
+## 27. Nexus Assistant
+
+### What It Does
+
+The Nexus Assistant is an in-app AI sidebar that provides context-aware help and data exploration capabilities. It is accessible from the right side of the application shell.
+
+### Modes
+
+| Mode | Description |
+|------|-------------|
+| **Platform Help** | Streaming, context-aware answers about platform features, navigation, and best practices. Uses the current page context to provide relevant help. |
+| **Data Explorer** | Natural language queries against object records. Ask questions like "show me all patients admitted in the last 7 days" and get structured results. |
+
+### Action System
+
+The assistant can perform platform actions on behalf of the user:
+
+| Action | Description |
+|--------|-------------|
+| **Create Connector** | Set up a new data source connection |
+| **Create Object Type** | Define a new ontology entity |
+| **Create Pipeline** | Build a data transformation pipeline |
+| **Create Logic Function** | Define an automation workflow |
+
+### Action Flow
+
+1. User requests an action in natural language (e.g., "create a connector for our HR API")
+2. The assistant gathers required parameters through conversation
+3. A **confirmation card** is rendered in the chat with the proposed action details
+4. User confirms or modifies the parameters
+5. Action is executed against the relevant backend service
+
+### Sequential Action Chaining
+
+The assistant supports chaining multiple actions in sequence. For example: "Create an object type called Employee, then create a pipeline to sync data from the HR connector into it." Each action is proposed as a confirmation card and executed in order upon approval.
+
+### Conversations
+
+- Conversations are **tenant-scoped** — each tenant has its own conversation history
+- Full message history is persisted and retrievable
+- Streaming responses via SSE for real-time display
+
+---
+
+## 28. Settings & Health
 
 ### Settings
 
-User and platform preferences accessible from the nav rail.
+User and platform preferences accessible from the nav rail. Tab-based layout:
+
+| Tab | Description |
+|---------|-------------|
+| **General** | Organization name, timezone, account info |
+| **AI Models** | Per-tenant LLM provider management — Anthropic / OpenAI / Azure OpenAI / Google / Local. CRUD with masked API keys, custom base URLs, model registration, connection testing, default selection, and enable/disable toggle. Detailed below. |
+| **Notifications** | Email + Slack channel configuration with test-send |
+| **API Keys** | Outbound integration keys exposed by Nexus (separate from inbound LLM keys above) |
+| **Data Retention** | Per-domain retention windows (events, audit, ontology records) |
+| **Permissions** | Role/capability matrix (read-only) |
+| **Alert Rules** | Linked Alerts page |
+| **API Gateway** | Linked Gateway page |
+| **System Health** | Service health dashboard |
+
+Top-bar / global preferences:
 
 | Setting | Description |
 |---------|-------------|
@@ -1266,9 +1392,49 @@ User and platform preferences accessible from the nav rail.
 | **Schedules** | View and manage all active cron schedules across pipelines, agents, and logic functions |
 | **Health** | Service health dashboard |
 
+#### AI Models / Providers
+
+Each tenant can register its own LLM providers and pick which one the platform uses by default. The choice flows through every AI surface: Agent Studio, AIP Analyst, schema inference, app generation, workbench cells, lineage explanations, and chat-with-data.
+
+**Resolution order**
+
+1. If the caller passes an explicit `provider_id`, use that row.
+2. Otherwise, the tenant's `is_default = true` provider.
+3. Otherwise, the tenant's first `enabled = true` provider (oldest).
+4. Otherwise, the platform-wide `ANTHROPIC_API_KEY` env fallback.
+
+**Backed by `model_providers` table**
+
+```sql
+id, tenant_id, name, provider_type, api_key_encrypted, base_url,
+models (jsonb), is_default, enabled, created_at
+```
+
+**Provider types**
+
+| `provider_type` | Routing | SDK |
+|---|---|---|
+| `anthropic` | Direct Anthropic API | `anthropic.AsyncAnthropic` |
+| `openai` | OpenAI Chat Completions | `openai.AsyncOpenAI` |
+| `azure_openai` | Azure OpenAI Chat Completions | `openai.AsyncOpenAI` w/ resource base URL |
+| `local` | OpenAI-compatible local server (Ollama auto-appends `/v1`) | `openai.AsyncOpenAI` w/ custom base URL |
+| `google` | Connection test only — chat path falls back to Anthropic env until the Gemini SDK is wired | — |
+
+**Cross-provider tool-use** — `agent_turn_async` in `shared/llm_router.py` translates Anthropic tool definitions to OpenAI `function` schema, and converts OpenAI `tool_calls` back into Claude-style `tool_use` content blocks so the agentic loop in `agent_service/runtime.py` works regardless of provider.
+
+**API endpoints (agent-service :8013)**
+
+```
+GET    /model-providers              — list (api_key_encrypted is masked: abcd••••••••wxyz)
+POST   /model-providers              — create
+PUT    /model-providers/{id}         — update; masked-value bodies are ignored
+DELETE /model-providers/{id}         — remove
+POST   /model-providers/{id}/test    — connection probe
+```
+
 ### Platform Health
 
-Displays the status of all 23 backend services:
+Displays the status of all 25+ backend services:
 
 - **Service Name** and port
 - **Status:** Healthy (green) / Unhealthy (red)
@@ -1279,7 +1445,7 @@ Each service exposes `GET /health` returning `{ "status": "ok" }`.
 
 ---
 
-## 27. Lineage
+## 29. Lineage
 
 ### What It Does
 
@@ -1303,11 +1469,54 @@ GET /lineage/impact/{id}                         — Affected objects
 
 ---
 
-## 28. Backend Services Reference
+## 30. Token Tracking
+
+### What It Does
+
+Token tracking provides platform-wide visibility into LLM token consumption across all services that call an LLM. It enables cost attribution by tenant, service, and model — across whatever provider the tenant has configured (Anthropic / OpenAI / Azure OpenAI / Local). Records carry the resolved model ID, so downstream cost reports remain accurate even when a tenant switches providers.
+
+### Architecture
+
+- **Shared Utility:** `token_tracker.py` in `/backend/shared/` provides a fire-and-forget function to report token usage
+- **Fire-and-Forget:** Each LLM call site sends a non-blocking POST to the admin service with usage data after the LLM response completes. Failures are logged but never block the caller.
+- **Admin Service Aggregation:** The admin service (8022) stores and aggregates token usage records
+
+### Instrumentation
+
+Token tracking is instrumented across **10 LLM call sites** in the platform:
+
+- Inference service (schema inference, app generation, code generation, PII scanning)
+- Agent service (agent conversations, tool use)
+- Logic service (LLM call blocks)
+- Pipeline service (LLM_CLASSIFY nodes)
+- Nexus Assistant (platform help, data explorer)
+
+### Usage Record Fields
+
+| Field | Description |
+|-------|-------------|
+| `tenant_id` | Tenant that initiated the request |
+| `service` | Originating service name |
+| `model` | Resolved model ID (e.g., `claude-sonnet-4-6`, `gpt-4o`, `llama3.1:8b`) — captured at call time from the tenant's selected provider |
+| `input_tokens` | Prompt token count |
+| `output_tokens` | Completion token count |
+| `timestamp` | When the call was made |
+
+### Aggregation
+
+The admin service provides aggregation queries:
+
+- **By tenant:** Total tokens per tenant over a date range
+- **By service:** Which services consume the most tokens
+- **By model:** Token distribution across model tiers
+
+---
+
+## 31. Backend Services Reference
 
 ### Complete API Endpoint Count
 
-**Total: 320+ endpoints across 23 services**
+**Total: 350+ endpoints across 25+ services**
 
 | Service | Port | Endpoints | Key Focus |
 |---------|------|-----------|-----------|
@@ -1321,7 +1530,7 @@ GET /lineage/impact/{id}                         — Affected objects
 | correlation-engine | 8008 | 2 | Semantic similarity scoring |
 | process-engine | 8009 | 13 | Process mining analytics, conformance |
 | alert-engine | 8010 | 15 | Alert rules, notifications, webhooks |
-| auth-service | 8011 | 14 | JWT auth, MFA, OIDC, user management |
+| auth-service | 8011 | 15 | JWT auth, MFA, OIDC, impersonation, user management |
 | logic-service | 8012 | 14 | Logic function editor/executor |
 | agent-service | 8013 | 20 | Claude agents, threads, tool execution |
 | utility-service | 8014 | 3 | Pre-built utilities (OCR, scrape, geocode) |
@@ -1332,8 +1541,12 @@ GET /lineage/impact/{id}                         — Affected objects
 | data-quality-service | 8019 | 3 | Data profiling, quality scoring |
 | collaboration-service | 8020 | 5 | Comments, threaded discussions |
 | api-gateway-service | 8021 | 9 | External API exposure |
-| admin-service | 8022 | 5 | Tenant provisioning, usage tracking |
-| sepsis-service | 8023 | 12 | Sample clinical dataset (QA) |
+| admin-service | 8022 | 8 | Tenant management, token usage tracking |
+| sepsis-service | 8023 | 12 | Sepsis clinical demo dataset |
+| demo-service | 8024 | 6 | Multi-industry demo datasets |
+| whatsapp-service | 8025 | 5 | WhatsApp Business API integration |
+| project-management | 9000 | 12 | Projects, companies, teams, Gantt |
+| finance-service | 9001 | 10 | Expenses, revenue, accounts receivable |
 
 ### Shared Infrastructure
 
@@ -1356,7 +1569,7 @@ Authorization: Bearer {jwt}      — Optional JWT auth (skippable in dev)
 
 ---
 
-## 29. Frontend Architecture
+## 32. Frontend Architecture
 
 ### Technology Stack
 
@@ -1480,7 +1693,7 @@ Warning:     #D97706 (orange)
 
 ---
 
-## 30. Deployment
+## 33. Deployment
 
 ### Docker Compose
 
@@ -1506,6 +1719,30 @@ timescaledb ──→ event-log-service ──→ process-engine
 redis ────────→ connector-service, pipeline-service (cache, pub/sub)
 ```
 
+### CI/CD — GitHub Actions
+
+Deployments are automated via GitHub Actions with a security-first pipeline:
+
+1. **Security Scan:** `pip-audit` checks Python dependencies for known vulnerabilities; Trivy scans Docker images for CVEs
+2. **Build:** Docker images built for all services
+3. **Deploy:** SSH into the EC2 instance with a **30-minute command timeout**
+4. **Pull & Restart:** `git reset --hard` to avoid local change conflicts, then `docker-compose up -d --build`
+
+#### Security Scan Details
+
+- **pip-audit:** Scans `requirements.txt` for packages with known CVEs
+- **Trivy:** Container image vulnerability scanner
+- **`.trivyignore`:** Allowlist for non-exploitable CVEs that would otherwise block deployment
+- Scans run on every push and PR to `main`
+
+### Production Infrastructure
+
+| Resource | Value |
+|----------|-------|
+| **Elastic IP** | `52.202.36.168` |
+| **Instance** | AWS EC2 |
+| **SSH Timeout** | 30 minutes per command |
+
 ### Environment Variables
 
 Key environment variables (set in docker-compose.yml or `.env`):
@@ -1515,10 +1752,11 @@ Key environment variables (set in docker-compose.yml or `.env`):
 | `DATABASE_URL` | PostgreSQL connection string |
 | `TIMESCALE_URL` | TimescaleDB connection string |
 | `REDIS_URL` | Redis connection string |
-| `ANTHROPIC_API_KEY` | Claude API key for inference/agent services |
+| `ANTHROPIC_API_KEY` | Default Claude API key. Acts as a platform-wide fallback when a tenant has no provider configured in Settings → AI Models. Tenants override this with their own Anthropic / OpenAI / Azure OpenAI / Local credentials. |
 | `JWT_SECRET` | Secret for JWT token generation |
 | `SKIP_AUTH` | Set `true` in dev to bypass authentication |
 | `CORS_ORIGINS` | Allowed CORS origins (default: localhost:3000,5173) |
+| `ALLOWED_ORIGIN_EC2` | Production CORS origin for the EC2 deployment |
 
 ### NGINX Configuration
 
@@ -1571,12 +1809,14 @@ Language is selectable from the user menu in the nav rail. Navigation labels, bu
 
 | Layer | Mechanism |
 |-------|-----------|
-| **Auth** | RS256 JWT with refresh tokens. JWKS endpoint for key rotation. |
+| **Auth** | RS256 JWT with refresh tokens. JWKS endpoint for key rotation with auto-retry. MFA via TOTP. |
 | **Rate Limiting** | slowapi on auth endpoints: 10 requests/minute |
 | **Account Lockout** | 5 failed login attempts → 15-minute lockout |
 | **Credential Storage** | Connector credentials encrypted at rest (Fernet) |
 | **PII Detection** | AI-powered PII scanning via inference service |
 | **Multi-Tenancy** | Strict tenant isolation via header-based scoping |
+| **Impersonation** | JWT-based with `impersonated_by` claim, superadmin-only, fully audited |
 | **Security Headers** | X-Content-Type-Options, X-Frame-Options on all responses |
-| **CORS** | Configurable origins, restrictive defaults |
+| **CORS** | Configurable origins via `CORS_ORIGINS` and `ALLOWED_ORIGIN_EC2`, restrictive defaults |
+| **CI Security** | pip-audit + Trivy scanning on every deployment, `.trivyignore` for non-exploitable CVEs |
 | **Audit Trail** | Immutable event log of all actions |

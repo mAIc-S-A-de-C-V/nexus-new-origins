@@ -17,8 +17,18 @@
 9. [Human Actions](#9-human-actions)
 10. [Utilities](#10-utilities)
 11. [Users & Roles](#11-users--roles)
-12. [Template Variable Reference](#12-template-variable-reference)
-13. [Quick-Reference Cheatsheet](#13-quick-reference-cheatsheet)
+12. [Superadmin & Platform Management](#12-superadmin--platform-management)
+13. [Admin Console](#13-admin-console)
+14. [Nexus Assistant](#14-nexus-assistant)
+15. [Data Quality](#15-data-quality)
+16. [Value Monitor](#16-value-monitor)
+17. [API Gateway](#17-api-gateway)
+18. [Collaboration](#18-collaboration)
+19. [Search](#19-search)
+20. [Audit & Compliance](#20-audit--compliance)
+21. [Settings — AI Models & Providers](#21-settings--ai-models--providers)
+22. [Template Variable Reference](#22-template-variable-reference)
+23. [Quick-Reference Cheatsheet](#23-quick-reference-cheatsheet)
 
 ---
 
@@ -55,6 +65,7 @@ test@anyco.com →  tenant-anyco-com  (auto-provisioned on first user create)
 
 **Step 1** — Enter email → click Next
 **Step 2** — Enter password → click Sign in
+**Step 3** — Land on the **Dashboards** module (default landing page for fresh sign-ins; returning users resume the last page they viewed).
 
 Default credentials (maic.ai):
 - Email: `admin@maic.ai`
@@ -270,6 +281,21 @@ Lookup Field        alert_id        ← query param on the detail endpoint
 ```
 
 For each row, the pipeline calls `GET /detail?alert_id={row.id}` and merges the response onto the row. Up to 10 concurrent calls.
+
+### Pipeline status and error handling
+
+- Pipeline status now correctly reports **FAILED** when SOURCE nodes receive HTTP errors (4xx, 5xx).
+- Field mappings and validation rules display as formatted JSON in the node inspector.
+
+### SOURCE node — HTTP method
+
+SOURCE nodes support an **HTTP Method** field (`GET`, `POST`, `PUT`). This overrides the connector's default method for the pipeline run. Useful when the same connector is used for both read and write operations.
+
+```
+Step Label      Fetch Records
+Connector       My API
+HTTP Method     POST             ← override connector default
+```
 
 ### SINK_EVENT node — process mining
 
@@ -640,9 +666,9 @@ The result is available in subsequent blocks as `{utility_result.items[0].title}
 
 | Role | Access |
 |---|---|
-| `ADMIN` | Everything — users, all modules, all data |
-| `DATA_ENGINEER` | Connectors, pipelines, ontology — no user management |
-| `ANALYST` | Read-only apps, dashboards, event log |
+| `SUPERADMIN` | Full platform access, cross-tenant visibility, impersonation, token tracking |
+| `ADMIN` | Tenant-level administration — users, all modules, all data |
+| `ANALYST` | Read + explore + query across all modules |
 | `VIEWER` | Read-only access |
 
 ### Creating a user
@@ -679,7 +705,331 @@ Creating a user for a domain auto-provisions that domain's tenant if it doesn't 
 
 ---
 
-## 12. Template Variable Reference
+## 12. Superadmin & Platform Management
+
+> **Where:** Left sidebar → Globe icon (only visible to `SUPERADMIN` role)
+
+The **superadmin** role has full cross-tenant visibility. Superadmins can see and manage all tenants, users, and usage from a single view. This is the top-level operator role for platform owners.
+
+### Platform page
+
+The Platform page is accessed via the **globe icon** in the NavRail. It is only rendered for users with the `SUPERADMIN` role. It contains four tabs:
+
+| Tab | Purpose |
+|---|---|
+| **Tenants** | Create and manage tenants (name, slug, plan) |
+| **Token Usage** | Monitor all LLM calls across services and tenants |
+| **Health** | Platform health overview |
+| **Impersonation** | Impersonate any user across any tenant |
+
+### Creating tenants
+
+From the **Tenants** tab, click **+ New Tenant** and fill in:
+
+```
+Name        MJSP
+Slug        mjsp-sv
+Plan        enterprise
+```
+
+### Creating users for tenants
+
+From within a tenant view, click **+ New User** to provision a user directly into that tenant. The same credentials card flow applies.
+
+### Token usage monitoring
+
+The **Token Usage** tab tracks all LLM calls across all services (agents, Logic Studio `llm_call` blocks, assistant queries). Usage is broken down by tenant, service, and model.
+
+### Impersonation
+
+Click **Impersonate** on any user row. The app immediately behaves as that user:
+
+- A **red banner** appears at the top of the screen indicating the impersonated session.
+- All data, permissions, and views reflect the impersonated user's tenant and role.
+- Click **Exit** on the banner to return to the superadmin session.
+- Impersonated sessions persist across page reloads via `sessionStorage`.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  ⚠ Impersonating: jose@mjsp.sv (ADMIN)          [ Exit ]        │
+├──────────────────────────────────────────────────────────────────┤
+│  ... app renders as jose@mjsp.sv ...                             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 13. Admin Console
+
+> **Where:** `/admin` route (protected by `SUPERADMIN` role)
+
+The Admin Console provides a dedicated interface for tenant CRUD operations. Accessible at the `/admin` route, it is protected and only available to users with the `SUPERADMIN` role.
+
+### Capabilities
+
+- **Create** new tenants with name, slug, and plan
+- **Read** tenant details and associated users
+- **Update** tenant configuration and plan
+- **Delete** tenants (with confirmation)
+
+---
+
+## 14. Nexus Assistant
+
+> **Where:** Bottom-right chat icon (available on all pages)
+
+The Nexus Assistant is an AI-powered chat sidebar that provides contextual help and data exploration.
+
+### Opening the assistant
+
+Click the **chat icon** in the bottom-right corner of any page. The sidebar slides open.
+
+### Two modes
+
+| Mode | Purpose |
+|---|---|
+| **Platform Help** | Ask questions about the platform, get streaming responses |
+| **Data Explorer** | Query specific object type records using natural language |
+
+### Platform Help mode
+
+- **Streaming responses** — answers appear token by token.
+- **Context-aware** — the assistant knows your current page, connectors, pipelines, and object types.
+- Ask things like "How do I set up a Dynamic Login connector?" or "What pipelines are connected to the Borrower object type?"
+
+### Data Explorer mode
+
+- Select an **object type** from the dropdown.
+- Ask natural language questions about the data: "Show me all borrowers with credit score above 700" or "How many alerts were created this week?"
+- Results render as tables within the chat.
+
+### Action system
+
+The assistant can **create** platform resources on your behalf:
+
+- Connectors
+- Object types
+- Pipelines
+- Logic functions
+
+Actions appear as **confirmation cards** in the chat with **Confirm** and **Cancel** buttons. You must explicitly confirm before any resource is created.
+
+```
+┌──────────────────────────────────────────────────────┐
+│  🔧 Create Object Type                               │
+│                                                      │
+│  Name:    Invoice                                    │
+│  Fields:  id (text), amount (number), status (text)  │
+│                                                      │
+│  [ Confirm ]    [ Cancel ]                           │
+└──────────────────────────────────────────────────────┘
+```
+
+Actions are **chained sequentially** — one action per message. The assistant waits for confirmation before proposing the next action.
+
+### Tenant scoping
+
+Conversations are **tenant-scoped**. Each tenant sees only their own conversation history.
+
+---
+
+## 15. Data Quality
+
+> **Where:** Left sidebar → Data Quality
+
+Monitor and enforce data quality across your ontology.
+
+### Quality scoring
+
+Each object type receives a **quality score** based on completeness, consistency, and validity of its records. Scores are displayed as a percentage on the Data Quality dashboard.
+
+### On-demand quality checks
+
+Click **Run Check** on any object type to trigger a quality evaluation. The check analyzes all records and updates the quality score in real time.
+
+---
+
+## 16. Value Monitor
+
+> **Where:** Left sidebar → Value Monitor
+
+Track the business value delivered by the platform over time.
+
+### Business value categories
+
+Organize value delivery into categories (e.g., cost savings, risk reduction, operational efficiency) and associate them with specific use cases.
+
+### Timeline view
+
+A timeline visualization shows when and how value was delivered, making it easy to report on ROI and platform impact.
+
+---
+
+## 17. API Gateway
+
+> **Where:** Left sidebar → API Gateway
+
+Expose ontology data as external REST APIs for downstream consumers.
+
+### How it works
+
+1. Select an **object type** to expose
+2. The gateway generates a **dynamic endpoint** with a slug (e.g., `/api/v1/borrowers`)
+3. Consumers authenticate with an **API key**
+
+### API key management
+
+- **Create** API keys with a label and optional expiration
+- **Revoke** keys instantly
+- **Toggle** keys on/off without deleting them
+
+```
+┌──────────────────────────────────────────────────────┐
+│  API Keys                                            │
+│                                                      │
+│  Key              Status     Created                 │
+│  sk-abc...xyz     Active     2026-04-01    [Revoke]  │
+│  sk-def...uvw     Disabled   2026-03-15    [Toggle]  │
+│                                                      │
+│  [ + Create Key ]                                    │
+└──────────────────────────────────────────────────────┘
+```
+
+### Dynamic endpoints
+
+Endpoints are generated with slugs based on the object type name:
+
+```
+GET  /api/v1/borrowers          → list all records
+GET  /api/v1/borrowers/:id      → get one record
+```
+
+---
+
+## 18. Collaboration
+
+> **Where:** Available on data objects and records
+
+### Comments
+
+Add comments to any data object or individual record. Comments support threaded discussions for focused conversations.
+
+### Thread-based discussions
+
+Reply to any comment to start a thread. Threads keep discussions organized and contextual to the specific data point being discussed.
+
+---
+
+## 19. Search
+
+> **Where:** Top bar search icon (available globally)
+
+### Global full-text search
+
+Search across **all data objects** in the platform from a single search bar. Results are grouped by object type and ranked by relevance.
+
+---
+
+## 20. Audit & Compliance
+
+> **Where:** Left sidebar → Event Log (expanded)
+
+Building on the Event Log, the audit and compliance system adds structured approval workflows.
+
+### Checkpoint gates
+
+Define **checkpoint gates** at critical stages of a pipeline or process. When a case reaches a checkpoint, it pauses and waits for explicit approval before proceeding.
+
+### Approval request flow
+
+1. A pipeline or agent triggers a checkpoint gate
+2. An **approval request** is created and assigned to the appropriate reviewer
+3. The reviewer sees the request in their **Human Actions** queue
+4. The reviewer **approves** or **rejects** the request
+5. The pipeline resumes or halts based on the decision
+
+---
+
+## 21. Settings — AI Models & Providers
+
+> **Where:** Left sidebar → Settings → **AI Models** tab (Cpu icon, second from top)
+
+Each tenant can plug in its own LLM providers — cloud (Anthropic, OpenAI, Azure OpenAI, Google) or self-hosted (Ollama, vLLM, LM Studio) — and pick a default that the whole platform flows through.
+
+### What it covers
+
+Every AI surface in the platform consults the tenant's chosen provider:
+
+- Agent Studio (tool-using agents, sync + streaming)
+- AIP Analyst (chat with data)
+- Schema inference, similarity scoring, conflict detection
+- AI-generated apps and dashboards
+- Workbench notebook cell generation
+- Pipeline / logic copilot prompts
+- Lineage explanations and anomaly surfacing
+
+When no provider is configured for a tenant, the platform falls back to the server's `ANTHROPIC_API_KEY`.
+
+### Adding a provider
+
+1. Click **+ Add provider**
+2. Pick a **Provider type**:
+
+| Provider type | Notes |
+|---|---|
+| **Anthropic** | API key required. Default models: Claude Opus 4.7, Sonnet 4.6, Haiku 4.5. |
+| **OpenAI** | API key required. Default models: GPT-4o, GPT-4o mini, o1. |
+| **Azure OpenAI** | API key + base URL of the form `https://<resource>.openai.azure.com`. |
+| **Google (Gemini)** | API key required. Connection test works; full chat routing is on the roadmap. |
+| **Local / Self-hosted** | No API key needed. Base URL example: `http://host.docker.internal:11434` for Ollama. The platform appends `/v1` automatically for Ollama-style servers. |
+
+3. Optionally override the **Base URL** (leave blank to use the provider's default endpoint).
+4. Add or remove **models** — anything you list shows up in model pickers across the platform. Custom IDs are supported (e.g. `llama3.1:8b`, a fine-tuned snapshot, or an Azure deployment name).
+5. Toggle **Default for tenant** — exactly one default per tenant. Set / clear from the row's star button.
+6. Toggle **Enabled** — disabled providers stay configured but are skipped by the resolver.
+7. **Save** → the row appears in the list with a masked key (`abcd••••••••wxyz`). Plaintext keys never come back from the server after the first save.
+
+### Testing a connection
+
+Each row has a **Test** button that hits a lightweight endpoint:
+
+| Type | Test target |
+|---|---|
+| Anthropic | `POST /v1/messages` with a 1-token ping |
+| OpenAI / Azure OpenAI | `GET /v1/models` |
+| Google | `GET /v1beta/models?key=…` |
+| Local | `GET /api/tags` (Ollama-style) |
+
+A green banner means the credentials and endpoint are reachable.
+
+### Editing & rotating keys
+
+- Click the pencil to edit. Leaving the API key field blank keeps the existing key.
+- The provider type is locked once the row exists (create a new provider if you need to switch backends).
+- Deleting a provider drops it from the resolver — anything that was using it falls back to the tenant default.
+
+### Provider matrix (current)
+
+| Provider | Inference (chat, JSON) | Agents w/ tools | SSE streaming |
+|---|---|---|---|
+| Anthropic | ✅ | ✅ | ✅ token-by-token |
+| OpenAI / Azure | ✅ | ✅ (function calls translated to Claude-style tool blocks) | ⚠️ chunk-once |
+| Local (Ollama / vLLM / LM Studio) | ✅ | ✅ if the model supports OpenAI-style tools | ⚠️ chunk-once |
+| Google Gemini | ❌ falls back to env Anthropic | ❌ | ❌ |
+
+### API endpoints (agent-service :8013)
+
+```
+GET    /model-providers              — list tenant providers (api keys masked)
+POST   /model-providers              — create provider
+PUT    /model-providers/{id}         — update (masked key body is ignored on PUT)
+DELETE /model-providers/{id}         — remove provider
+POST   /model-providers/{id}/test    — connection probe
+```
+
+---
+
+## 22. Template Variable Reference
 
 ### Date templates (connector query params)
 
@@ -731,7 +1081,7 @@ Fetches the first row from another connector and extracts a nested field value.
 
 ---
 
-## 13. Quick-Reference Cheatsheet
+## 23. Quick-Reference Cheatsheet
 
 ### Most common pipeline patterns
 
@@ -789,11 +1139,39 @@ SOURCE
 
 ### Agent model guide
 
+The model dropdown in Agent Studio (and every other AI surface) lists whatever the tenant has registered in Settings → AI Models. Default Anthropic options when nothing is configured:
+
 | Model | Best for |
 |---|---|
 | `claude-haiku-4-5-20251001` | Fast, cheap, structured lookups |
 | `claude-sonnet-4-6` | Complex reasoning, multi-step analysis |
-| `claude-opus-4-6` | Deep research, long documents |
+| `claude-opus-4-7` | Deep research, long documents |
+| `gpt-4o` / `gpt-4o-mini` | OpenAI alternatives once an OpenAI provider is registered |
+| `llama3.1:8b`, `qwen2.5:7b`, custom IDs | Self-hosted via the **Local** provider type (Ollama / vLLM / LM Studio) |
+
+### Default credentials
+
+| Account | Email | Password |
+|---|---|---|
+| Default admin | `admin@maic.ai` | `admin` |
+
+### Superadmin features
+
+| Feature | How to access |
+|---|---|
+| Platform management | Globe icon in NavRail (superadmin only) |
+| Impersonation | Platform → Impersonation tab → click "Impersonate" |
+| Token usage | Platform → Token Usage tab |
+| Admin Console | Navigate to `/admin` |
+
+### Nexus Assistant shortcuts
+
+| Action | How |
+|---|---|
+| Open assistant | Click the chat icon (bottom-right corner) |
+| Switch mode | Toggle between "Platform Help" and "Data Explorer" at the top of the sidebar |
+| Confirm action | Click "Confirm" on the action card |
+| Cancel action | Click "Cancel" on the action card |
 
 ---
 

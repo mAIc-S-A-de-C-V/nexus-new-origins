@@ -622,36 +622,42 @@ CREATE INDEX ON object_embeddings USING ivfflat (embedding vector_cosine_ops);
 - Cmd+K search gains "Semantic" toggle alongside existing text search
 - Semantic mode calls the new endpoint
 
-### 5C — Multi-Model Provider Registry
+### 5C — Multi-Model Provider Registry — ✅ Shipped April 2026
 
-**What:** Support multiple LLM providers, configurable per tenant.
+**Status:** Shipped. Tenants can register their own LLM providers (Anthropic, OpenAI, Azure OpenAI, local Ollama / vLLM / LM Studio) from Settings → AI Models, mark a default, test the connection, and disable/enable per row. Inference and Agent Studio both route through the resolver.
 
-**Backend (new table in `agent_service` or shared config):**
+**Backend (live in `agent_service`):**
 
 ```sql
 CREATE TABLE model_providers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
     name TEXT NOT NULL,
     provider_type TEXT NOT NULL,  -- 'anthropic', 'openai', 'google', 'azure_openai', 'local'
     api_key_encrypted TEXT,
     base_url TEXT,
-    models JSONB NOT NULL DEFAULT '[]',  -- [{"id": "gpt-4o", "label": "GPT-4o", "context_window": 128000}]
+    models JSONB DEFAULT '[]',     -- [{"id": "gpt-4o", "label": "GPT-4o", "context_window": 128000}]
     is_default BOOLEAN DEFAULT false,
-    rate_limit_rpm INTEGER,
+    enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
-**Integration points:**
-- Agent Studio: model selector dropdown pulls from registry (not hardcoded)
-- Logic Studio: LLM Call block selects from registry
-- Infer Service: uses default provider for schema inference
-- Fallback chain: if primary model fails, try secondary provider
+**Integration points (live):**
+- `backend/shared/llm_router.py` — `resolve_provider` (async + sync), `chat_text_async/sync`, `agent_turn_async` adapters covering Anthropic and OpenAI-compatible (OpenAI / Azure / local)
+- `agent_service/runtime.py` — `run_agent` and `stream_agent` resolve per call, translate Anthropic tool defs ↔ OpenAI function calls, accept a `provider_id` override
+- `inference_service/claude_client.py` — every `_call`, `chat_with_data`, AI-Copilot create_* method, and `generate_workbench_cells` routes through the resolver
+- Env-based `ANTHROPIC_API_KEY` is retained as a platform-wide fallback
 
-**Frontend:**
-- Admin settings page: manage providers, add API keys, test connection
-- Agent Studio / Logic Studio: model selector shows all available models with provider badge
+**Frontend (live):**
+- Settings → **AI Models** tab: full CRUD with masked keys, per-provider model registration, connection test, default selection, enable/disable toggle
+- Agent Studio model picker / other AI surfaces inherit the resolved default until per-call provider selection ships
+
+**Still on the roadmap:**
+- Google Gemini chat routing (connection test works; chat path needs the `google-genai` SDK wired)
+- Per-project / per-rate-limit-rpm controls
+- Provider failover / retry chain across multiple registered providers
+- Per-agent / per-logic-block `provider_id` override UI (backend already accepts it)
 
 ### 5D — Agent Embedding in Apps
 

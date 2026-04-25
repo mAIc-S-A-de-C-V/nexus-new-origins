@@ -16,7 +16,7 @@ This document tracks every meaningful capability gap between Nexus and Palantir 
 | 3 | Workshop (no-code app builder) | 🔴 Critical | Phase B |
 | 4 | Vector search / RAG layer | 🟠 High | Phase B |
 | 5 | Incremental pipeline processing | 🟠 High | Phase C |
-| 6 | Multi-LLM provider registry | 🟡 Medium | Phase B |
+| 6 | Multi-LLM provider registry | ✅ Shipped (Apr 2026) | Phase B |
 | 7 | LLM permission scoping | 🟡 Medium | Phase B |
 | 8 | Code Repositories (git-backed pipelines) | 🟡 Medium | Phase C |
 | 9 | Compute Modules (Docker container execution) | 🟡 Medium | Phase C |
@@ -232,15 +232,22 @@ CREATE INDEX ON object_embeddings USING ivfflat (embedding vector_cosine_ops);
 
 ---
 
-### B.3 — Multi-LLM Provider Registry
+### B.3 — Multi-LLM Provider Registry — ✅ Shipped April 2026
 
 **What Palantir has:** OpenAI, Claude, Gemini, Llama, and others selectable per function/agent.
 
-**What to build:**
-- Add `model_providers` table: `{id, name, type: 'anthropic'|'openai'|'google'|'local', api_key_ref, base_url, models[]}`
-- Agent Studio and Logic Studio model selector pulls from this registry
-- Fallback chain: if primary model fails, try secondary
-- Per-project rate limits (configurable)
+**What was built:**
+- `model_providers` table on agent-service (`{id, tenant_id, name, provider_type: 'anthropic'|'openai'|'google'|'azure_openai'|'local', api_key_encrypted, base_url, models, is_default, enabled, created_at}`)
+- Frontend CRUD UI in Settings → AI Models (masked keys, per-provider model registration, connection test, default selection, enable/disable)
+- `backend/shared/llm_router.py` — per-tenant resolver (sync + async) and unified chat / agent-loop adapters that work across Anthropic, OpenAI, Azure OpenAI, and OpenAI-compatible local servers (Ollama / vLLM / LM Studio). Cross-provider tool-use translation included
+- Wired into agent-service runtime (run_agent, stream_agent) and inference-service (every Anthropic call site)
+- Env-based `ANTHROPIC_API_KEY` retained as fallback when no provider is configured
+- API endpoints under `/model-providers` (CRUD + `/test`)
+
+**Still on the roadmap:**
+- Google Gemini chat routing (currently connection-test only — needs `google-genai` SDK)
+- Per-project rate limits
+- Provider failover / retry chain
 
 ---
 

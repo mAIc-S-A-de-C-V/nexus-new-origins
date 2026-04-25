@@ -9,8 +9,11 @@
 1. Platform running: `docker-compose up -d --build`
 2. Frontend at `http://localhost:3000`
 3. All services healthy (check Settings → System Health)
-4. `ANTHROPIC_API_KEY` set for AI features
+4. LLM provider configured. Either:
+   - Set `ANTHROPIC_API_KEY` in `.env` (platform-wide fallback used for any tenant that hasn't customised), **or**
+   - Sign in and add a provider per-tenant in **Settings → AI Models** (Anthropic / OpenAI / Azure OpenAI / Local Ollama / vLLM / LM Studio). Hit **Test** to confirm the connection, then mark **Default for tenant**.
 5. Demo service running at `http://localhost:8024` (included in docker-compose)
+6. Default landing page is **Dashboards** (`apps`) — fresh sign-ins land here. Returning users resume their last page.
 
 ## Demo User Accounts
 
