@@ -1328,7 +1328,37 @@ const ConfigPanel: React.FC<{
               <FieldPicker value={comp.xField} onPick={(f) => set({ xField: f })} />
             </Row>
             <Row label="Y-AXIS (NUMBER)">
-              <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} />
+              <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} placeholder="Blank = count records per bucket" />
+            </Row>
+            <Row label="GROUP BY (one line per value — multi-series)">
+              <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} placeholder="Optional, e.g. sensor_name" />
+            </Row>
+            <Row label="TIME BUCKET">
+              <select
+                value={comp.timeBucket || 'month'}
+                onChange={(e) => set({ timeBucket: e.target.value as AppComponent['timeBucket'] })}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <option value="hour">Hour</option>
+                <option value="day">Day</option>
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+                <option value="quarter">Quarter</option>
+                <option value="year">Year</option>
+              </select>
+            </Row>
+            <Row label="AGGREGATION">
+              <select
+                value={comp.aggregation || 'sum'}
+                onChange={(e) => set({ aggregation: e.target.value as AppComponent['aggregation'] })}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <option value="sum">Sum</option>
+                <option value="avg">Average</option>
+                <option value="min">Min</option>
+                <option value="max">Max</option>
+                <option value="count">Count</option>
+              </select>
             </Row>
           </>
         )}
@@ -1352,10 +1382,24 @@ const ConfigPanel: React.FC<{
               <FieldPicker value={comp.xField} onPick={(f) => set({ xField: f })} />
             </Row>
             <Row label="Y-AXIS (NUMBER)">
-              <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} />
+              <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} placeholder="Blank = count" />
             </Row>
             <Row label="GROUP BY (SERIES)">
-              <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} placeholder="Optional" />
+              <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} placeholder="Optional, e.g. sensor_name" />
+            </Row>
+            <Row label="TIME BUCKET">
+              <select
+                value={comp.timeBucket || 'month'}
+                onChange={(e) => set({ timeBucket: e.target.value as AppComponent['timeBucket'] })}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <option value="hour">Hour</option>
+                <option value="day">Day</option>
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+                <option value="quarter">Quarter</option>
+                <option value="year">Year</option>
+              </select>
             </Row>
           </>
         )}

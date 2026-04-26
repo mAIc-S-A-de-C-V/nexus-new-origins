@@ -323,8 +323,11 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             # ::numeric cast blows up the entire query on the first non-
             # numeric row. The CASE … WHEN … ELSE NULL pattern produces NULL
             # for non-numeric rows, which SUM/AVG/MAX/MIN naturally ignore.
+            # POSIX bracket notation [[:digit:]] and [.] (a 1-char class with
+            # a literal dot) avoids backslash escaping pitfalls between
+            # Python f-strings, SQLAlchemy text(), and the asyncpg driver.
             value_expr = (
-                f"CASE WHEN data->>'{f}' ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+                f"CASE WHEN data->>'{f}' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
                 f"THEN (data->>'{f}')::numeric ELSE NULL END"
             )
             sql_fn = agg.method.upper()
@@ -352,11 +355,10 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                             bind_params[pname] = str(op_val)
                         elif op in ("gt", "gte", "lt", "lte"):
                             cmp = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-                            # Guard the cast: only compare rows whose value
-                            # parses as a number. Non-numeric rows are excluded
-                            # by the regex match (silent skip, no error).
+                            # Same regex-guarded cast as the SELECT side, in
+                            # POSIX bracket form to dodge backslash escaping.
                             where_parts.append(
-                                f"{accessor} ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+                                f"{accessor} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
                                 f"AND ({accessor})::numeric {cmp} :{pname}"
                             )
                             bind_params[pname] = float(op_val)
