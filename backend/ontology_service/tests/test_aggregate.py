@@ -137,13 +137,34 @@ def test_time_bucket_uses_date_trunc():
     assert "GROUP BY grp" in sql
 
 
-def test_sum_emits_numeric_cast_with_nullif():
+def test_sum_emits_safe_numeric_cast_with_regex_guard():
+    """
+    The aggregate SQL must NOT do a blanket ::numeric cast — JSONB columns
+    frequently mix types (one row stores an RPM number, another stores
+    "true" for a running flag) and a naked cast blows up the whole query
+    on the first non-numeric value. The CASE/regex guard skips non-numeric
+    rows silently.
+    """
     body = AggregateRequest(
         group_by="department",
         aggregations=[AggregationSpec(field="amount", method="sum")],
     )
     sql, _ = build_aggregate_sql(body, "t", "o")
-    assert "SUM(NULLIF(data->>'amount', '')::numeric)" in sql
+    # Regex-guarded numeric cast inside a CASE
+    assert "CASE WHEN data->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'" in sql
+    assert "(data->>'amount')::numeric ELSE NULL END" in sql
+    assert "SUM(" in sql
+
+
+def test_numeric_filter_includes_regex_guard():
+    body = AggregateRequest(
+        filters='{"amount": {"$gte": 100}}',
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # Both the regex match AND the numeric comparison must be present
+    assert "data->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'" in sql
+    assert "(data->>'amount')::numeric >= :flt0" in sql
 
 
 def test_multiple_aggregations_emit_separate_aliases():
@@ -157,8 +178,8 @@ def test_multiple_aggregations_emit_separate_aliases():
     )
     sql, _ = build_aggregate_sql(body, "t", "o")
     assert "COUNT(*) AS agg_0" in sql
-    assert "SUM(NULLIF(data->>'amount', '')::numeric) AS agg_1" in sql
-    assert "AVG(NULLIF(data->>'amount', '')::numeric) AS agg_2" in sql
+    assert "SUM(CASE WHEN data->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (data->>'amount')::numeric ELSE NULL END) AS agg_1" in sql
+    assert "AVG(CASE WHEN data->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (data->>'amount')::numeric ELSE NULL END) AS agg_2" in sql
 
 
 def test_count_distinct_uses_count_distinct():
@@ -189,6 +210,8 @@ def test_filters_operator_form():
     sql, params = build_aggregate_sql(body, "t", "o")
     assert "(data->>'amount')::numeric >= :flt0" in sql
     assert params["flt0"] == 100.0
+    # Filter value is also regex-guarded so non-numeric rows are skipped
+    assert "data->>'amount' ~ '^-?[0-9]+(\\.[0-9]+)?$'" in sql
 
 
 def test_filters_in_operator_emits_placeholders():
