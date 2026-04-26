@@ -145,7 +145,11 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Use a PAT (GHCR_PUSH_TOKEN) when present — required for multi-tag
+          # pushes to org-owned new packages, where the default GITHUB_TOKEN
+          # races the package's repo-association and 403s on the second tag.
+          # Falls back to GITHUB_TOKEN for repos where a PAT isn't configured.
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -175,7 +179,11 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Use a PAT (GHCR_PUSH_TOKEN) when present — required for multi-tag
+          # pushes to org-owned new packages, where the default GITHUB_TOKEN
+          # races the package's repo-association and 403s on the second tag.
+          # Falls back to GITHUB_TOKEN for repos where a PAT isn't configured.
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
       - id: meta
         uses: docker/metadata-action@v5
         with:

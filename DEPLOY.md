@@ -173,15 +173,48 @@ Set these in the repo under **Settings > Secrets and variables > Actions**:
 | `EC2_SSH_KEY` | Full contents of `~/.ssh/maic-prod.pem` | |
 | `ANTHROPIC_API_KEY` | Default Anthropic key (platform fallback when tenants have no LLM provider configured in Settings → AI Models) | |
 | `ADMIN_SEED_PASSWORD` | Initial superadmin password | |
+| `GHCR_PUSH_TOKEN` | **Required for org-owned repos.** A GitHub PAT with `write:packages` scope. The default `GITHUB_TOKEN` 403s on multi-tag pushes to brand-new org packages (race between the first tag creating the package and the second tag's blob HEAD check). A PAT bypasses this. |
 | `GHCR_PULL_TOKEN` | Optional; only required if GHCR packages are private | A GitHub PAT with `read:packages` scope. If you set GHCR packages to public visibility (recommended), this can be omitted. |
 
 > **Important:** If the Elastic IP ever changes, update the `EC2_HOST` secret AND re-run the workflow so the frontend gets rebuilt with the new URLs baked in.
 
 ### One-time setup on a fresh repo / fork
 
-1. Push to `main`; the first workflow run creates the GHCR packages.
-2. Go to **github.com/<org>/<repo>/pkgs/container/nexus-frontend** (and each service). For each: **Package settings → Change visibility → Public**. This lets EC2 pull anonymously and removes the need for `GHCR_PULL_TOKEN`.
-3. Alternatively, create a PAT with `read:packages` scope and store it as the `GHCR_PULL_TOKEN` secret; the deploy step does `docker login` automatically.
+1. **Create a PAT for pushing** — go to `github.com/settings/tokens?type=beta` (fine-grained):
+   - Token name: `nexus-ghcr-push`
+   - Resource owner: the org that owns the repo (`mAIc-S-A-de-C-V`)
+   - Repository access: **All** under the org (so future repos work) or just this repo
+   - Permissions → **Account** → **Packages**: **Read and write**
+   - Save the token. Add it to repo secrets as `GHCR_PUSH_TOKEN`.
+
+2. **Push to main**; the first workflow run creates the GHCR packages with the PAT (no 403).
+
+3. **(Optional) make packages public** so EC2 can pull anonymously:
+   - Go to **github.com/<org>/<repo>/pkgs/container/nexus-<svc>** for each of the 29 packages
+   - **Package settings → Danger Zone → Change visibility → Public**
+   - With public packages, you don't need `GHCR_PULL_TOKEN`.
+
+4. **Or** create a second PAT with `read:packages` only and store as `GHCR_PULL_TOKEN`; the deploy step does `docker login` on EC2 automatically.
+
+### Why two tokens?
+
+`GHCR_PUSH_TOKEN` lives only in GitHub Actions and writes to the registry from CI runners. `GHCR_PULL_TOKEN` (if used) lives only on EC2 and reads from the registry — never has write access. Splitting them limits blast radius if EC2 is ever compromised.
+
+### Bulk-flip packages to public via gh CLI
+
+Faster than clicking 29 times:
+
+```bash
+for svc in frontend connector-service pipeline-service inference-service ontology-service \
+  event-log-service audit-service schema-registry correlation-engine process-engine-service \
+  alert-engine-service auth-service logic-service agent-service utility-service \
+  analytics-service eval-service lineage-service search-service data-quality-service \
+  collaboration-service api-gateway-service admin-service sepsis-service demo-service \
+  kernel-service whatsapp-service project-management-service finance-service; do
+  gh api -X PATCH "/orgs/mAIc-S-A-de-C-V/packages/container/nexus-${svc}" \
+    -f visibility=public 2>&1 | tail -1
+done
+```
 
 ### When to override `IMAGE_NAMESPACE`
 
