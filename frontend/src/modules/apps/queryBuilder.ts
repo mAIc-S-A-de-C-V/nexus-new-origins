@@ -177,6 +177,91 @@ export function rangeToFilter(
   return out;
 }
 
+// ── EAV pattern detection (mirrors backend's _detect_eav_pattern) ──────────
+// When the object type is in long-format / sensor shape, this lets the editor
+// surface a friendly "Metric" picker instead of asking the user to manually
+// add a `field = "rpm"` filter every time.
+
+const ATTRIBUTE_NAME_HINTS = new Set([
+  'field', 'metric', 'metric_name', 'metric_type', 'measurement', 'kpi',
+  'attribute', 'attr', 'key', 'tag', 'type', 'reading_type', 'signal',
+  'sensor_type', 'channel', 'param', 'parameter',
+  // 'name' intentionally excluded — too generic
+]);
+
+const VALUE_NAME_HINTS = new Set([
+  'value', 'val', 'reading', 'data', 'amount', 'measurement',
+  'magnitude', 'quantity',
+]);
+
+const NUMERIC_RE = /^-?\d+(\.\d+)?$/;
+
+export interface EavPattern {
+  attributeCol: string;
+  valueCol: string;
+  metrics: string[];
+}
+
+/**
+ * Returns the detected attribute / value column pair when the sample looks
+ * like long-format / EAV data, else null. Same heuristic as the backend
+ * (claude_client._detect_eav_pattern) — keep both in sync.
+ */
+export function detectEavPattern(sampleRows: Record<string, unknown>[]): EavPattern | null {
+  if (!sampleRows || sampleRows.length < 5) return null;
+
+  const distinct: Record<string, Set<string>> = {};
+  const counts: Record<string, number> = {};
+  for (const row of sampleRows) {
+    if (!row) continue;
+    for (const [k, v] of Object.entries(row)) {
+      if (!(k in distinct)) {
+        distinct[k] = new Set();
+        counts[k] = 0;
+      }
+      if (v != null && v !== '') {
+        distinct[k].add(String(v));
+        counts[k] += 1;
+      }
+    }
+  }
+
+  // Find the attribute column
+  let attrCol: string | null = null;
+  for (const k of Object.keys(distinct)) {
+    if (!ATTRIBUTE_NAME_HINTS.has(k.toLowerCase())) continue;
+    const vals = distinct[k];
+    if (vals.size < 2 || vals.size > 30) continue;
+    if (![...vals].every((v) => v.length <= 40)) continue;
+    const recurrence = counts[k] / Math.max(vals.size, 1);
+    if (recurrence < 1.5) continue;
+    attrCol = k;
+    break;
+  }
+  if (!attrCol) return null;
+
+  // Find the value column
+  let valueCol: string | null = null;
+  for (const k of Object.keys(distinct)) {
+    if (k === attrCol) continue;
+    if (!VALUE_NAME_HINTS.has(k.toLowerCase())) continue;
+    const vals = distinct[k];
+    if (vals.size === 0) continue;
+    const numericCount = [...vals].filter((v) => NUMERIC_RE.test(v)).length;
+    if (numericCount >= 1) {
+      valueCol = k;
+      break;
+    }
+  }
+  if (!valueCol) return null;
+
+  return {
+    attributeCol: attrCol,
+    valueCol: valueCol,
+    metrics: [...distinct[attrCol]].sort(),
+  };
+}
+
 /**
  * Sensible default time bucket for a given range, so the chart shows a
  * reasonable number of data points (~12–96) instead of either 2 or 10000.

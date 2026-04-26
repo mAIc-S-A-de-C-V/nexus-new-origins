@@ -7,6 +7,7 @@ import {
   pickTimeBucket,
   rangeToFilter,
   suggestedBucketForRange,
+  detectEavPattern,
 } from './queryBuilder';
 import type { AppComponent, AppFilter } from '../../types/app';
 
@@ -221,5 +222,51 @@ describe('suggestedBucketForRange', () => {
   it('returns undefined for all_time / undefined', () => {
     expect(suggestedBucketForRange('all_time')).toBeUndefined();
     expect(suggestedBucketForRange(undefined)).toBeUndefined();
+  });
+});
+
+describe('detectEavPattern', () => {
+  it('detects sensor_reading-style long-format', () => {
+    const rows = [
+      { sensor_name: 'A', time: 't1', field: 'rpm',     value: '1500' },
+      { sensor_name: 'A', time: 't1', field: 'temp',    value: '78' },
+      { sensor_name: 'A', time: 't1', field: 'running', value: '1' },
+      { sensor_name: 'B', time: 't1', field: 'rpm',     value: '1600' },
+      { sensor_name: 'B', time: 't1', field: 'temp',    value: '80' },
+      { sensor_name: 'B', time: 't1', field: 'running', value: '1' },
+    ];
+    const eav = detectEavPattern(rows);
+    expect(eav).not.toBeNull();
+    expect(eav!.attributeCol).toBe('field');
+    expect(eav!.valueCol).toBe('value');
+    expect(new Set(eav!.metrics)).toEqual(new Set(['rpm', 'temp', 'running']));
+  });
+
+  it('does not misfire on wide-format business records', () => {
+    const rows = [
+      { id: '1', borrower: 'Alice', loan_amount: '10000', status: 'approved' },
+      { id: '2', borrower: 'Bob',   loan_amount: '25000', status: 'pending' },
+      { id: '3', borrower: 'Carol', loan_amount: '50000', status: 'rejected' },
+      { id: '4', borrower: 'Dan',   loan_amount: '15000', status: 'approved' },
+      { id: '5', borrower: 'Eve',   loan_amount: '30000', status: 'approved' },
+    ];
+    expect(detectEavPattern(rows)).toBeNull();
+  });
+
+  it('returns null for too few rows', () => {
+    expect(detectEavPattern([])).toBeNull();
+    expect(detectEavPattern([{ field: 'rpm', value: '1' }])).toBeNull();
+  });
+
+  it('rejects a column where every row has a unique value (entity name)', () => {
+    // Each row has a unique `field` value → recurrence ratio = 1.0 → not EAV
+    const rows = [
+      { id: '1', field: 'a', value: '1' },
+      { id: '2', field: 'b', value: '2' },
+      { id: '3', field: 'c', value: '3' },
+      { id: '4', field: 'd', value: '4' },
+      { id: '5', field: 'e', value: '5' },
+    ];
+    expect(detectEavPattern(rows)).toBeNull();
   });
 });

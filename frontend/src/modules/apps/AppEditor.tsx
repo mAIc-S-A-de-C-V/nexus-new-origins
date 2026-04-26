@@ -23,7 +23,7 @@ import {
   PieChart, AreaChart, TrendingUp, ListFilter, FileText, TableProperties, Variable,
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable } from '../../types/app';
-import { suggestedBucketForRange } from './queryBuilder';
+import { suggestedBucketForRange, detectEavPattern, type EavPattern } from './queryBuilder';
 import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
 import AppCanvas from './AppCanvas';
@@ -1015,6 +1015,46 @@ const ConfigPanel: React.FC<{
 
   const fields = declaredFields.length > 0 ? declaredFields : inferredFromRecords;
 
+  // EAV / long-format detection on the loaded sample. When present, the
+  // editor surfaces a friendly "Metric" picker that auto-creates the
+  // `<attribute_col> = <metric>` filter, so the user doesn't need to know
+  // about the EAV shape of their data.
+  const eav: EavPattern | null = React.useMemo(
+    () => detectEavPattern(sampleRecords),
+    [sampleRecords],
+  );
+
+  // Track the currently-selected metric for this widget by inspecting its
+  // existing filters. If the user has an `<attribute_col> = X` filter, that's
+  // the active metric.
+  const activeMetric: string = React.useMemo(() => {
+    if (!eav) return '';
+    const f = (comp.filters || []).find(
+      (x) => x.field === eav.attributeCol && x.operator === 'eq',
+    );
+    return f ? String(f.value || '') : '';
+  }, [eav, comp.filters]);
+
+  // When the user picks a metric, replace any existing attribute filter with
+  // a fresh one. Keeps every other filter the user has set.
+  const setMetric = (metric: string) => {
+    if (!eav) return;
+    const others = (comp.filters || []).filter(
+      (f) => f.field !== eav.attributeCol,
+    );
+    const next = metric
+      ? [...others, { id: `f-${Date.now()}`, field: eav.attributeCol, operator: 'eq' as FilterOperator, value: metric }]
+      : others;
+    set({ filters: next });
+    // For chart widgets that aggregate the value column, also fill in the
+    // value field defaults if not already set — the user almost always wants
+    // to chart the value column when on EAV data.
+    const isChart = comp.type === 'line-chart' || comp.type === 'area-chart' || comp.type === 'bar-chart' || comp.type === 'pie-chart';
+    if (isChart && !comp.valueField) {
+      set({ valueField: eav.valueCol });
+    }
+  };
+
   const Lbl: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     <div style={{ fontSize: 10, fontWeight: 600, color: '#64748B', marginBottom: 4, letterSpacing: '0.04em' }}>
       {children}
@@ -1252,6 +1292,28 @@ const ConfigPanel: React.FC<{
                   : `${fields.length} fields inferred from records (schema not declared)`}
               </div>
             )}
+          </Row>
+        )}
+
+        {/* EAV metric picker — only when the selected OT looks like
+            long-format / sensor data (one row per measurement event). */}
+        {eav && (comp.type === 'line-chart' || comp.type === 'area-chart' || comp.type === 'bar-chart' || comp.type === 'pie-chart' || comp.type === 'metric-card' || comp.type === 'stat-card') && (
+          <Row label={`METRIC (${eav.attributeCol})`}>
+            <select
+              value={activeMetric}
+              onChange={(e) => setMetric(e.target.value)}
+              style={{ width: '100%', padding: '6px 8px', border: '1px solid #C7D2FE', borderRadius: 4, fontSize: 12, color: '#0D1117', backgroundColor: '#EEF2FF', outline: 'none', fontFamily: 'var(--font-mono)' }}
+            >
+              <option value="">— all metrics (skip filter) —</option>
+              {eav.metrics.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+            <div style={{ marginTop: 4, fontSize: 10, color: '#6366F1' }}>
+              Detected long-format / EAV data. Picking a metric here adds a
+              filter on <code style={{ fontFamily: 'var(--font-mono)' }}>{eav.attributeCol}</code> and
+              auto-fills <code style={{ fontFamily: 'var(--font-mono)' }}>{eav.valueCol}</code> as the value field.
+            </div>
           </Row>
         )}
 
