@@ -694,21 +694,34 @@ Available fields: {json.dumps(properties[:60])}{sample_preview}
 TASK: Write JavaScript code (no JSX, no imports, no export) that:
 1. Receives these variables:
    - React           — the React object (use React.createElement, hooks, etc.)
-   - records         — array of raw rows (CAPPED to ~50–100k; do NOT use for
-                       very large object types — use `query()` instead)
-   - fields          — array of field names
+   - records         — array of raw rows. HARD CAPPED at 5000 rows. If the
+                       object type has more than 5000 rows total, this is a
+                       SAMPLE, not the whole dataset. Iterating over
+                       `records` for counts/sums/groupings is WRONG — the
+                       answer would be wrong AND it wastes bandwidth.
+   - fields          — array of field names from the sample
    - title           — the widget title string
-   - query(opts)     — server-side aggregation. Returns
-                       {{ rows: [{{group, series, agg_0}}], loading: bool, error: string }}.
-                       Re-runs whenever opts changes. Hooks-based; call it at
-                       the TOP of your code, the SAME number of times every
-                       render, NEVER inside if/else.
+   - query(opts)     — server-side aggregation against the WHOLE table.
+                       Returns {{ rows, loading, error }}. Hooks-based;
+                       call at the TOP of your code, SAME number of times
+                       every render, NEVER inside if/else.
+                       opts: {{ groupBy, timeBucket: {{field, interval}},
+                       aggregations: [{{field, method}}], filters,
+                       sortBy, sortDir, limit }}
+                       method ∈ count | sum | avg | min | max | count_distinct
+                       interval ∈ hour | day | week | month | quarter | year
+   - total           — total row count in the database (number).
+   - isSampled       — boolean. True iff total > records.length.
 2. Does whatever the user requested (filtering, grouping, calculations, custom visualization)
 3. Returns a React element tree using React.createElement()
 
 RULES:
-- For object types with millions of rows, NEVER iterate over `records`. Use
-   `query({{ groupBy: 'status', aggregations: [{{method:'count'}}] }})` instead.
+- DEFAULT TO query(). Use `records` ONLY for: rendering a small list of rows,
+   showing a sample, formatting raw text. Never use it for sums, counts,
+   averages, group-bys, or any aggregation — those go through query().
+- If isSampled is true and your widget needs all-rows semantics (top N,
+   total count, average, etc.), use query(). Iterating records when
+   isSampled would silently give the user a wrong answer.
 - Use ONLY React.createElement(), never JSX syntax (no < > tags)
 - Use only vanilla JS — no imports, no require(), no external libs
 - Field names must match exactly from the Available fields list

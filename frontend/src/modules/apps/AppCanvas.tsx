@@ -28,8 +28,15 @@ const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://loca
 
 // ── Data fetching ──────────────────────────────────────────────────────────
 
-function useRecords(objectTypeId?: string) {
+// Hard ceiling on the raw-records path. 100M-row tables cannot be paginated
+// down to the browser; the only sane raw-records use is "show me a sample".
+// Anything that needs full-table semantics has to use /aggregate via the
+// query() helper or one of the ServerAgg* widgets.
+const RAW_RECORDS_HARD_CAP = 5000;
+
+function useRecords(objectTypeId?: string, maxRecords: number = RAW_RECORDS_HARD_CAP) {
   const [records, setRecords] = useState<Record<string, unknown>[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -37,10 +44,10 @@ function useRecords(objectTypeId?: string) {
     let cancelled = false;
     setLoading(true);
 
-    // Fetch first page to learn the total, then fan out remaining pages in parallel.
-    // Server caps limit at 10000; we use a chunky page so the request count stays small.
-    const PAGE = 5000;
+    const cap = Math.max(1, Math.min(maxRecords, RAW_RECORDS_HARD_CAP));
+    const PAGE = Math.min(5000, cap);
     const MAX_CONCURRENCY = 6;
+
     async function fetchAll() {
       const headers = { 'x-tenant-id': getTenantId() };
       const firstRes = await fetch(
@@ -49,18 +56,24 @@ function useRecords(objectTypeId?: string) {
       );
       const firstData = await firstRes.json();
       const firstRows: Record<string, unknown>[] = firstData.records || [];
-      const total: number = firstData.total ?? firstRows.length;
+      const rowsTotal: number = firstData.total ?? firstRows.length;
 
       if (cancelled) return;
-      if (total <= firstRows.length) {
-        setRecords(firstRows);
+      setTotal(rowsTotal);
+
+      // If we've already hit the cap from page 1, or if the table is small
+      // enough to fit in one page, we're done.
+      if (firstRows.length >= cap || rowsTotal <= firstRows.length) {
+        setRecords(firstRows.slice(0, cap));
         return;
       }
 
+      // Walk forward in PAGE-sized steps until we hit `cap` or `rowsTotal`,
+      // whichever comes first. NEVER paginate the entire table.
+      const stop = Math.min(rowsTotal, cap);
       const offsets: number[] = [];
-      for (let off = PAGE; off < total; off += PAGE) offsets.push(off);
+      for (let off = PAGE; off < stop; off += PAGE) offsets.push(off);
 
-      // Bounded concurrency so we don't fire 200 fetches at once on huge datasets.
       const buckets: number[][] = Array.from({ length: MAX_CONCURRENCY }, () => []);
       offsets.forEach((off, i) => buckets[i % MAX_CONCURRENCY].push(off));
 
@@ -69,8 +82,11 @@ function useRecords(objectTypeId?: string) {
           const out: Record<string, unknown>[] = [];
           for (const off of bucket) {
             if (cancelled) return out;
+            const remaining = cap - (firstRows.length + out.length);
+            if (remaining <= 0) break;
+            const limit = Math.min(PAGE, remaining);
             const r = await fetch(
-              `${ONTOLOGY_API}/object-types/${objectTypeId}/records?limit=${PAGE}&offset=${off}`,
+              `${ONTOLOGY_API}/object-types/${objectTypeId}/records?limit=${limit}&offset=${off}`,
               { headers },
             );
             const d = await r.json();
@@ -81,15 +97,15 @@ function useRecords(objectTypeId?: string) {
       );
 
       if (cancelled) return;
-      const all = firstRows.concat(...chunks);
+      const all = firstRows.concat(...chunks).slice(0, cap);
       setRecords(all);
     }
 
     fetchAll().catch(() => { if (!cancelled) setRecords([]); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [objectTypeId]);
+  }, [objectTypeId, maxRecords]);
 
-  return { records, loading };
+  return { records, loading, total };
 }
 
 // ── Server-side aggregation hook ──────────────────────────────────────────
@@ -1165,8 +1181,12 @@ const TextBlock: React.FC<{ comp: AppComponent }> = ({ comp }) => (
  *     render (it uses hooks). Never inside if/else.
  *   - opts: { groupBy, timeBucket, aggregations, filters, sortBy, sortDir, limit }
  */
-const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({ comp, records }) => {
+const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[]; recordsTotal?: number }> = ({ comp, records, recordsTotal }) => {
   const fields = records.length > 0 ? Object.keys(records[0]) : [];
+  // True row count in the database (not just what was sampled). Lets user
+  // code know whether `records` is the whole dataset or a 5k-row sample.
+  const totalCount = typeof recordsTotal === 'number' ? recordsTotal : records.length;
+  const isSampled = totalCount > records.length;
 
   const tenantId = getTenantId();
   const objectTypeId = comp.objectTypeId;
@@ -1246,8 +1266,8 @@ const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, u
   }
   try {
     // eslint-disable-next-line no-new-func
-    const fn = new Function('React', 'records', 'fields', 'title', 'query', comp.code);
-    const result = fn(React, records, fields, comp.title, query);
+    const fn = new Function('React', 'records', 'fields', 'title', 'query', 'total', 'isSampled', comp.code);
+    const result = fn(React, records, fields, comp.title, query, totalCount, isSampled);
     return result ?? null;
   } catch (err) {
     return (
@@ -2400,7 +2420,7 @@ const ComponentRendererNoRecords: React.FC<{ comp: AppComponent; allComponents?:
 };
 
 const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, allComponents }) => {
-  const { records: rawRecords, loading } = useRecords(comp.objectTypeId);
+  const { records: rawRecords, loading, total: recordsTotal } = useRecords(comp.objectTypeId);
   const { filter: crossFilter } = useContext(CrossFilterContext);
   const afterCompFilters = applyFilters(rawRecords, comp.filters);
   // Apply cross-widget filter (skip if this widget is the source)
@@ -2442,7 +2462,7 @@ const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; 
     case 'filter-bar': return <FilterBar comp={comp} records={records} />;
     case 'text-block': return <TextBlock comp={comp} />;
     case 'chat-widget': return <ChatWidget comp={comp} records={records} allComponents={allComponents} />;
-    case 'custom-code': return <CustomCodeWidget comp={comp} records={records} />;
+    case 'custom-code': return <CustomCodeWidget comp={comp} records={records} recordsTotal={recordsTotal} />;
     case 'map': return <MapWidget comp={comp} records={records} />;
     case 'utility-output': return <UtilityWidget comp={comp} />;
     case 'dropdown-filter': return <DropdownFilterWidget comp={comp} />;

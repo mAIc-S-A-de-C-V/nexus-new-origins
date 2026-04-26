@@ -36,11 +36,13 @@ interface OntologyType { id: string; name: string; displayName: string; properti
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 
+// Small sample of records used ONLY for inferring field names when the
+// object type has no declared properties. Capped at 50 rows.
 function useRecordsForFilter(objectTypeId?: string) {
   const [records, setRecords] = useState<Record<string, unknown>[]>([]);
   useEffect(() => {
     if (!objectTypeId) { setRecords([]); return; }
-    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/records`, {
+    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/records?limit=50`, {
       headers: { 'x-tenant-id': getTenantId() },
     })
       .then((r) => r.json())
@@ -48,6 +50,40 @@ function useRecordsForFilter(objectTypeId?: string) {
       .catch(() => setRecords([]));
   }, [objectTypeId]);
   return records;
+}
+
+// Distinct values for one field, computed server-side via /aggregate.
+// Returns ALL distinct values across the table (capped at 200), not just
+// what shows up in the first sample of records. Used by the filter row's
+// "pick a value" dropdown.
+function useDistinctValues(objectTypeId?: string, fieldName?: string): string[] {
+  const [values, setValues] = useState<string[]>([]);
+  useEffect(() => {
+    if (!objectTypeId || !fieldName) { setValues([]); return; }
+    let cancelled = false;
+    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      body: JSON.stringify({
+        group_by: fieldName,
+        aggregations: [{ method: 'count' }],
+        sort_by: 'agg_0',
+        sort_dir: 'desc',
+        limit: 200,
+      }),
+    })
+      .then((r) => r.ok ? r.json() : { rows: [] })
+      .then((d: { rows: Array<{ group: string | null }> }) => {
+        if (cancelled) return;
+        const out = (d.rows || [])
+          .map((r) => String(r.group ?? ''))
+          .filter(Boolean);
+        setValues(out);
+      })
+      .catch(() => { if (!cancelled) setValues([]); });
+    return () => { cancelled = true; };
+  }, [objectTypeId, fieldName]);
+  return values;
 }
 
 function useObjectTypes() {
@@ -729,26 +765,20 @@ function isDateField(field: string): boolean {
 const FilterRow: React.FC<{
   f: AppFilter;
   fields: string[];
-  allRecords: Record<string, unknown>[];
+  objectTypeId?: string;
   onUpdate: (patch: Partial<AppFilter>) => void;
   onRemove: () => void;
-}> = ({ f, fields, allRecords, onUpdate, onRemove }) => {
+}> = ({ f, fields, objectTypeId, onUpdate, onRemove }) => {
   const opDef = (op: FilterOperator) => OPERATORS.find((o) => o.value === op);
   const noVal = opDef(f.operator)?.noValue;
   const isMulti = opDef(f.operator)?.multi;
   const isDate = isDateField(f.field) && !isMulti;
   const listId = `dl-${f.id}`;
 
-  const distinctVals = React.useMemo(() => {
-    if (!allRecords.length || !f.field) return [];
-    const seen = new Set<string>();
-    for (const rec of allRecords) {
-      const v = String(rec[f.field] ?? '');
-      if (v) seen.add(v);
-      if (seen.size >= 200) break;
-    }
-    return Array.from(seen).sort();
-  }, [allRecords, f.field]);
+  // Server-side distinct values via /aggregate. Returns ALL values across the
+  // table (capped at 200), not just what's in the first 50 records like before.
+  const distinctValsRaw = useDistinctValues(objectTypeId, f.field);
+  const distinctVals = React.useMemo(() => [...distinctValsRaw].sort(), [distinctValsRaw]);
 
   return (
     <div style={{
@@ -941,7 +971,7 @@ const FilterBuilder: React.FC<{
           key={f.id}
           f={f}
           fields={effectiveFields}
-          allRecords={allRecords}
+          objectTypeId={objectTypeId}
           onUpdate={(patch) => update(f.id, patch)}
           onRemove={() => remove(f.id)}
         />
