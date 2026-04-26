@@ -35,6 +35,9 @@ const NODE_ICONS: Record<string, React.ReactNode> = {
 const CONNECTOR_FIELDS = new Set(['connectorId', 'lookupConnectorId']);
 const OBJECT_TYPE_FIELDS = new Set(['objectTypeId']);
 const AGENT_FIELDS = new Set(['agentId']);
+const MODEL_FIELDS = new Set(['model']);
+
+interface TenantModel { id: string; label: string; provider: string }
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
   RUNNING:   { label: 'Running',   bg: '#FFF7ED', text: '#92400E' },
@@ -60,12 +63,13 @@ interface FieldProps {
   connectors: { id: string; name: string }[];
   objectTypes: { id: string; name: string }[];
   agents: { id: string; name: string }[];
+  tenantModels: TenantModel[];
   onChange: (stepId: string, key: string, value: unknown) => void;
 }
 
 const FieldInput: React.FC<FieldProps> = ({
   stepId, fieldKey, fieldType, placeholder, options, defaultVal,
-  value, connectors, objectTypes, agents, onChange,
+  value, connectors, objectTypes, agents, tenantModels, onChange,
 }) => {
   const raw = value ?? defaultVal ?? '';
   const strVal = (typeof raw === 'object' && raw !== null) ? JSON.stringify(raw, null, 2) : String(raw);
@@ -116,6 +120,22 @@ const FieldInput: React.FC<FieldProps> = ({
       <select value={strVal} onChange={e => onChange(stepId, fieldKey, e.target.value)} style={selectStyle}>
         <option value="">Select object type...</option>
         {objectTypes.map(ot => <option key={ot.id} value={ot.id}>{ot.name}</option>)}
+      </select>
+    );
+  }
+  if (fieldType === 'select' && MODEL_FIELDS.has(fieldKey)) {
+    return (
+      <select value={strVal} onChange={e => onChange(stepId, fieldKey, e.target.value)} style={selectStyle}>
+        {tenantModels.length > 0 && (
+          <optgroup label="From your providers">
+            {tenantModels.map(m => (
+              <option key={`tm-${m.id}`} value={m.id}>{m.label} — {m.provider}</option>
+            ))}
+          </optgroup>
+        )}
+        <optgroup label="Built-in defaults">
+          {options?.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        </optgroup>
       </select>
     );
   }
@@ -257,6 +277,7 @@ export const PipelineBuilder: React.FC = () => {
   const { connectors, fetchConnectors } = useConnectorStore();
   const { objectTypes, fetchObjectTypes } = useOntologyStore();
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
+  const [tenantModels, setTenantModels] = useState<TenantModel[]>([]);
 
   const [isRunning, setIsRunning]         = useState(false);
   const [showNewModal, setShowNewModal]   = useState(false);
@@ -280,6 +301,22 @@ export const PipelineBuilder: React.FC = () => {
     fetch(`${AGENT_API}/agents`, { headers: { 'x-tenant-id': getTenantId() } })
       .then(r => r.ok ? r.json() : [])
       .then(data => setAgents(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    // Pull the tenant's BYOLLM providers so their models show up in the
+    // Model dropdowns of pipeline steps (LLM_CLASSIFY, etc.) alongside the
+    // built-in Claude defaults.
+    fetch(`${AGENT_API}/model-providers`, { headers: { 'x-tenant-id': getTenantId() } })
+      .then(r => r.ok ? r.json() : [])
+      .then((providers: Array<{ name: string; enabled: boolean; models: Array<{ id: string; label?: string }> }>) => {
+        const flat: TenantModel[] = [];
+        for (const p of (Array.isArray(providers) ? providers : [])) {
+          if (p.enabled === false) continue;
+          for (const m of (p.models || [])) {
+            flat.push({ id: m.id, label: m.label || m.id, provider: p.name });
+          }
+        }
+        setTenantModels(flat);
+      })
       .catch(() => {});
     const pending = consumePendingPipeline();
     fetchPipelines().then(() => {
@@ -727,6 +764,7 @@ export const PipelineBuilder: React.FC = () => {
                                 connectors={connectors}
                                 objectTypes={objectTypes}
                                 agents={agents}
+                                tenantModels={tenantModels}
                                 onChange={updateStepConfig}
                               />
                             </div>
