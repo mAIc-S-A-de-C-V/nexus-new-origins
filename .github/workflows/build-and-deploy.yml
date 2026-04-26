@@ -283,12 +283,19 @@ jobs:
             # Runtime .env (build-time URLs already baked into the frontend image)
             printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nADMIN_SEED_PASSWORD=${{ secrets.ADMIN_SEED_PASSWORD }}\nALLOWED_ORIGIN_EC2=http://${{ secrets.EC2_HOST }}:3000\nIMAGE_TAG='"$IMAGE_TAG"'\n' > .env
 
-            # Authenticate to GHCR if a pull token is configured. If the
-            # packages are public, this is unnecessary — docker pull will
-            # succeed anonymously.
-            if [ -n "${{ secrets.GHCR_PULL_TOKEN }}" ]; then
-              echo "${{ secrets.GHCR_PULL_TOKEN }}" | sudo docker login ghcr.io \
+            # Authenticate to GHCR. Prefers GHCR_PULL_TOKEN (read-only PAT,
+            # principle of least privilege on the EC2 box). Falls back to
+            # GHCR_PUSH_TOKEN since a write token includes read. If neither
+            # is set, the pull only works for public packages.
+            GHCR_TOKEN='${{ secrets.GHCR_PULL_TOKEN }}'
+            if [ -z "$GHCR_TOKEN" ]; then
+              GHCR_TOKEN='${{ secrets.GHCR_PUSH_TOKEN }}'
+            fi
+            if [ -n "$GHCR_TOKEN" ]; then
+              echo "$GHCR_TOKEN" | sudo docker login ghcr.io \
                 -u ${{ github.actor }} --password-stdin
+            else
+              echo "WARNING: no GHCR token set; relying on public packages"
             fi
 
             # Pull all images defined in the deploy override, then up.
