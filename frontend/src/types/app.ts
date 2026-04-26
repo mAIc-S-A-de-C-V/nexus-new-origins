@@ -1,5 +1,6 @@
 export type FilterOperator =
   | 'eq' | 'neq'
+  | 'in' | 'not_in'
   | 'contains' | 'not_contains'
   | 'gt' | 'gte' | 'lt' | 'lte'
   | 'after' | 'before'

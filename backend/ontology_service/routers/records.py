@@ -358,6 +358,13 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                                 placeholders.append(f":{k}")
                                 bind_params[k] = str(v)
                             where_parts.append(f"{accessor} IN ({', '.join(placeholders)})")
+                        elif op == "not_in" and isinstance(op_val, list):
+                            placeholders = []
+                            for j, v in enumerate(op_val):
+                                k = f"{pname}_{j}"
+                                placeholders.append(f":{k}")
+                                bind_params[k] = str(v)
+                            where_parts.append(f"({accessor} NOT IN ({', '.join(placeholders)}) OR {accessor} IS NULL)")
                 else:
                     pname = f"flt{idx}"
                     where_parts.append(f"{accessor} = :{pname}")

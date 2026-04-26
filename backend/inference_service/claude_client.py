@@ -517,11 +517,21 @@ Rules:
    AND set "timeBucket" to "day" | "week" | "month" | "quarter" | "year" based on
    how zoomed-in the user wants. Default to "month" for general overview, "day"
    for "last 30 days" type asks.
+- MULTI-SERIES line/area charts: when the user asks for several metrics on the
+   same chart over time (e.g. "rpm, running, temp over time", "revenue by region
+   over time"), set "labelField" to the categorical column that distinguishes
+   the series (e.g. "field", "metric_type", "region", "sensor_name"). The chart
+   will draw one line per labelField value automatically. Use a filter with
+   operator "in" to scope to specific values, e.g.
+   { "field": "field", "operator": "in", "value": "rpm, running, temp" }.
 - Pick columns for the data-table that actually have data in the sample rows
 - For count aggregation, field may be null or omitted
 - For groupBy widgets (bar-chart, pie-chart): labelField MUST be a categorical
    field — status, stage, type, category, source, region. NEVER pick a primary
-   key, an email, a freeform name, or a high-cardinality field."""
+   key, an email, a freeform name, or a high-cardinality field.
+- Filters now support operators "in" / "not_in" with comma-separated values,
+   e.g. value="rpm, running, temp". Use these instead of stacking multiple eq
+   filters (eq filters AND together, "in" gives OR semantics)."""
 
         result = self._call(prompt)
         return result
@@ -624,10 +634,21 @@ Filter rules:
 Line-chart rules:
 - For "per week / per day / over time" with NO explicit numeric value → omit valueField entirely (the renderer groups by date and counts)
 - xField must be a date field from the available fields list
+- MULTI-SERIES: when the user wants several metrics on one chart (e.g. "rpm,
+   running, temp over time", "revenue by region over time"), ALSO set labelField
+   to the categorical column that distinguishes the series. The chart draws one
+   line per distinct labelField value. Always set timeBucket explicitly.
+- Use an "in" filter with comma-separated values to scope a multi-series chart
+   to specific labels, e.g. {"field": "metric", "operator": "in", "value": "rpm, running, temp"}.
 
 Bar-chart rules:
 - For "per stage / by category / distribution" with NO explicit numeric value → omit valueField entirely (the renderer counts per label)
 - labelField must be the grouping/category field
+
+Filter operator notes:
+- "eq" filters AND together. To filter "metric is rpm OR running OR temp", use
+   ONE filter row with operator "in" and value "rpm, running, temp". Do NOT
+   create three separate eq filters — that's an impossible AND.
 
 Only include keys relevant to the widget type. Omit null/empty keys entirely."""
 
@@ -671,11 +692,23 @@ Object type: "{object_type_name}" (id: {object_type_id})
 Available fields: {json.dumps(properties[:60])}{sample_preview}
 
 TASK: Write JavaScript code (no JSX, no imports, no export) that:
-1. Receives these variables: React (the React object), records (array of data objects), fields (array of field names), title (string)
+1. Receives these variables:
+   - React           — the React object (use React.createElement, hooks, etc.)
+   - records         — array of raw rows (CAPPED to ~50–100k; do NOT use for
+                       very large object types — use `query()` instead)
+   - fields          — array of field names
+   - title           — the widget title string
+   - query(opts)     — server-side aggregation. Returns
+                       { rows: [{group, series?, agg_0, …}], loading: bool, error: string|null }.
+                       Re-runs whenever opts changes. Hooks-based; call it at
+                       the TOP of your code, the SAME number of times every
+                       render, NEVER inside if/else.
 2. Does whatever the user requested (filtering, grouping, calculations, custom visualization)
 3. Returns a React element tree using React.createElement()
 
 RULES:
+- For object types with millions of rows, NEVER iterate over `records`. Use
+   `query({{ groupBy: 'status', aggregations: [{{method:'count'}}] }})` instead.
 - Use ONLY React.createElement(), never JSX syntax (no < > tags)
 - Use only vanilla JS — no imports, no require(), no external libs
 - Field names must match exactly from the Available fields list
@@ -683,14 +716,29 @@ RULES:
 - For colors use: primary=#7C3AED, success=#16A34A, danger=#DC2626, muted=#94A3B8, border=#E2E8F0
 - Keep the UI clean and minimal — use padding 12-16px, font-size 12-13px
 - Always wrap in a div with style={{padding:'12px', height:'100%', overflow:'auto', boxSizing:'border-box'}}
-- Handle empty data gracefully (check records.length)
+- Handle empty data gracefully (check records.length, or data.loading / data.error from query())
 
-EXAMPLE pattern for a ranked list:
+EXAMPLE pattern for a ranked list (small dataset):
   var items = records.slice(0, 10);
   return React.createElement('div', {{style:{{padding:'12px'}}}},
     React.createElement('div', {{style:{{fontWeight:600,marginBottom:'8px',fontSize:'13px'}}}}, title),
     items.map(function(r, i) {{
       return React.createElement('div', {{key:i, style:{{...}}}}, r.fieldname);
+    }})
+  );
+
+EXAMPLE pattern for a server-side query (any dataset size):
+  var data = query({{
+    groupBy: 'status',
+    aggregations: [{{ method: 'count' }}],
+    sortBy: 'agg_0', sortDir: 'desc', limit: 10
+  }});
+  if (data.loading) return React.createElement('div', null, 'Loading…');
+  if (data.error)   return React.createElement('div', null, 'Error: ' + data.error);
+  return React.createElement('div', {{style:{{padding:'12px'}}}},
+    React.createElement('div', {{style:{{fontWeight:600}}}}, title),
+    data.rows.map(function(r, i) {{
+      return React.createElement('div', {{key:i}}, r.group + ': ' + r.agg_0);
     }})
   );
 

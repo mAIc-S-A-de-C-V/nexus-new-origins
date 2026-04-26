@@ -203,6 +203,20 @@ def test_filters_in_operator_emits_placeholders():
     assert params["flt0_2"] == "review"
 
 
+def test_filters_not_in_operator_emits_negation_with_null_safety():
+    body = AggregateRequest(
+        filters='{"status": {"$not_in": ["cancelled", "refunded"]}}',
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    # NOT IN must include OR ... IS NULL or it silently drops rows where
+    # the field is absent (Postgres NULL semantics).
+    assert "data->>'status' NOT IN (:flt0_0, :flt0_1)" in sql
+    assert "data->>'status' IS NULL" in sql
+    assert params["flt0_0"] == "cancelled"
+    assert params["flt0_1"] == "refunded"
+
+
 def test_sort_by_agg_index():
     body = AggregateRequest(
         group_by="dept",

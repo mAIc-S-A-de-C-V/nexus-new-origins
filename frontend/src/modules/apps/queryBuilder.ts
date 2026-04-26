@@ -57,6 +57,18 @@ export function buildServerFilters(
     switch (f.operator) {
       case 'eq': out[f.field] = f.value; break;
       case 'neq': out[f.field] = { $neq: f.value }; break;
+      case 'in': {
+        const list = String(f.value).split(',').map((s) => s.trim()).filter(Boolean);
+        if (list.length) out[f.field] = { $in: list };
+        break;
+      }
+      case 'not_in': {
+        const list = String(f.value).split(',').map((s) => s.trim()).filter(Boolean);
+        // Server doesn't have $not_in yet; encode as a negated $in for now.
+        // Long-term: add $not_in to records.py JSONB filter parser.
+        if (list.length) out[f.field] = { $not_in: list };
+        break;
+      }
       case 'gt': out[f.field] = { $gt: parseFloat(f.value) }; break;
       case 'gte': out[f.field] = { $gte: parseFloat(f.value) }; break;
       case 'lt': out[f.field] = { $lt: parseFloat(f.value) }; break;

@@ -704,9 +704,11 @@ const Ctrl: React.FC<{
 
 // ── Filter builder ────────────────────────────────────────────────────────────
 
-const OPERATORS: { value: FilterOperator; label: string; noValue?: boolean }[] = [
+const OPERATORS: { value: FilterOperator; label: string; noValue?: boolean; multi?: boolean }[] = [
   { value: 'eq',          label: '=' },
   { value: 'neq',         label: '≠' },
+  { value: 'in',          label: 'in (any of)',  multi: true },
+  { value: 'not_in',      label: 'not in',       multi: true },
   { value: 'contains',    label: 'contains' },
   { value: 'not_contains',label: "doesn't contain" },
   { value: 'gt',          label: '>' },
@@ -733,7 +735,8 @@ const FilterRow: React.FC<{
 }> = ({ f, fields, allRecords, onUpdate, onRemove }) => {
   const opDef = (op: FilterOperator) => OPERATORS.find((o) => o.value === op);
   const noVal = opDef(f.operator)?.noValue;
-  const isDate = isDateField(f.field);
+  const isMulti = opDef(f.operator)?.multi;
+  const isDate = isDateField(f.field) && !isMulti;
   const listId = `dl-${f.id}`;
 
   const distinctVals = React.useMemo(() => {
@@ -793,7 +796,21 @@ const FilterRow: React.FC<{
 
       {/* Row 2: value input — auto-detects date fields and distinct value sets */}
       {!noVal && (
-        isDate ? (
+        isMulti ? (
+          /* Comma-separated list for IN / NOT IN, e.g. "rpm, running, temp" */
+          <input
+            value={f.value}
+            onChange={(e) => onUpdate({ value: e.target.value })}
+            placeholder="comma-separated, e.g. rpm, running, temp"
+            list={distinctVals.length > 0 ? listId : undefined}
+            style={{
+              width: '100%', height: 24, padding: '0 6px',
+              border: '1px solid #E2E8F0', borderRadius: 4,
+              fontSize: 11, color: '#0D1117', backgroundColor: '#fff',
+              boxSizing: 'border-box',
+            }}
+          />
+        ) : isDate ? (
           <input
             type="datetime-local"
             value={f.value ? f.value.slice(0, 16) : ''}

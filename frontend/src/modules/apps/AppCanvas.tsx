@@ -209,9 +209,16 @@ function applyFilters(
       const fvNum = parseFloat(fv);
       const fvDate = /\d{4}-\d{2}-\d{2}/.test(fv) ? new Date(fv) : null;
 
+      // Multi-value ops parse the value as a comma-separated list.
+      const fvList = (f.operator === 'in' || f.operator === 'not_in')
+        ? fv.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
+
       switch (f.operator) {
         case 'eq':          return str === fv;
         case 'neq':         return str !== fv;
+        case 'in':          return fvList.includes(str);
+        case 'not_in':      return !fvList.includes(str);
         case 'contains':    return str.toLowerCase().includes(fv.toLowerCase());
         case 'not_contains':return !str.toLowerCase().includes(fv.toLowerCase());
         // For numeric/date comparisons, prefer date when both sides are dates
@@ -1142,8 +1149,67 @@ const TextBlock: React.FC<{ comp: AppComponent }> = ({ comp }) => (
 // Claude-generated code executed safely with new Function.
 // The code receives: React, records, fields, title — and must return React elements.
 
+/**
+ * Custom-code widget — Claude-generated JS body that returns a React tree.
+ *
+ * Two data paths the user code can use:
+ *   1. `records` (existing) — already-paginated array of raw rows. Capped
+ *      by `useRecords`; safe up to ~50–100k rows; do not use on a 100M-row
+ *      object type.
+ *   2. `query(opts)` (new) — server-side aggregation, scales to any size.
+ *      Synchronous to call (uses React hooks under the hood); returns
+ *      { rows, loading, error }. Re-runs whenever `opts` changes.
+ *
+ * `query` rules:
+ *   - Call it at the TOP of your code, the same number of times on every
+ *     render (it uses hooks). Never inside if/else.
+ *   - opts: { groupBy, timeBucket, aggregations, filters, sortBy, sortDir, limit }
+ */
 const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({ comp, records }) => {
   const fields = records.length > 0 ? Object.keys(records[0]) : [];
+
+  const tenantId = getTenantId();
+  const objectTypeId = comp.objectTypeId;
+
+  // Closure-captured query helper — uses hooks, so the user code must follow
+  // the rules of hooks. Each call adds a useState + useEffect to this widget.
+  const query = (opts: AggregateOptions) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const [state, setState] = React.useState<{
+      rows: Record<string, unknown>[]; loading: boolean; error: string | null;
+    }>({ rows: [], loading: true, error: null });
+    const key = JSON.stringify({ ot: objectTypeId, opts });
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    React.useEffect(() => {
+      if (!objectTypeId) {
+        setState({ rows: [], loading: false, error: 'No objectTypeId set on this widget' });
+        return;
+      }
+      let cancelled = false;
+      setState({ rows: [], loading: true, error: null });
+      const body = {
+        filters: opts.filters ? JSON.stringify(opts.filters) : null,
+        group_by: opts.groupBy ?? null,
+        time_bucket: opts.timeBucket ?? null,
+        aggregations: opts.aggregations,
+        sort_by: opts.sortBy ?? null,
+        sort_dir: opts.sortDir ?? 'desc',
+        limit: opts.limit ?? 200,
+      };
+      fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenantId },
+        body: JSON.stringify(body),
+      })
+        .then((r) => r.ok ? r.json() : Promise.reject(`status ${r.status}`))
+        .then((d) => { if (!cancelled) setState({ rows: d.rows || [], loading: false, error: null }); })
+        .catch((e) => { if (!cancelled) setState({ rows: [], loading: false, error: String(e) }); });
+      return () => { cancelled = true; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [key]);
+    return state;
+  };
+
   if (!comp.code) {
     return (
       <div style={{ padding: 16, color: '#94A3B8', fontSize: 12 }}>No code provided.</div>
@@ -1151,8 +1217,8 @@ const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, u
   }
   try {
     // eslint-disable-next-line no-new-func
-    const fn = new Function('React', 'records', 'fields', 'title', comp.code);
-    const result = fn(React, records, fields, comp.title);
+    const fn = new Function('React', 'records', 'fields', 'title', 'query', comp.code);
+    const result = fn(React, records, fields, comp.title, query);
     return result ?? null;
   } catch (err) {
     return (

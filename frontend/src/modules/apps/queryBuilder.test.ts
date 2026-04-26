@@ -80,6 +80,32 @@ describe('buildServerFilters', () => {
     const cross = { field: 'department', value: 'Sales', sourceId: 'widget-2' };
     expect(buildServerFilters(f, cross, 'widget-1')).toEqual({ department: 'Sales' });
   });
+
+  it('encodes "in" operator from comma-separated value', () => {
+    const f: AppFilter[] = [{ id: 'f1', field: 'metric', operator: 'in', value: 'rpm, running, temp' }];
+    expect(buildServerFilters(f, null, id)).toEqual({
+      metric: { $in: ['rpm', 'running', 'temp'] },
+    });
+  });
+
+  it('"in" with whitespace and trailing commas is normalized', () => {
+    const f: AppFilter[] = [{ id: 'f1', field: 'metric', operator: 'in', value: '  rpm , running ,, temp,  ' }];
+    expect(buildServerFilters(f, null, id)).toEqual({
+      metric: { $in: ['rpm', 'running', 'temp'] },
+    });
+  });
+
+  it('"in" with empty value is skipped', () => {
+    const f: AppFilter[] = [{ id: 'f1', field: 'metric', operator: 'in', value: '   ,  ' }];
+    expect(buildServerFilters(f, null, id)).toBeUndefined();
+  });
+
+  it('encodes "not_in" as $not_in', () => {
+    const f: AppFilter[] = [{ id: 'f1', field: 'status', operator: 'not_in', value: 'cancelled, refunded' }];
+    expect(buildServerFilters(f, null, id)).toEqual({
+      status: { $not_in: ['cancelled', 'refunded'] },
+    });
+  });
 });
 
 describe('pickLabelField', () => {
