@@ -232,6 +232,8 @@ jobs:
   deploy:
     needs: [build-backend, build-frontend]
     runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: sha-${{ github.sha }}
     steps:
       - name: Deploy via SSH (pull + up only)
         uses: appleboy/ssh-action@v1.0.3
@@ -240,8 +242,22 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 15m
+          envs: IMAGE_TAG
           script: |
             set -euo pipefail
+
+            # ── Free disk BEFORE pulling ─────────────────────────────────
+            # The old build-on-EC2 flow left dangling images and a giant
+            # buildx cache. The new pulls need ~5 GB of headroom across 29
+            # images; without this prune, the first deploy after the
+            # cutover hits ENOSPC mid-pull.
+            echo "── Disk before cleanup ──"
+            df -h / || true
+            sudo docker builder prune -af 2>/dev/null || true
+            sudo docker container prune -f 2>/dev/null || true
+            sudo docker image prune -af 2>/dev/null || true
+            echo "── Disk after cleanup ──"
+            df -h /
 
             # Swap (safety net for tight memory boxes)
             if [ ! -f /swapfile ]; then
@@ -257,25 +273,34 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Runtime .env (build-time URLs already baked into the frontend image)
-            printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nADMIN_SEED_PASSWORD=${{ secrets.ADMIN_SEED_PASSWORD }}\nALLOWED_ORIGIN_EC2=http://${{ secrets.EC2_HOST }}:3000\n' > .env
+            # Pin the deploy to this commit's exact images. Ambient :latest
+            # is also pushed by the build job, but using the SHA prevents
+            # accidental drift if anyone pushes a hotfix mid-deploy.
+            # Truncate sha to first 7 chars to match metadata-action format.
+            export IMAGE_TAG="sha-$(echo "$IMAGE_TAG" | sed 's/^sha-//' | cut -c1-7)"
+            echo "Deploying IMAGE_TAG=$IMAGE_TAG"
 
-            # Authenticate to GHCR. Requires GHCR_PULL_TOKEN secret — a PAT
-            # with read:packages scope OR a fine-grained token with package
-            # read for this repo. If the package is set to public visibility,
-            # the docker login is unnecessary; the pull will work anonymously.
+            # Runtime .env (build-time URLs already baked into the frontend image)
+            printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nADMIN_SEED_PASSWORD=${{ secrets.ADMIN_SEED_PASSWORD }}\nALLOWED_ORIGIN_EC2=http://${{ secrets.EC2_HOST }}:3000\nIMAGE_TAG='"$IMAGE_TAG"'\n' > .env
+
+            # Authenticate to GHCR if a pull token is configured. If the
+            # packages are public, this is unnecessary — docker pull will
+            # succeed anonymously.
             if [ -n "${{ secrets.GHCR_PULL_TOKEN }}" ]; then
               echo "${{ secrets.GHCR_PULL_TOKEN }}" | sudo docker login ghcr.io \
                 -u ${{ github.actor }} --password-stdin
             fi
 
             # Pull all images defined in the deploy override, then up.
-            sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml pull
-            sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --remove-orphans
+            # IMAGE_TAG comes from the .env file above so compose substitutes it.
+            sudo --preserve-env=IMAGE_TAG docker-compose -f docker-compose.yml -f docker-compose.deploy.yml pull
+            sudo --preserve-env=IMAGE_TAG docker-compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --remove-orphans
 
             # Drop dangling images from the previous deploy to keep disk lean
             sudo docker image prune -f
 
             # Print health status so failures show in the workflow log
             sleep 15
-            sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml ps
+            sudo --preserve-env=IMAGE_TAG docker-compose -f docker-compose.yml -f docker-compose.deploy.yml ps
+            echo "── Disk after deploy ──"
+            df -h /
