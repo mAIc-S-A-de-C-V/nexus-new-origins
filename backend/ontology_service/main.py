@@ -31,6 +31,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ── Global exception handler ────────────────────────────────────────────────
+# Without this, an uncaught Python exception (e.g. a SQL error not caught by
+# the router) bypasses the CORS middleware and the browser sees a CORS error
+# instead of a real server error. Frustrating to diagnose. This handler
+# ensures every error response has CORS headers attached and a useful body.
+import logging as _logging
+import traceback as _tb
+from fastapi import HTTPException as _HTTPException
+from starlette.requests import Request as _StRequest
+
+_global_log = _logging.getLogger("ontology.exception_handler")
+
+
+@app.exception_handler(_HTTPException)
+async def _http_exception_handler(request: _StRequest, exc: _HTTPException):
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if origin and origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return _JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: _StRequest, exc: Exception):
+    _global_log.exception("unhandled exception on %s %s: %s", request.method, request.url.path, exc)
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if origin and origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return _JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"Internal server error: {type(exc).__name__}: {exc}",
+            "trace_id": str(id(exc)),
+        },
+        headers=headers,
+    )
+
 app.include_router(ontology.router, prefix="/object-types", tags=["ontology"], dependencies=[Depends(require_auth)])
 app.include_router(records.router, prefix="/object-types", tags=["records"], dependencies=[Depends(require_auth)])
 app.include_router(apps.router, prefix="/apps", tags=["apps"], dependencies=[Depends(require_auth)])
