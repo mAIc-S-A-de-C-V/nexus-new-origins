@@ -36,6 +36,30 @@ export interface AppEvent {
   actions: AppEventAction[];
 }
 
+// Time-range presets shared by widget xAxisRange and the dashboard filter bar.
+export type RangePreset =
+  | 'last_15m' | 'last_1h' | 'last_4h' | 'last_24h' | 'last_7d'
+  | 'last_30d' | 'last_90d' | 'last_year' | 'today' | 'yesterday'
+  | 'this_week' | 'this_month' | 'all_time' | 'custom';
+
+// Dashboard-level filter bar. When enabled, a row of controls renders at the
+// top of the canvas (range, custom dates, group multi-select) and every
+// inheriting widget's queries are scoped accordingly. Per-widget overrides
+// remain possible via inheritDashboardFilter=false.
+export interface DashboardFilterBar {
+  enabled: boolean;
+  // Field name to scope the time range against (e.g. 'time', 'created_at').
+  timeField?: string;
+  defaultRange?: RangePreset;
+  customStart?: string;
+  customEnd?: string;
+  // Optional categorical filter — typically the EAV `sensor_name` column.
+  // When set with a non-empty groupValues, every inheriting widget gets
+  // `<groupField> IN [...]` appended to its filters.
+  groupField?: string;
+  groupValues?: string[];
+}
+
 export type ComponentType =
   | 'metric-card'
   | 'data-table'
@@ -82,10 +106,16 @@ export interface AppComponent {
   // Relative time-range preset for the x-axis. When set, the chart auto-adds
   // a filter on `xField` covering this window. Saves the user from typing
   // ISO timestamps. 'all_time' / undefined = no filter applied.
-  xAxisRange?:
-    | 'last_15m' | 'last_1h' | 'last_4h' | 'last_24h' | 'last_7d'
-    | 'last_30d' | 'last_90d' | 'today' | 'yesterday' | 'this_week'
-    | 'this_month' | 'all_time';
+  xAxisRange?: RangePreset;
+  // When true (default), the widget uses the dashboard-level filter bar's
+  // time range / time field / group filter instead of its own xAxisRange.
+  // Set to false to opt out — useful when one widget needs a different
+  // window than the rest of the dashboard (e.g. a "30-day baseline" tile
+  // alongside several "today" tiles).
+  inheritDashboardFilter?: boolean;
+  // Custom date range used when xAxisRange === 'custom'. ISO timestamps.
+  xAxisCustomStart?: string;
+  xAxisCustomEnd?: string;
   // Server-side pagination page size for data-table. Default 50.
   pageSize?: number;
   // map
@@ -134,4 +164,5 @@ export interface NexusApp {
   syncInterval?: string;
   variables?: AppVariable[];
   events?: AppEvent[];
+  filterBar?: DashboardFilterBar;
 }

@@ -9,6 +9,11 @@ function toNexusApp(raw: Record<string, unknown>): NexusApp {
   const otIds = Array.isArray(raw.object_type_ids) && (raw.object_type_ids as string[]).length > 0
     ? (raw.object_type_ids as string[])
     : raw.object_type_id ? [raw.object_type_id as string] : [];
+  // Settings is a free-form JSON blob from the server. The dashboard filter
+  // bar config lives under settings.filter_bar (snake_case to match the
+  // rest of the API).
+  const settings = (raw.settings as Record<string, unknown>) || {};
+  const filterBar = settings.filter_bar as NexusApp['filterBar'] | undefined;
   return {
     id: raw.id as string,
     name: raw.name as string,
@@ -18,6 +23,7 @@ function toNexusApp(raw: Record<string, unknown>): NexusApp {
     objectTypeIds: otIds,
     createdAt: (raw.created_at as string) || new Date().toISOString(),
     updatedAt: (raw.updated_at as string) || new Date().toISOString(),
+    filterBar,
   };
 }
 
@@ -85,6 +91,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         description: updates.description,
         icon: updates.icon,
         components: updates.components,
+        // settings is a free-form blob; the dashboard filter bar lives
+        // inside it under filter_bar.
+        settings: updates.filterBar !== undefined ? { filter_bar: updates.filterBar } : undefined,
       }),
     });
     if (!resp.ok) throw new Error(`Failed to update app: ${resp.status}`);

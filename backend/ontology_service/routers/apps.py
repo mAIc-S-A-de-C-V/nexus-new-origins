@@ -25,6 +25,9 @@ class AppUpdateRequest(BaseModel):
     icon: Optional[str] = None
     object_type_ids: Optional[list[str]] = None
     components: Optional[list[dict]] = None
+    # App-level settings (currently dashboard filter bar config). Free-form
+    # JSON so we can keep adding flags without touching the schema.
+    settings: Optional[dict] = None
 
 
 def _row_to_dict(row: AppRow) -> dict:
@@ -39,6 +42,7 @@ def _row_to_dict(row: AppRow) -> dict:
         "object_type_id": ot_ids[0] if ot_ids else "",
         "object_type_ids": ot_ids,
         "components": row.components or [],
+        "settings": row.settings or {},
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -125,6 +129,8 @@ async def update_app(
         row.object_type_id = req.object_type_ids[0] if req.object_type_ids else row.object_type_id
     if req.components is not None:
         row.components = req.components
+    if req.settings is not None:
+        row.settings = req.settings
 
     await db.commit()
     await db.refresh(row)

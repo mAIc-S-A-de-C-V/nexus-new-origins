@@ -69,6 +69,9 @@ class AppRow(Base):
     object_type_id = Column(String, nullable=False, index=True)
     object_type_ids = Column(JSON, nullable=True, default=list)
     components = Column(JSON, nullable=False, default=list)
+    # App-level settings — currently holds the dashboard filter bar config
+    # (single source of truth for time range / group filter across widgets).
+    settings = Column(JSON, nullable=True, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -136,6 +139,17 @@ async def init_db():
                     WHERE table_name = 'apps' AND column_name = 'object_type_ids'
                 ) THEN
                     ALTER TABLE apps ADD COLUMN object_type_ids JSON DEFAULT '[]';
+                END IF;
+            END $$;
+        """))
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'settings'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN settings JSON DEFAULT '{}';
                 END IF;
             END $$;
         """))

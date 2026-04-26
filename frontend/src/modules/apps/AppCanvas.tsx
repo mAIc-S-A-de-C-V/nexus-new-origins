@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { NexusApp, AppComponent, AppFilter, AppEvent } from '../../types/app';
+import { NexusApp, AppComponent, AppFilter, AppEvent, DashboardFilterBar as DashboardFilterBarConfig, RangePreset } from '../../types/app';
 import { getTenantId } from '../../store/authStore';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 import { colors as tokens, chartPalette } from '../../design-system/tokens';
@@ -23,6 +23,26 @@ interface CrossFilterCtx {
   setFilter: (f: CrossFilter | null) => void;
 }
 const CrossFilterContext = createContext<CrossFilterCtx>({ filter: null, setFilter: () => {} });
+
+// ── Dashboard-level filter bar context ────────────────────────────────────
+// The "live" state — what the user has dialed in via the bar at the top of
+// the canvas. Initialized from `app.filterBar` defaults at first render.
+// Widgets opted into inheritance (default true) read this and use it to
+// override their per-widget xAxisRange / time field / row-set filter.
+interface DashboardFilterState {
+  enabled: boolean;
+  timeField?: string;
+  range: RangePreset;
+  customStart?: string;
+  customEnd?: string;
+  groupField?: string;
+  groupValues: string[];
+}
+const DashboardFilterContext = createContext<DashboardFilterState>({
+  enabled: false,
+  range: 'all_time',
+  groupValues: [],
+});
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -2242,7 +2262,7 @@ const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   const interval = pickTimeBucket(comp);
   const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
   // Merge the user's filter list with the time-range preset (last_24h etc.)
-  const rangeFilter = rangeToFilter(comp.xAxisRange, xField);
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd);
   const mergedFilters = rangeFilter
     ? { ...(serverFilters || {}), ...rangeFilter }
     : serverFilters;
@@ -2288,7 +2308,7 @@ const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   const method = comp.aggregation || (valueField ? 'sum' : 'count');
   const interval = pickTimeBucket(comp);
   const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
-  const rangeFilter = rangeToFilter(comp.xAxisRange, xField);
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd);
   const mergedFilters = rangeFilter
     ? { ...(serverFilters || {}), ...rangeFilter }
     : serverFilters;
@@ -2393,7 +2413,7 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
   const valueField = pickValueField(comp);
   const interval = pickTimeBucket(comp);
   const method = comp.aggregation || (valueField ? 'sum' : 'count');
-  const rangeFilter = rangeToFilter(comp.xAxisRange, xField);
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd);
   const mergedFilters = rangeFilter ? { ...(serverFilters || {}), ...rangeFilter } : serverFilters;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
@@ -2485,8 +2505,43 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
   );
 };
 
-const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, events, allComponents }) => {
+const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp: rawComp, events, allComponents }) => {
   const { filter: crossFilter } = useContext(CrossFilterContext);
+  const dash = useContext(DashboardFilterContext);
+
+  // Apply dashboard filter bar inheritance. Default is to inherit; widgets
+  // opt out by setting inheritDashboardFilter=false. Inheritance overrides
+  // the widget's xAxisRange / xField / custom dates and adds the group
+  // filter to its filter list.
+  const inherits = dash.enabled && rawComp.inheritDashboardFilter !== false;
+  const comp: AppComponent = inherits
+    ? {
+        ...rawComp,
+        xAxisRange: dash.range,
+        xAxisCustomStart: dash.customStart,
+        xAxisCustomEnd: dash.customEnd,
+        // Only override the time field if the dashboard specifies one and
+        // the widget doesn't already have one set explicitly.
+        xField: dash.timeField || rawComp.xField,
+        filters: (() => {
+          const base = rawComp.filters || [];
+          if (!dash.groupField || dash.groupValues.length === 0) return base;
+          // Drop any prior dashboard-injected group filter, then append
+          // a fresh one. Marked with the field name as the id so re-renders
+          // don't multiply it.
+          const dropped = base.filter((f) => f.field !== dash.groupField);
+          return [
+            ...dropped,
+            {
+              id: `__dash_${dash.groupField}`,
+              field: dash.groupField,
+              operator: 'in',
+              value: dash.groupValues.join(','),
+            },
+          ];
+        })(),
+      }
+    : rawComp;
 
   // Aggregate-friendly widgets short-circuit the full record pagination —
   // only the rolled-up numbers come back from the server. This is the only
@@ -2600,6 +2655,167 @@ const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; 
   }
 };
 
+// ── Dashboard filter bar UI ────────────────────────────────────────────────
+// Renders at the top of the canvas when `app.filterBar.enabled`. Single
+// source of truth for time range and (optional) group filter across every
+// inheriting widget on the dashboard.
+
+const RANGE_OPTIONS: Array<{ value: RangePreset; label: string }> = [
+  { value: 'all_time',  label: 'All time' },
+  { value: 'last_15m',  label: 'Last 15 min' },
+  { value: 'last_1h',   label: 'Last 1 hour' },
+  { value: 'last_4h',   label: 'Last 4 hours' },
+  { value: 'last_24h',  label: 'Last 24 hours' },
+  { value: 'today',     label: 'Today' },
+  { value: 'yesterday', label: 'Yesterday' },
+  { value: 'this_week', label: 'This week' },
+  { value: 'this_month',label: 'This month' },
+  { value: 'last_7d',   label: 'Last 7 days' },
+  { value: 'last_30d',  label: 'Last 30 days' },
+  { value: 'last_90d',  label: 'Last 90 days' },
+  { value: 'last_year', label: 'Last year' },
+  { value: 'custom',    label: 'Custom range…' },
+];
+
+const DashboardFilterBarUI: React.FC<{
+  config: DashboardFilterBarConfig;
+  objectTypeId?: string;
+  range: RangePreset;
+  setRange: (r: RangePreset) => void;
+  customStart: string;
+  setCustomStart: (s: string) => void;
+  customEnd: string;
+  setCustomEnd: (s: string) => void;
+  groupValues: string[];
+  setGroupValues: (vs: string[]) => void;
+}> = ({ config, objectTypeId, range, setRange, customStart, setCustomStart, customEnd, setCustomEnd, groupValues, setGroupValues }) => {
+  // Pull distinct values for the group field server-side. Capped at 200.
+  const [groupOptions, setGroupOptions] = useState<string[]>([]);
+  useEffect(() => {
+    if (!objectTypeId || !config.groupField) { setGroupOptions([]); return; }
+    let cancelled = false;
+    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      body: JSON.stringify({
+        group_by: config.groupField,
+        aggregations: [{ method: 'count' }],
+        sort_by: 'agg_0', sort_dir: 'desc', limit: 200,
+      }),
+    })
+      .then((r) => r.ok ? r.json() : { rows: [] })
+      .then((d: { rows: Array<{ group: string | null }> }) => {
+        if (cancelled) return;
+        setGroupOptions((d.rows || []).map((r) => String(r.group ?? '')).filter(Boolean));
+      })
+      .catch(() => { if (!cancelled) setGroupOptions([]); });
+    return () => { cancelled = true; };
+  }, [objectTypeId, config.groupField]);
+
+  // ISO ↔ <input type="datetime-local"> needs the local-flavored format.
+  const toLocal = (iso: string) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const fromLocal = (s: string) => s ? new Date(s).toISOString() : '';
+
+  const toggleGroupValue = (v: string) => {
+    if (groupValues.includes(v)) {
+      setGroupValues(groupValues.filter((x) => x !== v));
+    } else {
+      setGroupValues([...groupValues, v]);
+    }
+  };
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12,
+      padding: '12px 24px', backgroundColor: '#F8FAFC',
+      borderBottom: '1px solid #E2E8F0',
+    }}>
+      <span style={{ fontSize: 11, fontWeight: 600, color: '#475569', letterSpacing: '0.04em' }}>
+        FILTERS
+      </span>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155' }}>
+        Range:
+        <select
+          value={range}
+          onChange={(e) => setRange(e.target.value as RangePreset)}
+          style={{ padding: '4px 8px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12, backgroundColor: '#fff' }}
+        >
+          {RANGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </label>
+
+      {range === 'custom' && (
+        <>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155' }}>
+            From:
+            <input
+              type="datetime-local"
+              value={toLocal(customStart)}
+              onChange={(e) => setCustomStart(fromLocal(e.target.value))}
+              style={{ padding: '3px 6px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12 }}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155' }}>
+            To:
+            <input
+              type="datetime-local"
+              value={toLocal(customEnd)}
+              onChange={(e) => setCustomEnd(fromLocal(e.target.value))}
+              style={{ padding: '3px 6px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12 }}
+            />
+          </label>
+        </>
+      )}
+
+      {config.groupField && groupOptions.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#334155' }}>{config.groupField}:</span>
+          {groupValues.length === 0 && (
+            <span style={{ fontSize: 11, color: '#64748B', fontStyle: 'italic' }}>all</span>
+          )}
+          {groupOptions.map((v) => {
+            const active = groupValues.includes(v);
+            return (
+              <button
+                key={v}
+                onClick={() => toggleGroupValue(v)}
+                style={{
+                  padding: '3px 9px',
+                  border: `1px solid ${active ? '#2563EB' : '#CBD5E1'}`,
+                  borderRadius: 12,
+                  fontSize: 11,
+                  backgroundColor: active ? '#DBEAFE' : '#fff',
+                  color: active ? '#1D4ED8' : '#475569',
+                  cursor: 'pointer',
+                }}
+              >
+                {v}
+              </button>
+            );
+          })}
+          {groupValues.length > 0 && (
+            <button
+              onClick={() => setGroupValues([])}
+              style={{
+                padding: '3px 8px', border: 'none', background: 'transparent',
+                color: '#64748B', fontSize: 11, cursor: 'pointer', textDecoration: 'underline',
+              }}
+            >
+              clear
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── App Canvas ─────────────────────────────────────────────────────────────
 
 interface Props {
@@ -2609,10 +2825,43 @@ interface Props {
 const AppCanvas: React.FC<Props> = ({ app }) => {
   const [crossFilter, setCrossFilter] = useState<CrossFilter | null>(null);
 
+  // Dashboard filter bar live state. Initialized from the app's saved
+  // defaults; user can twiddle without persisting (changes are scoped to
+  // this view). The first object type drives the group-options query when
+  // the bar has a groupField configured.
+  const fb = app.filterBar;
+  const [liveRange, setLiveRange] = useState<RangePreset>(fb?.defaultRange || 'all_time');
+  const [liveStart, setLiveStart] = useState<string>(fb?.customStart || '');
+  const [liveEnd, setLiveEnd] = useState<string>(fb?.customEnd || '');
+  const [liveGroupVals, setLiveGroupVals] = useState<string[]>(fb?.groupValues || []);
+
+  const dashboardState: DashboardFilterState = {
+    enabled: !!fb?.enabled,
+    timeField: fb?.timeField,
+    range: liveRange,
+    customStart: liveStart,
+    customEnd: liveEnd,
+    groupField: fb?.groupField,
+    groupValues: liveGroupVals,
+  };
+
+  const firstOtId = app.components.find((c) => !!c.objectTypeId)?.objectTypeId;
+
   return (
     <AppVariableProvider definitions={app.variables || []}>
       <CrossFilterContext.Provider value={{ filter: crossFilter, setFilter: setCrossFilter }}>
+       <DashboardFilterContext.Provider value={dashboardState}>
         <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {fb?.enabled && (
+            <DashboardFilterBarUI
+              config={fb}
+              objectTypeId={firstOtId}
+              range={liveRange} setRange={setLiveRange}
+              customStart={liveStart} setCustomStart={setLiveStart}
+              customEnd={liveEnd} setCustomEnd={setLiveEnd}
+              groupValues={liveGroupVals} setGroupValues={setLiveGroupVals}
+            />
+          )}
           {/* Cross-filter badge */}
           {crossFilter && (
             <div style={{
@@ -2661,6 +2910,7 @@ const AppCanvas: React.FC<Props> = ({ app }) => {
             })}
           </div>
         </div>
+       </DashboardFilterContext.Provider>
       </CrossFilterContext.Provider>
     </AppVariableProvider>
   );

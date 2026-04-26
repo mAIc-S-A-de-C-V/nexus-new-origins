@@ -122,12 +122,29 @@ export function pickTimeBucket(comp: AppComponent): TimeBucket {
 export function rangeToFilter(
   range: AppComponent['xAxisRange'],
   xField: string,
+  customStart?: string,
+  customEnd?: string,
 ): Record<string, unknown> | undefined {
   if (!range || range === 'all_time' || !xField) return undefined;
   const now = Date.now();
   const oneMin = 60 * 1000;
   const oneHour = 60 * oneMin;
   const oneDay = 24 * oneHour;
+
+  // Custom range short-circuits the preset switch.
+  if (range === 'custom') {
+    const out: Record<string, unknown> = {};
+    if (customStart && customEnd) {
+      out[xField] = { $gte: customStart, $lte: customEnd };
+    } else if (customStart) {
+      out[xField] = { $gte: customStart };
+    } else if (customEnd) {
+      out[xField] = { $lte: customEnd };
+    } else {
+      return undefined;
+    }
+    return out;
+  }
 
   let from: number | null = null;
   let to: number | null = null;
@@ -140,6 +157,7 @@ export function rangeToFilter(
     case 'last_7d':  from = now - 7 * oneDay; break;
     case 'last_30d': from = now - 30 * oneDay; break;
     case 'last_90d': from = now - 90 * oneDay; break;
+    case 'last_year': from = now - 365 * oneDay; break;
     case 'today': {
       const d = new Date(); d.setHours(0, 0, 0, 0);
       from = d.getTime();
@@ -279,6 +297,7 @@ export function suggestedBucketForRange(range: AppComponent['xAxisRange']): Time
     case 'last_30d': return 'day';
     case 'this_month':return 'day';
     case 'last_90d': return 'day';
+    case 'last_year': return 'week';
     default: return undefined;
   }
 }

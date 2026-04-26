@@ -22,7 +22,7 @@ import {
   Database, Tag, MessageSquare, Sparkles, Loader, Braces, MapPin, Wrench,
   PieChart, AreaChart, TrendingUp, ListFilter, FileText, TableProperties, Variable,
 } from 'lucide-react';
-import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable } from '../../types/app';
+import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable, DashboardFilterBar, RangePreset } from '../../types/app';
 import { suggestedBucketForRange, detectEavPattern, type EavPattern } from './queryBuilder';
 import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
@@ -1193,6 +1193,24 @@ const ConfigPanel: React.FC<{
           </div>
         </Row>
 
+        {/* Dashboard filter inheritance — only relevant for data-bound
+            widgets. Default is to inherit; user can opt out per widget. */}
+        {comp.objectTypeId && (
+          <Row label="DASHBOARD FILTER BAR">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={comp.inheritDashboardFilter !== false}
+                onChange={(e) => set({ inheritDashboardFilter: e.target.checked })}
+              />
+              Inherit time range &amp; group filter from dashboard bar
+            </label>
+            <div style={{ marginTop: 4, fontSize: 10, color: '#94A3B8' }}>
+              Off = use this widget&apos;s own TIME RANGE / filters even when the bar is on.
+            </div>
+          </Row>
+        )}
+
         {/* ── Chat widget: multi-select data sources + widget context ── */}
         {comp.type === 'chat-widget' && (
           <Row label="DATA SOURCES">
@@ -1431,6 +1449,7 @@ const ConfigPanel: React.FC<{
                   <option value="last_7d">Last 7 days</option>
                   <option value="last_30d">Last 30 days</option>
                   <option value="last_90d">Last 90 days</option>
+                  <option value="last_year">Last year</option>
                 </optgroup>
                 <optgroup label="Calendar">
                   <option value="today">Today</option>
@@ -1532,6 +1551,7 @@ const ConfigPanel: React.FC<{
                   <option value="last_7d">Last 7 days</option>
                   <option value="last_30d">Last 30 days</option>
                   <option value="last_90d">Last 90 days</option>
+                  <option value="last_year">Last year</option>
                 </optgroup>
                 <optgroup label="Calendar">
                   <option value="today">Today</option>
@@ -1605,6 +1625,7 @@ const ConfigPanel: React.FC<{
                   <option value="last_7d">Last 7 days</option>
                   <option value="last_30d">Last 30 days</option>
                   <option value="last_90d">Last 90 days</option>
+                  <option value="last_year">Last year</option>
                 </optgroup>
                 <optgroup label="Calendar">
                   <option value="today">Today</option>
@@ -2177,6 +2198,168 @@ const SyncPanel: React.FC<{ app: NexusApp; components: AppComponent[]; objectTyp
   );
 };
 
+// ── App settings panel (renders in the right sidebar when no widget is
+//    selected). Houses the dashboard-level filter bar config. ─────────────
+
+const APP_RANGE_OPTS: Array<{ value: RangePreset; label: string }> = [
+  { value: 'all_time',  label: 'All time' },
+  { value: 'last_24h',  label: 'Last 24 hours' },
+  { value: 'today',     label: 'Today' },
+  { value: 'last_7d',   label: 'Last 7 days' },
+  { value: 'last_30d',  label: 'Last 30 days' },
+  { value: 'last_90d',  label: 'Last 90 days' },
+  { value: 'last_year', label: 'Last year' },
+  { value: 'custom',    label: 'Custom range' },
+];
+
+const AppSettingsPanel: React.FC<{
+  filterBar: DashboardFilterBar | undefined;
+  onChange: (fb: DashboardFilterBar | undefined) => void;
+  components: AppComponent[];
+  objectTypes: OntologyType[];
+}> = ({ filterBar, onChange, components, objectTypes }) => {
+  // Use the first widget with an objectTypeId as the source of fields for
+  // the time/group field pickers. The user can still type any field name
+  // manually if their dashboard mixes object types.
+  const firstOtId = components.find((c) => c.objectTypeId)?.objectTypeId;
+  const ot = objectTypes.find((o) => o.id === firstOtId);
+  const fields = ot ? ot.properties.filter((p) => !p.name.endsWith('[]')).map((p) => p.name) : [];
+
+  const fb: DashboardFilterBar = filterBar || { enabled: false };
+  const upd = (patch: Partial<DashboardFilterBar>) => onChange({ ...fb, ...patch });
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
+    borderRadius: 4, fontSize: 12, color: '#0D1117', outline: 'none',
+    backgroundColor: '#fff',
+  };
+  const lblStyle: React.CSSProperties = {
+    fontSize: 10, fontWeight: 600, color: '#64748B',
+    marginBottom: 4, letterSpacing: '0.04em',
+  };
+
+  return (
+    <div style={{
+      width: 320, borderLeft: '1px solid #E2E8F0', backgroundColor: '#FAFBFC',
+      display: 'flex', flexDirection: 'column', overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '10px 14px', borderBottom: '1px solid #E2E8F0',
+        backgroundColor: '#fff',
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>App Settings</div>
+        <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+          Click a widget to edit it, or configure dashboard-level options here.
+        </div>
+      </div>
+      <div style={{ flex: 1, padding: '14px', overflowY: 'auto' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 10 }}>
+          Dashboard Filter Bar
+        </div>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155', cursor: 'pointer', marginBottom: 12 }}>
+          <input
+            type="checkbox"
+            checked={!!fb.enabled}
+            onChange={(e) => upd({ enabled: e.target.checked })}
+          />
+          Show filter bar at top of dashboard
+        </label>
+
+        {fb.enabled && (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <div style={lblStyle}>TIME FIELD</div>
+              {fields.length > 0 ? (
+                <select
+                  value={fb.timeField || ''}
+                  onChange={(e) => upd({ timeField: e.target.value || undefined })}
+                  style={inputStyle}
+                >
+                  <option value="">— pick a date/time field —</option>
+                  {fields.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              ) : (
+                <input
+                  value={fb.timeField || ''}
+                  onChange={(e) => upd({ timeField: e.target.value || undefined })}
+                  placeholder="e.g. time, created_at"
+                  style={inputStyle}
+                />
+              )}
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={lblStyle}>DEFAULT RANGE</div>
+              <select
+                value={fb.defaultRange || 'last_7d'}
+                onChange={(e) => upd({ defaultRange: e.target.value as RangePreset })}
+                style={inputStyle}
+              >
+                {APP_RANGE_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+
+            {fb.defaultRange === 'custom' && (
+              <>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={lblStyle}>DEFAULT FROM (ISO)</div>
+                  <input
+                    value={fb.customStart || ''}
+                    onChange={(e) => upd({ customStart: e.target.value })}
+                    placeholder="2026-01-01T00:00:00Z"
+                    style={inputStyle}
+                  />
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={lblStyle}>DEFAULT TO (ISO)</div>
+                  <input
+                    value={fb.customEnd || ''}
+                    onChange={(e) => upd({ customEnd: e.target.value })}
+                    placeholder="2026-04-01T00:00:00Z"
+                    style={inputStyle}
+                  />
+                </div>
+              </>
+            )}
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={lblStyle}>GROUP FILTER FIELD (optional)</div>
+              {fields.length > 0 ? (
+                <select
+                  value={fb.groupField || ''}
+                  onChange={(e) => upd({ groupField: e.target.value || undefined })}
+                  style={inputStyle}
+                >
+                  <option value="">— none —</option>
+                  {fields.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              ) : (
+                <input
+                  value={fb.groupField || ''}
+                  onChange={(e) => upd({ groupField: e.target.value || undefined })}
+                  placeholder="e.g. sensor_name"
+                  style={inputStyle}
+                />
+              )}
+              <div style={{ marginTop: 4, fontSize: 10, color: '#94A3B8' }}>
+                When set, the bar shows pills of distinct values for this field. Picking some scopes every inheriting widget to those rows.
+              </div>
+            </div>
+
+            <div style={{
+              marginTop: 16, padding: 10, backgroundColor: '#EFF6FF',
+              border: '1px solid #BFDBFE', borderRadius: 6, fontSize: 11, color: '#1E3A8A',
+            }}>
+              <strong>Tip:</strong> per widget, toggle &ldquo;Inherit time range &amp; group filter from dashboard bar&rdquo; off to keep its own settings.
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ── App Editor (main export) ──────────────────────────────────────────────────
 
 type Mode = 'view' | 'edit' | 'code' | 'sync';
@@ -2186,6 +2369,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   const [mode, setMode] = useState<Mode>(app.components.length > 0 ? 'view' : 'edit');
   const [components, setComponents] = useState<AppComponent[]>(app.components);
   const [variables, setVariables] = useState<AppVariable[]>(app.variables || []);
+  const [filterBar, setFilterBar] = useState<DashboardFilterBar | undefined>(app.filterBar);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -2208,11 +2392,12 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
 
   const mark = (comps: AppComponent[]) => { setComponents(comps); setDirty(true); };
   const markVars = (vars: AppVariable[]) => { setVariables(vars); setDirty(true); };
+  const markFilterBar = (fb: DashboardFilterBar | undefined) => { setFilterBar(fb); setDirty(true); };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await updateApp(app.id, { components, variables, updatedAt: new Date().toISOString() });
+      await updateApp(app.id, { components, variables, filterBar, updatedAt: new Date().toISOString() });
       setDirty(false);
       setMode('view');
     } finally { setSaving(false); }
@@ -2360,7 +2545,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {mode === 'view' && (
           <div style={{ flex: 1, overflowY: 'auto', backgroundColor: '#F8FAFC' }}>
-            <AppCanvas app={{ ...app, components }} />
+            <AppCanvas app={{ ...app, components, filterBar }} />
           </div>
         )}
 
@@ -2392,6 +2577,14 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
                 allComponents={components}
                 onChange={(c) => mark(components.map((x) => x.id === c.id ? c : x))}
                 onDelete={() => del(selectedComp.id)}
+              />
+            )}
+            {!selectedComp && (
+              <AppSettingsPanel
+                filterBar={filterBar}
+                onChange={markFilterBar}
+                components={components}
+                objectTypes={objectTypes}
               />
             )}
           </>
