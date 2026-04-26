@@ -13,17 +13,20 @@ import json
 import logging
 import os
 import re
+import time
 import httpx
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 from uuid import uuid4
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Header, Depends, BackgroundTasks, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func as sa_func, text
 from sqlalchemy.orm.attributes import flag_modified
 from database import get_session, ObjectTypeRow, ObjectRecordRow, OntologyLinkRow
 from shared.auth_middleware import require_auth, AuthUser
+from shared import query_cache, index_advisor, rollup_promoter
 
 logger = logging.getLogger(__name__)
 
@@ -422,22 +425,72 @@ async def aggregate_records(
 
     sql, bind_params = build_aggregate_sql(body, tenant_id, ot_id)
 
+    # ── Cache + rollup promotion ───────────────────────────────────────────
+    # Canonicalize the request so {a:1, b:2} and {b:2, a:1} hash the same.
+    cache_payload = {
+        "filters": body.filters or "",
+        "group_by": body.group_by or "",
+        "time_bucket": body.time_bucket.model_dump() if body.time_bucket else None,
+        "aggregations": [a.model_dump() for a in body.aggregations],
+        "sort_by": body.sort_by or "",
+        "sort_dir": body.sort_dir or "desc",
+        "limit": body.limit,
+    }
+    query_hash = query_cache.canonical_query_hash(cache_payload)
+    cache_key = query_cache.aggregate_cache_key(tenant_id, ot_id, query_hash)
+    index_key = query_cache.aggregate_index_key(tenant_id, ot_id)
+
+    async def _execute() -> dict:
+        t0 = time.perf_counter()
+        try:
+            result = await db.execute(text(sql), bind_params)
+            rows = result.mappings().all()
+        except Exception as exc:
+            logger.warning("aggregate failed for ot=%s tenant=%s: %s", ot_id, tenant_id, exc)
+            raise HTTPException(status_code=400, detail=f"Aggregation failed: {exc}")
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        serialized = []
+        for r in rows:
+            d: dict[str, Any] = {"group": r.get("grp")}
+            for i in range(len(body.aggregations)):
+                v = r.get(f"agg_{i}")
+                d[f"agg_{i}"] = float(v) if v is not None else None
+            serialized.append(d)
+
+        # Auto-index hot fields after a slow query.
+        candidate_fields = []
+        if body.group_by:
+            candidate_fields.append(body.group_by)
+        if body.time_bucket:
+            candidate_fields.append(body.time_bucket.field)
+        try:
+            await index_advisor.maybe_create_indexes_for(
+                engine=db.get_bind(),
+                fields=candidate_fields,
+                elapsed_ms=elapsed_ms,
+            )
+        except Exception as exc:
+            logger.debug("index advisor swallowed: %s", exc)
+
+        return {"rows": serialized, "total_groups": len(serialized), "elapsed_ms": elapsed_ms}
+
+    payload, from_cache = await query_cache.get_or_compute(
+        cache_key,
+        _execute,
+        ttl_seconds=query_cache.DEFAULT_TTL_SECONDS,
+        index_key=index_key,
+    )
+
+    # Track hits for promotion to long-TTL cache + background refresh.
     try:
-        result = await db.execute(text(sql), bind_params)
-        rows = result.mappings().all()
+        await rollup_promoter.maybe_promote(cache_key, recompute=_execute, index_key=index_key)
     except Exception as exc:
-        logger.warning("aggregate failed for ot=%s tenant=%s: %s", ot_id, tenant_id, exc)
-        raise HTTPException(status_code=400, detail=f"Aggregation failed: {exc}")
+        logger.debug("rollup promoter swallowed: %s", exc)
 
-    serialized = []
-    for r in rows:
-        d: dict[str, Any] = {"group": r.get("grp")}
-        for i in range(len(body.aggregations)):
-            v = r.get(f"agg_{i}")
-            d[f"agg_{i}"] = float(v) if v is not None else None
-        serialized.append(d)
-
-    return {"rows": serialized, "total_groups": len(serialized)}
+    payload["from_cache"] = from_cache
+    payload["promoted"] = rollup_promoter.is_promoted(cache_key)
+    return payload
 
 
 # ── Indexes (on-demand JSONB expression indexes for hot fields) ────────────
@@ -498,6 +551,236 @@ async def create_indexes(
                 failed[f] = str(exc)
 
     return {"created": created, "failed": failed}
+
+
+# ── Stream (NDJSON, no offset, server-side cursor) ─────────────────────────
+
+
+@router.get("/{ot_id}/stream")
+async def stream_records(
+    ot_id: str,
+    filter: Optional[str] = Query(None, description="JSON filter string, same syntax as /records"),
+    chunk_size: int = Query(1000, ge=100, le=10000),
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """
+    Stream every matching record as NDJSON (one JSON object per line).
+
+    Use this for exports, ML feature extraction, or anything that legitimately
+    needs every row. Unlike GET /records, this does NOT use OFFSET — it walks
+    a server-side keyset cursor on (id) so memory and time are O(rows) not O(rows²).
+
+    Response: `application/x-ndjson` — pipe to a file:
+        curl -H 'x-tenant-id: t' /object-types/X/stream > export.ndjson
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+
+    base_where = [
+        ObjectRecordRow.object_type_id == ot_id,
+        ObjectRecordRow.tenant_id == tenant_id,
+    ]
+    if filter:
+        try:
+            base_where.extend(_build_jsonb_filters(filter))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid filter: {exc}")
+
+    async def generate() -> AsyncGenerator[bytes, None]:
+        last_id: Optional[str] = None
+        total = 0
+        while True:
+            q = select(ObjectRecordRow).where(*base_where)
+            if last_id is not None:
+                q = q.where(ObjectRecordRow.id > last_id)
+            q = q.order_by(ObjectRecordRow.id).limit(chunk_size)
+            result = await db.execute(q)
+            rows = result.scalars().all()
+            if not rows:
+                break
+            for row in rows:
+                line = json.dumps(row.data, default=str) + "\n"
+                yield line.encode()
+            last_id = rows[-1].id
+            total += len(rows)
+            if len(rows) < chunk_size:
+                break
+        # Trailing summary line — clients that don't need it can ignore.
+        yield (json.dumps({"_meta": {"total_streamed": total}}) + "\n").encode()
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+# ── TimescaleDB hypertable migration (admin) ───────────────────────────────
+
+
+class TimescaleMigrateRequest(BaseModel):
+    date_field: str
+    chunk_time_interval: str = "7 days"
+
+
+@router.post("/{ot_id}/timescale-migrate")
+async def timescale_migrate(
+    ot_id: str,
+    body: TimescaleMigrateRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """
+    Admin op: copy this object type's records into a TimescaleDB hypertable
+    partitioned by `date_field` (extracted from JSONB).
+
+    This DOES NOT change query routing — it sets up the hypertable so a
+    follow-up release can read from it for OTs that have been migrated.
+    The flag we set on ObjectType.data['storage_mode'] = 'hypertable' tells
+    the read path to use the hypertable connection.
+
+    Pre-conditions:
+      - `date_field` exists in records and casts cleanly to timestamptz
+      - admin or superadmin role
+      - TIMESCALE_URL env var configured (defaults to compose-internal URL)
+    """
+    if user.role not in ("admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="admin role required")
+
+    tenant_id = x_tenant_id or "tenant-001"
+    safe_field = _safe_field(body.date_field)
+
+    timescale_url = os.environ.get(
+        "TIMESCALE_URL",
+        "postgresql+asyncpg://nexus:nexus_pass@timescaledb:5432/nexus_events",
+    )
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+    ts_engine = create_async_engine(timescale_url, echo=False, pool_pre_ping=True)
+
+    table_name = f"or_hypertable_{re.sub(r'[^a-zA-Z0-9_]', '', ot_id).lower()}"[:63]
+
+    try:
+        async with ts_engine.connect() as ts_conn:
+            await ts_conn.execution_options(isolation_level="AUTOCOMMIT")
+            # Create the table on TimescaleDB
+            await ts_conn.execute(text(
+                f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                f"  id TEXT NOT NULL,"
+                f"  tenant_id TEXT NOT NULL,"
+                f"  source_id TEXT NOT NULL,"
+                f"  data JSONB NOT NULL,"
+                f"  bucket_ts TIMESTAMPTZ NOT NULL,"
+                f"  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+                f"  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+                f")"
+            ))
+            # Convert to hypertable (idempotent; create_hypertable raises if already converted)
+            await ts_conn.execute(text(
+                f"SELECT create_hypertable('{table_name}', 'bucket_ts', "
+                f"chunk_time_interval => INTERVAL '{body.chunk_time_interval}', "
+                f"if_not_exists => TRUE)"
+            ))
+            # Tenant + source_id index
+            await ts_conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS {table_name}_tenant_idx "
+                f"ON {table_name} (tenant_id, source_id)"
+            ))
+
+        # Stream records from primary DB → write to hypertable in batches.
+        copied = 0
+        last_id: Optional[str] = None
+        BATCH = 1000
+        while True:
+            q = select(ObjectRecordRow).where(
+                ObjectRecordRow.object_type_id == ot_id,
+                ObjectRecordRow.tenant_id == tenant_id,
+            )
+            if last_id is not None:
+                q = q.where(ObjectRecordRow.id > last_id)
+            q = q.order_by(ObjectRecordRow.id).limit(BATCH)
+            result = await db.execute(q)
+            rows = result.scalars().all()
+            if not rows:
+                break
+
+            insert_values = []
+            for r in rows:
+                bucket_ts_raw = r.data.get(safe_field) if isinstance(r.data, dict) else None
+                if not bucket_ts_raw:
+                    continue
+                insert_values.append({
+                    "id": r.id,
+                    "tenant_id": r.tenant_id,
+                    "source_id": r.source_id,
+                    "data": json.dumps(r.data),
+                    "bucket_ts": bucket_ts_raw,
+                })
+
+            if insert_values:
+                async with ts_engine.connect() as ts_conn:
+                    await ts_conn.execution_options(isolation_level="AUTOCOMMIT")
+                    await ts_conn.execute(
+                        text(
+                            f"INSERT INTO {table_name} (id, tenant_id, source_id, data, bucket_ts) "
+                            f"VALUES (:id, :tenant_id, :source_id, :data::jsonb, (:bucket_ts)::timestamptz) "
+                            f"ON CONFLICT DO NOTHING"
+                        ),
+                        insert_values,
+                    )
+
+            copied += len(rows)
+            last_id = rows[-1].id
+            if len(rows) < BATCH:
+                break
+
+        # Mark the object type as having a hypertable so a future release can
+        # route reads through it.
+        ot_result = await db.execute(
+            select(ObjectTypeRow).where(
+                ObjectTypeRow.id == ot_id,
+                ObjectTypeRow.tenant_id == tenant_id,
+            )
+        )
+        ot_row = ot_result.scalar_one_or_none()
+        if ot_row:
+            ot_data = dict(ot_row.data or {})
+            ot_data["storage_mode"] = "hypertable"
+            ot_data["hypertable_name"] = table_name
+            ot_data["hypertable_date_field"] = safe_field
+            ot_row.data = ot_data
+            flag_modified(ot_row, "data")
+            await db.commit()
+
+        await ts_engine.dispose()
+
+        return {
+            "table": table_name,
+            "records_copied": copied,
+            "date_field": safe_field,
+            "chunk_interval": body.chunk_time_interval,
+            "note": "Read routing not yet wired — this set up the hypertable; queries still hit the primary DB.",
+        }
+    except Exception as exc:
+        try:
+            await ts_engine.dispose()
+        except Exception:
+            pass
+        logger.warning("timescale migrate failed for ot=%s: %s", ot_id, exc)
+        raise HTTPException(status_code=500, detail=f"Migration failed: {exc}")
+
+
+# ── Cache stats (diagnostic) ───────────────────────────────────────────────
+
+
+@router.get("/_cache/stats")
+async def cache_stats(user: AuthUser = Depends(require_auth)):
+    """Diagnostic endpoint: rollup-promoter stats. Useful for tuning thresholds."""
+    return {
+        "rollup": rollup_promoter.stats(),
+        "auto_index_threshold_ms": index_advisor.SLOW_QUERY_MS,
+        "auto_index_enabled": index_advisor.AUTO_INDEX_ENABLED,
+        "default_ttl_seconds": query_cache.DEFAULT_TTL_SECONDS,
+        "rollup_ttl_seconds": query_cache.ROLLUP_TTL_SECONDS,
+    }
 
 
 # ── GET single record ──────────────────────────────────────────────────────
@@ -689,6 +972,7 @@ async def update_record(
     row.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
+    asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
     return {
         "record": row.data,
         "source_id": row.source_id,
@@ -722,6 +1006,7 @@ async def delete_record(
 
     await db.delete(row)
     await db.commit()
+    asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
     return {"deleted": True, "source_id": record_id}
 
 
@@ -851,6 +1136,7 @@ async def sync_records(
         upserted += 1
 
     await db.commit()
+    asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
     return {
         "synced": upserted,
         "primary_records": len(primary_records),
@@ -933,6 +1219,7 @@ async def ingest_records(
         ingested += 1
 
     await db.commit()
+    asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
     return {
         "ingested": ingested,
         "new_count": len(new_source_ids),
@@ -1039,6 +1326,7 @@ async def array_append_records(
         appended += 1
 
     await db.commit()
+    asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
     return {
         "appended": appended,
         "total_incoming": len(incoming),
