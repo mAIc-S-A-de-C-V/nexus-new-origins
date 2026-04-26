@@ -74,11 +74,14 @@ const NewAppModal: React.FC<{
 
     try {
       const recordsResp = await fetch(
-        `${ONTOLOGY_API}/object-types/${primaryOtId}/records`,
+        `${ONTOLOGY_API}/object-types/${primaryOtId}/records?limit=50`,
         { headers: { 'x-tenant-id': getTenantId() } }
       );
       const recordsData = recordsResp.ok ? await recordsResp.json() : {};
-      const sampleRows: Record<string, unknown>[] = (recordsData.records || []).slice(0, 7);
+      // Send up to 50 rows so the backend can detect EAV / long-format
+      // patterns (one row per metric event). The prompt itself still
+      // displays only ~7 to keep token count manageable.
+      const sampleRows: Record<string, unknown>[] = (recordsData.records || []).slice(0, 50);
 
       setGenStatus('Sending prompt to Claude...');
       const resp = await fetch(`${INFERENCE_API}/infer/generate-app`, {

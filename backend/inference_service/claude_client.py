@@ -35,6 +35,164 @@ MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4096
 
 
+# ── Schema-shape detection ──────────────────────────────────────────────────
+# Helper used by every generator prompt. Sniffs a sample of records to figure
+# out whether the object type is in entity-attribute-value (EAV) shape — one
+# row per measurement event with the metric name in a column, the value in
+# another column. Sensor data, custom-field tables, observability logs all
+# look like this. The AI's training assumes wide-format tables, so without a
+# hint it generates `SUM(value)` aggregations that mix RPM with running flags.
+
+_ATTRIBUTE_NAME_HINTS = {
+    "field", "metric", "metric_name", "metric_type", "measurement", "kpi",
+    "attribute", "attr", "key", "tag", "type", "reading_type", "signal",
+    "sensor_type", "channel", "param", "parameter",
+    # "name" intentionally excluded — too generic, false-positives on
+    # entity tables (customer.name, sensor.name, etc.).
+}
+_VALUE_NAME_HINTS = {
+    "value", "val", "reading", "data", "amount", "measurement",
+    "magnitude", "quantity",
+}
+_NUMERIC_RE = re.compile(r"^-?\d+(\.\d+)?$") if False else None  # see below; not used
+
+
+def _detect_eav_pattern(sample_rows: list[dict]) -> dict | None:
+    """
+    Returns {'attribute_col': str, 'value_col': str, 'metrics': [..], 'preview': [..]}
+    when the sample looks like long-format / EAV data, else None.
+
+    Detection heuristic:
+      - A column whose name suggests an attribute/metric label
+        (field/metric/measurement/attribute/etc.) AND has 2–30 distinct
+        short string values.
+      - A separate column whose name suggests a value
+        (value/reading/data/amount/etc.) AND contains a mix of numeric and
+        non-numeric values, OR purely numeric values that vary per attribute
+        (different metrics having different scales).
+    """
+    import re as _re
+    if not sample_rows or len(sample_rows) < 5:
+        return None
+
+    keys: list[str] = []
+    distinct: dict[str, set[str]] = {}
+    counts: dict[str, int] = {}
+    for row in sample_rows:
+        for k, v in (row or {}).items():
+            if k not in distinct:
+                distinct[k] = set()
+                counts[k] = 0
+                keys.append(k)
+            if v is not None and v != "":
+                distinct[k].add(str(v))
+                counts[k] += 1
+
+    # Find attribute column. Criteria:
+    #   - Name hint matches (field / metric / measurement / etc.)
+    #   - 2..30 distinct values (low cardinality, looks like a metric label)
+    #   - Recurrence: average appearances per value >= 1.5, so we don't
+    #     false-positive on a `name` column where each row is its own entity
+    #     (1 distinct value per row → ratio 1.0).
+    attr_col: str | None = None
+    for k in keys:
+        kl = k.lower()
+        if kl not in _ATTRIBUTE_NAME_HINTS:
+            continue
+        vals = distinct[k]
+        if not (2 <= len(vals) <= 30):
+            continue
+        if not all(len(v) <= 40 for v in vals):
+            continue
+        recurrence = counts[k] / max(len(vals), 1)
+        if recurrence < 1.5:
+            continue
+        attr_col = k
+        break
+
+    if not attr_col:
+        return None
+
+    # Find value column (different from attr)
+    numeric_re = _re.compile(r"^-?\d+(\.\d+)?$")
+    value_col: str | None = None
+    for k in keys:
+        if k == attr_col:
+            continue
+        kl = k.lower()
+        if kl not in _VALUE_NAME_HINTS:
+            continue
+        vals = distinct[k]
+        if not vals:
+            continue
+        numeric_count = sum(1 for v in vals if numeric_re.match(v))
+        # Either: at least one numeric (the typical sensor case), or pure
+        # numeric with widely varying ranges (different metrics)
+        if numeric_count >= 1:
+            value_col = k
+            break
+
+    if not value_col:
+        return None
+
+    # Build a preview of one row per metric so the AI sees the structure
+    seen_attrs: set[str] = set()
+    preview: list[dict] = []
+    for row in sample_rows:
+        attr = row.get(attr_col)
+        if attr is None or str(attr) in seen_attrs:
+            continue
+        seen_attrs.add(str(attr))
+        preview.append({attr_col: attr, value_col: row.get(value_col)})
+        if len(preview) >= 6:
+            break
+
+    return {
+        "attribute_col": attr_col,
+        "value_col": value_col,
+        "metrics": sorted(distinct[attr_col]),
+        "preview": preview,
+    }
+
+
+def _eav_prompt_section(sample_rows: list[dict]) -> str:
+    """Format the EAV hint as a prompt section. Empty string when not EAV."""
+    eav = _detect_eav_pattern(sample_rows)
+    if not eav:
+        return ""
+    metrics_csv = ", ".join(eav["metrics"][:20])
+    preview_lines = "\n".join(
+        f"  {row[eav['attribute_col']]:<15s}  {eav['value_col']}={row.get(eav['value_col'])}"
+        for row in eav["preview"]
+    )
+    return (
+        "\n\nDETECTED PATTERN — Entity-Attribute-Value (EAV) / long-format:\n"
+        f"  Attribute column: \"{eav['attribute_col']}\" (categorical)\n"
+        f"  Value column:     \"{eav['value_col']}\" (mixed types — numeric for some\n"
+        f"                    metrics, strings for others)\n"
+        f"  Distinct metrics: {metrics_csv}\n"
+        f"  One row per metric:\n{preview_lines}\n"
+        "\n"
+        "EACH row is ONE measurement event, NOT a record with all metrics.\n"
+        "Different rows have different metrics in the attribute column.\n"
+        "\n"
+        "RULES for this kind of data:\n"
+        f"  1. When the user asks for a chart on a specific metric (e.g. \"RPM\",\n"
+        f"     \"temperature\"), you MUST add a filter on the attribute column:\n"
+        f"     {{\"field\": \"{eav['attribute_col']}\", \"operator\": \"eq\", \"value\": \"<METRIC>\"}}\n"
+        f"  2. Use \"{eav['value_col']}\" as the valueField, with aggregation=avg\n"
+        f"     (or sum for counter-style metrics).\n"
+        f"  3. NEVER aggregate \"{eav['value_col']}\" without the attribute filter —\n"
+        "     it would mix metrics of different units and scales.\n"
+        "  4. For \"all metrics over time\" requests, generate ONE chart per metric\n"
+        "     (e.g. one line-chart for RPM, one for temperature, one for running).\n"
+        "     Or use multi-series with labelField on a sub-attribute (e.g.\n"
+        "     sensor_name) and a single attribute filter.\n"
+        "  5. Counter-style flags (running=1) are best aggregated with method=count\n"
+        "     and the filter value=1, NOT sum/avg.\n"
+    )
+
+
 class ClaudeInferenceClient:
     """Wrapper around the Anthropic SDK for structured schema inference tasks."""
 
@@ -442,12 +600,14 @@ class ClaudeInferenceClient:
             )
             sample_preview = f"\nSample data ({len(sample_rows)} rows shown):\n{header}\n{rows_text}"
 
+        eav_section = _eav_prompt_section(sample_rows)
+
         prompt = f"""You are a dashboard builder AI. Generate a JSON layout for a data dashboard.
 
 User request: "{description}"
 
 Object type: "{object_type_name}" (id: {object_type_id})
-All available fields: {json.dumps(properties[:60])}{sample_preview}
+All available fields: {json.dumps(properties[:60])}{sample_preview}{eav_section}
 
 Use the sample data above to understand what fields actually contain values and what they look like.
 Only reference fields that appear in the sample data or the fields list.
@@ -566,6 +726,8 @@ Rules:
             )
             sample_preview = f"\nSample data:\n{header}\n{rows_text}"
 
+        eav_section = _eav_prompt_section(sample_rows)
+
         prompt = f"""You are a dashboard widget builder. Generate ONE widget config from a natural language request.
 
 Today: {today}  |  Current week starts: {week_start}  |  Current month starts: {month_start}
@@ -573,7 +735,7 @@ Today: {today}  |  Current week starts: {week_start}  |  Current month starts: {
 User request: "{description}"
 
 Object type: "{object_type_name}" (id: {object_type_id})
-Available fields: {json.dumps(properties[:60])}{sample_preview}
+Available fields: {json.dumps(properties[:60])}{sample_preview}{eav_section}
 
 CRITICAL — DATA SCALE: this object type may contain millions of rows.
 Charts, metric cards, and data tables are rendered by the frontend as queries
@@ -684,12 +846,14 @@ Only include keys relevant to the widget type. Omit null/empty keys entirely."""
             )
             sample_preview = f"\nSample data ({len(sample_rows)} rows):\n{header}\n{rows_text}"
 
+        eav_section = _eav_prompt_section(sample_rows)
+
         prompt = f"""You are a dashboard code generator. Generate a JavaScript function body for a custom widget.
 
 Today: {today}  |  Current week starts: {week_start}
 User request: "{description}"
 Object type: "{object_type_name}" (id: {object_type_id})
-Available fields: {json.dumps(properties[:60])}{sample_preview}
+Available fields: {json.dumps(properties[:60])}{sample_preview}{eav_section}
 
 TASK: Write JavaScript code (no JSX, no imports, no export) that:
 1. Receives these variables:
