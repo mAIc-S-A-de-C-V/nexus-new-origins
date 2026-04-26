@@ -1025,6 +1025,17 @@ const ConfigPanel: React.FC<{
     [sampleRecords],
   );
 
+  // The metrics list from `detectEavPattern` is derived from a 50-row sample,
+  // so it can miss metrics that exist in the table but aren't in that sample
+  // (common with time-sorted sensor data — wifi events dominate the most
+  // recent rows). Pull the authoritative list from the server.
+  const eavAttrCol = eav?.attributeCol;
+  const distinctMetrics = useDistinctValues(comp.objectTypeId, eavAttrCol);
+  const metricList = React.useMemo(() => {
+    if (distinctMetrics.length > 0) return distinctMetrics;
+    return eav?.metrics || [];
+  }, [distinctMetrics, eav]);
+
   // Track the currently-selected metric for this widget by inspecting its
   // existing filters. If the user has an `<attribute_col> = X` filter, that's
   // the active metric.
@@ -1306,7 +1317,7 @@ const ConfigPanel: React.FC<{
               style={{ width: '100%', padding: '6px 8px', border: '1px solid #C7D2FE', borderRadius: 4, fontSize: 12, color: '#0D1117', backgroundColor: '#EEF2FF', outline: 'none', fontFamily: 'var(--font-mono)' }}
             >
               <option value="">— all metrics (skip filter) —</option>
-              {eav.metrics.map((m) => (
+              {metricList.map((m) => (
                 <option key={m} value={m}>{m}</option>
               ))}
             </select>
