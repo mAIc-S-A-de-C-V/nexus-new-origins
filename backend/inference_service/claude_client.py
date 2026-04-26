@@ -239,9 +239,48 @@ def _convert_custom_code_to_typed(comp: dict, object_type_id: str) -> dict:
     return out
 
 
+# Phrases that strongly indicate a text-block is being used as a chart
+# placeholder rather than as actual prose content. If we see one of these
+# in a text-block's `content`, we convert the widget to a typed chart
+# based on its title — same heuristic as for custom-code.
+_PLACEHOLDER_PHRASES = (
+    "would render here",
+    "would display",
+    "would show",
+    "placeholder for",
+    "chart goes here",
+    "chart would render",
+    "chart would appear",
+    "[line chart",
+    "[bar chart",
+    "[pie chart",
+    "[area chart",
+    "[pivot table",
+    "[chart:",
+    "data points across",
+    "time-series points",
+)
+
+
+def _is_placeholder_text_block(comp: dict) -> bool:
+    if comp.get("type") != "text-block":
+        return False
+    content = str(comp.get("content", "")).lower()
+    if not content.strip():
+        return False
+    # Bracketed text starting with "[" and containing a chart keyword,
+    # OR explicit placeholder phrases
+    if any(p in content for p in _PLACEHOLDER_PHRASES):
+        return True
+    if content.startswith("[") and content.endswith("]") and any(w in content for w in ("chart", "table", "widget", "render")):
+        return True
+    return False
+
+
 def _scrub_custom_code_components(layout: dict, object_type_id: str) -> dict:
-    """Replace any custom-code components in a generate_app response with
-    typed widgets. Mutates and returns the layout dict.
+    """Replace any custom-code OR placeholder-text-block components with
+    real typed widgets. The AI sometimes uses text-block as a workaround
+    when told it can't use custom-code; we catch both. Mutates the layout.
     """
     if not isinstance(layout, dict):
         return layout
@@ -251,14 +290,17 @@ def _scrub_custom_code_components(layout: dict, object_type_id: str) -> dict:
     scrubbed: list[dict] = []
     converted_count = 0
     for comp in components:
-        if isinstance(comp, dict) and comp.get("type") == "custom-code":
+        if not isinstance(comp, dict):
+            scrubbed.append(comp)
+            continue
+        if comp.get("type") == "custom-code" or _is_placeholder_text_block(comp):
             scrubbed.append(_convert_custom_code_to_typed(comp, object_type_id))
             converted_count += 1
         else:
             scrubbed.append(comp)
     if converted_count:
         logger.warning(
-            "scrubbed %d custom-code widgets from generated layout for ot=%s",
+            "scrubbed %d placeholder/custom-code widgets from generated layout for ot=%s",
             converted_count, object_type_id,
         )
     layout["components"] = scrubbed
@@ -714,16 +756,28 @@ class ClaudeInferenceClient:
 
         prompt = f"""You are a dashboard builder AI. Generate a JSON layout for a data dashboard.
 
-ABSOLUTE PROHIBITION: NEVER generate widgets of type "custom-code".
-NOT EVEN ONCE. NOT FOR LINE CHARTS. NOT FOR PIVOT TABLES. NOT FOR ANY
-"complex" request. Custom-code widgets render as static placeholder text
-in this dashboard system. They are reserved for the SINGLE-WIDGET AI
-generator, NOT this multi-widget dashboard generator. If you find
-yourself reaching for "custom-code", pick the closest typed widget
-instead. The valid types are EXACTLY:
+CRITICAL FACT: when you emit a component like
+  {{"type": "line-chart", "xField": "time", "valueField": "value",
+    "labelField": "sensor_name", "filters": [...]}}
+the frontend renders a REAL, INTERACTIVE LINE CHART with live data
+fetched from the database. You do NOT need to write rendering code.
+You do NOT need to "describe" the chart. You do NOT put placeholders
+like "[chart would render here]" anywhere.
+
+PROHIBITED behaviors (output containing any of these is rejected):
+  - type="custom-code" (banned in dashboards entirely)
+  - type="text-block" with content describing a chart that should be
+    there ("[Line chart widget would render here ...]",
+    "Chart: N data points", "this would show", "placeholder for a chart")
+  - Any component whose `content`, `code`, or `description` field
+    describes a visualization in prose instead of just being the
+    visualization
+
+If a real chart belongs there, EMIT THE REAL CHART. Use these types:
   metric-card, kpi-banner, stat-card, data-table, pivot-table,
-  bar-chart, line-chart, area-chart, pie-chart, filter-bar, text-block.
-ANY component with type="custom-code" will be rejected.
+  bar-chart, line-chart, area-chart, pie-chart, filter-bar.
+text-block is ONLY for actual prose content the user wants displayed
+(e.g. dashboard description, instructions). Never as a chart substitute.
 
 User request: "{description}"
 

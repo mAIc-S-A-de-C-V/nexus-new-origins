@@ -135,3 +135,57 @@ def test_handles_layout_without_components():
 def test_handles_non_dict_input():
     assert _scrub_custom_code_components(None, "ot-1") is None  # type: ignore[arg-type]
     assert _scrub_custom_code_components([], "ot-1") == []      # type: ignore[arg-type]
+
+
+def test_converts_text_block_used_as_chart_placeholder():
+    """The AI sometimes uses text-block as a workaround when told it can't
+    use custom-code. Catch placeholder content and convert to a real widget."""
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "text-block",
+                "title": "RPM by sensor — last 24 hours",
+                "content": "[Line chart widget would render here with RPM data by sensor]",
+                "objectTypeId": "ot-1",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    c = out["components"][0]
+    assert c["type"] == "line-chart"
+    assert c["xField"] == "time"
+
+
+def test_converts_text_block_with_data_points_summary():
+    """Catches '(Line chart: 109 data points)' style stubs too."""
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "text-block",
+                "title": "Temperature trend over time",
+                "content": "(Line chart: 109 time-series points)",
+                "objectTypeId": "ot-1",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    assert out["components"][0]["type"] == "line-chart"
+
+
+def test_does_not_scrub_legitimate_text_blocks():
+    """Real prose text blocks (dashboard descriptions, instructions) pass through."""
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "text-block",
+                "title": "About this dashboard",
+                "content": "This dashboard shows live readings from all production sensors. Use the filter bar above to scope to a specific sensor.",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    assert out["components"][0]["type"] == "text-block"
+    assert "live readings" in out["components"][0]["content"]
