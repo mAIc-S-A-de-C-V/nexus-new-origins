@@ -180,12 +180,12 @@ Set these in the repo under **Settings > Secrets and variables > Actions**:
 
 ### One-time setup on a fresh repo / fork
 
-1. **Create a PAT for pushing** — go to `github.com/settings/tokens?type=beta` (fine-grained):
-   - Token name: `nexus-ghcr-push`
-   - Resource owner: the org that owns the repo (`mAIc-S-A-de-C-V`)
-   - Repository access: **All** under the org (so future repos work) or just this repo
-   - Permissions → **Account** → **Packages**: **Read and write**
-   - Save the token. Add it to repo secrets as `GHCR_PUSH_TOKEN`.
+1. **Create a CLASSIC PAT for pushing** — fine-grained PATs don't support GHCR. Go to `github.com/settings/tokens` (NOT `/personal-access-tokens`):
+   - Click **Generate new token** → **Generate new token (classic)**
+   - Note: `nexus-ghcr-push`
+   - Expiration: your call (90 days / 1 year / no expiration)
+   - Scopes: check `write:packages` (auto-includes `read:packages` and `repo`)
+   - Generate, copy the `ghp_…` token, save as repo secret `GHCR_PUSH_TOKEN`.
 
 2. **Push to main**; the first workflow run creates the GHCR packages with the PAT (no 403).
 
@@ -194,7 +194,7 @@ Set these in the repo under **Settings > Secrets and variables > Actions**:
    - **Package settings → Danger Zone → Change visibility → Public**
    - With public packages, you don't need `GHCR_PULL_TOKEN`.
 
-4. **Or** create a second PAT with `read:packages` only and store as `GHCR_PULL_TOKEN`; the deploy step does `docker login` on EC2 automatically.
+4. **Or** create a second classic PAT (same `/settings/tokens` flow) with only `read:packages` scope and store as `GHCR_PULL_TOKEN`; the deploy step does `docker login` on EC2 automatically.
 
 ### Why two tokens?
 
