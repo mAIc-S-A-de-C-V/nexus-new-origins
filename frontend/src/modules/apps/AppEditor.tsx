@@ -868,9 +868,24 @@ const FilterBuilder: React.FC<{
 }> = ({ filters, fields, objectTypeId, onChange }) => {
   const allRecords = useRecordsForFilter(objectTypeId);
 
+  // If the object type has no declared properties (common for dynamic/sensor
+  // data), fall back to inferring fields from the loaded records so the user
+  // can still pick a column to filter on.
+  const inferredFields = React.useMemo(() => {
+    if (fields.length > 0) return fields;
+    if (!allRecords.length) return [];
+    const seen = new Set<string>();
+    for (const r of allRecords.slice(0, 50)) {
+      Object.keys(r || {}).forEach((k) => { if (!k.endsWith('[]')) seen.add(k); });
+    }
+    return Array.from(seen);
+  }, [fields, allRecords]);
+
+  const effectiveFields = fields.length > 0 ? fields : inferredFields;
+
   const add = () => onChange([
     ...filters,
-    { id: `f-${Date.now()}`, field: fields[0] || '', operator: 'eq', value: '' },
+    { id: `f-${Date.now()}`, field: effectiveFields[0] || '', operator: 'eq', value: '' },
   ]);
 
   const update = (id: string, patch: Partial<AppFilter>) =>
@@ -908,7 +923,7 @@ const FilterBuilder: React.FC<{
         <FilterRow
           key={f.id}
           f={f}
-          fields={fields}
+          fields={effectiveFields}
           allRecords={allRecords}
           onUpdate={(patch) => update(f.id, patch)}
           onRemove={() => remove(f.id)}

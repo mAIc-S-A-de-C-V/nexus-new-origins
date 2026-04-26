@@ -257,9 +257,6 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     """Pure SQL builder for /aggregate. Returns (sql_string, bind_params).
     Raises HTTPException on validation errors. Kept side-effect-free for testability.
     """
-    if body.group_by and body.time_bucket:
-        raise HTTPException(status_code=400, detail="Specify either group_by or time_bucket, not both.")
-
     if not body.aggregations:
         raise HTTPException(status_code=400, detail="At least one aggregation is required.")
 
@@ -277,20 +274,38 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     select_parts: list[str] = []
     bind_params: dict[str, Any] = {"tid": tenant_id, "otid": ot_id}
 
-    if body.group_by:
-        gb = _safe_field(body.group_by)
-        select_parts.append(f"data->>'{gb}' AS grp")
-        group_clause: Optional[str] = f"data->>'{gb}'"
-    elif body.time_bucket:
+    # ── Grouping dimensions ─────────────────────────────────────────────────
+    # Three modes:
+    #   (1) group_by alone           — categorical breakdown (bar/pie)
+    #   (2) time_bucket alone         — single time series (line/area)
+    #   (3) BOTH                      — multi-series time series, e.g. one
+    #                                   line per `metric_type` over time.
+    #                                   Response includes a `series` field.
+    group_clause: Optional[str] = None
+    series_clause: Optional[str] = None
+    has_time = bool(body.time_bucket)
+    has_group = bool(body.group_by)
+
+    if has_time:
         tb_field = _safe_field(body.time_bucket.field)
         interval = body.time_bucket.interval
         select_parts.append(
             f"to_char(date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz), 'YYYY-MM-DD\"T\"HH24:MI:SS') AS grp"
         )
         group_clause = f"date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz)"
-    else:
+
+    if has_group:
+        gb = _safe_field(body.group_by)
+        if has_time:
+            # Multi-series: time bucket is `grp`, group_by becomes `series`
+            select_parts.append(f"data->>'{gb}' AS series")
+            series_clause = f"data->>'{gb}'"
+        else:
+            select_parts.append(f"data->>'{gb}' AS grp")
+            group_clause = f"data->>'{gb}'"
+
+    if not has_time and not has_group:
         select_parts.append("'_total' AS grp")
-        group_clause = None
 
     for i, agg in enumerate(body.aggregations):
         alias = f"agg_{i}"
@@ -350,27 +365,45 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
 
     where_sql = " AND ".join(where_parts)
 
+    # Append non-null guards on the dimension columns so we don't get a giant
+    # NULL bucket from records where the field is absent.
+    if group_clause:
+        where_sql += f" AND {group_clause} IS NOT NULL"
+    if series_clause:
+        where_sql += f" AND {series_clause} IS NOT NULL"
+
     order_sql = ""
     if body.sort_by:
         sb = body.sort_by
         direction = "DESC" if body.sort_dir.lower() == "desc" else "ASC"
         if sb == "group":
             order_sql = f"ORDER BY grp {direction}"
+        elif sb == "series":
+            order_sql = f"ORDER BY series {direction}"
         elif re.match(r"^agg_\d+$", sb):
             agg_idx = int(sb.split("_")[1])
             if 0 <= agg_idx < len(body.aggregations):
                 order_sql = f"ORDER BY {sb} {direction} NULLS LAST"
+    elif series_clause and group_clause:
+        # Multi-series time series: keep both axes ordered for clean rendering
+        order_sql = "ORDER BY grp ASC, series ASC"
     elif group_clause:
         order_sql = "ORDER BY agg_0 DESC NULLS LAST"
 
     safe_limit = max(1, min(int(body.limit or 200), 5000))
 
+    group_by_cols: list[str] = []
     if group_clause:
+        group_by_cols.append("grp")
+    if series_clause:
+        group_by_cols.append("series")
+
+    if group_by_cols:
         sql = (
             f"SELECT {', '.join(select_parts)} "
             f"FROM object_records "
-            f"WHERE {where_sql} AND {group_clause} IS NOT NULL "
-            f"GROUP BY grp "
+            f"WHERE {where_sql} "
+            f"GROUP BY {', '.join(group_by_cols)} "
             f"{order_sql} "
             f"LIMIT {safe_limit}"
         )
@@ -453,6 +486,8 @@ async def aggregate_records(
         serialized = []
         for r in rows:
             d: dict[str, Any] = {"group": r.get("grp")}
+            if r.get("series") is not None:
+                d["series"] = r.get("series")
             for i in range(len(body.aggregations)):
                 v = r.get(f"agg_{i}")
                 d[f"agg_{i}"] = float(v) if v is not None else None

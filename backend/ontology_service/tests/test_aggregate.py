@@ -43,16 +43,23 @@ def test_safe_field_rejects_overlong_names():
 # ── Validation rules ──────────────────────────────────────────────────────
 
 
-def test_group_by_and_time_bucket_are_mutually_exclusive():
+def test_group_by_and_time_bucket_together_emit_multi_series_sql():
+    """Multi-series time series: both dimensions allowed; response gains a `series` col."""
     body = AggregateRequest(
-        group_by="status",
+        group_by="metric_type",
         time_bucket=TimeBucketSpec(field="created_at", interval="day"),
-        aggregations=[AggregationSpec(method="count")],
+        aggregations=[AggregationSpec(field="value", method="avg")],
     )
-    with pytest.raises(HTTPException) as exc:
-        build_aggregate_sql(body, "tenant-1", "ot-1")
-    assert exc.value.status_code == 400
-    assert "group_by or time_bucket" in exc.value.detail
+    sql, _ = build_aggregate_sql(body, "tenant-1", "ot-1")
+    # time bucket goes into `grp`, group_by becomes `series`
+    assert "AS grp" in sql
+    assert "AS series" in sql
+    assert "GROUP BY grp, series" in sql
+    # Both dimensions get NULL guards in WHERE
+    assert "data->>'metric_type' IS NOT NULL" in sql
+    assert "date_trunc('day'" in sql
+    # Default ordering puts time first then series
+    assert "ORDER BY grp ASC, series ASC" in sql
 
 
 def test_aggregations_required():
@@ -263,6 +270,44 @@ def test_limit_negative_is_clamped_to_min_1():
     )
     sql, _ = build_aggregate_sql(body, "t", "o")
     assert "LIMIT 1" in sql
+
+
+def test_multi_series_uses_series_column_for_groupby():
+    body = AggregateRequest(
+        group_by="sensor",
+        time_bucket=TimeBucketSpec(field="time", interval="hour"),
+        aggregations=[AggregationSpec(field="value", method="avg")],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "data->>'sensor' AS series" in sql
+    # In multi-series mode, the original group_by accessor is NOT also the `grp`
+    assert "data->>'sensor' AS grp" not in sql
+
+
+def test_multi_series_filter_pushdown_still_works():
+    body = AggregateRequest(
+        group_by="metric_type",
+        time_bucket=TimeBucketSpec(field="created_at", interval="month"),
+        aggregations=[AggregationSpec(method="count")],
+        filters='{"metric_type": {"$in": ["rpm", "running", "temp"]}}',
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    assert "data->>'metric_type' IN (:flt0_0, :flt0_1, :flt0_2)" in sql
+    assert params["flt0_0"] == "rpm"
+    assert params["flt0_1"] == "running"
+    assert params["flt0_2"] == "temp"
+
+
+def test_sort_by_series_works():
+    body = AggregateRequest(
+        group_by="region",
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[AggregationSpec(method="count")],
+        sort_by="series",
+        sort_dir="asc",
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "ORDER BY series ASC" in sql
 
 
 def test_field_whitelist_blocks_injection_in_group_by():

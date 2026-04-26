@@ -575,11 +575,13 @@ const LineChart: React.FC<{
   comp: AppComponent;
   records?: Record<string, unknown>[];
   serverPoints?: { x: string; y: number }[];
+  serverSeries?: Record<string, { x: string; y: number }[]>;
   resolvedXField?: string;
 }> = ({
   comp,
   records,
   serverPoints,
+  serverSeries,
   resolvedXField,
 }) => {
   const recs = records || [];
@@ -648,15 +650,34 @@ const LineChart: React.FC<{
     })();
   }
 
-  const maxY = Math.max(...points.map((p) => p.y), 1);
-  const W = 400, H = 140, pad = { top: 10, right: 10, bottom: 24, left: 40 };
+  // Multi-series rendering: if serverSeries was provided, draw one line per
+  // series, share an x-axis, color via chartPalette.
+  const seriesEntries: [string, { x: string; y: number }[]][] = serverSeries
+    ? Object.entries(serverSeries).slice(0, 8) // safety cap on series count
+    : [['__single', points]];
+
+  const allXs = Array.from(new Set(seriesEntries.flatMap(([, arr]) => arr.map((p) => p.x)))).sort();
+  const xIndex = new Map(allXs.map((x, i) => [x, i] as const));
+  const allY = seriesEntries.flatMap(([, arr]) => arr.map((p) => p.y));
+  const maxY = Math.max(...allY, 1);
+  const W = 400, H = 160, pad = { top: 10, right: 10, bottom: serverSeries ? 38 : 24, left: 40 };
   const innerW = W - pad.left - pad.right;
   const innerH = H - pad.top - pad.bottom;
 
-  const toX = (i: number) => pad.left + (i / Math.max(points.length - 1, 1)) * innerW;
+  const toX = (i: number) => pad.left + (i / Math.max(allXs.length - 1, 1)) * innerW;
   const toY = (v: number) => pad.top + innerH - (v / maxY) * innerH;
 
-  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${toX(i)} ${toY(p.y)}`).join(' ');
+  const pathFor = (arr: { x: string; y: number }[]) =>
+    arr
+      .map((p, i) => {
+        const ix = xIndex.get(p.x);
+        if (ix === undefined) return null;
+        return `${i === 0 ? 'M' : 'L'} ${toX(ix)} ${toY(p.y)}`;
+      })
+      .filter(Boolean)
+      .join(' ');
+
+  const isEmpty = serverSeries ? Object.keys(serverSeries).length === 0 : points.length < 2;
 
   return (
     <div style={{
@@ -667,7 +688,7 @@ const LineChart: React.FC<{
         {comp.title}
       </div>
       <div style={{ flex: 1, padding: '8px 16px', overflowX: 'auto' }}>
-        {points.length < 2 ? (
+        {isEmpty ? (
           <div style={{ textAlign: 'center', padding: 32, color: '#94A3B8', fontSize: 12 }}>
             {xField ? `No date data found in "${xField}"` : 'Configure an x-axis date field'}
           </div>
@@ -685,21 +706,36 @@ const LineChart: React.FC<{
                 </g>
               );
             })}
-            {/* Line */}
-            <path d={pathD} fill="none" stroke={chartPalette[0]} strokeWidth={2} />
-            {/* Dots */}
-            {points.map((p, i) => (
-              <circle key={i} cx={toX(i)} cy={toY(p.y)} r={3} fill={chartPalette[0]} />
-            ))}
-            {/* X labels */}
-            {points.filter((_, i) => i % Math.max(1, Math.floor(points.length / 5)) === 0).map((p, i) => {
-              const idx = i * Math.max(1, Math.floor(points.length / 5));
+            {/* Lines (one per series) + dots */}
+            {seriesEntries.map(([name, arr], si) => {
+              const color = chartPalette[si % chartPalette.length];
               return (
-                <text key={i} x={toX(idx)} y={H - 4} textAnchor="middle" fontSize={8} fill="#94A3B8">
-                  {p.x}
+                <g key={name}>
+                  <path d={pathFor(arr)} fill="none" stroke={color} strokeWidth={2} />
+                  {arr.map((p, i) => {
+                    const ix = xIndex.get(p.x);
+                    if (ix === undefined) return null;
+                    return <circle key={i} cx={toX(ix)} cy={toY(p.y)} r={3} fill={color} />;
+                  })}
+                </g>
+              );
+            })}
+            {/* X labels */}
+            {allXs.filter((_, i) => i % Math.max(1, Math.floor(allXs.length / 5)) === 0).map((x, i) => {
+              const idx = i * Math.max(1, Math.floor(allXs.length / 5));
+              return (
+                <text key={i} x={toX(idx)} y={pad.top + innerH + 14} textAnchor="middle" fontSize={8} fill="#94A3B8">
+                  {x}
                 </text>
               );
             })}
+            {/* Series legend (multi-series only) */}
+            {serverSeries && seriesEntries.map(([name], si) => (
+              <g key={`l-${name}`} transform={`translate(${pad.left + si * 70}, ${H - 8})`}>
+                <rect width={8} height={8} rx={1} fill={chartPalette[si % chartPalette.length]} />
+                <text x={11} y={7} fontSize={8} fill="#475569">{name.slice(0, 12)}</text>
+              </g>
+            ))}
           </svg>
         )}
       </div>
@@ -2066,20 +2102,40 @@ const ServerAggPieChart: React.FC<{ comp: AppComponent; serverFilters?: Record<s
 };
 
 // Server-side LineChart: time-bucketed sum/count of valueField over xField.
+// If `labelField` is set AND differs from `xField`, runs as multi-series:
+// the response groups by labelField AND time bucket, so we get one line per
+// labelField value (e.g. one line per sensor / metric_type).
 const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const xField = pickXField(comp);
   const valueField = pickValueField(comp);
   const method = valueField ? 'sum' : 'count';
   const interval = pickTimeBucket(comp);
+  const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
+    groupBy: labelField,
     timeBucket: { field: xField, interval },
     aggregations: [{ field: valueField, method }],
     filters: serverFilters,
     sortBy: 'group',
     sortDir: 'asc',
-    limit: 200,
+    limit: labelField ? 1000 : 200,
   });
   if (loading) return <LoadingTile />;
+
+  if (labelField) {
+    // Multi-series: each row is { group: <bucket>, series: <label>, agg_0: <value> }.
+    // Pivot into per-series point arrays for the renderer.
+    const seriesMap: Record<string, { x: string; y: number }[]> = {};
+    for (const r of rows) {
+      if (r.group == null) continue;
+      const seriesKey = String((r as Record<string, unknown>).series ?? 'value');
+      const x = String(r.group).slice(0, 10);
+      const y = typeof r.agg_0 === 'number' ? r.agg_0 : 0;
+      (seriesMap[seriesKey] ||= []).push({ x, y });
+    }
+    return <LineChart comp={comp} serverSeries={seriesMap} resolvedXField={xField} />;
+  }
+
   const serverPoints = rows
     .filter((r) => r.group != null)
     .map((r) => ({
@@ -2094,15 +2150,30 @@ const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   const valueField = pickValueField(comp);
   const method = valueField ? 'sum' : 'count';
   const interval = pickTimeBucket(comp);
+  const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
+    groupBy: labelField,
     timeBucket: { field: xField, interval },
     aggregations: [{ field: valueField, method }],
     filters: serverFilters,
     sortBy: 'group',
     sortDir: 'asc',
-    limit: 200,
+    limit: labelField ? 1000 : 200,
   });
   if (loading) return <LoadingTile />;
+
+  if (labelField) {
+    // Flatten multi-series into one stream of points the existing AreaChart
+    // bucketing can handle. Future: pass series breakdown to AreaChart too.
+    const flat = rows
+      .filter((r) => r.group != null)
+      .map((r) => ({
+        x: String(r.group).slice(0, 10),
+        y: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
+      }));
+    return <AreaChartWidget comp={comp} serverPoints={flat} />;
+  }
+
   const serverPoints = rows
     .filter((r) => r.group != null)
     .map((r) => ({
