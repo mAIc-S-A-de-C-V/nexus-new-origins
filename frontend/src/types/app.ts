@@ -74,7 +74,10 @@ export interface AppComponent {
   valueField?: string;
   xField?: string; // line-chart x-axis (date/time field)
   // Time bucket for line/area charts. If unset, defaults to 'month' (or 'week' in count mode).
-  timeBucket?: 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
+  timeBucket?:
+    | 'second' | '5_seconds' | '15_seconds' | '30_seconds'
+    | 'minute' | '5_minutes' | '15_minutes' | '30_minutes'
+    | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
   // Server-side pagination page size for data-table. Default 50.
   pageSize?: number;
   // map

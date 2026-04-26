@@ -12,7 +12,10 @@ export interface CrossFilter {
   sourceId: string;
 }
 
-export type TimeBucket = 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
+export type TimeBucket =
+  | 'second' | '5_seconds' | '15_seconds' | '30_seconds'
+  | 'minute' | '5_minutes' | '15_minutes' | '30_minutes'
+  | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
 
 export type AggregateMethod = 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct';
 

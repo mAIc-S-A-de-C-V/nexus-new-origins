@@ -137,6 +137,40 @@ def test_time_bucket_uses_date_trunc():
     assert "GROUP BY grp" in sql
 
 
+@pytest.mark.parametrize("interval,expected_sql_interval", [
+    ("second",      "1 second"),
+    ("5_seconds",   "5 seconds"),
+    ("30_seconds",  "30 seconds"),
+    ("minute",      "1 minute"),
+    ("5_minutes",   "5 minutes"),
+    ("15_minutes",  "15 minutes"),
+    ("30_minutes",  "30 minutes"),
+])
+def test_sub_hour_buckets_use_date_bin(interval, expected_sql_interval):
+    """Sub-hour intervals route through Postgres date_bin (PG 14+)."""
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="time", interval=interval),
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "date_bin(" in sql
+    assert f"INTERVAL '{expected_sql_interval}'" in sql
+    assert "TIMESTAMPTZ '2000-01-01'" in sql
+    assert "date_trunc" not in sql
+
+
+def test_calendar_buckets_still_use_date_trunc():
+    """hour/day/week/month/quarter/year keep using date_trunc (cleaner SQL plans)."""
+    for interval in ("hour", "day", "week", "month", "quarter", "year"):
+        body = AggregateRequest(
+            time_bucket=TimeBucketSpec(field="time", interval=interval),
+            aggregations=[AggregationSpec(method="count")],
+        )
+        sql, _ = build_aggregate_sql(body, "t", "o")
+        assert f"date_trunc('{interval}'" in sql
+        assert "date_bin(" not in sql
+
+
 def test_sum_emits_safe_numeric_cast_with_regex_guard():
     """
     The aggregate SQL must NOT do a blanket ::numeric cast — JSONB columns
@@ -381,4 +415,11 @@ def test_agg_methods_constant():
 
 
 def test_buckets_constant():
-    assert {"hour", "day", "week", "month", "quarter", "year"} == _BUCKETS
+    expected = {
+        # Sub-hour (date_bin)
+        "second", "5_seconds", "15_seconds", "30_seconds",
+        "minute", "5_minutes", "15_minutes", "30_minutes",
+        # Calendar (date_trunc)
+        "hour", "day", "week", "month", "quarter", "year",
+    }
+    assert expected == _BUCKETS

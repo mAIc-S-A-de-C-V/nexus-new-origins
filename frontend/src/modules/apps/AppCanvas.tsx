@@ -743,15 +743,28 @@ const LineChart: React.FC<{
                 </g>
               );
             })}
-            {/* X labels */}
-            {allXs.filter((_, i) => i % Math.max(1, Math.floor(allXs.length / 5)) === 0).map((x, i) => {
-              const idx = i * Math.max(1, Math.floor(allXs.length / 5));
-              return (
-                <text key={i} x={toX(idx)} y={pad.top + innerH + 14} textAnchor="middle" fontSize={8} fill="#94A3B8">
-                  {x}
-                </text>
-              );
-            })}
+            {/* X labels — formatted by data span. ISO timestamps stay as
+                YYYY-MM-DD when they span > 24h, or HH:MM when sub-hour /
+                same-day, or MM-DD HH:MM in between. Keeps charts readable
+                whether you're looking at a year of monthly buckets or 60
+                seconds of 1-second buckets. */}
+            {(() => {
+              const formatLabel = (x: string): string => {
+                if (x.length < 13) return x;             // already short (date-only)
+                const days = new Set(allXs.map((s) => s.slice(0, 10))).size;
+                if (days <= 1) return x.slice(11, 16);   // HH:MM
+                if (days <= 14) return x.slice(5, 16).replace('T', ' ');  // MM-DD HH:MM
+                return x.slice(0, 10);                    // YYYY-MM-DD
+              };
+              return allXs.filter((_, i) => i % Math.max(1, Math.floor(allXs.length / 5)) === 0).map((x, i) => {
+                const idx = i * Math.max(1, Math.floor(allXs.length / 5));
+                return (
+                  <text key={i} x={toX(idx)} y={pad.top + innerH + 14} textAnchor="middle" fontSize={8} fill="#94A3B8">
+                    {formatLabel(x)}
+                  </text>
+                );
+              });
+            })()}
             {/* Series legend (multi-series only) */}
             {serverSeries && seriesEntries.map(([name], si) => (
               <g key={`l-${name}`} transform={`translate(${pad.left + si * 70}, ${H - 8})`}>
@@ -2240,11 +2253,13 @@ const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   if (labelField) {
     // Multi-series: each row is { group: <bucket>, series: <label>, agg_0: <value> }.
     // Pivot into per-series point arrays for the renderer.
+    // KEEP the full bucket key — slicing to 10 chars (YYYY-MM-DD) was
+    // collapsing 24 hourly buckets into one daily bucket per day.
     const seriesMap: Record<string, { x: string; y: number }[]> = {};
     for (const r of rows) {
       if (r.group == null) continue;
       const seriesKey = String((r as Record<string, unknown>).series ?? 'value');
-      const x = String(r.group).slice(0, 10);
+      const x = String(r.group);
       const y = typeof r.agg_0 === 'number' ? r.agg_0 : 0;
       (seriesMap[seriesKey] ||= []).push({ x, y });
     }
@@ -2254,7 +2269,7 @@ const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   const serverPoints = rows
     .filter((r) => r.group != null)
     .map((r) => ({
-      x: String(r.group).slice(0, 10),
+      x: String(r.group),
       y: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
     }));
   return <LineChart comp={comp} serverPoints={serverPoints} resolvedXField={xField} />;
@@ -2278,12 +2293,10 @@ const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   if (loading) return <LoadingTile />;
 
   if (labelField) {
-    // Flatten multi-series into one stream of points the existing AreaChart
-    // bucketing can handle. Future: pass series breakdown to AreaChart too.
     const flat = rows
       .filter((r) => r.group != null)
       .map((r) => ({
-        x: String(r.group).slice(0, 10),
+        x: String(r.group),
         y: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
       }));
     return <AreaChartWidget comp={comp} serverPoints={flat} />;
@@ -2292,7 +2305,7 @@ const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   const serverPoints = rows
     .filter((r) => r.group != null)
     .map((r) => ({
-      x: String(r.group).slice(0, 10),
+      x: String(r.group),
       y: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
     }));
   return <AreaChartWidget comp={comp} serverPoints={serverPoints} />;

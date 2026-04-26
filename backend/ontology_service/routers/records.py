@@ -223,7 +223,24 @@ async def list_records(
 
 _FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _AGG_METHODS = {"count", "sum", "avg", "min", "max", "count_distinct"}
-_BUCKETS = {"hour", "day", "week", "month", "quarter", "year"}
+
+# Coarse buckets handled by Postgres date_trunc.
+_TRUNC_BUCKETS = {"hour", "day", "week", "month", "quarter", "year"}
+
+# Fine-grained buckets handled by Postgres date_bin (PG 14+). The values are
+# the SQL interval strings.
+_BIN_BUCKETS = {
+    "second":      "1 second",
+    "5_seconds":   "5 seconds",
+    "15_seconds":  "15 seconds",
+    "30_seconds":  "30 seconds",
+    "minute":      "1 minute",
+    "5_minutes":   "5 minutes",
+    "15_minutes":  "15 minutes",
+    "30_minutes":  "30 minutes",
+}
+
+_BUCKETS = _TRUNC_BUCKETS | set(_BIN_BUCKETS.keys())
 
 
 def _safe_field(name: str) -> str:
@@ -289,10 +306,23 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     if has_time:
         tb_field = _safe_field(body.time_bucket.field)
         interval = body.time_bucket.interval
+        # Coarse (date_trunc) vs. fine (date_bin) bucketing. date_trunc handles
+        # natural calendar boundaries; date_bin handles arbitrary intervals
+        # (e.g. every 5 minutes, every 15 seconds) anchored to a fixed origin.
+        if interval in _BIN_BUCKETS:
+            bin_str = _BIN_BUCKETS[interval]
+            bucket_expr = (
+                f"date_bin(INTERVAL '{bin_str}', "
+                f"NULLIF(data->>'{tb_field}', '')::timestamptz, "
+                f"TIMESTAMPTZ '2000-01-01')"
+            )
+        else:
+            # Coarse calendar bucket
+            bucket_expr = f"date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz)"
         select_parts.append(
-            f"to_char(date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz), 'YYYY-MM-DD\"T\"HH24:MI:SS') AS grp"
+            f"to_char({bucket_expr}, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS grp"
         )
-        group_clause = f"date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz)"
+        group_clause = bucket_expr
 
     if has_group:
         gb = _safe_field(body.group_by)

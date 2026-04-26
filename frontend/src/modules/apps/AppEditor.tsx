@@ -1339,12 +1339,26 @@ const ConfigPanel: React.FC<{
                 onChange={(e) => set({ timeBucket: e.target.value as AppComponent['timeBucket'] })}
                 style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
               >
-                <option value="hour">Hour</option>
-                <option value="day">Day</option>
-                <option value="week">Week</option>
-                <option value="month">Month</option>
-                <option value="quarter">Quarter</option>
-                <option value="year">Year</option>
+                <optgroup label="Sub-second precision">
+                  <option value="second">Second</option>
+                  <option value="5_seconds">5 seconds</option>
+                  <option value="15_seconds">15 seconds</option>
+                  <option value="30_seconds">30 seconds</option>
+                </optgroup>
+                <optgroup label="Minutes">
+                  <option value="minute">Minute</option>
+                  <option value="5_minutes">5 minutes</option>
+                  <option value="15_minutes">15 minutes</option>
+                  <option value="30_minutes">30 minutes</option>
+                </optgroup>
+                <optgroup label="Calendar">
+                  <option value="hour">Hour</option>
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
+                </optgroup>
               </select>
             </Row>
             <Row label="AGGREGATION">
@@ -1393,12 +1407,26 @@ const ConfigPanel: React.FC<{
                 onChange={(e) => set({ timeBucket: e.target.value as AppComponent['timeBucket'] })}
                 style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
               >
-                <option value="hour">Hour</option>
-                <option value="day">Day</option>
-                <option value="week">Week</option>
-                <option value="month">Month</option>
-                <option value="quarter">Quarter</option>
-                <option value="year">Year</option>
+                <optgroup label="Sub-second precision">
+                  <option value="second">Second</option>
+                  <option value="5_seconds">5 seconds</option>
+                  <option value="15_seconds">15 seconds</option>
+                  <option value="30_seconds">30 seconds</option>
+                </optgroup>
+                <optgroup label="Minutes">
+                  <option value="minute">Minute</option>
+                  <option value="5_minutes">5 minutes</option>
+                  <option value="15_minutes">15 minutes</option>
+                  <option value="30_minutes">30 minutes</option>
+                </optgroup>
+                <optgroup label="Calendar">
+                  <option value="hour">Hour</option>
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
+                </optgroup>
               </select>
             </Row>
           </>
