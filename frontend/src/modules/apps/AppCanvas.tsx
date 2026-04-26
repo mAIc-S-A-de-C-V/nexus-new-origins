@@ -2111,6 +2111,7 @@ function useEventBus(events: AppEvent[] | undefined) {
 const SERVER_AGG_TYPES = new Set([
   'metric-card', 'kpi-banner', 'stat-card',
   'bar-chart', 'pie-chart', 'line-chart', 'area-chart',
+  'pivot-table',
   'filter-bar',
 ]);
 
@@ -2381,6 +2382,109 @@ const ServerPaginatedDataTable: React.FC<{ comp: AppComponent; serverFilters?: R
   );
 };
 
+// PivotTable widget — true 2D pivot. Rows = labelField (e.g. sensor_name),
+// Columns = time-bucketed xField (e.g. day), Cells = aggregated value.
+// Single /aggregate POST → ≤ rows×cols numbers → rendered as an HTML table.
+// Solves the common "X by Y by Z" question without the AI having to write
+// fragile custom-code pivots.
+const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const labelField = comp.labelField || 'sensor_name';
+  const xField = pickXField(comp);
+  const valueField = pickValueField(comp);
+  const interval = pickTimeBucket(comp);
+  const method = comp.aggregation || (valueField ? 'sum' : 'count');
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField);
+  const mergedFilters = rangeFilter ? { ...(serverFilters || {}), ...rangeFilter } : serverFilters;
+  const { rows, loading } = useAggregate(comp.objectTypeId, {
+    groupBy: labelField,
+    timeBucket: { field: xField, interval },
+    aggregations: [{ field: valueField, method: method as AggregateSpec['method'] }],
+    filters: mergedFilters,
+    sortBy: 'group',
+    sortDir: 'asc',
+    limit: 5000,
+  });
+
+  if (loading) return <LoadingTile />;
+
+  // Pivot the {group: <bucket>, series: <label>, agg_0: <value>} rows
+  // into rowKeys × colKeys → cell.
+  const pivot: Record<string, Record<string, number | null>> = {};
+  const colSet = new Set<string>();
+  const rowSet = new Set<string>();
+  for (const r of rows) {
+    if (r.group == null) continue;
+    const col = String(r.group);
+    const row = String((r as Record<string, unknown>).series ?? '(all)');
+    if (!pivot[row]) pivot[row] = {};
+    pivot[row][col] = typeof r.agg_0 === 'number' ? r.agg_0 : null;
+    colSet.add(col);
+    rowSet.add(row);
+  }
+  const cols = Array.from(colSet).sort();
+  const rowKeys = Array.from(rowSet).sort();
+
+  const fmtCol = (c: string): string => {
+    if (c.length < 13) return c;
+    const sameDay = cols.every((x) => x.slice(0, 10) === cols[0].slice(0, 10));
+    if (sameDay) return c.slice(11, 16);
+    return c.slice(5, 10);
+  };
+
+  const fmtVal = (v: number | null | undefined): string => {
+    if (v == null) return '—';
+    if (Math.abs(v) >= 1000) return v.toLocaleString();
+    if (Math.abs(v) >= 1) return v.toFixed(1);
+    return v.toFixed(2);
+  };
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column',
+    }}>
+      <div style={{
+        padding: '12px 16px', borderBottom: '1px solid #E2E8F0',
+        fontSize: 13, fontWeight: 600, color: '#0D1117',
+      }}>{comp.title}</div>
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        {rowKeys.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 32, color: '#94A3B8', fontSize: 12 }}>
+            No data for this query
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ backgroundColor: '#F8FAFC', position: 'sticky', top: 0 }}>
+                <th style={{ textAlign: 'left', padding: '8px 12px', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0', whiteSpace: 'nowrap' }}>
+                  {labelField}
+                </th>
+                {cols.map((c) => (
+                  <th key={c} style={{ textAlign: 'right', padding: '8px 12px', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
+                    {fmtCol(c)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rowKeys.map((rk) => (
+                <tr key={rk} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                  <td style={{ padding: '7px 12px', color: '#0D1117', fontWeight: 500 }}>{rk}</td>
+                  {cols.map((c) => (
+                    <td key={c} style={{ padding: '7px 12px', textAlign: 'right', color: '#374151', fontFamily: 'var(--font-mono)' }}>
+                      {fmtVal(pivot[rk]?.[c])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, events, allComponents }) => {
   const { filter: crossFilter } = useContext(CrossFilterContext);
 
@@ -2397,6 +2501,7 @@ const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; all
       case 'pie-chart': return <ServerAggPieChart comp={comp} serverFilters={serverFilters} />;
       case 'line-chart': return <ServerAggLineChart comp={comp} serverFilters={serverFilters} />;
       case 'area-chart': return <ServerAggAreaChart comp={comp} serverFilters={serverFilters} />;
+      case 'pivot-table': return <ServerPivotTable comp={comp} serverFilters={serverFilters} />;
       case 'filter-bar': return <ServerAggFilterBar comp={comp} serverFilters={serverFilters} />;
     }
   }

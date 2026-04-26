@@ -113,6 +113,7 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'line-chart',   label: 'Line Chart',   icon: <LineChart size={13} />,          defaultColSpan: 6,  description: 'Time-series line chart' },
   { type: 'pie-chart',    label: 'Pie Chart',    icon: <PieChart size={13} />,           defaultColSpan: 4,  description: 'Pie / donut proportional chart' },
   { type: 'area-chart',   label: 'Area Chart',   icon: <AreaChart size={13} />,          defaultColSpan: 6,  description: 'Stacked area for trends over time' },
+  { type: 'pivot-table',  label: 'Pivot Table',  icon: <TableProperties size={13} />,    defaultColSpan: 12, description: 'Cross-tab: rows × time buckets, aggregated cells' },
   { type: 'stat-card',    label: 'Stat Number',  icon: <TrendingUp size={13} />,         defaultColSpan: 3,  description: 'Large number with trend arrow' },
   { type: 'filter-bar',   label: 'Filter Bar',   icon: <SlidersHorizontal size={13} />,  defaultColSpan: 12, description: 'Interactive filter chips' },
   { type: 'date-picker',  label: 'Date Picker',  icon: <SlidersHorizontal size={13} />,  defaultColSpan: 6,  description: 'Date range filter for all widgets' },
@@ -1558,6 +1559,92 @@ const ConfigPanel: React.FC<{
                   <option value="quarter">Quarter</option>
                   <option value="year">Year</option>
                 </optgroup>
+              </select>
+            </Row>
+          </>
+        )}
+
+        {/* pivot-table */}
+        {comp.type === 'pivot-table' && (
+          <>
+            <Row label="ROWS (categorical, e.g. sensor_name)">
+              <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} />
+            </Row>
+            <Row label="COLUMNS — DATE/TIME field for time buckets">
+              <FieldPicker value={comp.xField} onPick={(f) => set({ xField: f })} />
+            </Row>
+            <Row label="VALUE (number to aggregate; blank = count rows)">
+              <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} placeholder="Blank = count" />
+            </Row>
+            <Row label="TIME RANGE (auto-applies to filter)">
+              <select
+                value={comp.xAxisRange || 'all_time'}
+                onChange={(e) => {
+                  const range = e.target.value as AppComponent['xAxisRange'];
+                  const suggested = suggestedBucketForRange(range);
+                  set({ xAxisRange: range, ...(comp.timeBucket ? {} : { timeBucket: suggested }) });
+                }}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <optgroup label="Recent">
+                  <option value="last_15m">Last 15 minutes</option>
+                  <option value="last_1h">Last 1 hour</option>
+                  <option value="last_4h">Last 4 hours</option>
+                  <option value="last_24h">Last 24 hours</option>
+                  <option value="last_7d">Last 7 days</option>
+                  <option value="last_30d">Last 30 days</option>
+                  <option value="last_90d">Last 90 days</option>
+                </optgroup>
+                <optgroup label="Calendar">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="this_week">This week</option>
+                  <option value="this_month">This month</option>
+                </optgroup>
+                <optgroup label="No filter">
+                  <option value="all_time">All time</option>
+                </optgroup>
+              </select>
+            </Row>
+            <Row label="TIME BUCKET (column granularity)">
+              <select
+                value={comp.timeBucket || 'day'}
+                onChange={(e) => set({ timeBucket: e.target.value as AppComponent['timeBucket'] })}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <optgroup label="Sub-second">
+                  <option value="second">Second</option>
+                  <option value="5_seconds">5 seconds</option>
+                  <option value="15_seconds">15 seconds</option>
+                  <option value="30_seconds">30 seconds</option>
+                </optgroup>
+                <optgroup label="Minutes">
+                  <option value="minute">Minute</option>
+                  <option value="5_minutes">5 minutes</option>
+                  <option value="15_minutes">15 minutes</option>
+                  <option value="30_minutes">30 minutes</option>
+                </optgroup>
+                <optgroup label="Calendar">
+                  <option value="hour">Hour</option>
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
+                </optgroup>
+              </select>
+            </Row>
+            <Row label="AGGREGATION">
+              <select
+                value={comp.aggregation || 'count'}
+                onChange={(e) => set({ aggregation: e.target.value as AppComponent['aggregation'] })}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <option value="count">Count</option>
+                <option value="sum">Sum</option>
+                <option value="avg">Average</option>
+                <option value="min">Min</option>
+                <option value="max">Max</option>
               </select>
             </Row>
           </>

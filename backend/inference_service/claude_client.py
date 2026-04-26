@@ -661,6 +661,34 @@ Return JSON with this exact structure (no markdown, no extra text):
       "labelField": "field_used_for_labels",
       "valueField": "field_used_for_values_or_null",
       "colSpan": 6
+    }},
+    {{
+      "id": "c5",
+      "type": "line-chart",
+      "title": "MetricName per Series — Time Range",
+      "objectTypeId": "{object_type_id}",
+      "xField": "date_field",
+      "valueField": "value_field",
+      "labelField": "series_field (e.g. sensor_name) for multi-series",
+      "timeBucket": "hour",
+      "aggregation": "avg",
+      "xAxisRange": "last_24h",
+      "filters": [{{"field": "<attribute_col>", "operator": "eq", "value": "<metric>"}}],
+      "colSpan": 12
+    }},
+    {{
+      "id": "c6",
+      "type": "pivot-table",
+      "title": "X per Y per Day",
+      "objectTypeId": "{object_type_id}",
+      "labelField": "row_field (e.g. sensor_name)",
+      "xField": "date_field",
+      "valueField": "value_field_or_null_for_count",
+      "timeBucket": "day",
+      "aggregation": "count",
+      "xAxisRange": "last_7d",
+      "filters": [],
+      "colSpan": 12
     }}
   ]
 }}
@@ -677,6 +705,18 @@ Rules:
    AND set "timeBucket" to "day" | "week" | "month" | "quarter" | "year" based on
    how zoomed-in the user wants. Default to "month" for general overview, "day"
    for "last 30 days" type asks.
+- For "X per Y per Z" / pivot questions ("uptime per sensor per day",
+   "revenue per region per month"), use the "pivot-table" widget. Config:
+   {{"type":"pivot-table", "labelField":"<row field, e.g. sensor_name>",
+     "xField":"<date field>", "valueField":"<numeric, blank for count>",
+     "timeBucket":"day", "aggregation":"count|sum|avg",
+     "xAxisRange":"last_7d", "filters":[...], "colSpan":12}}
+   The pivot-table widget renders a real 2D HTML table client-side; no
+   custom code needed.
+- DO NOT generate "custom-code" widgets in this dashboard. They're for the
+   single-widget AI generator, not multi-widget dashboards. If the user
+   asks for something a typed widget can't express exactly, pick the
+   closest typed widget — never custom-code.
 - MULTI-SERIES line/area charts: when the user asks for several metrics on the
    same chart over time (e.g. "rpm, running, temp over time", "revenue by region
    over time"), set "labelField" to the categorical column that distinguishes

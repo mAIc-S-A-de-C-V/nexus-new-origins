@@ -43,6 +43,7 @@ export type ComponentType =
   | 'line-chart'
   | 'pie-chart'
   | 'area-chart'
+  | 'pivot-table'
   | 'stat-card'
   | 'date-picker'
   | 'kpi-banner'
