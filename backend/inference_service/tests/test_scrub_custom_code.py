@@ -189,3 +189,88 @@ def test_does_not_scrub_legitimate_text_blocks():
     out = _scrub_custom_code_components(layout, "ot-1")
     assert out["components"][0]["type"] == "text-block"
     assert "live readings" in out["components"][0]["content"]
+
+
+def test_catches_chart_placeholder_with_data_points_dash():
+    """The 'Chart placeholder - 121 data points' phrasing the AI used to dodge."""
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "text-block",
+                "title": "RPM by Sensor - Last 24 Hours",
+                "content": "Chart placeholder - 121 data points",
+                "objectTypeId": "ot-1",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    assert out["components"][0]["type"] == "line-chart"
+
+
+def test_title_says_chart_but_type_is_text_block_force_converts():
+    """Even with empty content, a chart-titled text-block becomes a chart."""
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "text-block",
+                "title": "RPM by sensor — last 24 hours",
+                "content": "",
+                "objectTypeId": "ot-1",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    assert out["components"][0]["type"] == "line-chart"
+
+
+def test_title_says_pivot_but_type_is_data_table_force_converts():
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "data-table",
+                "title": "Running ticks per sensor per day - last 7 days",
+                "objectTypeId": "ot-1",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    assert out["components"][0]["type"] == "pivot-table"
+
+
+def test_title_says_ranking_but_type_is_text_block_force_converts():
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "text-block",
+                "title": "Top 10 sensors by RPM",
+                "content": "Bar chart placeholder",
+                "objectTypeId": "ot-1",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    assert out["components"][0]["type"] == "bar-chart"
+
+
+def test_correct_type_matching_title_passes_through():
+    layout = {
+        "components": [
+            {
+                "id": "c1",
+                "type": "line-chart",
+                "title": "RPM by sensor — last 24 hours",
+                "objectTypeId": "ot-1",
+                "xField": "time",
+                "valueField": "value",
+                "labelField": "sensor_name",
+            }
+        ]
+    }
+    out = _scrub_custom_code_components(layout, "ot-1")
+    assert out["components"][0]["type"] == "line-chart"
+    # Untouched
+    assert out["components"][0]["xField"] == "time"

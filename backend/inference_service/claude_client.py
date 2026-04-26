@@ -239,48 +239,115 @@ def _convert_custom_code_to_typed(comp: dict, object_type_id: str) -> dict:
     return out
 
 
-# Phrases that strongly indicate a text-block is being used as a chart
-# placeholder rather than as actual prose content. If we see one of these
-# in a text-block's `content`, we convert the widget to a typed chart
-# based on its title — same heuristic as for custom-code.
 _PLACEHOLDER_PHRASES = (
-    "would render here",
-    "would display",
-    "would show",
-    "placeholder for",
-    "chart goes here",
-    "chart would render",
-    "chart would appear",
-    "[line chart",
-    "[bar chart",
-    "[pie chart",
-    "[area chart",
-    "[pivot table",
-    "[chart:",
-    "data points across",
-    "time-series points",
+    # Stub / placeholder language the AI uses to dodge real widgets
+    "would render here", "would display", "would show",
+    "placeholder for", "chart placeholder", "chart goes here",
+    "chart would render", "chart would appear",
+    "[line chart", "[bar chart", "[pie chart", "[area chart", "[pivot table",
+    "[chart:", "[data points",
+    # Stubs that summarize instead of render
+    "data points across", "time-series points", "data points)",
+    "n data points", "this would show",
 )
 
 
 def _is_placeholder_text_block(comp: dict) -> bool:
+    """Looks like a chart-shaped stub disguised as a text-block?"""
     if comp.get("type") != "text-block":
         return False
-    content = str(comp.get("content", "")).lower()
-    if not content.strip():
+    content = str(comp.get("content", "")).lower().strip()
+    if not content:
         return False
-    # Bracketed text starting with "[" and containing a chart keyword,
-    # OR explicit placeholder phrases
     if any(p in content for p in _PLACEHOLDER_PHRASES):
         return True
-    if content.startswith("[") and content.endswith("]") and any(w in content for w in ("chart", "table", "widget", "render")):
+    if content.startswith("[") and content.endswith("]") and any(
+        w in content for w in ("chart", "table", "widget", "render")
+    ):
         return True
     return False
 
 
+def _classify_title_intent(title: str) -> str | None:
+    """Return what the title implies the widget SHOULD be:
+    'pivot', 'line', 'bar', 'pie', 'area', 'metric', 'data-table',
+    'kpi', 'prose', or None when ambiguous.
+
+    The classifier is conservative — it only returns a strong opinion
+    when the title clearly maps to a typed widget.
+    """
+    t = (title or "").lower()
+    if not t:
+        return None
+
+    # Pivot: needs TWO separators ("per ... per ..." or " by ... by ...")
+    pivot_seps = t.count(" per ") + t.count(" by ")
+    has_time_word = any(w in t for w in ("day", "hour", "week", "month", "year", "date"))
+    if any(w in t for w in ("matrix", "pivot", "cross-tab", "crosstab")):
+        return "pivot"
+    if pivot_seps >= 2 and has_time_word:
+        return "pivot"
+
+    # Time-series: any time-window language → line-chart
+    time_phrases = (
+        "over time", "trend", "history", "timeline", "per hour",
+        "per minute", "per second", "per day",
+        "last 1 hour", "last 4 hour", "last 24 hour", "last 7 day",
+        "last 30 day", "last 90 day",
+        "today", "yesterday", "this week", "this month",
+    )
+    if any(p in t for p in time_phrases):
+        return "line"
+    # "X by Y — last N hours" pattern (single by + time bucket)
+    if " by " in t and any(p in t for p in ("hour", "minute", "day", "week", "month")):
+        return "line"
+
+    # Categorical comparison
+    if any(p in t for p in ("ranking", "top ", " vs ", "compare", "comparison",
+                             "distribution", "breakdown")):
+        return "bar"
+    if any(p in t for p in ("share of", "proportion", "percent of total",
+                             "% of total", "donut", "pie")):
+        return "pie"
+
+    # Listing
+    if any(p in t for p in ("list of", "all rows", "raw rows", "records",
+                             "details list", "log", "audit")):
+        return "data-table"
+
+    # Single-value summary
+    if any(p in t for p in ("total", "count of", "sum of", "average",
+                             "avg ", "maximum", "minimum", "kpi")):
+        return "metric"
+
+    return None
+
+
+_INTENT_TO_TYPES: dict[str, set[str]] = {
+    "pivot":      {"pivot-table"},
+    "line":       {"line-chart"},
+    "bar":        {"bar-chart"},
+    "pie":        {"pie-chart"},
+    "area":       {"area-chart"},
+    "metric":     {"metric-card", "stat-card", "kpi-banner"},
+    "data-table": {"data-table"},
+    "kpi":        {"kpi-banner"},
+}
+
+
 def _scrub_custom_code_components(layout: dict, object_type_id: str) -> dict:
-    """Replace any custom-code OR placeholder-text-block components with
-    real typed widgets. The AI sometimes uses text-block as a workaround
-    when told it can't use custom-code; we catch both. Mutates the layout.
+    """Aggressive output validation. Three reasons a widget gets converted
+    to a typed widget:
+
+      1. type == "custom-code" (banned in dashboards)
+      2. text-block whose content is a chart placeholder
+      3. Title implies a chart/pivot/table type but the actual type doesn't
+         match (e.g. title "RPM by sensor — last 24 hours" with type
+         "text-block" or "data-table" or anything else that isn't line-chart)
+
+    The scrubber prefers the title's implied type over whatever the AI
+    actually emitted. The AI tries hard to dodge the no-custom-code rule;
+    we just ignore its choice and use the title-implied type instead.
     """
     if not isinstance(layout, dict):
         return layout
@@ -293,14 +360,31 @@ def _scrub_custom_code_components(layout: dict, object_type_id: str) -> dict:
         if not isinstance(comp, dict):
             scrubbed.append(comp)
             continue
-        if comp.get("type") == "custom-code" or _is_placeholder_text_block(comp):
+
+        comp_type = comp.get("type")
+        title_intent = _classify_title_intent(str(comp.get("title", "")))
+
+        # Reason 1: banned type
+        force = comp_type == "custom-code"
+        # Reason 2: chart-placeholder text-block
+        if not force and _is_placeholder_text_block(comp):
+            force = True
+        # Reason 3: title says chart, type isn't chart
+        if not force and title_intent is not None:
+            allowed_types = _INTENT_TO_TYPES.get(title_intent, set())
+            if allowed_types and comp_type not in allowed_types:
+                force = True
+
+        if force:
             scrubbed.append(_convert_custom_code_to_typed(comp, object_type_id))
             converted_count += 1
         else:
             scrubbed.append(comp)
+
     if converted_count:
         logger.warning(
-            "scrubbed %d placeholder/custom-code widgets from generated layout for ot=%s",
+            "scrubbed %d widgets (custom-code / placeholder / title-type "
+            "mismatch) from generated layout for ot=%s",
             converted_count, object_type_id,
         )
     layout["components"] = scrubbed
