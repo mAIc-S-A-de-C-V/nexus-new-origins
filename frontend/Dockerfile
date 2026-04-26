@@ -1,6 +1,12 @@
 FROM node:20.18.0-alpine AS builder
 
 WORKDIR /app
+
+# Cap V8 heap so Vite's bundling phase doesn't OOM-kill on smaller EC2 boxes.
+# 3 GB leaves headroom on a t3.medium (4 GB) and is enough to bundle the
+# current dep tree (plotly + recharts + reactflow + ~150 deps).
+ENV NODE_OPTIONS=--max-old-space-size=3072
+
 COPY package*.json ./
 RUN npm install
 
@@ -56,7 +62,10 @@ ENV VITE_API_GATEWAY_URL=$VITE_API_GATEWAY_URL
 ENV VITE_ADMIN_SERVICE_URL=$VITE_ADMIN_SERVICE_URL
 ENV VITE_KERNEL_SERVICE_URL=$VITE_KERNEL_SERVICE_URL
 
-RUN npm run build
+# Skip the in-Docker tsc — type-checking runs in CI before the image is
+# built. This halves the build's memory pressure and time, which is what
+# was OOM-killing the build on small EC2 boxes.
+RUN npm run build:fast
 
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html

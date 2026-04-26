@@ -2335,7 +2335,39 @@ const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; all
     return <ServerPaginatedDataTable comp={comp} serverFilters={serverFilters} />;
   }
 
+  // Widgets that do their own data fetching server-side (or don't need
+  // records at all) should never trigger useRecords. ChatWidget passes the
+  // question + object_type_id to /infer/chat which fetches what it needs;
+  // the previous architecture was pulling the full table just to throw the
+  // records away.
+  if (RECORDS_FREE_TYPES.has(comp.type)) {
+    return <ComponentRendererNoRecords comp={comp} allComponents={allComponents} />;
+  }
+
   return <ComponentRendererRaw comp={comp} events={events} allComponents={allComponents} />;
+};
+
+const RECORDS_FREE_TYPES = new Set([
+  'chat-widget',     // /infer/chat handles data fetching server-side
+  'text-block',      // static content
+  'utility-output',  // calls a utility, no records needed
+  'dropdown-filter', // uses /aggregate via useAggregate inside the widget
+  'form',            // posts to an action; no records
+  'object-table',    // has its own data path
+  'date-picker',     // pure UI
+]);
+
+const ComponentRendererNoRecords: React.FC<{ comp: AppComponent; allComponents?: AppComponent[] }> = ({ comp, allComponents }) => {
+  switch (comp.type) {
+    case 'chat-widget': return <ChatWidget comp={comp} records={[]} allComponents={allComponents} />;
+    case 'text-block': return <TextBlock comp={comp} />;
+    case 'utility-output': return <UtilityWidget comp={comp} />;
+    case 'dropdown-filter': return <DropdownFilterWidget comp={comp} />;
+    case 'form': return <FormWidget comp={comp} />;
+    case 'object-table': return <ObjectTableWidget comp={comp} />;
+    case 'date-picker': return <DatePickerWidget comp={comp} records={[]} />;
+    default: return null;
+  }
 };
 
 const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, allComponents }) => {
