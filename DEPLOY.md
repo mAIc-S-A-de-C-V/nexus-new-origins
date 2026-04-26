@@ -173,8 +173,8 @@ Set these in the repo under **Settings > Secrets and variables > Actions**:
 | `EC2_SSH_KEY` | Full contents of `~/.ssh/maic-prod.pem` | |
 | `ANTHROPIC_API_KEY` | Default Anthropic key (platform fallback when tenants have no LLM provider configured in Settings → AI Models) | |
 | `ADMIN_SEED_PASSWORD` | Initial superadmin password | |
-| `GHCR_PUSH_TOKEN` | **Required for org-owned repos.** A GitHub PAT with `write:packages` scope. The default `GITHUB_TOKEN` 403s on multi-tag pushes to brand-new org packages (race between the first tag creating the package and the second tag's blob HEAD check). A PAT bypasses this. |
-| `GHCR_PULL_TOKEN` | Optional; only required if GHCR packages are private | A GitHub PAT with `read:packages` scope. If you set GHCR packages to public visibility (recommended), this can be omitted. |
+| `GHCR_PUSH_TOKEN` | **Required for org-owned repos.** Classic PAT with `write:packages` scope. Used by CI to push images. Also reused by EC2 for pulls if `GHCR_PULL_TOKEN` is not set (write implies read). |
+| `GHCR_PULL_TOKEN` | Recommended; pinned read-only PAT for the EC2 box | Classic PAT with `read:packages` scope only. When set, EC2 uses this instead of the push token — smaller blast radius if the EC2 instance is ever compromised. |
 
 > **Important:** If the Elastic IP ever changes, update the `EC2_HOST` secret AND re-run the workflow so the frontend gets rebuilt with the new URLs baked in.
 
@@ -187,34 +187,19 @@ Set these in the repo under **Settings > Secrets and variables > Actions**:
    - Scopes: check `write:packages` (auto-includes `read:packages` and `repo`)
    - Generate, copy the `ghp_…` token, save as repo secret `GHCR_PUSH_TOKEN`.
 
-2. **Push to main**; the first workflow run creates the GHCR packages with the PAT (no 403).
+2. **Push to main**; the first workflow run creates the GHCR packages (private by default — KEEP them private; the images contain your full backend Python source and are essentially a code archive).
 
-3. **(Optional) make packages public** so EC2 can pull anonymously:
-   - Go to **github.com/<org>/<repo>/pkgs/container/nexus-<svc>** for each of the 29 packages
-   - **Package settings → Danger Zone → Change visibility → Public**
-   - With public packages, you don't need `GHCR_PULL_TOKEN`.
+3. **(Recommended) create a second classic PAT for read-only pulls**:
+   - Same `/settings/tokens` flow as step 1
+   - Note: `nexus-ghcr-pull`
+   - Scopes: only `read:packages`
+   - Save as repo secret `GHCR_PULL_TOKEN`. The deploy step uses this on EC2.
 
-4. **Or** create a second classic PAT (same `/settings/tokens` flow) with only `read:packages` scope and store as `GHCR_PULL_TOKEN`; the deploy step does `docker login` on EC2 automatically.
+   If you skip this step, the workflow falls back to using `GHCR_PUSH_TOKEN` for pulls, which works but means the EC2 instance has a token that could push poisoned images if it's ever compromised. The two-token model below limits that blast radius.
 
 ### Why two tokens?
 
-`GHCR_PUSH_TOKEN` lives only in GitHub Actions and writes to the registry from CI runners. `GHCR_PULL_TOKEN` (if used) lives only on EC2 and reads from the registry — never has write access. Splitting them limits blast radius if EC2 is ever compromised.
-
-### Bulk-flip packages to public via gh CLI
-
-Faster than clicking 29 times:
-
-```bash
-for svc in frontend connector-service pipeline-service inference-service ontology-service \
-  event-log-service audit-service schema-registry correlation-engine process-engine-service \
-  alert-engine-service auth-service logic-service agent-service utility-service \
-  analytics-service eval-service lineage-service search-service data-quality-service \
-  collaboration-service api-gateway-service admin-service sepsis-service demo-service \
-  kernel-service whatsapp-service project-management-service finance-service; do
-  gh api -X PATCH "/orgs/mAIc-S-A-de-C-V/packages/container/nexus-${svc}" \
-    -f visibility=public 2>&1 | tail -1
-done
-```
+`GHCR_PUSH_TOKEN` lives only in GitHub Actions and pushes to the registry from CI runners. `GHCR_PULL_TOKEN` lives on EC2 and only reads — never has write access. If EC2 is ever compromised, the attacker gets read access to your images (they could already exfiltrate the running source code from the box anyway), but cannot push tampered images that the next deploy would pick up.
 
 ### When to override `IMAGE_NAMESPACE`
 
