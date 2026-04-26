@@ -45,9 +45,42 @@ jobs:
           ignore-unfixed: true
           exit-code: '0'  # don't fail the deploy on findings; review separately
 
+  # ── Smoke check: every backend Python file must parse cleanly ───────────
+  # Catches syntax errors BEFORE we waste 5 min building 29 images and
+  # shipping a broken one. ~10 sec to run; would have caught the f-string
+  # bug in claude_client.py before deploy.
+  python-syntax-check:
+    needs: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Parse every .py under backend/ and nexus-apps/
+        run: |
+          python <<'PY'
+          import ast, glob, sys
+          errs = []
+          for pattern in ('backend/**/*.py', 'nexus-apps/**/*.py'):
+              for f in glob.glob(pattern, recursive=True):
+                  if '/__pycache__/' in f or '/.venv/' in f:
+                      continue
+                  try:
+                      ast.parse(open(f).read())
+                  except SyntaxError as e:
+                      errs.append((f, e))
+          for f, e in errs:
+              print(f'::error file={f},line={e.lineno or 0}::{e.msg}')
+          if errs:
+              print(f'\n{len(errs)} file(s) failed to parse.')
+              sys.exit(1)
+          print('OK — all Python files parse')
+          PY
+
   # ── Build all backend images in parallel ────────────────────────────────
   build-backend:
-    needs: security-scan
+    needs: [security-scan, python-syntax-check]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -170,7 +203,7 @@ jobs:
 
   # ── Build frontend separately (needs VITE_* build args) ─────────────────
   build-frontend:
-    needs: security-scan
+    needs: [security-scan, python-syntax-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

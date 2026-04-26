@@ -1173,12 +1173,29 @@ const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, u
 
   // Closure-captured query helper — uses hooks, so the user code must follow
   // the rules of hooks. Each call adds a useState + useEffect to this widget.
+  // Defensive against AI-generated code that passes malformed opts:
+  //   - aggregations defaults to [{method: 'count'}] if missing or empty
+  //   - each aggregation is normalized: method defaults to 'count', stray
+  //     undefined fields are stripped
+  //   - on 4xx, surface FastAPI's `detail` field in the error message so the
+  //     user-supplied code (or its writer) can see what's wrong
   const query = (opts: AggregateOptions) => {
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const [state, setState] = React.useState<{
       rows: Record<string, unknown>[]; loading: boolean; error: string | null;
     }>({ rows: [], loading: true, error: null });
-    const key = JSON.stringify({ ot: objectTypeId, opts });
+
+    const safeOpts = opts || ({} as AggregateOptions);
+    const rawAggs = Array.isArray(safeOpts.aggregations) ? safeOpts.aggregations : [];
+    const aggregations = (rawAggs.length > 0 ? rawAggs : [{ method: 'count' as const }])
+      .map((a) => {
+        const out: { field?: string; method: string } = { method: a?.method || 'count' };
+        if (a && typeof a.field === 'string' && a.field.trim()) out.field = a.field.trim();
+        return out;
+      });
+
+    const key = JSON.stringify({ ot: objectTypeId, ...safeOpts, aggregations });
+
     // eslint-disable-next-line react-hooks/rules-of-hooks
     React.useEffect(() => {
       if (!objectTypeId) {
@@ -1187,23 +1204,35 @@ const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, u
       }
       let cancelled = false;
       setState({ rows: [], loading: true, error: null });
-      const body = {
-        filters: opts.filters ? JSON.stringify(opts.filters) : null,
-        group_by: opts.groupBy ?? null,
-        time_bucket: opts.timeBucket ?? null,
-        aggregations: opts.aggregations,
-        sort_by: opts.sortBy ?? null,
-        sort_dir: opts.sortDir ?? 'desc',
-        limit: opts.limit ?? 200,
-      };
+      const body: Record<string, unknown> = { aggregations };
+      if (safeOpts.filters && Object.keys(safeOpts.filters).length) body.filters = JSON.stringify(safeOpts.filters);
+      if (safeOpts.groupBy) body.group_by = safeOpts.groupBy;
+      if (safeOpts.timeBucket && safeOpts.timeBucket.field && safeOpts.timeBucket.interval) {
+        body.time_bucket = { field: safeOpts.timeBucket.field, interval: safeOpts.timeBucket.interval };
+      }
+      if (safeOpts.sortBy) body.sort_by = safeOpts.sortBy;
+      if (safeOpts.sortDir) body.sort_dir = safeOpts.sortDir;
+      if (safeOpts.limit) body.limit = safeOpts.limit;
+
       fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenantId },
         body: JSON.stringify(body),
       })
-        .then((r) => r.ok ? r.json() : Promise.reject(`status ${r.status}`))
+        .then(async (r) => {
+          if (r.ok) return r.json();
+          // Try to surface FastAPI's structured error so the user knows what failed
+          let detail: string;
+          try {
+            const j = await r.json();
+            detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+          } catch {
+            detail = await r.text().catch(() => '');
+          }
+          throw new Error(`status ${r.status}${detail ? ': ' + detail : ''}`);
+        })
         .then((d) => { if (!cancelled) setState({ rows: d.rows || [], loading: false, error: null }); })
-        .catch((e) => { if (!cancelled) setState({ rows: [], loading: false, error: String(e) }); });
+        .catch((e) => { if (!cancelled) setState({ rows: [], loading: false, error: e instanceof Error ? e.message : String(e) }); });
       return () => { cancelled = true; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [key]);
