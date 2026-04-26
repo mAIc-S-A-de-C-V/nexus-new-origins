@@ -50,8 +50,28 @@ const AgentConfigPanel: React.FC<{
   const [form, setForm] = useState({ ...agent });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [tenantModels, setTenantModels] = useState<Array<{ id: string; label: string; provider: string }>>([]);
 
   useEffect(() => { setForm({ ...agent }); setDirty(false); }, [agent.id]);
+
+  // Pull the tenant's registered LLM providers so their models show up in
+  // the picker alongside the Claude defaults.
+  useEffect(() => {
+    const url = (import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013') + '/model-providers';
+    fetch(url, { headers: { 'x-tenant-id': getTenantId() } })
+      .then((r) => r.ok ? r.json() : [])
+      .then((providers: Array<{ name: string; enabled: boolean; models: Array<{ id: string; label?: string }> }>) => {
+        const flat: Array<{ id: string; label: string; provider: string }> = [];
+        for (const p of (Array.isArray(providers) ? providers : [])) {
+          if (p.enabled === false) continue;
+          for (const m of (p.models || [])) {
+            flat.push({ id: m.id, label: m.label || m.id, provider: p.name });
+          }
+        }
+        setTenantModels(flat);
+      })
+      .catch(() => {});
+  }, []);
 
   const u = (patch: Partial<AgentConfig>) => {
     setForm((f) => ({ ...f, ...patch }));
@@ -91,9 +111,18 @@ const AgentConfigPanel: React.FC<{
         <div style={{ flex: 1 }}>
           <label style={{ fontSize: 11, color: C.muted, display: 'block', marginBottom: 4 }}>Model</label>
           <select style={inputStyle} value={form.model} onChange={(e) => u({ model: e.target.value })}>
-            <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-            <option value="claude-sonnet-4-6">Sonnet 4.6</option>
-            <option value="claude-opus-4-6">Opus 4.6</option>
+            {tenantModels.length > 0 && (
+              <optgroup label="Your providers">
+                {tenantModels.map((m) => (
+                  <option key={`tm-${m.id}`} value={m.id}>{m.label} — {m.provider}</option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label="Anthropic defaults">
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+              <option value="claude-sonnet-4-6">Sonnet 4.6</option>
+              <option value="claude-opus-4-7">Opus 4.7</option>
+            </optgroup>
           </select>
         </div>
         <div>

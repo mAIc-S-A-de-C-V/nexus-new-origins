@@ -209,20 +209,29 @@ async def test_provider(
                     },
                 )
             elif provider == "openai" or provider == "azure_openai":
-                # Treat user-supplied base_url as the API root (the "/v1"-level
-                # URL the OpenAI SDK uses). Append /models for the test probe.
-                # Examples:
-                #   https://router.huggingface.co/v1     -> .../v1/models
-                #   https://api.openai.com/v1            -> .../v1/models
-                #   https://x.openai.azure.com/openai/v1 -> .../openai/v1/models
-                if base_url:
-                    base = base_url.rstrip("/")
-                    url = base if base.endswith("/models") else base + "/models"
-                else:
-                    url = "https://api.openai.com/v1/models"
-                resp = await client.get(
+                # Test via a tiny chat completion. Works for OpenAI, Azure
+                # OpenAI, Hugging Face Router, Together, Fireworks, vLLM,
+                # LM Studio, and anything else that speaks the OpenAI API.
+                # /v1/models doesn't exist on every provider (HF in particular).
+                base = (base_url or "https://api.openai.com/v1").rstrip("/")
+                url = base if base.endswith("/chat/completions") else base + "/chat/completions"
+                # Pick any model the user has registered; default to a tiny one.
+                models = row.models or []
+                first_model = (
+                    (models[0].get("id") if isinstance(models[0], dict) else models[0])
+                    if models else "gpt-4o-mini"
+                )
+                resp = await client.post(
                     url,
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": first_model,
+                        "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
                 )
             elif provider == "google":
                 url = base_url or "https://generativelanguage.googleapis.com/v1beta/models"
