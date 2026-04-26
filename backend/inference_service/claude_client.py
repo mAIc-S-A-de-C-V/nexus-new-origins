@@ -155,6 +155,116 @@ def _detect_eav_pattern(sample_rows: list[dict]) -> dict | None:
     }
 
 
+def _convert_custom_code_to_typed(comp: dict, object_type_id: str) -> dict:
+    """
+    Heuristic: convert a custom-code widget into a sensible typed widget.
+
+    Title-based hints decide what the user probably wanted:
+      "X over time" / "trend" / "by hour" / "last 24 hours" → line-chart
+      "X per Y per Z" / "matrix" / "by sensor by day"       → pivot-table
+      "X vs Y" / "compare" / "ranking"                      → bar-chart
+      "list of"                                             → data-table
+      anything else                                         → text-block (safe)
+
+    Pulls fields out of the original code/config when possible. Worst case,
+    the typed widget will be misconfigured but renders without erroring,
+    which is strictly better than a hallucinated stub.
+    """
+    title = str(comp.get("title", "")).lower()
+    out: dict = {
+        "id": comp.get("id"),
+        "objectTypeId": comp.get("objectTypeId") or object_type_id,
+        "title": comp.get("title", "Widget"),
+        "colSpan": comp.get("colSpan", 12),
+    }
+
+    # Pivot-table indicators: needs to look like "X per Y per Z"
+    # (two separators AND a time-related word). A single " by " or " per "
+    # is just a multi-series line chart, not a pivot.
+    pivot_separators = title.count(" per ") + title.count(" by ")
+    has_time_word = any(p in title for p in ("day", "hour", "week", "month", "date"))
+    is_explicit_pivot = any(p in title for p in ("matrix", "pivot", "cross-tab", "crosstab"))
+    if (pivot_separators >= 2 and has_time_word) or is_explicit_pivot:
+        out["type"] = "pivot-table"
+        out["labelField"] = comp.get("labelField") or "sensor_name"
+        out["xField"] = comp.get("xField") or "time"
+        out["valueField"] = comp.get("valueField")
+        out["timeBucket"] = comp.get("timeBucket") or "day"
+        out["aggregation"] = comp.get("aggregation") or "count"
+        out["xAxisRange"] = comp.get("xAxisRange") or "last_7d"
+        out["filters"] = comp.get("filters") or []
+        return out
+
+    # Time-series line-chart indicators
+    if any(p in title for p in ("over time", "trend", "per hour", "per minute",
+                                 "last 24", "last 7", "last 30", "today",
+                                 "yesterday", "this week", "this month",
+                                 "history", "timeline")):
+        out["type"] = "line-chart"
+        out["xField"] = comp.get("xField") or "time"
+        out["valueField"] = comp.get("valueField")
+        out["labelField"] = comp.get("labelField")
+        out["timeBucket"] = comp.get("timeBucket") or "hour"
+        out["aggregation"] = comp.get("aggregation") or ("count" if not out.get("valueField") else "avg")
+        out["xAxisRange"] = comp.get("xAxisRange") or "last_24h"
+        out["filters"] = comp.get("filters") or []
+        return out
+
+    # Comparison / ranking
+    if any(p in title for p in ("ranking", "top", "compare", " vs ", "distribution")):
+        out["type"] = "bar-chart"
+        out["labelField"] = comp.get("labelField")
+        out["valueField"] = comp.get("valueField")
+        out["aggregation"] = comp.get("aggregation") or "count"
+        out["filters"] = comp.get("filters") or []
+        return out
+
+    # List
+    if any(p in title for p in ("list", "table", "rows", "records")):
+        out["type"] = "data-table"
+        out["columns"] = comp.get("columns") or []
+        out["pageSize"] = comp.get("pageSize") or 50
+        out["filters"] = comp.get("filters") or []
+        return out
+
+    # Last-resort fallback: a text block explaining what was stripped, so the
+    # user sees the gap and can replace it manually rather than getting a
+    # silently-broken custom-code stub.
+    out["type"] = "text-block"
+    out["content"] = (
+        f"⚠ The AI generated a custom-code widget for \"{comp.get('title', 'this widget')}\" "
+        "which isn't allowed in dashboards. Drag a typed widget from the palette "
+        "to replace it — or re-run the AI Dashboard generator."
+    )
+    return out
+
+
+def _scrub_custom_code_components(layout: dict, object_type_id: str) -> dict:
+    """Replace any custom-code components in a generate_app response with
+    typed widgets. Mutates and returns the layout dict.
+    """
+    if not isinstance(layout, dict):
+        return layout
+    components = layout.get("components")
+    if not isinstance(components, list):
+        return layout
+    scrubbed: list[dict] = []
+    converted_count = 0
+    for comp in components:
+        if isinstance(comp, dict) and comp.get("type") == "custom-code":
+            scrubbed.append(_convert_custom_code_to_typed(comp, object_type_id))
+            converted_count += 1
+        else:
+            scrubbed.append(comp)
+    if converted_count:
+        logger.warning(
+            "scrubbed %d custom-code widgets from generated layout for ot=%s",
+            converted_count, object_type_id,
+        )
+    layout["components"] = scrubbed
+    return layout
+
+
 def _eav_prompt_section(sample_rows: list[dict]) -> str:
     """Format the EAV hint as a prompt section. Empty string when not EAV."""
     eav = _detect_eav_pattern(sample_rows)
@@ -604,6 +714,17 @@ class ClaudeInferenceClient:
 
         prompt = f"""You are a dashboard builder AI. Generate a JSON layout for a data dashboard.
 
+ABSOLUTE PROHIBITION: NEVER generate widgets of type "custom-code".
+NOT EVEN ONCE. NOT FOR LINE CHARTS. NOT FOR PIVOT TABLES. NOT FOR ANY
+"complex" request. Custom-code widgets render as static placeholder text
+in this dashboard system. They are reserved for the SINGLE-WIDGET AI
+generator, NOT this multi-widget dashboard generator. If you find
+yourself reaching for "custom-code", pick the closest typed widget
+instead. The valid types are EXACTLY:
+  metric-card, kpi-banner, stat-card, data-table, pivot-table,
+  bar-chart, line-chart, area-chart, pie-chart, filter-bar, text-block.
+ANY component with type="custom-code" will be rejected.
+
 User request: "{description}"
 
 Object type: "{object_type_name}" (id: {object_type_id})
@@ -734,6 +855,10 @@ Rules:
    filters (eq filters AND together, "in" gives OR semantics)."""
 
         result = self._call(prompt)
+        # Belt-and-suspenders: even if Claude ignores the prompt and emits
+        # custom-code widgets, scrub them server-side so the dashboard
+        # renders typed widgets only.
+        result = _scrub_custom_code_components(result, object_type_id)
         return result
 
     def generate_widget(
