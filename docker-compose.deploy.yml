@@ -1,0 +1,75 @@
+# Deploy override: replaces every `build:` block in docker-compose.yml with
+# `image: ghcr.io/<owner>/nexus-<service>:${IMAGE_TAG:-latest}` so EC2 can
+# `docker-compose pull` instead of building anything locally.
+#
+# Usage on EC2:
+#   docker-compose -f docker-compose.yml -f docker-compose.deploy.yml pull
+#   docker-compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
+#
+# `IMAGE_NAMESPACE` defaults to the org name in lowercase; override via env
+# if your fork lives under a different owner.
+
+x-image-namespace: &namespace ${IMAGE_NAMESPACE:-maic-s-a-de-c-v}
+x-tag: &tag ${IMAGE_TAG:-latest}
+
+services:
+  frontend:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-frontend:${IMAGE_TAG:-latest}
+  connector-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-connector-service:${IMAGE_TAG:-latest}
+  pipeline-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-pipeline-service:${IMAGE_TAG:-latest}
+  inference-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-inference-service:${IMAGE_TAG:-latest}
+  ontology-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-ontology-service:${IMAGE_TAG:-latest}
+  event-log-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-event-log-service:${IMAGE_TAG:-latest}
+  audit-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-audit-service:${IMAGE_TAG:-latest}
+  schema-registry:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-schema-registry:${IMAGE_TAG:-latest}
+  correlation-engine:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-correlation-engine:${IMAGE_TAG:-latest}
+  process-engine-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-process-engine-service:${IMAGE_TAG:-latest}
+  alert-engine-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-alert-engine-service:${IMAGE_TAG:-latest}
+  auth-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-auth-service:${IMAGE_TAG:-latest}
+  logic-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-logic-service:${IMAGE_TAG:-latest}
+  agent-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-agent-service:${IMAGE_TAG:-latest}
+  utility-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-utility-service:${IMAGE_TAG:-latest}
+  analytics-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-analytics-service:${IMAGE_TAG:-latest}
+  eval-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-eval-service:${IMAGE_TAG:-latest}
+  lineage-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-lineage-service:${IMAGE_TAG:-latest}
+  search-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-search-service:${IMAGE_TAG:-latest}
+  data-quality-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-data-quality-service:${IMAGE_TAG:-latest}
+  collaboration-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-collaboration-service:${IMAGE_TAG:-latest}
+  api-gateway-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-api-gateway-service:${IMAGE_TAG:-latest}
+  admin-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-admin-service:${IMAGE_TAG:-latest}
+  sepsis-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-sepsis-service:${IMAGE_TAG:-latest}
+  demo-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-demo-service:${IMAGE_TAG:-latest}
+  kernel-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-kernel-service:${IMAGE_TAG:-latest}
+  whatsapp-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-whatsapp-service:${IMAGE_TAG:-latest}
+  project-management-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-project-management-service:${IMAGE_TAG:-latest}
+  finance-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-finance-service:${IMAGE_TAG:-latest}
+  # postgres, redis, timescaledb, backup-service already use stock images;
+  # nothing to override.

@@ -1,0 +1,273 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-and-deploy-${{ github.ref }}
+  cancel-in-progress: false  # don't cancel a deploy in flight
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
+
+jobs:
+  # ── Security scan (kept from old deploy.yml) ────────────────────────────
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit
+      - name: Audit Python deps
+        run: |
+          for req in backend/*/requirements.txt backend/requirements.txt; do
+            if [ -f "$req" ]; then
+              echo "Auditing $req"
+              pip-audit -r "$req" --ignore-vuln PYSEC-2022-43012 --ignore-vuln CVE-2026-30922 || true
+            fi
+          done
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          exit-code: '0'  # don't fail the deploy on findings; review separately
+
+  # ── Build all backend images in parallel ────────────────────────────────
+  build-backend:
+    needs: security-scan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - service: connector-service
+            context: ./backend/connector_service
+            dockerfile: Dockerfile
+          - service: pipeline-service
+            context: ./backend
+            dockerfile: pipeline_service/Dockerfile
+          - service: inference-service
+            context: ./backend
+            dockerfile: inference_service/Dockerfile
+          - service: ontology-service
+            context: ./backend
+            dockerfile: ontology_service/Dockerfile
+          - service: event-log-service
+            context: ./backend
+            dockerfile: event_log_service/Dockerfile
+          - service: audit-service
+            context: ./backend
+            dockerfile: audit_service/Dockerfile
+          - service: schema-registry
+            context: ./backend/schema_registry
+            dockerfile: Dockerfile
+          - service: correlation-engine
+            context: ./backend
+            dockerfile: correlation_engine/Dockerfile
+          - service: process-engine-service
+            context: ./backend/process_engine
+            dockerfile: Dockerfile
+          - service: alert-engine-service
+            context: ./backend/alert_engine
+            dockerfile: Dockerfile
+          - service: auth-service
+            context: ./backend/auth_service
+            dockerfile: Dockerfile
+          - service: logic-service
+            context: ./backend/logic_service
+            dockerfile: Dockerfile
+          - service: agent-service
+            context: ./backend
+            dockerfile: agent_service/Dockerfile
+          - service: utility-service
+            context: ./backend/utility_service
+            dockerfile: Dockerfile
+          - service: analytics-service
+            context: ./backend
+            dockerfile: analytics_service/Dockerfile
+          - service: eval-service
+            context: ./backend
+            dockerfile: eval_service/Dockerfile
+          - service: lineage-service
+            context: ./backend
+            dockerfile: lineage_service/Dockerfile
+          - service: search-service
+            context: ./backend
+            dockerfile: search_service/Dockerfile
+          - service: data-quality-service
+            context: ./backend
+            dockerfile: data_quality_service/Dockerfile
+          - service: collaboration-service
+            context: ./backend
+            dockerfile: collaboration_service/Dockerfile
+          - service: api-gateway-service
+            context: ./backend
+            dockerfile: api_gateway_service/Dockerfile
+          - service: admin-service
+            context: ./backend
+            dockerfile: admin_service/Dockerfile
+          - service: sepsis-service
+            context: ./backend/sepsis_service
+            dockerfile: Dockerfile
+          - service: demo-service
+            context: ./backend/demo_service
+            dockerfile: Dockerfile
+          - service: kernel-service
+            context: ./backend
+            dockerfile: Dockerfile.kernel
+          - service: whatsapp-service
+            context: ./backend/whatsapp_service
+            dockerfile: Dockerfile
+          - service: project-management-service
+            context: ./nexus-apps/project-management-service
+            dockerfile: Dockerfile
+          - service: finance-service
+            context: ./nexus-apps/finance-service
+            dockerfile: Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/nexus-${{ matrix.service }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false  # smaller registry footprint
+
+  # ── Build frontend separately (needs VITE_* build args) ─────────────────
+  build-frontend:
+    needs: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/nexus-frontend
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build & push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+          provenance: false
+          build-args: |
+            VITE_CONNECTOR_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8001
+            VITE_PIPELINE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8002
+            VITE_INFERENCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8003
+            VITE_ONTOLOGY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8004
+            VITE_EVENT_LOG_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8005
+            VITE_AUDIT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8006
+            VITE_CORRELATION_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8008
+            VITE_PROCESS_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8009
+            VITE_ALERT_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8010
+            VITE_AUTH_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8011
+            VITE_LOGIC_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8012
+            VITE_AGENT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8013
+            VITE_UTILITY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8014
+            VITE_ANALYTICS_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8015
+            VITE_EVAL_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8016
+            VITE_LINEAGE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8017
+            VITE_SEARCH_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8018
+            VITE_DATA_QUALITY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8019
+            VITE_COLLABORATION_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8020
+            VITE_API_GATEWAY_URL=http://${{ secrets.EC2_HOST }}:8021
+            VITE_ADMIN_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8022
+            VITE_PROJECT_MGMT_URL=http://${{ secrets.EC2_HOST }}:9000
+            VITE_FINANCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:9001
+            VITE_KERNEL_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8024
+
+  # ── Deploy: pull on EC2, no building, no disk pressure ──────────────────
+  deploy:
+    needs: [build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH (pull + up only)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+
+            # Swap (safety net for tight memory boxes)
+            if [ ! -f /swapfile ]; then
+              sudo fallocate -l 4G /swapfile
+              sudo chmod 600 /swapfile
+              sudo mkswap /swapfile
+              sudo swapon /swapfile
+              echo '/swapfile swap swap defaults 0 0' | sudo tee -a /etc/fstab
+            fi
+            sudo swapon /swapfile 2>/dev/null || true
+
+            cd nexus-new-origins
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Runtime .env (build-time URLs already baked into the frontend image)
+            printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nADMIN_SEED_PASSWORD=${{ secrets.ADMIN_SEED_PASSWORD }}\nALLOWED_ORIGIN_EC2=http://${{ secrets.EC2_HOST }}:3000\n' > .env
+
+            # Authenticate to GHCR. Requires GHCR_PULL_TOKEN secret — a PAT
+            # with read:packages scope OR a fine-grained token with package
+            # read for this repo. If the package is set to public visibility,
+            # the docker login is unnecessary; the pull will work anonymously.
+            if [ -n "${{ secrets.GHCR_PULL_TOKEN }}" ]; then
+              echo "${{ secrets.GHCR_PULL_TOKEN }}" | sudo docker login ghcr.io \
+                -u ${{ github.actor }} --password-stdin
+            fi
+
+            # Pull all images defined in the deploy override, then up.
+            sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml pull
+            sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --remove-orphans
+
+            # Drop dangling images from the previous deploy to keep disk lean
+            sudo docker image prune -f
+
+            # Print health status so failures show in the workflow log
+            sleep 15
+            sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml ps

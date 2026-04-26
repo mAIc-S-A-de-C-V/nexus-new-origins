@@ -118,66 +118,74 @@ A copy should also exist at `frontend/.env` as a Vite fallback (same `VITE_*` ke
 
 ---
 
-## Manual Redeploy
+## Manual Redeploy (current — pull-only flow, no building on EC2)
+
+EC2 no longer builds images. CI builds them on GitHub-hosted runners and pushes to GHCR; EC2 just pulls.
 
 ```bash
 ssh -i ~/.ssh/maic-prod.pem ec2-user@52.202.36.168
 cd nexus-new-origins
 git pull
-sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache
-sudo DOCKER_BUILDKIT=0 docker-compose up -d --force-recreate
+sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml pull
+sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
 ```
 
-If you only changed backend code and the frontend `.env` has not changed, you can skip `--no-cache` for a faster build:
+That's the entire deploy. No `--build`, no disk-pressure, no OOM. Pulls take ~30 seconds for changed services.
+
+To roll back to a specific commit's image set, set `IMAGE_TAG` to the short SHA:
 
 ```bash
-sudo DOCKER_BUILDKIT=0 docker-compose up -d --build
+sudo IMAGE_TAG=72e967f docker-compose -f docker-compose.yml -f docker-compose.deploy.yml pull
+sudo IMAGE_TAG=72e967f docker-compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
 ```
 
 ---
 
-## Rebuilding Individual Services
+## Rebuilding a single service after a code change
 
-To rebuild and restart a single service without touching the rest:
-
-```bash
-sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache <service-name>
-sudo docker-compose up -d --force-recreate <service-name>
-```
-
-Examples:
+You don't rebuild on EC2 anymore. Edit code → push to `main` → GitHub Actions builds + deploys. To force one service to redeploy without code changes:
 
 ```bash
-# Rebuild only the frontend (e.g., after changing VITE_* URLs)
-sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache frontend
-sudo docker-compose up -d --force-recreate frontend
-
-# Rebuild only the connector service
-sudo DOCKER_BUILDKIT=0 docker-compose build --no-cache connector-service
-sudo docker-compose up -d --force-recreate connector-service
+sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml pull <service-name>
+sudo docker-compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --force-recreate <service-name>
 ```
 
 ---
 
-## GitHub Actions CI/CD
+## GitHub Actions CI/CD (build-and-deploy.yml)
 
-Defined in `.github/workflows/deploy.yml`. On every push to `main`:
+Defined in `.github/workflows/build-and-deploy.yml`. On every push to `main`:
 
-1. **Security scan** -- `pip-audit` on all `requirements.txt` files + Trivy filesystem scan for HIGH/CRITICAL vulnerabilities.
-2. **Deploy** -- SSHes into EC2, runs `git reset --hard origin/main`, writes `.env` and `frontend/.env` from secrets, builds all images with `--no-cache`, and recreates containers.
+1. **Security scan** — `pip-audit` on `requirements.txt` files + Trivy filesystem scan for HIGH/CRITICAL.
+2. **Build** — All ~29 service images build in parallel on GitHub-hosted runners using a matrix. Tagged with both the short SHA (e.g. `:72e967f`) and `:latest`. Pushed to `ghcr.io/<org>/nexus-<service>:<tag>` with per-service GHA build cache for fast incremental rebuilds.
+3. **Deploy** — SSHes into EC2, runs `docker-compose pull && docker-compose up -d`. No building, ~1 min total.
+
+The frontend image is built in a separate job because it needs `VITE_*` build args derived from `EC2_HOST`.
 
 ### Required GitHub Secrets
 
 Set these in the repo under **Settings > Secrets and variables > Actions**:
 
-| Secret | Value |
-|---|---|
-| `EC2_HOST` | `52.202.36.168` (must match the Elastic IP) |
-| `EC2_USER` | `ec2-user` |
-| `EC2_SSH_KEY` | Full contents of `~/.ssh/maic-prod.pem` |
-| `ANTHROPIC_API_KEY` | Default Anthropic key (platform fallback when tenants have no LLM provider configured in Settings → AI Models) |
+| Secret | Value | Notes |
+|---|---|---|
+| `EC2_HOST` | `52.202.36.168` (Elastic IP) | Used for SSH **and** baked into the frontend `VITE_*` URLs at build time |
+| `EC2_USER` | `ec2-user` | |
+| `EC2_SSH_KEY` | Full contents of `~/.ssh/maic-prod.pem` | |
+| `ANTHROPIC_API_KEY` | Default Anthropic key (platform fallback when tenants have no LLM provider configured in Settings → AI Models) | |
+| `ADMIN_SEED_PASSWORD` | Initial superadmin password | |
+| `GHCR_PULL_TOKEN` | Optional; only required if GHCR packages are private | A GitHub PAT with `read:packages` scope. If you set GHCR packages to public visibility (recommended), this can be omitted. |
 
-> **Important:** If the Elastic IP ever changes, you must update the `EC2_HOST` secret in GitHub. The deploy script derives all `VITE_*` URLs and `ALLOWED_ORIGIN_EC2` from this value.
+> **Important:** If the Elastic IP ever changes, update the `EC2_HOST` secret AND re-run the workflow so the frontend gets rebuilt with the new URLs baked in.
+
+### One-time setup on a fresh repo / fork
+
+1. Push to `main`; the first workflow run creates the GHCR packages.
+2. Go to **github.com/<org>/<repo>/pkgs/container/nexus-frontend** (and each service). For each: **Package settings → Change visibility → Public**. This lets EC2 pull anonymously and removes the need for `GHCR_PULL_TOKEN`.
+3. Alternatively, create a PAT with `read:packages` scope and store it as the `GHCR_PULL_TOKEN` secret; the deploy step does `docker login` automatically.
+
+### When to override `IMAGE_NAMESPACE`
+
+`docker-compose.deploy.yml` reads `${IMAGE_NAMESPACE:-maic-s-a-de-c-v}`. If you fork the repo to a different org, set `IMAGE_NAMESPACE` in `.env` on EC2 to match your GHCR owner.
 
 ---
 
