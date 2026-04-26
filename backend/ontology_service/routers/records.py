@@ -385,13 +385,43 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                             bind_params[pname] = str(op_val)
                         elif op in ("gt", "gte", "lt", "lte"):
                             cmp = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-                            # Same regex-guarded cast as the SELECT side, in
-                            # POSIX bracket form to dodge backslash escaping.
-                            where_parts.append(
-                                f"{accessor} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
-                                f"AND ({accessor})::numeric {cmp} :{pname}"
+                            val_str = str(op_val) if op_val is not None else ""
+                            # Three flavors of comparison depending on the
+                            # value's shape — picked at filter-build time:
+                            #
+                            #   ISO date string ("2026-04-25T...")  → timestamptz
+                            #     compare. Hits the xAxisRange presets and
+                            #     `after`/`before` filters that the frontend
+                            #     encodes as $gte/$lte.
+                            #
+                            #   Numeric                              → regex-
+                            #     guarded numeric cast (existing path).
+                            #
+                            #   Anything else                        → string
+                            #     compare (lexicographic).
+                            is_iso_date = (
+                                isinstance(op_val, str)
+                                and len(val_str) >= 10
+                                and val_str[4:5] == "-"
+                                and val_str[7:8] == "-"
                             )
-                            bind_params[pname] = float(op_val)
+                            if is_iso_date:
+                                where_parts.append(
+                                    f"NULLIF({accessor}, '')::timestamptz {cmp} "
+                                    f"(:{pname})::timestamptz"
+                                )
+                                bind_params[pname] = val_str
+                            else:
+                                try:
+                                    numeric_val = float(op_val)
+                                    where_parts.append(
+                                        f"{accessor} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                                        f"AND ({accessor})::numeric {cmp} :{pname}"
+                                    )
+                                    bind_params[pname] = numeric_val
+                                except (TypeError, ValueError):
+                                    where_parts.append(f"{accessor} {cmp} :{pname}")
+                                    bind_params[pname] = val_str
                         elif op == "contains":
                             where_parts.append(f"{accessor} ILIKE :{pname}")
                             bind_params[pname] = f"%{op_val}%"

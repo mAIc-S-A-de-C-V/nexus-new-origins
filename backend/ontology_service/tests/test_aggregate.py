@@ -248,6 +248,46 @@ def test_filters_operator_form():
     assert "data->>'amount' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$'" in sql
 
 
+def test_filters_iso_date_uses_timestamptz_cast():
+    """xAxisRange presets emit `time { $gte: '2026-04-25T...' }`. The filter
+    handler must detect ISO date strings and cast both sides to timestamptz —
+    otherwise float() blows up on the string and crashes the whole request."""
+    body = AggregateRequest(
+        filters='{"time": {"$gte": "2026-04-25T21:27:51.553Z"}}',
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    assert "NULLIF(data->>'time', '')::timestamptz >= (:flt0)::timestamptz" in sql
+    assert params["flt0"] == "2026-04-25T21:27:51.553Z"
+    # Must NOT take the numeric path
+    assert "::numeric" not in sql.split("flt0")[0].rsplit("WHERE", 1)[-1]
+
+
+def test_filters_iso_date_lt_and_lte_also_use_timestamptz():
+    body = AggregateRequest(
+        filters='{"created_at": {"$lt": "2026-01-15"}}',
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    assert "NULLIF(data->>'created_at', '')::timestamptz < (:flt0)::timestamptz" in sql
+    assert params["flt0"] == "2026-01-15"
+
+
+def test_filters_non_date_string_gt_falls_back_to_string_compare():
+    """A non-numeric, non-ISO-date string under $gt falls back to lexicographic
+    string comparison — no crash, no false numeric coercion."""
+    body = AggregateRequest(
+        filters='{"name": {"$gt": "alice"}}',
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    assert "data->>'name' > :flt0" in sql
+    assert params["flt0"] == "alice"
+    # Did not take the timestamptz or numeric path
+    assert "::timestamptz" not in sql
+    assert "::numeric" not in sql
+
+
 def test_filters_in_operator_emits_placeholders():
     body = AggregateRequest(
         filters='{"status": {"$in": ["active", "pending", "review"]}}',
