@@ -11,6 +11,7 @@ import {
   pickXField,
   pickValueField,
   pickTimeBucket,
+  rangeToFilter,
   type CrossFilter,
   type AggregateOptions,
   type AggregateSpec,
@@ -2236,14 +2237,19 @@ const ServerAggPieChart: React.FC<{ comp: AppComponent; serverFilters?: Record<s
 const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const xField = pickXField(comp);
   const valueField = pickValueField(comp);
-  const method = valueField ? 'sum' : 'count';
+  const method = comp.aggregation || (valueField ? 'sum' : 'count');
   const interval = pickTimeBucket(comp);
   const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
+  // Merge the user's filter list with the time-range preset (last_24h etc.)
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField);
+  const mergedFilters = rangeFilter
+    ? { ...(serverFilters || {}), ...rangeFilter }
+    : serverFilters;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
     timeBucket: { field: xField, interval },
-    aggregations: [{ field: valueField, method }],
-    filters: serverFilters,
+    aggregations: [{ field: valueField, method: method as AggregateSpec['method'] }],
+    filters: mergedFilters,
     sortBy: 'group',
     sortDir: 'asc',
     limit: labelField ? 1000 : 200,
@@ -2278,14 +2284,18 @@ const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
 const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const xField = pickXField(comp);
   const valueField = pickValueField(comp);
-  const method = valueField ? 'sum' : 'count';
+  const method = comp.aggregation || (valueField ? 'sum' : 'count');
   const interval = pickTimeBucket(comp);
   const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField);
+  const mergedFilters = rangeFilter
+    ? { ...(serverFilters || {}), ...rangeFilter }
+    : serverFilters;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
     timeBucket: { field: xField, interval },
-    aggregations: [{ field: valueField, method }],
-    filters: serverFilters,
+    aggregations: [{ field: valueField, method: method as AggregateSpec['method'] }],
+    filters: mergedFilters,
     sortBy: 'group',
     sortDir: 'asc',
     limit: labelField ? 1000 : 200,

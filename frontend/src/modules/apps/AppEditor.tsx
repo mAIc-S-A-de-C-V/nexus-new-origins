@@ -23,6 +23,7 @@ import {
   PieChart, AreaChart, TrendingUp, ListFilter, FileText, TableProperties, Variable,
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable } from '../../types/app';
+import { suggestedBucketForRange } from './queryBuilder';
 import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
 import AppCanvas from './AppCanvas';
@@ -1333,6 +1334,41 @@ const ConfigPanel: React.FC<{
             <Row label="GROUP BY (one line per value — multi-series)">
               <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} placeholder="Optional, e.g. sensor_name" />
             </Row>
+            <Row label="TIME RANGE (auto-applies to x-axis filter)">
+              <select
+                value={comp.xAxisRange || 'all_time'}
+                onChange={(e) => {
+                  const range = e.target.value as AppComponent['xAxisRange'];
+                  // When the user changes range, auto-suggest a sensible bucket
+                  // size — only if they haven't explicitly set one yet.
+                  const suggested = suggestedBucketForRange(range);
+                  set({
+                    xAxisRange: range,
+                    ...(comp.timeBucket ? {} : { timeBucket: suggested }),
+                  });
+                }}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <optgroup label="Recent">
+                  <option value="last_15m">Last 15 minutes</option>
+                  <option value="last_1h">Last 1 hour</option>
+                  <option value="last_4h">Last 4 hours</option>
+                  <option value="last_24h">Last 24 hours</option>
+                  <option value="last_7d">Last 7 days</option>
+                  <option value="last_30d">Last 30 days</option>
+                  <option value="last_90d">Last 90 days</option>
+                </optgroup>
+                <optgroup label="Calendar">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="this_week">This week</option>
+                  <option value="this_month">This month</option>
+                </optgroup>
+                <optgroup label="No filter">
+                  <option value="all_time">All time</option>
+                </optgroup>
+              </select>
+            </Row>
             <Row label="TIME BUCKET">
               <select
                 value={comp.timeBucket || 'month'}
@@ -1400,6 +1436,39 @@ const ConfigPanel: React.FC<{
             </Row>
             <Row label="GROUP BY (SERIES)">
               <FieldPicker value={comp.labelField} onPick={(f) => set({ labelField: f })} placeholder="Optional, e.g. sensor_name" />
+            </Row>
+            <Row label="TIME RANGE (auto-applies to x-axis filter)">
+              <select
+                value={comp.xAxisRange || 'all_time'}
+                onChange={(e) => {
+                  const range = e.target.value as AppComponent['xAxisRange'];
+                  const suggested = suggestedBucketForRange(range);
+                  set({
+                    xAxisRange: range,
+                    ...(comp.timeBucket ? {} : { timeBucket: suggested }),
+                  });
+                }}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <optgroup label="Recent">
+                  <option value="last_15m">Last 15 minutes</option>
+                  <option value="last_1h">Last 1 hour</option>
+                  <option value="last_4h">Last 4 hours</option>
+                  <option value="last_24h">Last 24 hours</option>
+                  <option value="last_7d">Last 7 days</option>
+                  <option value="last_30d">Last 30 days</option>
+                  <option value="last_90d">Last 90 days</option>
+                </optgroup>
+                <optgroup label="Calendar">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="this_week">This week</option>
+                  <option value="this_month">This month</option>
+                </optgroup>
+                <optgroup label="No filter">
+                  <option value="all_time">All time</option>
+                </optgroup>
+              </select>
             </Row>
             <Row label="TIME BUCKET">
               <select

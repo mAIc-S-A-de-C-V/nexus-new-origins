@@ -78,6 +78,13 @@ export interface AppComponent {
     | 'second' | '5_seconds' | '15_seconds' | '30_seconds'
     | 'minute' | '5_minutes' | '15_minutes' | '30_minutes'
     | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
+  // Relative time-range preset for the x-axis. When set, the chart auto-adds
+  // a filter on `xField` covering this window. Saves the user from typing
+  // ISO timestamps. 'all_time' / undefined = no filter applied.
+  xAxisRange?:
+    | 'last_15m' | 'last_1h' | 'last_4h' | 'last_24h' | 'last_7d'
+    | 'last_30d' | 'last_90d' | 'today' | 'yesterday' | 'this_week'
+    | 'this_month' | 'all_time';
   // Server-side pagination page size for data-table. Default 50.
   pageSize?: number;
   // map

@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildServerFilters,
   pickLabelField,
   pickXField,
   pickValueField,
   pickTimeBucket,
+  rangeToFilter,
+  suggestedBucketForRange,
 } from './queryBuilder';
 import type { AppComponent, AppFilter } from '../../types/app';
 
@@ -156,5 +158,68 @@ describe('pickTimeBucket', () => {
 
   it('respects explicit timeBucket', () => {
     expect(pickTimeBucket({ id: '1', type: 'line-chart', title: '', timeBucket: 'day' } as AppComponent)).toBe('day');
+  });
+});
+
+describe('rangeToFilter', () => {
+  // Pin the clock so tests are deterministic.
+  const FIXED = new Date('2026-04-26T15:00:00.000Z').getTime();
+  beforeAll(() => { vi.setSystemTime(FIXED); });
+  afterEach(() => {});
+
+  it('returns undefined for all_time / unset', () => {
+    expect(rangeToFilter(undefined, 'time')).toBeUndefined();
+    expect(rangeToFilter('all_time', 'time')).toBeUndefined();
+  });
+
+  it('returns undefined when xField is empty', () => {
+    expect(rangeToFilter('last_24h', '')).toBeUndefined();
+  });
+
+  it('encodes last_24h as $gte (now − 24h)', () => {
+    const f = rangeToFilter('last_24h', 'time');
+    expect(f).toEqual({ time: { $gte: '2026-04-25T15:00:00.000Z' } });
+  });
+
+  it('encodes last_7d', () => {
+    const f = rangeToFilter('last_7d', 'time');
+    expect(f).toEqual({ time: { $gte: '2026-04-19T15:00:00.000Z' } });
+  });
+
+  it('encodes today as midnight (local)', () => {
+    const f = rangeToFilter('today', 'time') as Record<string, { $gte: string }>;
+    // Just verify shape; exact timestamp depends on local timezone.
+    expect(f).toBeDefined();
+    expect(typeof f.time.$gte).toBe('string');
+  });
+
+  it('encodes yesterday as a closed interval (yesterday midnight → today midnight)', () => {
+    const f = rangeToFilter('yesterday', 'time') as Record<string, { $gte: string; $lte: string }>;
+    expect(f).toBeDefined();
+    expect(typeof f.time.$gte).toBe('string');
+    expect(typeof f.time.$lte).toBe('string');
+    // gte must be before lte
+    expect(new Date(f.time.$gte).getTime()).toBeLessThan(new Date(f.time.$lte).getTime());
+  });
+});
+
+// Helper for vi.setSystemTime — vitest exposes this as a global when
+// `globals: true` is set in vitest config.
+import { beforeAll } from 'vitest';
+
+describe('suggestedBucketForRange', () => {
+  it('picks fine buckets for short ranges', () => {
+    expect(suggestedBucketForRange('last_15m')).toBe('minute');
+    expect(suggestedBucketForRange('last_1h')).toBe('minute');
+    expect(suggestedBucketForRange('last_4h')).toBe('5_minutes');
+    expect(suggestedBucketForRange('last_24h')).toBe('hour');
+    expect(suggestedBucketForRange('last_7d')).toBe('hour');
+    expect(suggestedBucketForRange('last_30d')).toBe('day');
+    expect(suggestedBucketForRange('last_90d')).toBe('day');
+  });
+
+  it('returns undefined for all_time / undefined', () => {
+    expect(suggestedBucketForRange('all_time')).toBeUndefined();
+    expect(suggestedBucketForRange(undefined)).toBeUndefined();
   });
 });

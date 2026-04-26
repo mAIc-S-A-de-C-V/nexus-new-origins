@@ -111,3 +111,89 @@ export function pickValueField(comp: AppComponent): string | undefined {
 export function pickTimeBucket(comp: AppComponent): TimeBucket {
   return comp.timeBucket || 'month';
 }
+
+/**
+ * Resolve `comp.xAxisRange` (e.g. "last_24h") into a server filter on
+ * `xField`. Computed at render time using the browser's clock; the chart
+ * re-runs whenever the user reopens or refreshes.
+ *
+ * Returns undefined when no range is set or 'all_time' is selected.
+ */
+export function rangeToFilter(
+  range: AppComponent['xAxisRange'],
+  xField: string,
+): Record<string, unknown> | undefined {
+  if (!range || range === 'all_time' || !xField) return undefined;
+  const now = Date.now();
+  const oneMin = 60 * 1000;
+  const oneHour = 60 * oneMin;
+  const oneDay = 24 * oneHour;
+
+  let from: number | null = null;
+  let to: number | null = null;
+
+  switch (range) {
+    case 'last_15m': from = now - 15 * oneMin; break;
+    case 'last_1h':  from = now - oneHour; break;
+    case 'last_4h':  from = now - 4 * oneHour; break;
+    case 'last_24h': from = now - oneDay; break;
+    case 'last_7d':  from = now - 7 * oneDay; break;
+    case 'last_30d': from = now - 30 * oneDay; break;
+    case 'last_90d': from = now - 90 * oneDay; break;
+    case 'today': {
+      const d = new Date(); d.setHours(0, 0, 0, 0);
+      from = d.getTime();
+      break;
+    }
+    case 'yesterday': {
+      const d = new Date(); d.setHours(0, 0, 0, 0);
+      to = d.getTime();
+      from = to - oneDay;
+      break;
+    }
+    case 'this_week': {
+      const d = new Date(); d.setHours(0, 0, 0, 0);
+      const day = d.getDay() || 7; // 1=Mon, 7=Sun
+      d.setDate(d.getDate() - day + 1);
+      from = d.getTime();
+      break;
+    }
+    case 'this_month': {
+      const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(1);
+      from = d.getTime();
+      break;
+    }
+    default: return undefined;
+  }
+
+  const out: Record<string, unknown> = {};
+  if (from !== null && to !== null) {
+    out[xField] = { $gte: new Date(from).toISOString(), $lte: new Date(to).toISOString() };
+  } else if (from !== null) {
+    out[xField] = { $gte: new Date(from).toISOString() };
+  } else if (to !== null) {
+    out[xField] = { $lte: new Date(to).toISOString() };
+  }
+  return out;
+}
+
+/**
+ * Sensible default time bucket for a given range, so the chart shows a
+ * reasonable number of data points (~12–96) instead of either 2 or 10000.
+ */
+export function suggestedBucketForRange(range: AppComponent['xAxisRange']): TimeBucket | undefined {
+  switch (range) {
+    case 'last_15m': return 'minute';
+    case 'last_1h':  return 'minute';
+    case 'last_4h':  return '5_minutes';
+    case 'last_24h': return 'hour';
+    case 'today':    return 'hour';
+    case 'yesterday':return 'hour';
+    case 'this_week':return 'hour';
+    case 'last_7d':  return 'hour';
+    case 'last_30d': return 'day';
+    case 'this_month':return 'day';
+    case 'last_90d': return 'day';
+    default: return undefined;
+  }
+}
