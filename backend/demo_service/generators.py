@@ -835,3 +835,247 @@ def generate_bpic2020_payment_requests(n_cases: int = 1500) -> list[dict]:
                 "organizational_entity": dept,
             })
     return rows
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Insurance Demo — Policies, Claims, Medical Submissions
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json as _json
+
+_INSURANCE_TIERS = ["Basico", "Estandar", "Premium", "Platinum"]
+_INSURANCE_TIER_WEIGHTS = [30, 35, 25, 10]
+
+_INSURANCE_STATUSES = ["Vigente", "Vencida", "Cancelada"]
+_INSURANCE_STATUS_WEIGHTS = [75, 15, 10]
+
+_PLAN_TYPES = ["Individual", "Familiar", "Corporativo"]
+
+_FIRST_NAMES = [
+    "Maria", "Jose", "Carlos", "Ana", "Juan", "Rosa", "Luis", "Elena",
+    "Pedro", "Carmen", "Miguel", "Sofia", "Fernando", "Patricia", "Ricardo",
+    "Laura", "Alejandro", "Gabriela", "Roberto", "Claudia", "Oscar", "Diana",
+    "Raul", "Monica", "Daniel", "Andrea", "Francisco", "Lucia", "Sergio", "Isabel",
+]
+_LAST_NAMES = [
+    "Garcia", "Lopez", "Martinez", "Rodriguez", "Hernandez", "Gonzalez",
+    "Perez", "Sanchez", "Ramirez", "Torres", "Flores", "Rivera", "Gomez",
+    "Diaz", "Cruz", "Morales", "Ortiz", "Gutierrez", "Chavez", "Ramos",
+    "Reyes", "Mendoza", "Aguilar", "Castillo", "Jimenez", "Romero",
+]
+
+_COVERED_SERVICES = {
+    "Basico": ["Consulta general", "Urgencias", "Laboratorio basico", "Hospitalizacion (sala general)"],
+    "Estandar": ["Consulta general", "Consulta especialista", "Urgencias", "Laboratorio", "Imagenologia basica", "Hospitalizacion", "Cirugia ambulatoria"],
+    "Premium": ["Consulta general", "Consulta especialista", "Urgencias", "Laboratorio completo", "Imagenologia", "Hospitalizacion (privada)", "Cirugia", "Rehabilitacion", "Salud mental", "Maternidad"],
+    "Platinum": ["Consulta general", "Consulta especialista", "Urgencias", "Laboratorio completo", "Imagenologia avanzada", "Hospitalizacion (suite)", "Cirugia", "Rehabilitacion", "Salud mental", "Maternidad", "Dental", "Vision", "Medicina alternativa", "Ambulancia aerea"],
+}
+
+_EXCLUDED_SERVICES = {
+    "Basico": ["Cirugia estetica", "Dental", "Vision", "Salud mental", "Maternidad", "Rehabilitacion", "Medicina alternativa", "Ambulancia aerea"],
+    "Estandar": ["Cirugia estetica", "Dental", "Vision", "Medicina alternativa", "Ambulancia aerea"],
+    "Premium": ["Cirugia estetica", "Medicina alternativa", "Ambulancia aerea"],
+    "Platinum": ["Cirugia estetica"],
+}
+
+_COVERAGE_DETAIL = {
+    "Basico": {"consulta_general": {"copago": 30, "limite_anual_usd": 5000}, "urgencias": {"copago": 40, "limite_anual_usd": 10000}, "laboratorio": {"copago": 35, "limite_anual_usd": 3000}, "hospitalizacion": {"copago": 50, "limite_anual_usd": 15000}},
+    "Estandar": {"consulta_general": {"copago": 20, "limite_anual_usd": 10000}, "consulta_especialista": {"copago": 25, "limite_anual_usd": 8000}, "urgencias": {"copago": 25, "limite_anual_usd": 20000}, "laboratorio": {"copago": 20, "limite_anual_usd": 5000}, "imagenologia": {"copago": 30, "limite_anual_usd": 5000}, "hospitalizacion": {"copago": 30, "limite_anual_usd": 30000}, "cirugia_ambulatoria": {"copago": 35, "limite_anual_usd": 15000}},
+    "Premium": {"consulta_general": {"copago": 10, "limite_anual_usd": 20000}, "consulta_especialista": {"copago": 15, "limite_anual_usd": 15000}, "urgencias": {"copago": 15, "limite_anual_usd": 50000}, "laboratorio": {"copago": 10, "limite_anual_usd": 10000}, "imagenologia": {"copago": 15, "limite_anual_usd": 10000}, "hospitalizacion": {"copago": 15, "limite_anual_usd": 75000}, "cirugia": {"copago": 20, "limite_anual_usd": 50000}, "rehabilitacion": {"copago": 20, "limite_anual_usd": 10000}, "salud_mental": {"copago": 20, "limite_anual_usd": 8000}, "maternidad": {"copago": 15, "limite_anual_usd": 20000}},
+    "Platinum": {"consulta_general": {"copago": 5, "limite_anual_usd": 50000}, "consulta_especialista": {"copago": 10, "limite_anual_usd": 30000}, "urgencias": {"copago": 10, "limite_anual_usd": 100000}, "laboratorio": {"copago": 5, "limite_anual_usd": 25000}, "imagenologia": {"copago": 10, "limite_anual_usd": 20000}, "hospitalizacion": {"copago": 10, "limite_anual_usd": 150000}, "cirugia": {"copago": 10, "limite_anual_usd": 100000}, "rehabilitacion": {"copago": 10, "limite_anual_usd": 25000}, "salud_mental": {"copago": 10, "limite_anual_usd": 20000}, "maternidad": {"copago": 10, "limite_anual_usd": 40000}, "dental": {"copago": 15, "limite_anual_usd": 5000}, "vision": {"copago": 15, "limite_anual_usd": 3000}},
+}
+
+_PREMIUM_RANGES = {
+    "Basico": (45, 120), "Estandar": (120, 280),
+    "Premium": (280, 550), "Platinum": (550, 1200),
+}
+_DEDUCTIBLE_RANGES = {
+    "Basico": (500, 2000), "Estandar": (300, 1000),
+    "Premium": (100, 500), "Platinum": (0, 200),
+}
+_MAX_COVERAGE = {
+    "Basico": (25000, 50000), "Estandar": (50000, 150000),
+    "Premium": (150000, 500000), "Platinum": (500000, 1500000),
+}
+
+
+def generate_insurance_policies(n_policies: int = 500) -> list[dict]:
+    rng = _seed("insurance-policies")
+    base = datetime(2023, 1, 1)
+    rows = []
+    for i in range(n_policies):
+        tier = _pick(rng, _INSURANCE_TIERS, _INSURANCE_TIER_WEIGHTS)
+        status = _pick(rng, _INSURANCE_STATUSES, _INSURANCE_STATUS_WEIGHTS)
+        plan = _pick(rng, _PLAN_TYPES)
+        first = _pick(rng, _FIRST_NAMES)
+        last = _pick(rng, _LAST_NAMES)
+        age = rng.randint(18, 75)
+        start = base + timedelta(days=rng.randint(0, 700))
+        end = start + timedelta(days=365)
+        premium = round(rng.uniform(*_PREMIUM_RANGES[tier]), 2)
+        deductible = round(rng.uniform(*_DEDUCTIBLE_RANGES[tier]), 2)
+        max_cov = round(rng.uniform(*_MAX_COVERAGE[tier]), 2)
+        deps = rng.randint(0, 4) if plan == "Familiar" else 0
+
+        rows.append({
+            "policy_id": f"POL-{10000 + i}",
+            "holder_name": f"{first} {last}",
+            "holder_age": age,
+            "holder_id": f"{rng.randint(10000000, 99999999)}-{rng.randint(0,9)}",
+            "plan_type": plan,
+            "tier": tier,
+            "status": status,
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": end.strftime("%Y-%m-%d"),
+            "monthly_premium_usd": premium,
+            "annual_deductible_usd": deductible,
+            "max_annual_coverage_usd": max_cov,
+            "dependents_count": deps,
+            "covered_services": ", ".join(_COVERED_SERVICES[tier]),
+            "excluded_services": ", ".join(_EXCLUDED_SERVICES[tier]),
+            "exclusions": "Condiciones preexistentes no declaradas, Cirugia estetica, Lesiones autoinfligidas",
+            "coverage_detail_json": _json.dumps(_COVERAGE_DETAIL[tier], ensure_ascii=False),
+        })
+    return rows
+
+
+_CLAIM_CATEGORIES = ["Consulta", "Urgencias", "Hospitalizacion", "Cirugia", "Laboratorio", "Imagenologia", "Maternidad", "Rehabilitacion", "Dental", "Farmacia"]
+_CLAIM_CATEGORY_WEIGHTS = [25, 15, 12, 8, 15, 8, 5, 5, 4, 3]
+
+_DIAGNOSES = [
+    "Infeccion respiratoria aguda", "Fractura de extremidad", "Apendicitis aguda",
+    "Diabetes mellitus tipo 2", "Hipertension arterial", "Dolor abdominal agudo",
+    "Embarazo normal", "Cesarea programada", "Hernia inguinal", "Calculo renal",
+    "Gastritis cronica", "Lumbalgia", "Infeccion urinaria", "Dengue",
+    "Neumonia adquirida en comunidad", "Trauma craneoencefalico leve",
+    "Colecistitis aguda", "Artritis reumatoide", "Anemia ferropenica",
+    "Trastorno de ansiedad generalizada",
+]
+
+_PROVIDERS = [
+    "Hospital Nacional Rosales", "Hospital de Diagnostico", "Clinica Medica Pro-Familia",
+    "Hospital CIMA", "Clinica Asistencial La Divina Providencia", "Centro Medico Escalon",
+    "Hospital de la Mujer", "Clinica Mayo (San Salvador)", "Hospital San Rafael",
+    "Laboratorios Paill", "Centro de Imagenologia Avanzada",
+]
+
+_DOCTORS = [
+    "Dr. Martinez R.", "Dra. Lopez G.", "Dr. Hernandez M.", "Dra. Garcia P.",
+    "Dr. Rodriguez S.", "Dra. Flores T.", "Dr. Ramirez L.", "Dra. Torres V.",
+    "Dr. Gonzalez H.", "Dra. Sanchez K.", "Dr. Cruz D.", "Dra. Morales A.",
+]
+
+_CLAIM_ACTIVITIES = {
+    "approved": [
+        "Reclamo Registrado", "Documentos Verificados", "Cobertura Confirmada",
+        "Evaluacion Medica", "Monto Aprobado", "Pago Procesado", "Reclamo Cerrado",
+    ],
+    "denied": [
+        "Reclamo Registrado", "Documentos Verificados", "Cobertura Verificada",
+        "Reclamo Denegado", "Notificacion al Asegurado",
+    ],
+    "pending": [
+        "Reclamo Registrado", "Documentos Verificados", "Pendiente Evaluacion Medica",
+    ],
+    "appealed": [
+        "Reclamo Registrado", "Documentos Verificados", "Cobertura Verificada",
+        "Reclamo Denegado", "Apelacion Recibida", "Revision por Comite",
+        "Apelacion Aprobada", "Monto Aprobado", "Pago Procesado", "Reclamo Cerrado",
+    ],
+}
+
+_CLAIM_OUTCOME_WEIGHTS = [50, 25, 10, 15]  # approved, denied, pending, appealed
+
+
+def generate_insurance_claims(n_cases: int = 2000) -> list[dict]:
+    rng = _seed("insurance-claims")
+    base = datetime(2023, 6, 1)
+    policies = generate_insurance_policies()
+    rows = []
+    for i in range(n_cases):
+        case_id = f"CLM-{20000 + i}"
+        pol = _pick(rng, policies)
+        category = _pick(rng, _CLAIM_CATEGORIES, _CLAIM_CATEGORY_WEIGHTS)
+        diagnosis = _pick(rng, _DIAGNOSES)
+        provider = _pick(rng, _PROVIDERS)
+        doctor = _pick(rng, _DOCTORS)
+        amount = round(rng.uniform(50, 15000), 2)
+        outcome = _pick(rng, ["approved", "denied", "pending", "appealed"], _CLAIM_OUTCOME_WEIGHTS)
+        path = _CLAIM_ACTIVITIES[outcome]
+
+        t = base + timedelta(days=rng.randint(0, 500))
+        for act in path:
+            t += timedelta(hours=rng.randint(1, 72))
+            rows.append({
+                "case_id": case_id,
+                "policy_id": pol["policy_id"],
+                "activity": act,
+                "timestamp": t.isoformat() + "Z",
+                "resource": _pick(rng, ["Recepcion", "Verificador", "Medico Auditor", "Comite Medico", "Finanzas", "Notificaciones"]),
+                "claim_category": category,
+                "diagnosis": diagnosis,
+                "claimed_amount_usd": amount,
+                "tier": pol["tier"],
+                "provider": provider,
+                "attending_doctor": doctor,
+            })
+    return rows
+
+
+_SUBMISSION_CATEGORIES = ["Cirugia programada", "Estudio diagnostico", "Tratamiento especializado", "Rehabilitacion", "Procedimiento dental", "Maternidad", "Salud mental"]
+_SUBMISSION_CAT_WEIGHTS = [25, 25, 20, 10, 8, 7, 5]
+
+_URGENCY_LEVELS = ["Electiva", "Prioritaria", "Urgente"]
+_URGENCY_WEIGHTS = [50, 35, 15]
+
+_SUBMISSION_STATUSES = ["Pendiente verificacion", "En revision", "Aprobada", "Denegada", "Requiere documentacion adicional"]
+_SUBMISSION_STATUS_WEIGHTS = [35, 20, 20, 15, 10]
+
+_PROCEDURES = {
+    "Cirugia programada": ["Colecistectomia laparoscopica", "Artroscopia de rodilla", "Hernioplastia inguinal", "Cesarea programada", "Septoplastia", "Amigdalectomia"],
+    "Estudio diagnostico": ["Resonancia magnetica cerebral", "Tomografia computarizada abdominal", "Ecocardiograma", "Electromiografia", "PET-CT", "Biopsia de ganglio"],
+    "Tratamiento especializado": ["Quimioterapia ciclo completo", "Dialisis peritoneal", "Terapia biologica", "Radioterapia", "Cateterismo cardiaco"],
+    "Rehabilitacion": ["Fisioterapia post-quirurgica (20 sesiones)", "Rehabilitacion cardiaca", "Terapia ocupacional", "Rehabilitacion pulmonar"],
+    "Procedimiento dental": ["Implante dental unitario", "Endodoncia molar", "Cirugia de tercer molar", "Corona porcelana"],
+    "Maternidad": ["Control prenatal completo", "Parto natural", "Cesarea de emergencia", "Ecografia 4D"],
+    "Salud mental": ["Psicoterapia (12 sesiones)", "Evaluacion psiquiatrica", "Internamiento psiquiatrico", "Terapia de grupo (8 sesiones)"],
+}
+
+
+def generate_insurance_medical_submissions(n_submissions: int = 300) -> list[dict]:
+    rng = _seed("insurance-submissions")
+    base = datetime(2024, 1, 1)
+    policies = generate_insurance_policies()
+    rows = []
+    for i in range(n_submissions):
+        pol = _pick(rng, [p for p in policies if p["status"] == "Vigente"] or policies)
+        category = _pick(rng, _SUBMISSION_CATEGORIES, _SUBMISSION_CAT_WEIGHTS)
+        procedure = _pick(rng, _PROCEDURES[category])
+        urgency = _pick(rng, _URGENCY_LEVELS, _URGENCY_WEIGHTS)
+        status = _pick(rng, _SUBMISSION_STATUSES, _SUBMISSION_STATUS_WEIGHTS)
+        cost = round(rng.uniform(200, 25000), 2)
+        sub_date = base + timedelta(days=rng.randint(0, 300))
+
+        rows.append({
+            "submission_id": f"SUB-{30000 + i}",
+            "policy_id": pol["policy_id"],
+            "patient_name": pol["holder_name"],
+            "category": category,
+            "diagnosis": _pick(rng, _DIAGNOSES),
+            "procedure_description": procedure,
+            "estimated_cost_usd": cost,
+            "provider": _pick(rng, _PROVIDERS),
+            "attending_doctor": _pick(rng, _DOCTORS),
+            "urgency": urgency,
+            "status": status,
+            "submission_date": sub_date.strftime("%Y-%m-%d"),
+            "notes": "" if rng.random() > 0.3 else _pick(rng, [
+                "Paciente con antecedentes de hipertension",
+                "Requiere autorizacion previa del comite medico",
+                "Segunda opinion solicitada",
+                "Documentacion incompleta — falta orden medica",
+                "Procedimiento previamente denegado, reevaluacion solicitada",
+                "Paciente menor de edad, requiere consentimiento del tutor",
+            ]),
+        })
+    return rows

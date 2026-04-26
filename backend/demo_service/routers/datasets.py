@@ -25,6 +25,8 @@ from generators import (
     generate_smart_factory, generate_bpic2020_domestic,
     generate_bpic2020_international, generate_bpic2020_prepaid,
     generate_bpic2020_permits, generate_bpic2020_payment_requests,
+    generate_insurance_policies, generate_insurance_claims,
+    generate_insurance_medical_submissions,
 )
 
 router = APIRouter()
@@ -252,6 +254,41 @@ DATASET_CATALOG: dict[str, dict] = {
         "case_id_field": "case_id",
         "activity_field": "activity",
         "timestamp_field": "timestamp",
+    },
+
+    # ── Insurance ──
+    "insurance-policies": {
+        "name": "Polizas de Seguro Medico",
+        "industry": "Insurance / Healthcare",
+        "description": "500 polizas de seguro medico con 4 niveles de cobertura (Basico, Estandar, Premium, Platinum). "
+                       "Incluye detalles de cobertura, copagos, limites anuales y exclusiones.",
+        "source": "synthetic",
+        "generator": generate_insurance_policies,
+        "case_id_field": "policy_id",
+        "activity_field": "policy_id",
+        "timestamp_field": "start_date",
+    },
+    "insurance-claims": {
+        "name": "Reclamos de Seguros (Event Log)",
+        "industry": "Insurance / Healthcare",
+        "description": "Log de eventos del proceso de reclamos de seguros — 2000 casos, 16K+ eventos. "
+                       "Cubre registro, verificacion, evaluacion medica, aprobacion/denegacion y pago.",
+        "source": "synthetic",
+        "generator": generate_insurance_claims,
+        "case_id_field": "case_id",
+        "activity_field": "activity",
+        "timestamp_field": "timestamp",
+    },
+    "insurance-medical-submissions": {
+        "name": "Solicitudes Medicas Pendientes",
+        "industry": "Insurance / Healthcare",
+        "description": "300 solicitudes de procedimientos medicos pendientes de verificacion de cobertura. "
+                       "Incluye categorias, urgencia, costo estimado y estado de aprobacion.",
+        "source": "synthetic",
+        "generator": generate_insurance_medical_submissions,
+        "case_id_field": "submission_id",
+        "activity_field": "category",
+        "timestamp_field": "submission_date",
     },
 }
 
