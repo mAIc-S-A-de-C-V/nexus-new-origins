@@ -964,9 +964,25 @@ const ConfigPanel: React.FC<{
 }> = ({ comp, objectTypes, allComponents, onChange, onDelete }) => {
   const set = (patch: Partial<AppComponent>) => onChange({ ...comp, ...patch });
   const selectedOt = objectTypes.find((o) => o.id === comp.objectTypeId);
-  const fields = (selectedOt?.properties || [])
+  const declaredFields = (selectedOt?.properties || [])
     .filter((p) => !p.name.endsWith('[]'))
     .map((p) => p.name);
+
+  // Sensor / dynamic-schema OTs frequently have an empty properties list; in
+  // that case, infer fields from a sample of records so the X/Y axis pickers,
+  // groupBy / labelField selectors, etc. can offer something to choose.
+  const sampleRecords = useRecordsForFilter(comp.objectTypeId);
+  const inferredFromRecords = React.useMemo(() => {
+    if (declaredFields.length > 0) return declaredFields;
+    if (!sampleRecords.length) return [];
+    const seen = new Set<string>();
+    for (const r of sampleRecords.slice(0, 50)) {
+      Object.keys(r || {}).forEach((k) => { if (!k.endsWith('[]')) seen.add(k); });
+    }
+    return Array.from(seen);
+  }, [declaredFields, sampleRecords]);
+
+  const fields = declaredFields.length > 0 ? declaredFields : inferredFromRecords;
 
   const Lbl: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     <div style={{ fontSize: 10, fontWeight: 600, color: '#64748B', marginBottom: 4, letterSpacing: '0.04em' }}>
@@ -1200,7 +1216,9 @@ const ConfigPanel: React.FC<{
             </select>
             {selectedOt && (
               <div style={{ marginTop: 4, fontSize: 10, color: '#94A3B8' }}>
-                {selectedOt.properties.length} properties · {selectedOt.properties.filter(p => p.name.endsWith('[]')).length} arrays
+                {selectedOt.properties.length > 0
+                  ? `${selectedOt.properties.length} properties · ${selectedOt.properties.filter(p => p.name.endsWith('[]')).length} arrays`
+                  : `${fields.length} fields inferred from records (schema not declared)`}
               </div>
             )}
           </Row>
