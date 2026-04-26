@@ -699,7 +699,7 @@ TASK: Write JavaScript code (no JSX, no imports, no export) that:
    - fields          — array of field names
    - title           — the widget title string
    - query(opts)     — server-side aggregation. Returns
-                       { rows: [{group, series?, agg_0, …}], loading: bool, error: string|null }.
+                       {{ rows: [{{group, series, agg_0}}], loading: bool, error: string }}.
                        Re-runs whenever opts changes. Hooks-based; call it at
                        the TOP of your code, the SAME number of times every
                        render, NEVER inside if/else.
