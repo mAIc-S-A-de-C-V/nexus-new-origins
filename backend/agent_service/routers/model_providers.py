@@ -209,7 +209,17 @@ async def test_provider(
                     },
                 )
             elif provider == "openai" or provider == "azure_openai":
-                url = base_url or "https://api.openai.com/v1/models"
+                # Treat user-supplied base_url as the API root (the "/v1"-level
+                # URL the OpenAI SDK uses). Append /models for the test probe.
+                # Examples:
+                #   https://router.huggingface.co/v1     -> .../v1/models
+                #   https://api.openai.com/v1            -> .../v1/models
+                #   https://x.openai.azure.com/openai/v1 -> .../openai/v1/models
+                if base_url:
+                    base = base_url.rstrip("/")
+                    url = base if base.endswith("/models") else base + "/models"
+                else:
+                    url = "https://api.openai.com/v1/models"
                 resp = await client.get(
                     url,
                     headers={"Authorization": f"Bearer {api_key}"},
