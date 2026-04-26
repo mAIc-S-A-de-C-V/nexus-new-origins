@@ -452,6 +452,16 @@ All available fields: {json.dumps(properties[:60])}{sample_preview}
 Use the sample data above to understand what fields actually contain values and what they look like.
 Only reference fields that appear in the sample data or the fields list.
 
+CRITICAL — DATA SCALE: this object type may contain millions of rows.
+The dashboard NEVER pulls raw rows for charts or metric cards. Each widget you
+generate is rendered by the frontend as a single SQL-shaped query against the
+server's /aggregate endpoint. Your job is to pick the right groupBy, valueField,
+and time bucket so the server returns at most ~50 numbers per widget. Picking
+the wrong field is fine; picking a field that doesn't exist in the list will
+fail. Picking labelField/valueField that produce 100k unique groups is wrong —
+prefer low-cardinality categorical fields (status, type, category, region) for
+groupBy, and date fields for time-bucketed charts.
+
 Return JSON with this exact structure (no markdown, no extra text):
 {{
   "app_name": "short descriptive name",
@@ -500,9 +510,18 @@ Rules:
 - Always start with one kpi-banner (colSpan 12)
 - Add 2-4 metric-cards based on what makes sense from the user request
 - Add a data-table with columns that are relevant to the user's request
+   - Use "pageSize" (default 50) — data-table is paginated server-side. Never
+     promise it shows "all" records.
 - Add a bar-chart if the request mentions trends, grouping, or comparison
+- For time-series widgets (line-chart, area-chart): set "xField" to a date field
+   AND set "timeBucket" to "day" | "week" | "month" | "quarter" | "year" based on
+   how zoomed-in the user wants. Default to "month" for general overview, "day"
+   for "last 30 days" type asks.
 - Pick columns for the data-table that actually have data in the sample rows
-- For count aggregation, field may be null or omitted"""
+- For count aggregation, field may be null or omitted
+- For groupBy widgets (bar-chart, pie-chart): labelField MUST be a categorical
+   field — status, stage, type, category, source, region. NEVER pick a primary
+   key, an email, a freeform name, or a high-cardinality field."""
 
         result = self._call(prompt)
         return result
@@ -546,6 +565,13 @@ User request: "{description}"
 Object type: "{object_type_name}" (id: {object_type_id})
 Available fields: {json.dumps(properties[:60])}{sample_preview}
 
+CRITICAL — DATA SCALE: this object type may contain millions of rows.
+Charts, metric cards, and data tables are rendered by the frontend as queries
+against /aggregate (for charts/metrics) or paginated /records (for tables).
+The browser NEVER receives raw rows for charts or metric cards. Pick groupBy
+(labelField) on low-cardinality categorical fields. For line/area charts,
+always set xField to a date field AND set timeBucket explicitly.
+
 Return a SINGLE JSON widget object (no markdown, no extra text):
 {{
   "id": "w-auto",
@@ -557,9 +583,11 @@ Return a SINGLE JSON widget object (no markdown, no extra text):
   "aggregation": "count | sum | avg | max | min (metric-card only)",
   "columns": ["f1","f2","f3"] "(data-table only)",
   "maxRows": 50,
-  "labelField": "field (bar-chart only)",
-  "valueField": "field (bar/line-chart only)",
-  "xField": "date field (line-chart only)",
+  "labelField": "field (bar-chart / pie-chart only — categorical, low cardinality)",
+  "valueField": "field (bar/line-chart only — numeric. omit for count mode)",
+  "xField": "date field (line-chart / area-chart only)",
+  "timeBucket": "day | week | month | quarter | year (line/area-chart only — defaults to month)",
+  "pageSize": 50,
   "filters": [
     {{
       "id": "f1",

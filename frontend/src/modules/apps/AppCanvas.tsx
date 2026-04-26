@@ -5,9 +5,18 @@ import { NexusApp, AppComponent, AppFilter, AppEvent } from '../../types/app';
 import { getTenantId } from '../../store/authStore';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 import { colors as tokens, chartPalette } from '../../design-system/tokens';
+import {
+  buildServerFilters,
+  pickLabelField,
+  pickXField,
+  pickValueField,
+  pickTimeBucket,
+  type CrossFilter,
+  type AggregateOptions,
+  type AggregateSpec,
+} from './queryBuilder';
 
 // ── Cross-widget filter context ───────────────────────────────────────────
-interface CrossFilter { field: string; value: string; sourceId: string }
 interface CrossFilterCtx {
   filter: CrossFilter | null;
   setFilter: (f: CrossFilter | null) => void;
@@ -86,21 +95,6 @@ function useRecords(objectTypeId?: string) {
 // ── Server-side aggregation hook ──────────────────────────────────────────
 // Calls POST /object-types/{id}/aggregate. Returns one or more aggregated
 // numbers (and group keys when group_by / time_bucket is set).
-
-interface AggregateSpec {
-  field?: string;
-  method: 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct';
-}
-
-interface AggregateOptions {
-  groupBy?: string;
-  timeBucket?: { field: string; interval: 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year' };
-  aggregations: AggregateSpec[];
-  filters?: Record<string, unknown>;
-  sortBy?: string;
-  sortDir?: 'asc' | 'desc';
-  limit?: number;
-}
 
 interface AggregateRow {
   group: string | null;
@@ -317,78 +311,70 @@ const KpiBanner: React.FC<{ comp: AppComponent; records?: Record<string, unknown
   );
 };
 
-const DataTable: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
-  comp,
-  records,
-}) => {
-  const maxRows = comp.maxRows || 10;
-  const shown = records.slice(0, maxRows);
-  const allCols = records.length > 0 ? Object.keys(records[0]) : [];
-  // Keep configured columns even if names differ from record keys (underscore-insensitive)
+const DataTable: React.FC<{
+  comp: AppComponent;
+  records?: Record<string, unknown>[];
+  serverPage?: { rows: Record<string, unknown>[]; total: number; page: number; pageSize: number; loading: boolean };
+  onPage?: (next: number) => void;
+}> = ({ comp, records, serverPage, onPage }) => {
+  const useServer = !!serverPage;
+  const rows = useServer ? serverPage!.rows : (records || []).slice(0, comp.maxRows || 10);
+  const total = useServer ? serverPage!.total : (records || []).length;
+  const page = useServer ? serverPage!.page : 0;
+  const pageSize = useServer ? serverPage!.pageSize : (comp.maxRows || 10);
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(pageSize, 1)));
+
+  const allCols = rows.length > 0 ? Object.keys(rows[0]) : [];
   const cols = comp.columns?.length
-    ? comp.columns.filter((c) => records.some((r) => resolveRaw(r, c) !== undefined))
+    ? comp.columns.filter((c) => rows.some((r) => resolveRaw(r, c) !== undefined) || allCols.length === 0)
     : allCols.filter((c) => !c.endsWith('[]'));
 
   return (
     <div style={{
-      backgroundColor: '#fff',
-      border: '1px solid #E2E8F0',
-      borderRadius: 8,
-      overflow: 'hidden',
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column',
     }}>
       <div style={{
-        padding: '12px 16px',
-        borderBottom: '1px solid #E2E8F0',
-        fontSize: 13,
-        fontWeight: 600,
-        color: '#0D1117',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
+        padding: '12px 16px', borderBottom: '1px solid #E2E8F0',
+        fontSize: 13, fontWeight: 600, color: '#0D1117',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
         <span>{comp.title}</span>
         <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>
-          {records.length.toLocaleString()} records
+          {total.toLocaleString()} records
+          {useServer && totalPages > 1 ? ` · page ${page + 1} of ${totalPages}` : ''}
         </span>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
+        {useServer && serverPage!.loading && (
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backgroundColor: 'rgba(255,255,255,0.7)', color: '#94A3B8', fontSize: 12, zIndex: 1,
+          }}>Loading…</div>
+        )}
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ backgroundColor: '#F8FAFC', position: 'sticky', top: 0 }}>
               {cols.map((c) => (
                 <th key={c} style={{
-                  textAlign: 'left',
-                  padding: '8px 12px',
-                  color: '#64748B',
-                  fontWeight: 500,
-                  borderBottom: '1px solid #E2E8F0',
-                  whiteSpace: 'nowrap',
-                }}>
-                  {c}
-                </th>
+                  textAlign: 'left', padding: '8px 12px',
+                  color: '#64748B', fontWeight: 500,
+                  borderBottom: '1px solid #E2E8F0', whiteSpace: 'nowrap',
+                }}>{c}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {shown.map((row, i) => (
+            {rows.map((row, i) => (
               <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
                 {cols.map((c) => {
                   const val = resolveRaw(row, c);
                   return (
                     <td key={c} style={{
-                      padding: '7px 12px',
-                      color: '#374151',
-                      maxWidth: 200,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      padding: '7px 12px', color: '#374151', maxWidth: 200,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }}>
-                      {Array.isArray(val)
-                        ? `[${(val as unknown[]).length} items]`
-                        : String(val ?? '')}
+                      {Array.isArray(val) ? `[${(val as unknown[]).length} items]` : String(val ?? '')}
                     </td>
                   );
                 })}
@@ -396,75 +382,110 @@ const DataTable: React.FC<{ comp: AppComponent; records: Record<string, unknown>
             ))}
           </tbody>
         </table>
-        {records.length === 0 && (
+        {rows.length === 0 && !(useServer && serverPage!.loading) && (
           <div style={{ textAlign: 'center', padding: '32px', color: '#94A3B8', fontSize: 12 }}>
-            No records — run a sync first
+            No records {useServer ? '' : '— run a sync first'}
           </div>
         )}
       </div>
+      {useServer && totalPages > 1 && (
+        <div style={{
+          padding: '8px 12px', borderTop: '1px solid #E2E8F0',
+          display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6, fontSize: 11,
+        }}>
+          <button
+            disabled={page === 0 || serverPage!.loading}
+            onClick={() => onPage && onPage(Math.max(0, page - 1))}
+            style={{
+              padding: '4px 10px', border: '1px solid #E2E8F0', borderRadius: 4,
+              background: '#fff', color: page === 0 ? '#CBD5E1' : '#475569',
+              cursor: page === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >Prev</button>
+          <button
+            disabled={page >= totalPages - 1 || serverPage!.loading}
+            onClick={() => onPage && onPage(Math.min(totalPages - 1, page + 1))}
+            style={{
+              padding: '4px 10px', border: '1px solid #E2E8F0', borderRadius: 4,
+              background: '#fff', color: page >= totalPages - 1 ? '#CBD5E1' : '#475569',
+              cursor: page >= totalPages - 1 ? 'not-allowed' : 'pointer',
+            }}
+          >Next</button>
+        </div>
+      )}
     </div>
   );
 };
 
-const BarChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
+const BarChart: React.FC<{
+  comp: AppComponent;
+  records?: Record<string, unknown>[];
+  serverRows?: { group: string; value: number }[];
+  resolvedLabelField?: string;
+}> = ({
   comp,
   records,
+  serverRows,
+  resolvedLabelField,
 }) => {
   const { filter: crossFilter, setFilter: setCrossFilter } = useContext(CrossFilterContext);
-  // Auto-detect the best label field: prefer the configured one, but fall back to
-  // the first field that produces more than 1 distinct non-numeric value
-  const candidateLabelField = comp.labelField || comp.columns?.[0] || '';
-  const allFields = records.length > 0 ? Object.keys(records[0]).filter((k) => !k.endsWith('[]')) : [];
 
-  const labelField = (() => {
-    if (candidateLabelField) {
-      // Check if this field produces meaningful labels (not all "Unknown")
-      const nonEmpty = records.filter((r) => r[candidateLabelField] != null && r[candidateLabelField] !== '').length;
-      if (nonEmpty > 0) return candidateLabelField;
-    }
-    // Fall back to first field with >1 distinct string value
-    for (const f of allFields) {
-      const vals = new Set(records.map((r) => String(r[f] ?? '')).filter(Boolean));
-      if (vals.size > 1 && vals.size <= records.length * 0.8) return f;
-    }
-    return allFields[0] || 'name';
-  })();
+  // ── Server-side path: trust the precomputed rows ──
+  let labelField: string;
+  let entries: [string, number][];
 
-  // Determine if valueField should be used for summing or if we should just count.
-  // We use count mode if:
-  //  - no valueField configured
-  //  - valueField === labelField (mistake: user set the same field for both)
-  //  - valueField values are mostly non-numeric or look like ID numbers (avg > 100k)
-  const rawValueField = comp.valueField || comp.field || '';
-  const useCountMode = (() => {
-    if (!rawValueField || rawValueField === labelField) return true;
-    if (!records.length) return true;
-    const nums = records
-      .map((r) => parseFloat(String(r[rawValueField] ?? '')))
-      .filter((n) => !isNaN(n));
-    if (nums.length < records.length * 0.5) return true; // mostly non-numeric → count
-    const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-    if (avg > 100_000) return true; // looks like ID numbers → count
-    return false;
-  })();
-  const valueField = useCountMode ? '' : rawValueField;
+  if (serverRows) {
+    labelField = resolvedLabelField || comp.labelField || comp.columns?.[0] || '';
+    entries = serverRows
+      .map((r) => [r.group ?? '(empty)', r.value] as [string, number])
+      .slice(0, 15);
+  } else {
+    const recs = records || [];
+    const candidateLabelField = comp.labelField || comp.columns?.[0] || '';
+    const allFields = recs.length > 0 ? Object.keys(recs[0]).filter((k) => !k.endsWith('[]')) : [];
 
-  // Build bar data: group by labelField
-  const grouped: Record<string, number> = {};
-  for (const r of records) {
-    const rawLabel = r[labelField];
-    const label = (rawLabel != null && rawLabel !== '' ? String(rawLabel) : '(empty)').slice(0, 40);
-    if (valueField) {
-      const n = parseFloat(String(r[valueField] ?? 0));
-      grouped[label] = (grouped[label] || 0) + (isNaN(n) ? 0 : n);
-    } else {
-      grouped[label] = (grouped[label] || 0) + 1;
+    labelField = (() => {
+      if (candidateLabelField) {
+        const nonEmpty = recs.filter((r) => r[candidateLabelField] != null && r[candidateLabelField] !== '').length;
+        if (nonEmpty > 0) return candidateLabelField;
+      }
+      for (const f of allFields) {
+        const vals = new Set(recs.map((r) => String(r[f] ?? '')).filter(Boolean));
+        if (vals.size > 1 && vals.size <= recs.length * 0.8) return f;
+      }
+      return allFields[0] || 'name';
+    })();
+
+    const rawValueField = comp.valueField || comp.field || '';
+    const useCountMode = (() => {
+      if (!rawValueField || rawValueField === labelField) return true;
+      if (!recs.length) return true;
+      const nums = recs
+        .map((r) => parseFloat(String(r[rawValueField] ?? '')))
+        .filter((n) => !isNaN(n));
+      if (nums.length < recs.length * 0.5) return true;
+      const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+      if (avg > 100_000) return true;
+      return false;
+    })();
+    const valueField = useCountMode ? '' : rawValueField;
+
+    const grouped: Record<string, number> = {};
+    for (const r of recs) {
+      const rawLabel = r[labelField];
+      const label = (rawLabel != null && rawLabel !== '' ? String(rawLabel) : '(empty)').slice(0, 40);
+      if (valueField) {
+        const n = parseFloat(String(r[valueField] ?? 0));
+        grouped[label] = (grouped[label] || 0) + (isNaN(n) ? 0 : n);
+      } else {
+        grouped[label] = (grouped[label] || 0) + 1;
+      }
     }
+
+    entries = Object.entries(grouped)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15);
   }
-
-  const entries = Object.entries(grouped)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 15);
 
   const maxVal = Math.max(...entries.map(([, v]) => v), 1);
   const barHeight = 24;
@@ -550,75 +571,82 @@ const BarChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[
   );
 };
 
-const LineChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
+const LineChart: React.FC<{
+  comp: AppComponent;
+  records?: Record<string, unknown>[];
+  serverPoints?: { x: string; y: number }[];
+  resolvedXField?: string;
+}> = ({
   comp,
   records,
+  serverPoints,
+  resolvedXField,
 }) => {
-  const allFields = records.length > 0 ? Object.keys(records[0]) : [];
+  const recs = records || [];
+  const allFields = recs.length > 0 ? Object.keys(recs[0]) : [];
 
-  // Auto-resolve xField: if configured field doesn't exist, find the first date-like field
   const resolveField = (configured: string, fallbackTest: (f: string) => boolean) => {
     if (configured && allFields.includes(configured)) return configured;
-    // try fuzzy: strip underscores and compare lowercased
     const norm = (s: string) => s.toLowerCase().replace(/_/g, '');
     const fuzzy = allFields.find((f) => norm(f) === norm(configured));
     if (fuzzy) return fuzzy;
     return allFields.find(fallbackTest) || '';
   };
 
-  const xField = resolveField(
+  const xField = resolvedXField || resolveField(
     comp.xField || comp.labelField || '',
     (f) => /date|time|_at|modified|created/i.test(f),
   );
 
-  const rawYField = comp.valueField || comp.field || '';
-  // Use count mode if no yField or if it's the same as xField or looks like IDs
-  const useCountMode = (() => {
-    if (!rawYField || rawYField === xField) return true;
-    const resolved = resolveField(rawYField, () => false);
-    if (!resolved) return true;
-    const nums = records.map((r) => parseFloat(String(r[resolved] ?? ''))).filter((n) => !isNaN(n));
-    if (nums.length < records.length * 0.3) return true;
-    if (nums.reduce((a, b) => a + b, 0) / Math.max(nums.length, 1) > 100_000) return true;
-    return false;
-  })();
-  const yField = useCountMode ? '' : resolveField(rawYField, () => false);
+  let points: { x: string; y: number }[];
+  if (serverPoints) {
+    points = serverPoints.slice(-20);
+  } else {
+    const rawYField = comp.valueField || comp.field || '';
+    const useCountMode = (() => {
+      if (!rawYField || rawYField === xField) return true;
+      const resolved = resolveField(rawYField, () => false);
+      if (!resolved) return true;
+      const nums = recs.map((r) => parseFloat(String(r[resolved] ?? ''))).filter((n) => !isNaN(n));
+      if (nums.length < recs.length * 0.3) return true;
+      if (nums.reduce((a, b) => a + b, 0) / Math.max(nums.length, 1) > 100_000) return true;
+      return false;
+    })();
+    const yField = useCountMode ? '' : resolveField(rawYField, () => false);
 
-  // Build points: if count mode, group by week (first 7 chars of date = YYYY-Www or YYYY-MM-D)
-  const points: { x: string; y: number }[] = (() => {
-    if (!xField) return [];
-    if (useCountMode) {
-      // Group by date prefix (YYYY-MM-DD → use YYYY-WNN week bucket)
-      const weekly: Record<string, number> = {};
-      for (const r of records) {
-        const rawVal = resolveRaw(r, xField);
-        const { date: parsedDate } = coerce(rawVal);
-        const raw = parsedDate ? parsedDate.toISOString().slice(0, 10) : String(rawVal ?? '').slice(0, 10);
-        if (!raw || raw === 'undefined') continue;
-        // bucket to week start (Mon)
-        const d = new Date(raw);
-        if (isNaN(d.getTime())) continue;
-        const day = d.getDay(); // 0=Sun
-        const diffToMon = (day === 0 ? -6 : 1 - day);
-        const mon = new Date(d);
-        mon.setDate(d.getDate() + diffToMon);
-        const key = mon.toISOString().slice(0, 10);
-        weekly[key] = (weekly[key] || 0) + 1;
+    points = (() => {
+      if (!xField) return [];
+      if (useCountMode) {
+        const weekly: Record<string, number> = {};
+        for (const r of recs) {
+          const rawVal = resolveRaw(r, xField);
+          const { date: parsedDate } = coerce(rawVal);
+          const raw = parsedDate ? parsedDate.toISOString().slice(0, 10) : String(rawVal ?? '').slice(0, 10);
+          if (!raw || raw === 'undefined') continue;
+          const d = new Date(raw);
+          if (isNaN(d.getTime())) continue;
+          const day = d.getDay();
+          const diffToMon = (day === 0 ? -6 : 1 - day);
+          const mon = new Date(d);
+          mon.setDate(d.getDate() + diffToMon);
+          const key = mon.toISOString().slice(0, 10);
+          weekly[key] = (weekly[key] || 0) + 1;
+        }
+        return Object.entries(weekly)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .slice(-20)
+          .map(([x, y]) => ({ x, y }));
       }
-      return Object.entries(weekly)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .slice(-20)
-        .map(([x, y]) => ({ x, y }));
-    }
-    return records
-      .filter((r) => r[xField] !== undefined && r[yField] !== undefined)
-      .sort((a, b) => String(a[xField]).localeCompare(String(b[xField])))
-      .slice(0, 20)
-      .map((r) => ({
-        x: String(r[xField] ?? '').slice(0, 10),
-        y: parseFloat(String(r[yField] ?? 0)) || 0,
-      }));
-  })();
+      return recs
+        .filter((r) => r[xField] !== undefined && r[yField] !== undefined)
+        .sort((a, b) => String(a[xField]).localeCompare(String(b[xField])))
+        .slice(0, 20)
+        .map((r) => ({
+          x: String(r[xField] ?? '').slice(0, 10),
+          y: parseFloat(String(r[yField] ?? 0)) || 0,
+        }));
+    })();
+  }
 
   const maxY = Math.max(...points.map((p) => p.y), 1);
   const W = 400, H = 140, pad = { top: 10, right: 10, bottom: 24, left: 40 };
@@ -680,26 +708,33 @@ const LineChart: React.FC<{ comp: AppComponent; records: Record<string, unknown>
 };
 
 // ── Pie / Donut Chart ────────────────────────────────────────────────────
-const PieChartWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
-  comp, records,
-}) => {
+const PieChartWidget: React.FC<{
+  comp: AppComponent;
+  records?: Record<string, unknown>[];
+  serverRows?: { group: string; value: number }[];
+  resolvedLabelField?: string;
+}> = ({ comp, records, serverRows, resolvedLabelField }) => {
   const { filter: crossFilter, setFilter: setCrossFilter } = useContext(CrossFilterContext);
-  const labelField = comp.labelField || (records.length ? Object.keys(records[0])[0] : 'name');
-  const valueField = comp.valueField || '';
+  const recs = records || [];
+  const labelField = resolvedLabelField || comp.labelField || (recs.length ? Object.keys(recs[0])[0] : 'name');
 
-  // Group data
-  const grouped: Record<string, number> = {};
-  for (const r of records) {
-    const label = (r[labelField] != null && r[labelField] !== '' ? String(r[labelField]) : '(empty)').slice(0, 30);
-    if (valueField) {
-      const n = parseFloat(String(r[valueField] ?? 0));
-      grouped[label] = (grouped[label] || 0) + (isNaN(n) ? 0 : n);
-    } else {
-      grouped[label] = (grouped[label] || 0) + 1;
+  let entries: [string, number][];
+  if (serverRows) {
+    entries = serverRows.map((r) => [(r.group ?? '(empty)').slice(0, 30), r.value] as [string, number]).slice(0, 12);
+  } else {
+    const valueField = comp.valueField || '';
+    const grouped: Record<string, number> = {};
+    for (const r of recs) {
+      const label = (r[labelField] != null && r[labelField] !== '' ? String(r[labelField]) : '(empty)').slice(0, 30);
+      if (valueField) {
+        const n = parseFloat(String(r[valueField] ?? 0));
+        grouped[label] = (grouped[label] || 0) + (isNaN(n) ? 0 : n);
+      } else {
+        grouped[label] = (grouped[label] || 0) + 1;
+      }
     }
+    entries = Object.entries(grouped).sort((a, b) => b[1] - a[1]).slice(0, 12);
   }
-
-  const entries = Object.entries(grouped).sort((a, b) => b[1] - a[1]).slice(0, 12);
   const total = entries.reduce((s, [, v]) => s + v, 0);
   const cx = 100, cy = 100, r = 80, ir = 45; // outer and inner (donut) radius
 
@@ -764,40 +799,54 @@ const PieChartWidget: React.FC<{ comp: AppComponent; records: Record<string, unk
 };
 
 // ── Area Chart ───────────────────────────────────────────────────────────
-const AreaChartWidget: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
-  comp, records,
-}) => {
-  const allFields = records.length > 0 ? Object.keys(records[0]) : [];
+const AreaChartWidget: React.FC<{
+  comp: AppComponent;
+  records?: Record<string, unknown>[];
+  serverPoints?: { x: string; y: number }[];
+}> = ({ comp, records, serverPoints }) => {
+  const recs = records || [];
+  const allFields = recs.length > 0 ? Object.keys(recs[0]) : [];
   const xField = comp.xField || allFields.find(f => /date|time|created|updated/i.test(f)) || allFields[0] || '';
   const valueField = comp.valueField || allFields.find(f => /count|amount|value|total|price|revenue/i.test(f)) || '';
   const groupField = comp.labelField || '';
 
-  // Parse and sort by date
-  const parseDate = (v: unknown) => {
-    if (!v) return 0;
-    const s = String(v);
-    const d = new Date(s);
-    if (!isNaN(d.getTime())) return d.getTime();
-    const n = Number(s);
-    if (!isNaN(n) && n > 1e9 && n < 1e13) return n * 1000;
-    if (!isNaN(n) && n >= 1e13) return n;
-    return 0;
-  };
+  let buckets: Record<string, Record<string, number>>;
 
-  // Bucket by month
-  const buckets: Record<string, Record<string, number>> = {};
-  for (const r of records) {
-    const ts = parseDate(r[xField]);
-    if (!ts) continue;
-    const d = new Date(ts);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    if (!buckets[key]) buckets[key] = {};
-    const series = groupField && r[groupField] ? String(r[groupField]) : 'value';
-    if (valueField) {
-      const n = parseFloat(String(r[valueField] ?? 0));
-      buckets[key][series] = (buckets[key][series] || 0) + (isNaN(n) ? 0 : n);
-    } else {
-      buckets[key][series] = (buckets[key][series] || 0) + 1;
+  if (serverPoints) {
+    // Server returned a single time series (no multi-series support yet).
+    buckets = {};
+    for (const p of serverPoints) {
+      const key = (p.x || '').slice(0, 7); // YYYY-MM
+      if (!key) continue;
+      if (!buckets[key]) buckets[key] = {};
+      buckets[key]['value'] = (buckets[key]['value'] || 0) + p.y;
+    }
+  } else {
+    const parseDate = (v: unknown) => {
+      if (!v) return 0;
+      const s = String(v);
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) return d.getTime();
+      const n = Number(s);
+      if (!isNaN(n) && n > 1e9 && n < 1e13) return n * 1000;
+      if (!isNaN(n) && n >= 1e13) return n;
+      return 0;
+    };
+
+    buckets = {};
+    for (const r of recs) {
+      const ts = parseDate(r[xField]);
+      if (!ts) continue;
+      const d = new Date(ts);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (!buckets[key]) buckets[key] = {};
+      const series = groupField && r[groupField] ? String(r[groupField]) : 'value';
+      if (valueField) {
+        const n = parseFloat(String(r[valueField] ?? 0));
+        buckets[key][series] = (buckets[key][series] || 0) + (isNaN(n) ? 0 : n);
+      } else {
+        buckets[key][series] = (buckets[key][series] || 0) + 1;
+      }
     }
   }
 
@@ -991,15 +1040,18 @@ const DatePickerWidget: React.FC<{ comp: AppComponent; records: Record<string, u
   );
 };
 
-const FilterBar: React.FC<{ comp: AppComponent; records: Record<string, unknown>[] }> = ({
-  comp,
-  records,
-}) => {
+const FilterBar: React.FC<{
+  comp: AppComponent;
+  records?: Record<string, unknown>[];
+  serverValues?: string[];
+}> = ({ comp, records, serverValues }) => {
   const [search, setSearch] = React.useState('');
   const filterField = comp.filterField || comp.columns?.[0] || '';
-  const uniqueValues = Array.from(
-    new Set(records.map((r) => String(r[filterField] ?? '')).filter(Boolean))
-  ).slice(0, 20);
+  const uniqueValues = serverValues
+    ? serverValues.slice(0, 20)
+    : Array.from(
+        new Set((records || []).map((r) => String(r[filterField] ?? '')).filter(Boolean))
+      ).slice(0, 20);
 
   return (
     <div style={{
@@ -1486,22 +1538,19 @@ const DropdownFilterWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   const { setVariable, getVariable } = useAppVariables();
   const varId = comp.variableId || '';
   const currentValue = varId ? getVariable(varId) : '';
-  const { records } = useRecords(comp.objectTypeId);
 
-  // Static options from config or distinct values from records
-  const opts: string[] = comp.options && comp.options.length > 0
-    ? comp.options
-    : (() => {
-        const field = comp.filterField || comp.labelField || '';
-        if (!field || !records.length) return [];
-        const seen = new Set<string>();
-        for (const r of records) {
-          const v = String(r[field] ?? '');
-          if (v) seen.add(v);
-          if (seen.size >= 100) break;
-        }
-        return Array.from(seen).sort();
-      })();
+  // Static options from config, OR distinct values fetched from server (group_by + count).
+  // We never paginate the full record set just to build a dropdown.
+  const dynamicField = comp.filterField || comp.labelField || '';
+  const useStatic = (comp.options && comp.options.length > 0) || !comp.objectTypeId || !dynamicField;
+  const aggregateOpts: AggregateOptions | null = useStatic
+    ? null
+    : { groupBy: dynamicField, aggregations: [{ method: 'count' }], sortBy: 'agg_0', sortDir: 'desc', limit: 200 };
+  const { rows: distinctRows } = useAggregate(useStatic ? undefined : comp.objectTypeId, aggregateOpts);
+
+  const opts: string[] = useStatic
+    ? (comp.options || [])
+    : distinctRows.map((r) => String(r.group ?? '')).filter(Boolean).sort();
 
   return (
     <div style={{
@@ -1891,42 +1940,16 @@ function useEventBus(events: AppEvent[] | undefined) {
 
 // ── Component wrapper with per-type data loading ───────────────────────────
 
-// Build the JSON filter dict the aggregate endpoint expects, combining the
-// widget's own filters with the active cross-filter (if any, and we're not the
-// widget that emitted it).
-function buildServerFilters(
-  filters: AppFilter[] | undefined,
-  crossFilter: CrossFilter | null,
-  ownId: string,
-): Record<string, unknown> | undefined {
-  const out: Record<string, unknown> = {};
-  for (const f of filters || []) {
-    if (!f.field) continue;
-    const isUnaryOp = f.operator === 'is_empty' || f.operator === 'is_not_empty';
-    if (!isUnaryOp && (f.value == null || f.value === '')) continue;
-    switch (f.operator) {
-      case 'eq': out[f.field] = f.value; break;
-      case 'neq': out[f.field] = { $neq: f.value }; break;
-      case 'gt': out[f.field] = { $gt: parseFloat(f.value) }; break;
-      case 'gte': out[f.field] = { $gte: parseFloat(f.value) }; break;
-      case 'lt': out[f.field] = { $lt: parseFloat(f.value) }; break;
-      case 'lte': out[f.field] = { $lte: parseFloat(f.value) }; break;
-      case 'after': out[f.field] = { $gte: f.value }; break;
-      case 'before': out[f.field] = { $lte: f.value }; break;
-      case 'contains': out[f.field] = { $contains: f.value }; break;
-      case 'is_empty': out[f.field] = { $is_null: true }; break;
-      case 'is_not_empty': out[f.field] = { $is_not_null: true }; break;
-      default: break;
-    }
-  }
-  if (crossFilter && crossFilter.sourceId !== ownId) {
-    out[crossFilter.field] = crossFilter.value;
-  }
-  return Object.keys(out).length ? out : undefined;
-}
+// Widgets that can be served by /aggregate or paginated /records — they should
+// never paginate the full record set down. The contract: no client-side
+// computation over raw rows; the browser only ever sees query results.
+const SERVER_AGG_TYPES = new Set([
+  'metric-card', 'kpi-banner', 'stat-card',
+  'bar-chart', 'pie-chart', 'line-chart', 'area-chart',
+  'filter-bar',
+]);
 
-// Aggregate-only widgets that can short-circuit the full-records fetch.
-const SERVER_AGG_TYPES = new Set(['metric-card', 'kpi-banner', 'stat-card']);
+const SERVER_PAGINATED_TYPES = new Set(['data-table']);
 
 const ServerAggMetricCard: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const { rows, loading } = useAggregate(comp.objectTypeId, {
@@ -2000,16 +2023,179 @@ const LoadingTile: React.FC = () => (
   </div>
 );
 
+// Server-side BarChart: groupBy + sum/count, returns up to 50 groups.
+const ServerAggBarChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const labelField = pickLabelField(comp);
+  const valueField = pickValueField(comp);
+  const method = valueField ? 'sum' : 'count';
+  const { rows, loading } = useAggregate(comp.objectTypeId, {
+    groupBy: labelField,
+    aggregations: [{ field: valueField, method }],
+    filters: serverFilters,
+    sortBy: 'agg_0',
+    sortDir: 'desc',
+    limit: 50,
+  });
+  if (loading) return <LoadingTile />;
+  const serverRows = rows.map((r) => ({
+    group: String(r.group ?? '(empty)'),
+    value: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
+  }));
+  return <BarChart comp={comp} serverRows={serverRows} resolvedLabelField={labelField} />;
+};
+
+// Server-side PieChart: same shape as BarChart, smaller slice limit.
+const ServerAggPieChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const labelField = pickLabelField(comp);
+  const valueField = pickValueField(comp);
+  const method = valueField ? 'sum' : 'count';
+  const { rows, loading } = useAggregate(comp.objectTypeId, {
+    groupBy: labelField,
+    aggregations: [{ field: valueField, method }],
+    filters: serverFilters,
+    sortBy: 'agg_0',
+    sortDir: 'desc',
+    limit: 30,
+  });
+  if (loading) return <LoadingTile />;
+  const serverRows = rows.map((r) => ({
+    group: String(r.group ?? '(empty)'),
+    value: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
+  }));
+  return <PieChartWidget comp={comp} serverRows={serverRows} resolvedLabelField={labelField} />;
+};
+
+// Server-side LineChart: time-bucketed sum/count of valueField over xField.
+const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const xField = pickXField(comp);
+  const valueField = pickValueField(comp);
+  const method = valueField ? 'sum' : 'count';
+  const interval = pickTimeBucket(comp);
+  const { rows, loading } = useAggregate(comp.objectTypeId, {
+    timeBucket: { field: xField, interval },
+    aggregations: [{ field: valueField, method }],
+    filters: serverFilters,
+    sortBy: 'group',
+    sortDir: 'asc',
+    limit: 200,
+  });
+  if (loading) return <LoadingTile />;
+  const serverPoints = rows
+    .filter((r) => r.group != null)
+    .map((r) => ({
+      x: String(r.group).slice(0, 10),
+      y: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
+    }));
+  return <LineChart comp={comp} serverPoints={serverPoints} resolvedXField={xField} />;
+};
+
+const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const xField = pickXField(comp);
+  const valueField = pickValueField(comp);
+  const method = valueField ? 'sum' : 'count';
+  const interval = pickTimeBucket(comp);
+  const { rows, loading } = useAggregate(comp.objectTypeId, {
+    timeBucket: { field: xField, interval },
+    aggregations: [{ field: valueField, method }],
+    filters: serverFilters,
+    sortBy: 'group',
+    sortDir: 'asc',
+    limit: 200,
+  });
+  if (loading) return <LoadingTile />;
+  const serverPoints = rows
+    .filter((r) => r.group != null)
+    .map((r) => ({
+      x: String(r.group).slice(0, 10),
+      y: typeof r.agg_0 === 'number' ? r.agg_0 : 0,
+    }));
+  return <AreaChartWidget comp={comp} serverPoints={serverPoints} />;
+};
+
+const ServerAggFilterBar: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const filterField = comp.filterField || comp.columns?.[0] || '';
+  const opts: AggregateOptions | null = filterField
+    ? { groupBy: filterField, aggregations: [{ method: 'count' }], sortBy: 'agg_0', sortDir: 'desc', filters: serverFilters, limit: 50 }
+    : null;
+  const { rows } = useAggregate(filterField ? comp.objectTypeId : undefined, opts);
+  const values = rows.map((r) => String(r.group ?? '')).filter(Boolean);
+  return <FilterBar comp={comp} serverValues={values} />;
+};
+
+// Hook: paginated server-side records fetch — for data-table (one page at a time).
+function useRecordsPage(
+  objectTypeId: string | undefined,
+  filters: Record<string, unknown> | undefined,
+  page: number,
+  pageSize: number,
+) {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const filtersKey = JSON.stringify(filters ?? null);
+
+  useEffect(() => {
+    if (!objectTypeId) { setRows([]); setTotal(0); return; }
+    let cancelled = false;
+    setLoading(true);
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String(page * pageSize) });
+    if (filters) params.set('filter', JSON.stringify(filters));
+    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/records?${params}`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    })
+      .then((r) => r.ok ? r.json() : { records: [], total: 0 })
+      .then((d) => {
+        if (!cancelled) {
+          setRows(d.records || []);
+          setTotal(d.total ?? 0);
+        }
+      })
+      .catch(() => { if (!cancelled) { setRows([]); setTotal(0); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objectTypeId, filtersKey, page, pageSize]);
+
+  return { rows, total, loading };
+}
+
+const ServerPaginatedDataTable: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const [page, setPage] = useState(0);
+  const pageSize = comp.pageSize || comp.maxRows || 50;
+  const { rows, total, loading } = useRecordsPage(comp.objectTypeId, serverFilters, page, pageSize);
+  return (
+    <DataTable
+      comp={comp}
+      serverPage={{ rows, total, page, pageSize, loading }}
+      onPage={setPage}
+    />
+  );
+};
+
 const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, events, allComponents }) => {
   const { filter: crossFilter } = useContext(CrossFilterContext);
 
-  // For pure-aggregate widgets, skip the full pagination — fetch only the
-  // aggregated values from the server. Eliminates the per-widget 100k pull.
+  // Aggregate-friendly widgets short-circuit the full record pagination —
+  // only the rolled-up numbers come back from the server. This is the only
+  // way the dashboard scales to 100M+ rows: the browser never sees raw data.
   if (comp.objectTypeId && SERVER_AGG_TYPES.has(comp.type)) {
     const serverFilters = buildServerFilters(comp.filters, crossFilter, comp.id);
-    if (comp.type === 'metric-card') return <ServerAggMetricCard comp={comp} serverFilters={serverFilters} />;
-    if (comp.type === 'kpi-banner') return <ServerAggKpiBanner comp={comp} serverFilters={serverFilters} />;
-    if (comp.type === 'stat-card') return <ServerAggStatCard comp={comp} serverFilters={serverFilters} />;
+    switch (comp.type) {
+      case 'metric-card': return <ServerAggMetricCard comp={comp} serverFilters={serverFilters} />;
+      case 'kpi-banner': return <ServerAggKpiBanner comp={comp} serverFilters={serverFilters} />;
+      case 'stat-card': return <ServerAggStatCard comp={comp} serverFilters={serverFilters} />;
+      case 'bar-chart': return <ServerAggBarChart comp={comp} serverFilters={serverFilters} />;
+      case 'pie-chart': return <ServerAggPieChart comp={comp} serverFilters={serverFilters} />;
+      case 'line-chart': return <ServerAggLineChart comp={comp} serverFilters={serverFilters} />;
+      case 'area-chart': return <ServerAggAreaChart comp={comp} serverFilters={serverFilters} />;
+      case 'filter-bar': return <ServerAggFilterBar comp={comp} serverFilters={serverFilters} />;
+    }
+  }
+
+  // data-table: server-side pagination, never the full table.
+  if (comp.objectTypeId && SERVER_PAGINATED_TYPES.has(comp.type)) {
+    const serverFilters = buildServerFilters(comp.filters, crossFilter, comp.id);
+    return <ServerPaginatedDataTable comp={comp} serverFilters={serverFilters} />;
   }
 
   return <ComponentRendererRaw comp={comp} events={events} allComponents={allComponents} />;

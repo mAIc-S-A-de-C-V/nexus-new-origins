@@ -72,6 +72,10 @@ export interface AppComponent {
   labelField?: string;
   valueField?: string;
   xField?: string; // line-chart x-axis (date/time field)
+  // Time bucket for line/area charts. If unset, defaults to 'month' (or 'week' in count mode).
+  timeBucket?: 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
+  // Server-side pagination page size for data-table. Default 50.
+  pageSize?: number;
   // map
   latField?: string;
   lngField?: string;

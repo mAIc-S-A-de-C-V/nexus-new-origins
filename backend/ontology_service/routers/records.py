@@ -250,45 +250,10 @@ class AggregateRequest(BaseModel):
     limit: int = 200
 
 
-@router.post("/{ot_id}/aggregate")
-async def aggregate_records(
-    ot_id: str,
-    body: AggregateRequest,
-    x_tenant_id: Optional[str] = Header(None),
-    db: AsyncSession = Depends(get_session),
-    user: AuthUser = Depends(require_auth),
-):
+def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> tuple[str, dict[str, Any]]:
+    """Pure SQL builder for /aggregate. Returns (sql_string, bind_params).
+    Raises HTTPException on validation errors. Kept side-effect-free for testability.
     """
-    Server-side aggregation over object records.
-
-    Body:
-      {
-        "filters": "{\"status\": \"active\"}",      // optional, same syntax as GET /records
-        "group_by": "department",                    // optional
-        "time_bucket": {                             // optional, mutually exclusive with group_by
-          "field": "created_at",
-          "interval": "day"                          // hour | day | week | month | quarter | year
-        },
-        "aggregations": [
-          {"method": "count"},
-          {"field": "amount", "method": "sum"}
-        ],
-        "sort_by": "agg_0",                          // "agg_0".."agg_N" or "group"
-        "sort_dir": "desc",
-        "limit": 200
-      }
-
-    Response:
-      {
-        "rows": [
-          {"group": "Sales", "agg_0": 1234, "agg_1": 56789.5},
-          ...
-        ],
-        "total_groups": 12
-      }
-    """
-    tenant_id = x_tenant_id or "tenant-001"
-
     if body.group_by and body.time_bucket:
         raise HTTPException(status_code=400, detail="Specify either group_by or time_bucket, not both.")
 
@@ -298,7 +263,6 @@ async def aggregate_records(
     if body.time_bucket and body.time_bucket.interval not in _BUCKETS:
         raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(_BUCKETS)}")
 
-    # Validate aggregations
     for agg in body.aggregations:
         if agg.method not in _AGG_METHODS:
             raise HTTPException(status_code=400, detail=f"Unknown aggregation method: {agg.method}")
@@ -307,18 +271,16 @@ async def aggregate_records(
         if agg.field:
             _safe_field(agg.field)
 
-    # Build SELECT projections
     select_parts: list[str] = []
     bind_params: dict[str, Any] = {"tid": tenant_id, "otid": ot_id}
 
     if body.group_by:
         gb = _safe_field(body.group_by)
         select_parts.append(f"data->>'{gb}' AS grp")
-        group_clause = f"data->>'{gb}'"
+        group_clause: Optional[str] = f"data->>'{gb}'"
     elif body.time_bucket:
         tb_field = _safe_field(body.time_bucket.field)
         interval = body.time_bucket.interval
-        # Cast JSONB string to timestamptz, then truncate to bucket
         select_parts.append(
             f"to_char(date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz), 'YYYY-MM-DD\"T\"HH24:MI:SS') AS grp"
         )
@@ -336,15 +298,12 @@ async def aggregate_records(
             select_parts.append(f"COUNT(DISTINCT data->>'{f}') AS {alias}")
         else:
             f = _safe_field(agg.field)  # type: ignore[arg-type]
-            # NULLIF empty strings, fail-safe cast to numeric
             value_expr = f"NULLIF(data->>'{f}', '')::numeric"
             sql_fn = agg.method.upper()
             select_parts.append(f"{sql_fn}({value_expr}) AS {alias}")
 
-    # WHERE clause
     where_parts = ["tenant_id = :tid", "object_type_id = :otid"]
     if body.filters:
-        # Reuse the JSONB filter parser; bind params get merged below
         try:
             parsed = json.loads(body.filters) if body.filters else {}
         except (json.JSONDecodeError, TypeError):
@@ -388,7 +347,6 @@ async def aggregate_records(
 
     where_sql = " AND ".join(where_parts)
 
-    # ORDER BY
     order_sql = ""
     if body.sort_by:
         sb = body.sort_by
@@ -402,7 +360,6 @@ async def aggregate_records(
     elif group_clause:
         order_sql = "ORDER BY agg_0 DESC NULLS LAST"
 
-    # LIMIT
     safe_limit = max(1, min(int(body.limit or 200), 5000))
 
     if group_clause:
@@ -420,6 +377,50 @@ async def aggregate_records(
             f"FROM object_records "
             f"WHERE {where_sql}"
         )
+
+    return sql, bind_params
+
+
+@router.post("/{ot_id}/aggregate")
+async def aggregate_records(
+    ot_id: str,
+    body: AggregateRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """
+    Server-side aggregation over object records.
+
+    Body:
+      {
+        "filters": "{\"status\": \"active\"}",      // optional, same syntax as GET /records
+        "group_by": "department",                    // optional
+        "time_bucket": {                             // optional, mutually exclusive with group_by
+          "field": "created_at",
+          "interval": "day"                          // hour | day | week | month | quarter | year
+        },
+        "aggregations": [
+          {"method": "count"},
+          {"field": "amount", "method": "sum"}
+        ],
+        "sort_by": "agg_0",                          // "agg_0".."agg_N" or "group"
+        "sort_dir": "desc",
+        "limit": 200
+      }
+
+    Response:
+      {
+        "rows": [
+          {"group": "Sales", "agg_0": 1234, "agg_1": 56789.5},
+          ...
+        ],
+        "total_groups": 12
+      }
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+
+    sql, bind_params = build_aggregate_sql(body, tenant_id, ot_id)
 
     try:
         result = await db.execute(text(sql), bind_params)
