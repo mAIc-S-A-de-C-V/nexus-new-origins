@@ -12,6 +12,7 @@ import {
   pickValueField,
   pickTimeBucket,
   rangeToFilter,
+  applyValueFormat,
   type CrossFilter,
   type AggregateOptions,
   type AggregateSpec,
@@ -280,12 +281,10 @@ const MetricCard: React.FC<{ comp: AppComponent; records?: Record<string, unknow
   records,
   serverValue,
 }) => {
-  const formatServer = (v: number, method: string | undefined): string => {
-    if (method === 'avg') return v.toFixed(1);
-    return v.toLocaleString();
-  };
+  // Honor the widget's value-format config (multiplier / decimals / unit).
+  // Falls back to a sensible default when nothing is configured.
   const value = serverValue != null
-    ? formatServer(serverValue, comp.aggregation)
+    ? applyValueFormat(serverValue, comp)
     : aggregate(records || [], comp.field, comp.aggregation || 'count');
   return (
     <div style={{
@@ -320,7 +319,7 @@ const KpiBanner: React.FC<{ comp: AppComponent; records?: Record<string, unknown
   const kpis = serverKpis
     ? [
         { label: 'Total Records', value: serverKpis.count.toLocaleString() },
-        { label: comp.field ? `Avg ${comp.field}` : 'Fields', value: comp.field && serverKpis.avg != null ? serverKpis.avg.toFixed(1) : '—' },
+        { label: comp.field ? `Avg ${comp.field}` : 'Fields', value: comp.field && serverKpis.avg != null ? applyValueFormat(serverKpis.avg, comp) : '—' },
         { label: 'Last Updated', value: 'Live' },
       ]
     : [
@@ -603,7 +602,7 @@ const BarChart: React.FC<{
                     fontSize={10}
                     fill="#374151"
                   >
-                    {val.toLocaleString()}
+                    {applyValueFormat(val, comp)}
                   </text>
                 </g>
               );
@@ -745,7 +744,7 @@ const LineChart: React.FC<{
                 <g key={t}>
                   <line x1={pad.left} y1={y} x2={W - pad.right} y2={y} stroke="#F1F5F9" strokeWidth={1} />
                   <text x={pad.left - 4} y={y + 4} textAnchor="end" fontSize={8} fill="#94A3B8">
-                    {(maxY * t).toFixed(0)}
+                    {applyValueFormat(maxY * t, comp)}
                   </text>
                 </g>
               );
@@ -868,7 +867,7 @@ const PieChartWidget: React.FC<{
                       else setCrossFilter({ field: labelField, value: a.label === '(empty)' ? '' : a.label, sourceId: comp.id });
                     }}
                   >
-                    <title>{a.label}: {a.val.toLocaleString()} ({a.pct}%)</title>
+                    <title>{a.label}: {applyValueFormat(a.val, comp)} ({a.pct}%)</title>
                   </path>
                 );
               })}
@@ -974,7 +973,7 @@ const AreaChartWidget: React.FC<{
             return (
               <g key={pct}>
                 <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#F1F5F9" strokeWidth={1} />
-                <text x={padL - 4} y={y + 3} textAnchor="end" fontSize={8} fill="#94A3B8">{Math.round(maxVal * pct).toLocaleString()}</text>
+                <text x={padL - 4} y={y + 3} textAnchor="end" fontSize={8} fill="#94A3B8">{applyValueFormat(maxVal * pct, comp)}</text>
               </g>
             );
           })}
@@ -1066,6 +1065,12 @@ const StatCard: React.FC<{
   }
 
   const fmt = (v: number) => {
+    // Honor user value-format if any field is set; otherwise the previous
+    // K/M abbreviator stays so existing dashboards don't visually change.
+    const hasFormat = comp.valueMultiplier != null
+      || comp.valueDecimals != null
+      || comp.valueUnit != null;
+    if (hasFormat) return applyValueFormat(v, comp);
     if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
     if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
     return agg === 'avg' ? v.toFixed(1) : v.toLocaleString();
@@ -2451,12 +2456,7 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
     return c.slice(5, 10);
   };
 
-  const fmtVal = (v: number | null | undefined): string => {
-    if (v == null) return '—';
-    if (Math.abs(v) >= 1000) return v.toLocaleString();
-    if (Math.abs(v) >= 1) return v.toFixed(1);
-    return v.toFixed(2);
-  };
+  const fmtVal = (v: number | null | undefined): string => applyValueFormat(v, comp);
 
   return (
     <div style={{

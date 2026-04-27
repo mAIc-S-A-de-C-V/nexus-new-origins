@@ -281,6 +281,36 @@ export function detectEavPattern(sampleRows: Record<string, unknown>[]): EavPatt
 }
 
 /**
+ * Apply a widget's numeric value transform (multiplier + decimals + unit
+ * suffix) to a raw aggregated number. Returns the formatted string ready
+ * to drop into a cell, label, or tooltip.
+ *
+ * When the widget has no transform configured, falls back to a sensible
+ * default: thousands separators for integers ≥1000, two-decimal otherwise.
+ */
+export function applyValueFormat(
+  raw: number | null | undefined,
+  comp: { valueMultiplier?: number; valueDecimals?: number; valueUnit?: string },
+): string {
+  if (raw == null || Number.isNaN(raw)) return '—';
+  const m = comp.valueMultiplier ?? 1;
+  const v = raw * m;
+  const hasFormat = comp.valueMultiplier != null
+    || comp.valueDecimals != null
+    || comp.valueUnit != null;
+  let body: string;
+  if (hasFormat) {
+    const d = comp.valueDecimals ?? (Math.abs(v) >= 100 ? 0 : 2);
+    body = v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+  } else {
+    if (Math.abs(v) >= 1000) body = v.toLocaleString();
+    else if (Math.abs(v) >= 1) body = v.toFixed(1);
+    else body = v.toFixed(2);
+  }
+  return comp.valueUnit ? `${body}${comp.valueUnit}` : body;
+}
+
+/**
  * Sensible default time bucket for a given range, so the chart shows a
  * reasonable number of data points (~12–96) instead of either 2 or 10000.
  */

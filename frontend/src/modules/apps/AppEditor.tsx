@@ -987,6 +987,52 @@ const FilterBuilder: React.FC<{
 const AGG_OPTIONS = ['count', 'sum', 'avg', 'max', 'min'];
 const COLSPAN_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
+// Widget types where the VALUE FORMAT control is meaningful — anything
+// that ends up rendering aggregated numbers. Filters / forms / chat etc.
+// don't show the section.
+const VALUE_FORMATTABLE = new Set<ComponentType>([
+  'metric-card', 'kpi-banner', 'stat-card',
+  'bar-chart', 'line-chart', 'pie-chart', 'area-chart',
+  'pivot-table',
+]);
+
+type ValueFormatPreset =
+  | 'none' | 'sec_to_hr' | 'sec_to_min' | 'ms_to_sec'
+  | 'div_k' | 'div_m' | 'x100_pct' | 'custom';
+
+// Reverse-derive which preset the widget's current numeric config matches.
+// Anything that doesn't match a named preset (but has any field set) is
+// treated as 'custom' so the user keeps editing those fields manually.
+function valueFormatPresetOf(comp: AppComponent): ValueFormatPreset {
+  const m = comp.valueMultiplier;
+  const u = comp.valueUnit;
+  if (m == null && u == null) return 'none';
+  if (m === 1 / 3600 && u === ' h') return 'sec_to_hr';
+  if (m === 1 / 60 && u === ' min') return 'sec_to_min';
+  if (m === 1 / 1000 && u === ' s') return 'ms_to_sec';
+  if (m === 1 / 1000 && u === 'k') return 'div_k';
+  if (m === 1 / 1_000_000 && u === 'M') return 'div_m';
+  if (m === 100 && u === '%') return 'x100_pct';
+  return 'custom';
+}
+
+// Build the patch that applying a preset should produce. Returns the
+// fields to merge into the widget — leaves decimals alone unless the user
+// hasn't set one yet.
+function applyValueFormatPreset(comp: AppComponent, preset: ValueFormatPreset): Partial<AppComponent> {
+  const keepDec = comp.valueDecimals;
+  switch (preset) {
+    case 'none':       return { valueMultiplier: undefined, valueUnit: undefined, valueDecimals: undefined };
+    case 'sec_to_hr':  return { valueMultiplier: 1 / 3600, valueUnit: ' h',   valueDecimals: keepDec ?? 1 };
+    case 'sec_to_min': return { valueMultiplier: 1 / 60,   valueUnit: ' min', valueDecimals: keepDec ?? 1 };
+    case 'ms_to_sec':  return { valueMultiplier: 1 / 1000, valueUnit: ' s',   valueDecimals: keepDec ?? 2 };
+    case 'div_k':      return { valueMultiplier: 1 / 1000, valueUnit: 'k',    valueDecimals: keepDec ?? 1 };
+    case 'div_m':      return { valueMultiplier: 1 / 1_000_000, valueUnit: 'M', valueDecimals: keepDec ?? 1 };
+    case 'x100_pct':   return { valueMultiplier: 100,     valueUnit: '%',    valueDecimals: keepDec ?? 1 };
+    case 'custom':     return { valueMultiplier: comp.valueMultiplier ?? 1, valueUnit: comp.valueUnit ?? '' };
+  }
+}
+
 const ConfigPanel: React.FC<{
   comp: AppComponent;
   objectTypes: OntologyType[];
@@ -1207,6 +1253,66 @@ const ConfigPanel: React.FC<{
             </label>
             <div style={{ marginTop: 4, fontSize: 10, color: '#94A3B8' }}>
               Off = use this widget&apos;s own TIME RANGE / filters even when the bar is on.
+            </div>
+          </Row>
+        )}
+
+        {/* Numeric value transform — for any widget that displays
+            aggregated numbers. Lets the user convert seconds → hours,
+            bytes → MB, fractions → %, etc. without touching the data. */}
+        {comp.objectTypeId && VALUE_FORMATTABLE.has(comp.type) && (
+          <Row label="VALUE FORMAT">
+            <select
+              value={valueFormatPresetOf(comp)}
+              onChange={(e) => {
+                const preset = e.target.value as ValueFormatPreset;
+                set(applyValueFormatPreset(comp, preset));
+              }}
+              style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, marginBottom: 6 }}
+            >
+              <option value="none">No transform (raw)</option>
+              <option value="sec_to_hr">Seconds → Hours (÷ 3600)</option>
+              <option value="sec_to_min">Seconds → Minutes (÷ 60)</option>
+              <option value="ms_to_sec">Milliseconds → Seconds (÷ 1000)</option>
+              <option value="div_k">÷ 1,000 (k)</option>
+              <option value="div_m">÷ 1,000,000 (M)</option>
+              <option value="x100_pct">× 100 with % suffix</option>
+              <option value="custom">Custom…</option>
+            </select>
+            {valueFormatPresetOf(comp) === 'custom' && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 4 }}>
+                <div>
+                  <Lbl>MULTIPLIER</Lbl>
+                  <input
+                    type="number" step="any"
+                    value={comp.valueMultiplier ?? 1}
+                    onChange={(e) => set({ valueMultiplier: parseFloat(e.target.value) || 1 })}
+                    style={{ width: '100%', height: 26, padding: '0 6px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12 }}
+                  />
+                </div>
+                <div>
+                  <Lbl>SUFFIX</Lbl>
+                  <input
+                    value={comp.valueUnit ?? ''}
+                    onChange={(e) => set({ valueUnit: e.target.value || undefined })}
+                    placeholder="' h', ' kg', etc."
+                    style={{ width: '100%', height: 26, padding: '0 6px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12 }}
+                  />
+                </div>
+              </div>
+            )}
+            <div style={{ marginTop: 6 }}>
+              <Lbl>DECIMALS</Lbl>
+              <input
+                type="number" min={0} max={8}
+                value={comp.valueDecimals ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  set({ valueDecimals: v === '' ? undefined : Math.max(0, Math.min(8, parseInt(v, 10) || 0)) });
+                }}
+                placeholder="auto"
+                style={{ width: 80, height: 26, padding: '0 6px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12 }}
+              />
             </div>
           </Row>
         )}

@@ -116,6 +116,13 @@ export interface AppComponent {
   // Custom date range used when xAxisRange === 'custom'. ISO timestamps.
   xAxisCustomStart?: string;
   xAxisCustomEnd?: string;
+  // Numeric value transform — applied at render time to every aggregated
+  // number this widget displays (cells, axis labels, tooltips).
+  //   displayed = (raw * valueMultiplier).toFixed(valueDecimals) + valueUnit
+  // Examples: seconds → hours uses multiplier 1/3600 and unit ' h'.
+  valueMultiplier?: number;
+  valueDecimals?: number;
+  valueUnit?: string;
   // Server-side pagination page size for data-table. Default 50.
   pageSize?: number;
   // map
