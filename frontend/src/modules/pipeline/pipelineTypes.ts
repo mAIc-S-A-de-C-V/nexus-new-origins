@@ -97,6 +97,18 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
     ],
   },
   {
+    type: 'PIVOT',
+    label: 'Pivot',
+    description: 'Collapse long-format rows into wide format. e.g. one row per (sensor_name, time) with each metric as its own column.',
+    color: '#7C3AED',
+    iconName: 'LayoutGrid',
+    configFields: [
+      { key: 'groupBy', label: 'Group By (one per line, or comma-separated)', type: 'textarea', placeholder: 'sensor_name\ntime', required: true },
+      { key: 'keyField', label: 'Key Field (column name source)', type: 'text', placeholder: 'field', required: true },
+      { key: 'valueField', label: 'Value Field (cell content source)', type: 'text', placeholder: 'value', required: true },
+    ],
+  },
+  {
     type: 'DEDUPE',
     label: 'Dedupe',
     description: 'Remove duplicate records',

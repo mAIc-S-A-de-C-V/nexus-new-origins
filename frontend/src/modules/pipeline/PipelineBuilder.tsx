@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Play, Square, Plus, Save, Trash2, ChevronUp, ChevronDown,
   Plug, Filter, ArrowRightLeft, Repeat, Sparkles,
-  Layers, Copy, ShieldCheck, Database, Activity, X, Bot, Clock, MessageSquare,
+  Layers, LayoutGrid, Copy, ShieldCheck, Database, Activity, X, Bot, Clock, MessageSquare,
 } from 'lucide-react';
 import { CommentsPanel } from '../../components/CommentsPanel';
 import { Button } from '../../design-system/components/Button';
@@ -25,6 +25,7 @@ const NODE_ICONS: Record<string, React.ReactNode> = {
   Repeat: <Repeat size={13} />,
   Sparkles: <Sparkles size={13} />,
   Layers: <Layers size={13} />,
+  LayoutGrid: <LayoutGrid size={13} />,
   Copy: <Copy size={13} />,
   ShieldCheck: <ShieldCheck size={13} />,
   Database: <Database size={13} />,

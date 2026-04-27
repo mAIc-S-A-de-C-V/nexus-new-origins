@@ -37,6 +37,7 @@ class NodeType(str, Enum):
     CAST = "CAST"
     ENRICH = "ENRICH"
     FLATTEN = "FLATTEN"
+    PIVOT = "PIVOT"
     DEDUPE = "DEDUPE"
     VALIDATE = "VALIDATE"
     SINK_OBJECT = "SINK_OBJECT"

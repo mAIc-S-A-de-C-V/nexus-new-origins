@@ -5,6 +5,7 @@ export type NodeType =
   | 'CAST'
   | 'ENRICH'
   | 'FLATTEN'
+  | 'PIVOT'
   | 'DEDUPE'
   | 'VALIDATE'
   | 'SINK_OBJECT'

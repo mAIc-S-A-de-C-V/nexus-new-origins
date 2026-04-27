@@ -304,6 +304,11 @@ class DagExecutor:
                     stats = {"casts": cfg.get("casts", {})}
                 elif node.type == NodeType.FLATTEN:
                     stats = {"path": cfg.get("path", ""), "expanded_to": len(records_out)}
+                elif node.type == NodeType.PIVOT:
+                    stats = {"group_by": cfg.get("groupBy") or cfg.get("group_by", ""),
+                             "key_field": cfg.get("keyField") or cfg.get("key_field", ""),
+                             "value_field": cfg.get("valueField") or cfg.get("value_field", ""),
+                             "collapsed_from": len(records_in), "collapsed_to": len(records_out)}
                 elif node.type == NodeType.SINK_OBJECT:
                     stats = {"object_type_id": cfg.get("objectTypeId") or node.object_type_id or pipeline.target_object_type_id, "write_mode": cfg.get("write_mode", "upsert")}
                 elif node.type == NodeType.SINK_EVENT:
@@ -447,6 +452,8 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_
         return _cast(node, records_in)
     if node.type == NodeType.FLATTEN:
         return _flatten(node, records_in)
+    if node.type == NodeType.PIVOT:
+        return _pivot(node, records_in)
     if node.type == NodeType.VALIDATE:
         return _validate(node, records_in)
     if node.type == NodeType.SINK_OBJECT:
@@ -1197,6 +1204,61 @@ def _flatten(node, records_in: list[dict]) -> list[dict]:
         else:
             result.append(rec)
     return result
+
+
+def _pivot(node, records_in: list[dict]) -> list[dict]:
+    """Long-format → wide-format pivot.
+
+    Collapses N rows that share the same `groupBy` tuple into ONE row, with
+    each row's (keyField, valueField) pair becoming a column on the output.
+
+    Example config:
+        groupBy:    ["sensor_name", "time"]
+        keyField:   "field"
+        valueField: "value"
+
+    Input rows:
+        {sensor_name: "Rajadora_3", time: T, field: "rpm",       value: 150.22}
+        {sensor_name: "Rajadora_3", time: T, field: "temp",      value: 53.3}
+        {sensor_name: "Rajadora_3", time: T, field: "wifi_ok",   value: True}
+    Output row:
+        {sensor_name: "Rajadora_3", time: T, rpm: 150.22, temp: 53.3, wifi_ok: True}
+
+    If two rows in the same group have the same key, the LAST one wins
+    (input order). This matches typical "deduplicate by groupBy then pick
+    latest" semantics. If you need explicit precedence, run DEDUPE first.
+    """
+    cfg = node.config or {}
+    group_by_raw = cfg.get("groupBy") or cfg.get("group_by") or ""
+    if isinstance(group_by_raw, str):
+        group_keys = [k.strip() for k in group_by_raw.replace("\n", ",").split(",") if k.strip()]
+    elif isinstance(group_by_raw, list):
+        group_keys = [str(k).strip() for k in group_by_raw if str(k).strip()]
+    else:
+        group_keys = []
+    key_field = cfg.get("keyField") or cfg.get("key_field", "")
+    value_field = cfg.get("valueField") or cfg.get("value_field", "")
+
+    # Misconfigured pivots should fail loud rather than silently passing
+    # data through — silent passthrough is what got the user here in the
+    # first place ("why is my data still in long format?").
+    if not group_keys or not key_field or not value_field:
+        return records_in
+
+    # Stable insertion order — keeps output reproducible. Uses dict (3.7+
+    # preserves insertion) keyed by the tuple of group_by values.
+    grouped: dict[tuple, dict] = {}
+    for rec in records_in:
+        if not isinstance(rec, dict):
+            continue
+        gkey = tuple(rec.get(k) for k in group_keys)
+        if gkey not in grouped:
+            grouped[gkey] = {k: rec.get(k) for k in group_keys}
+        col = rec.get(key_field)
+        if col is None or col == "":
+            continue
+        grouped[gkey][str(col)] = rec.get(value_field)
+    return list(grouped.values())
 
 
 def _validate(node, records_in: list[dict]) -> list[dict]:
