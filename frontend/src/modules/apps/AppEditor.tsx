@@ -987,6 +987,71 @@ const FilterBuilder: React.FC<{
 const AGG_OPTIONS = ['count', 'sum', 'avg', 'max', 'min'];
 const COLSPAN_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
+// CRITICAL: these are at module scope on purpose. If you move them inside
+// ConfigPanel, every render creates a fresh component identity and React
+// remounts the entire subtree — meaning every keystroke in any input loses
+// focus. Don't do that again.
+
+const Lbl: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div style={{ fontSize: 10, fontWeight: 600, color: '#64748B', marginBottom: 4, letterSpacing: '0.04em' }}>
+    {children}
+  </div>
+);
+
+const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div style={{ marginBottom: 12 }}>
+    <Lbl>{label}</Lbl>
+    {children}
+  </div>
+);
+
+const inp = (val: string | number | undefined, onCh: (v: string) => void, ph?: string) => (
+  <input value={val ?? ''} onChange={(e) => onCh(e.target.value)} placeholder={ph}
+    style={{
+      width: '100%', height: 28, padding: '0 8px', boxSizing: 'border-box',
+      border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, color: '#0D1117',
+      outline: 'none',
+    }}
+  />
+);
+
+const sel = (val: string | undefined, opts: string[], labels: string[] | undefined, onCh: (v: string) => void, empty?: string) => (
+  <select value={val ?? ''} onChange={(e) => onCh(e.target.value)}
+    style={{
+      width: '100%', height: 28, padding: '0 6px', border: '1px solid #E2E8F0',
+      borderRadius: 4, fontSize: 12, color: val ? '#0D1117' : '#94A3B8',
+      backgroundColor: '#fff', outline: 'none',
+    }}
+  >
+    {empty && <option value="">{empty}</option>}
+    {opts.map((o, i) => <option key={o} value={o}>{(labels || opts)[i]}</option>)}
+  </select>
+);
+
+// FieldPicker takes the field list as a prop (not via closure) so it
+// stays a stable component reference across parent renders — keeps focus
+// in inputs that are siblings of it, and avoids unmount churn here too.
+const FieldPickerCmp: React.FC<{ fields: string[]; value: string | undefined; onPick: (f: string) => void; placeholder?: string }> = ({ fields, value, onPick, placeholder }) => (
+  <div>
+    {sel(value, fields, undefined, onPick, placeholder || 'Select field…')}
+    {value && (
+      <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+        {fields.slice(0, 6).map((f) => (
+          <button key={f} onClick={() => onPick(f)}
+            style={{
+              padding: '1px 6px', border: `1px solid ${f === value ? '#2563EB' : '#E2E8F0'}`,
+              borderRadius: 3, fontSize: 10, cursor: 'pointer',
+              backgroundColor: f === value ? '#EFF6FF' : '#F8FAFC',
+              color: f === value ? '#2563EB' : '#64748B',
+            }}>
+            {f.length > 14 ? f.slice(0, 14) + '…' : f}
+          </button>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
 // Widget types where the VALUE FORMAT control is meaningful — anything
 // that ends up rendering aggregated numbers. Filters / forms / chat etc.
 // don't show the section.
@@ -1113,63 +1178,12 @@ const ConfigPanel: React.FC<{
     }
   };
 
-  const Lbl: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-    <div style={{ fontSize: 10, fontWeight: 600, color: '#64748B', marginBottom: 4, letterSpacing: '0.04em' }}>
-      {children}
-    </div>
-  );
-
-  const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
-    <div style={{ marginBottom: 12 }}>
-      <Lbl>{label}</Lbl>
-      {children}
-    </div>
-  );
-
-  const inp = (val: string | number | undefined, onCh: (v: string) => void, ph?: string) => (
-    <input value={val ?? ''} onChange={(e) => onCh(e.target.value)} placeholder={ph}
-      style={{
-        width: '100%', height: 28, padding: '0 8px', boxSizing: 'border-box',
-        border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, color: '#0D1117',
-        outline: 'none',
-      }}
-    />
-  );
-
-  const sel = (val: string | undefined, opts: string[], labels: string[] | undefined, onCh: (v: string) => void, empty?: string) => (
-    <select value={val ?? ''} onChange={(e) => onCh(e.target.value)}
-      style={{
-        width: '100%', height: 28, padding: '0 6px', border: '1px solid #E2E8F0',
-        borderRadius: 4, fontSize: 12, color: val ? '#0D1117' : '#94A3B8',
-        backgroundColor: '#fff', outline: 'none',
-      }}
-    >
-      {empty && <option value="">{empty}</option>}
-      {opts.map((o, i) => <option key={o} value={o}>{(labels || opts)[i]}</option>)}
-    </select>
-  );
-
-  // Field picker with pill display
-  const FieldPicker: React.FC<{ value: string | undefined; onPick: (f: string) => void; placeholder?: string }> = ({ value, onPick, placeholder }) => (
-    <div>
-      {sel(value, fields, undefined, onPick, placeholder || 'Select field…')}
-      {value && (
-        <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
-          {fields.slice(0, 6).map((f) => (
-            <button key={f} onClick={() => onPick(f)}
-              style={{
-                padding: '1px 6px', border: `1px solid ${f === value ? '#2563EB' : '#E2E8F0'}`,
-                borderRadius: 3, fontSize: 10, cursor: 'pointer',
-                backgroundColor: f === value ? '#EFF6FF' : '#F8FAFC',
-                color: f === value ? '#2563EB' : '#64748B',
-              }}>
-              {f.length > 14 ? f.slice(0, 14) + '…' : f}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  // Helper to call the module-scoped FieldPickerCmp without repeating
+  // `fields={fields}` everywhere. This is a plain function, not a
+  // component — it returns JSX whose element type is the stable
+  // FieldPickerCmp, so React never sees a fresh identity here.
+  const FieldPicker = (props: { value: string | undefined; onPick: (f: string) => void; placeholder?: string }): React.ReactElement =>
+    <FieldPickerCmp fields={fields} {...props} />;
 
   const widgetDef = WIDGET_DEFS.find((w) => w.type === comp.type);
 

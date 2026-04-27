@@ -2462,15 +2462,21 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
   const cols = Array.from(colSet).sort();
   const rowKeys = Array.from(rowSet).sort();
 
+  // Calendar buckets (day/week/month/quarter/year) → always show a date.
+  // The "show hour" branch is only meaningful for sub-day buckets.
+  const isCalendarBucket = ['day', 'week', 'month', 'quarter', 'year'].includes(interval);
   const fmtCol = (c: string): string => {
     if (c.length < 13) return c; // bare YYYY-MM-DD
-    // Reformat the bucket timestamp in the user's TZ. If every bucket is
-    // the same calendar day in that zone, show only HH:MM; otherwise show
-    // MM/DD. The server returns UTC-bucketed timestamps when no tz was
-    // sent; with tz, the buckets are already aligned to the user's day.
+    if (isCalendarBucket) {
+      return formatInTz(c, tz, interval === 'year' || interval === 'month' ? 'month' : 'day');
+    }
+    // Sub-day bucket: if every bucket is in the same calendar day, show
+    // HH:MM; otherwise MM/DD HH:MM so the user sees both axes.
     const allDates = cols.map((x) => formatInTz(x, tz, 'date'));
     const sameDay = allDates.every((d) => d === allDates[0]);
-    return sameDay ? formatInTz(c, tz, 'hour') + 'h' : formatInTz(c, tz, 'day');
+    return sameDay
+      ? formatInTz(c, tz, 'time').slice(0, 5)
+      : formatInTz(c, tz, 'short');
   };
 
   const fmtVal = (v: number | null | undefined): string => applyValueFormat(v, comp);
