@@ -1035,6 +1035,35 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
     }
   }, [objectType.id, objectType.sourcePipelineId, loadData, handleRunPipeline]);
 
+  const [wiping, setWiping] = useState(false);
+  const handleWipeRecords = React.useCallback(async () => {
+    // Two-step confirm — typing the OT name proves intent. Server also
+    // requires `?confirm=<ot_id>` so a misclick on a stale tab can't nuke
+    // the wrong object type.
+    const promptMsg = `Type the object type name "${objectType.displayName}" to wipe ALL ${dataRows.length}+ records.\n\nThis is irreversible.`;
+    const typed = window.prompt(promptMsg);
+    if (typed !== objectType.displayName) {
+      if (typed != null) window.alert("Name didn't match — nothing was deleted.");
+      return;
+    }
+    setWiping(true);
+    try {
+      const r = await fetch(
+        `${ONTOLOGY_API}/object-types/${objectType.id}/records?confirm=${encodeURIComponent(objectType.id)}`,
+        { method: 'DELETE' }
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        window.alert(`Wipe failed: ${data.detail || r.status}`);
+        return;
+      }
+      window.alert(`Deleted ${data.deleted ?? 0} records.`);
+      await loadData();
+    } finally {
+      setWiping(false);
+    }
+  }, [objectType.id, objectType.displayName, dataRows.length, loadData]);
+
   useEffect(() => {
     if (activeTab !== 'data') return;
     loadData();
@@ -1287,6 +1316,8 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
             properties={objectType.properties}
             onSync={handleSync}
             syncing={dataSyncing}
+            onWipe={handleWipeRecords}
+            wiping={wiping}
             dataSource={dataSource}
             isPipelineBacked={!!objectType.sourcePipelineId}
             pipelineName={sourcePipeline?.name}
@@ -1924,10 +1955,12 @@ const DataTab: React.FC<{
   properties?: import('../../types/ontology').ObjectProperty[];
   onSync?: () => void;
   syncing?: boolean;
+  onWipe?: () => void;
+  wiping?: boolean;
   dataSource?: 'persisted' | 'live';
   isPipelineBacked?: boolean;
   pipelineName?: string;
-}> = ({ rows, loading, error, hasConnectors, objectTypeName, arrayProperties = [], properties = [], onSync, syncing, dataSource, isPipelineBacked, pipelineName }) => {
+}> = ({ rows, loading, error, hasConnectors, objectTypeName, arrayProperties = [], properties = [], onSync, syncing, onWipe, wiping, dataSource, isPipelineBacked, pipelineName }) => {
   const [modalOpen, setModalOpen] = useState(false);
 
   if (!hasConnectors) {
@@ -2030,6 +2063,24 @@ const DataTab: React.FC<{
             >
               {isPipelineBacked ? <Play size={11} /> : null}
               {syncing ? (isPipelineBacked ? 'Running…' : 'Syncing…') : isPipelineBacked ? 'Run Pipeline' : '↻ Sync'}
+            </button>
+          )}
+          {onWipe && rows.length > 0 && (
+            <button
+              onClick={onWipe}
+              disabled={wiping}
+              title="Delete every record for this object type. Use after changing pipeline shape (e.g. added a PIVOT step) so the table only contains the new shape."
+              style={{
+                height: '32px', padding: '0 12px', borderRadius: '4px', flexShrink: 0,
+                border: '1px solid #FCA5A5',
+                backgroundColor: wiping ? '#FEE2E2' : '#FFFFFF',
+                color: '#DC2626', fontSize: '12px', fontWeight: 500,
+                cursor: wiping ? 'wait' : 'pointer', whiteSpace: 'nowrap',
+                display: 'flex', alignItems: 'center', gap: '5px',
+              }}
+            >
+              <Trash2 size={11} />
+              {wiping ? 'Wiping…' : 'Wipe all'}
             </button>
           )}
         </div>

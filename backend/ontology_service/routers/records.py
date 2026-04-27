@@ -1137,6 +1137,49 @@ async def update_record(
 
 # ── DELETE record ───────────────────────────────────────────────────────────
 
+@router.delete("/{ot_id}/records")
+async def delete_all_records(
+    ot_id: str,
+    confirm: str = "",
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+    user: AuthUser = Depends(require_auth),
+):
+    """Wipe ALL records for an object type. Destructive — caller must pass
+    ?confirm=<ot_id> so a stray DELETE can't nuke the wrong type.
+
+    Use case: you've changed pipeline shape (e.g. added a PIVOT step) and
+    want a clean slate before re-running, since old records have a
+    different schema than what the pipeline now produces.
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    if confirm != ot_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"To confirm bulk deletion, pass ?confirm={ot_id} on the request.",
+        )
+    # Count first so we can report what we wiped, then bulk-delete via SQL
+    # (faster than fetch-then-delete for large tables).
+    count_result = await db.execute(
+        text(
+            "SELECT COUNT(*) FROM object_records "
+            "WHERE object_type_id = :otid AND tenant_id = :tid"
+        ),
+        {"otid": ot_id, "tid": tenant_id},
+    )
+    deleted = count_result.scalar() or 0
+    await db.execute(
+        text(
+            "DELETE FROM object_records "
+            "WHERE object_type_id = :otid AND tenant_id = :tid"
+        ),
+        {"otid": ot_id, "tid": tenant_id},
+    )
+    await db.commit()
+    asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
+    return {"deleted": int(deleted), "object_type_id": ot_id}
+
+
 @router.delete("/{ot_id}/records/{record_id}")
 async def delete_record(
     ot_id: str,
