@@ -148,6 +148,20 @@ export function looksLikeIsoTimestamp(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}[T ]/.test(s);
 }
 
+// JS Date parsing rule: an ISO string *without* a timezone suffix
+// ("2026-04-27T20:30:00") is interpreted in the browser's local zone, not
+// UTC. Our /aggregate endpoint returns bucket timestamps in exactly that
+// shape (it strips the offset for compactness), and we always treat
+// those moments as UTC. Append "Z" so JS picks the right wall-clock time
+// and `formatInTz` shows the correct local hour.
+function _ensureUtcSuffix(s: string): string {
+  if (/[Zz]$|[+\-]\d{2}:?\d{2}$/.test(s)) return s;
+  // Only append for strings that have a time component — bare YYYY-MM-DD
+  // is a calendar date and doesn't need a TZ.
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}/.test(s)) return s + 'Z';
+  return s;
+}
+
 // Format a Date or ISO string in the chosen TZ. `kind` picks a sensible
 // preset rather than asking every caller to spell out Intl options.
 export function formatInTz(
@@ -155,7 +169,7 @@ export function formatInTz(
   tz: string,
   kind: 'datetime' | 'date' | 'time' | 'short' | 'hour' | 'day' | 'month' = 'datetime',
 ): string {
-  const d = typeof value === 'string' ? new Date(value) : value;
+  const d = typeof value === 'string' ? new Date(_ensureUtcSuffix(value)) : value;
   if (Number.isNaN(d.getTime())) return typeof value === 'string' ? value : '';
   const opts: Intl.DateTimeFormatOptions = (() => {
     switch (kind) {
