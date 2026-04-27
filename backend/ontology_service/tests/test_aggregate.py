@@ -293,27 +293,33 @@ def test_invalid_timezone_rejected():
 
 def test_filters_iso_date_uses_timestamptz_cast():
     """xAxisRange presets emit `time { $gte: '2026-04-25T...' }`. The filter
-    handler must detect ISO date strings and cast both sides to timestamptz —
-    otherwise float() blows up on the string and crashes the whole request."""
+    handler casts the column to timestamptz and binds the value as a real
+    Python datetime (asyncpg rejects str when SQL infers timestamptz)."""
+    from datetime import datetime
     body = AggregateRequest(
         filters='{"time": {"$gte": "2026-04-25T21:27:51.553Z"}}',
         aggregations=[AggregationSpec(method="count")],
     )
     sql, params = build_aggregate_sql(body, "t", "o")
-    assert "NULLIF(data->>'time', '')::timestamptz >= (:flt0)::timestamptz" in sql
-    assert params["flt0"] == "2026-04-25T21:27:51.553Z"
+    # Column-side cast still present; regex-guarded so a malformed row
+    # doesn't blow up the query.
+    assert "NULLIF(data->>'time', '')::timestamptz >= :flt0" in sql
+    assert "data->>'time' ~ '^[[:digit:]]{4}-[[:digit:]]{2}-[[:digit:]]{2}'" in sql
+    # Bind value is a real datetime, not a string.
+    assert isinstance(params["flt0"], datetime)
     # Must NOT take the numeric path
     assert "::numeric" not in sql.split("flt0")[0].rsplit("WHERE", 1)[-1]
 
 
 def test_filters_iso_date_lt_and_lte_also_use_timestamptz():
+    from datetime import datetime
     body = AggregateRequest(
         filters='{"created_at": {"$lt": "2026-01-15"}}',
         aggregations=[AggregationSpec(method="count")],
     )
     sql, params = build_aggregate_sql(body, "t", "o")
-    assert "NULLIF(data->>'created_at', '')::timestamptz < (:flt0)::timestamptz" in sql
-    assert params["flt0"] == "2026-01-15"
+    assert "NULLIF(data->>'created_at', '')::timestamptz < :flt0" in sql
+    assert isinstance(params["flt0"], datetime)
 
 
 def test_filters_non_date_string_gt_falls_back_to_string_compare():

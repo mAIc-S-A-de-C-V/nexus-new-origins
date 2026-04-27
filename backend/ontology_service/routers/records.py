@@ -330,13 +330,25 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         # Coarse (date_trunc) vs. fine (date_bin) bucketing. date_trunc handles
         # natural calendar boundaries; date_bin handles arbitrary intervals
         # (e.g. every 5 minutes, every 15 seconds) anchored to a fixed origin.
+        # Regex-guarded timestamptz cast. Returns NULL for any row whose
+        # `tb_field` doesn't start with YYYY-MM-DD so a single legacy /
+        # malformed row can't blow up the whole aggregate. Postgres'
+        # `::timestamptz` is liberal with the trailing format (T or space,
+        # with/without offset, with/without ms) — we just gate the cast
+        # on the leading shape.
+        ts_safe = (
+            f"(CASE WHEN data->>'{tb_field}' ~ "
+            f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+            f"THEN NULLIF(data->>'{tb_field}', '')::timestamptz "
+            f"ELSE NULL END)"
+        )
         if interval in _BIN_BUCKETS:
             bin_str = _BIN_BUCKETS[interval]
             # Sub-hour buckets are time-anchored, so the user's TZ doesn't
             # change the boundaries. Leave them alone.
             bucket_expr = (
                 f"date_bin(INTERVAL '{bin_str}', "
-                f"NULLIF(data->>'{tb_field}', '')::timestamptz, "
+                f"{ts_safe}, "
                 f"TIMESTAMPTZ '2000-01-01')"
             )
         else:
@@ -345,15 +357,14 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             # 6pm CST into the next UTC day, which surprises users.
             # Round-trip: timestamptz → naive (in tz) → date_trunc → back
             # to timestamptz so the response is still a UTC moment.
-            ts_in_tz = f"NULLIF(data->>'{tb_field}', '')::timestamptz"
             if tz_name:
                 bucket_expr = (
                     f"(date_trunc('{interval}', "
-                    f"({ts_in_tz}) AT TIME ZONE '{tz_name}') "
+                    f"{ts_safe} AT TIME ZONE '{tz_name}') "
                     f"AT TIME ZONE '{tz_name}')"
                 )
             else:
-                bucket_expr = f"date_trunc('{interval}', {ts_in_tz})"
+                bucket_expr = f"date_trunc('{interval}', {ts_safe})"
         select_parts.append(
             f"to_char({bucket_expr}, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS grp"
         )
@@ -441,11 +452,37 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                                 and val_str[7:8] == "-"
                             )
                             if is_iso_date:
-                                where_parts.append(
-                                    f"NULLIF({accessor}, '')::timestamptz {cmp} "
-                                    f"(:{pname})::timestamptz"
-                                )
-                                bind_params[pname] = val_str
+                                # Regex-guard the column cast so a single
+                                # malformed row (e.g. legacy data with `time`
+                                # set to a non-ISO string) doesn't blow up
+                                # the whole query.
+                                #
+                                # Bind the value as a real Python datetime —
+                                # asyncpg reads the SQL type hint
+                                # `($3)::timestamptz` as "param is
+                                # timestamptz" and rejects str inputs at the
+                                # client layer. Parse to datetime here so it
+                                # round-trips correctly.
+                                try:
+                                    iso_normal = val_str.replace("Z", "+00:00")
+                                    dt_val = datetime.fromisoformat(iso_normal)
+                                except ValueError:
+                                    # Couldn't parse — fall back to a
+                                    # text-cast SQL form that lets PG do the
+                                    # parsing (less efficient but still
+                                    # correct). Avoids the asyncpg type hint.
+                                    where_parts.append(
+                                        f"{accessor} ~ '^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+                                        f"AND NULLIF({accessor}, '')::timestamptz {cmp} "
+                                        f"(:{pname}::text)::timestamptz"
+                                    )
+                                    bind_params[pname] = val_str
+                                else:
+                                    where_parts.append(
+                                        f"{accessor} ~ '^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+                                        f"AND NULLIF({accessor}, '')::timestamptz {cmp} :{pname}"
+                                    )
+                                    bind_params[pname] = dt_val
                             else:
                                 try:
                                     numeric_val = float(op_val)
