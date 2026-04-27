@@ -268,6 +268,26 @@ class AggregateRequest(BaseModel):
     sort_by: Optional[str] = None
     sort_dir: str = "desc"
     limit: int = 200
+    # IANA timezone (e.g. "America/El_Salvador"). When set, calendar
+    # buckets (date_trunc) align to midnight in this zone instead of UTC,
+    # so a "day" bucket actually means a local-day for the user.
+    timezone: Optional[str] = None
+
+
+# IANA TZ names use [A-Za-z0-9_+/-]. Anything else is rejected, since the
+# value is interpolated into the SQL string (not a bind param — Postgres
+# AT TIME ZONE wants an immediate string literal in some contexts and the
+# safest path is strict validation).
+import re as _tz_re
+_TZ_NAME_RE = _tz_re.compile(r"^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$")
+
+
+def _safe_timezone(tz: Optional[str]) -> Optional[str]:
+    if not tz:
+        return None
+    if not _TZ_NAME_RE.match(tz):
+        raise HTTPException(status_code=400, detail=f"Invalid timezone name: {tz!r}")
+    return tz
 
 
 def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> tuple[str, dict[str, Any]]:
@@ -306,19 +326,34 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     if has_time:
         tb_field = _safe_field(body.time_bucket.field)
         interval = body.time_bucket.interval
+        tz_name = _safe_timezone(body.timezone)
         # Coarse (date_trunc) vs. fine (date_bin) bucketing. date_trunc handles
         # natural calendar boundaries; date_bin handles arbitrary intervals
         # (e.g. every 5 minutes, every 15 seconds) anchored to a fixed origin.
         if interval in _BIN_BUCKETS:
             bin_str = _BIN_BUCKETS[interval]
+            # Sub-hour buckets are time-anchored, so the user's TZ doesn't
+            # change the boundaries. Leave them alone.
             bucket_expr = (
                 f"date_bin(INTERVAL '{bin_str}', "
                 f"NULLIF(data->>'{tb_field}', '')::timestamptz, "
                 f"TIMESTAMPTZ '2000-01-01')"
             )
         else:
-            # Coarse calendar bucket
-            bucket_expr = f"date_trunc('{interval}', NULLIF(data->>'{tb_field}', '')::timestamptz)"
+            # Coarse calendar bucket. When a timezone is supplied, bucket
+            # at midnight of THAT zone, not UTC — otherwise "day" lumps
+            # 6pm CST into the next UTC day, which surprises users.
+            # Round-trip: timestamptz → naive (in tz) → date_trunc → back
+            # to timestamptz so the response is still a UTC moment.
+            ts_in_tz = f"NULLIF(data->>'{tb_field}', '')::timestamptz"
+            if tz_name:
+                bucket_expr = (
+                    f"(date_trunc('{interval}', "
+                    f"({ts_in_tz}) AT TIME ZONE '{tz_name}') "
+                    f"AT TIME ZONE '{tz_name}')"
+                )
+            else:
+                bucket_expr = f"date_trunc('{interval}', {ts_in_tz})"
         select_parts.append(
             f"to_char({bucket_expr}, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS grp"
         )

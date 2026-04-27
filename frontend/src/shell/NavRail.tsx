@@ -4,9 +4,10 @@ import {
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
   FolderKanban, Users, LogOut, DollarSign, Briefcase,
   BrainCircuit, Bot, MessageSquare, ShieldCheck, Wrench, Globe, FlaskConical,
-  Database, Shield, TrendingUp, BookOpen,
+  Database, Shield, TrendingUp, BookOpen, Clock,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useTimezone, COMMON_TIMEZONES } from '../lib/timezone';
 import { useAuth } from './TenantContext';
 import { usePermission } from '../hooks/usePermission';
 import { useAppStore } from '../store/appStore';
@@ -89,6 +90,7 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
   const [maicExpanded, setMaicExpanded] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { currentUser, logout } = useAuth();
+  const [tz, setTz] = useTimezone();
   const { isAdmin: isAdminNew, isSuperAdmin, canAccess, modules } = usePermission();
   const { t, i18n } = useTranslation();
   const { apps } = useAppStore();
@@ -326,6 +328,31 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Timezone selector — drives time-range filters and
+                  timestamp display platform-wide. */}
+              <div style={{ padding: '8px 12px 6px', borderBottom: '1px solid #1E2D42' }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: '#334155', textTransform: 'uppercase',
+                  letterSpacing: '0.06em', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <Clock size={11} /> Timezone
+                </div>
+                <select
+                  value={tz}
+                  onChange={(e) => setTz(e.target.value)}
+                  style={{
+                    width: '100%', height: 28, fontSize: 11,
+                    backgroundColor: '#0F1824', color: '#CBD5E1',
+                    border: '1px solid #1E2D42', borderRadius: 3, padding: '0 6px',
+                    outline: 'none', cursor: 'pointer',
+                  }}
+                >
+                  {COMMON_TIMEZONES.map((t) => (
+                    <option key={t.tz} value={t.tz} style={{ backgroundColor: '#0F1824' }}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               {/* Sign out */}

@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { NexusApp, AppComponent, AppFilter, AppEvent, DashboardFilterBar as DashboardFilterBarConfig, RangePreset } from '../../types/app';
+import { useTimezone, formatInTz } from '../../lib/timezone';
 import { getTenantId } from '../../store/authStore';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 import { colors as tokens, chartPalette } from '../../design-system/tokens';
@@ -142,7 +143,10 @@ interface AggregateRow {
 function useAggregate(objectTypeId: string | undefined, opts: AggregateOptions | null) {
   const [rows, setRows] = useState<AggregateRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const key = JSON.stringify(opts ?? null);
+  const [tz] = useTimezone();
+  // The user's TZ is part of the cache key so changing it triggers a
+  // refetch (server returns different bucket boundaries).
+  const key = JSON.stringify({ ...(opts ?? null), __tz: tz });
 
   useEffect(() => {
     if (!objectTypeId || !opts) { setRows([]); return; }
@@ -156,6 +160,7 @@ function useAggregate(objectTypeId: string | undefined, opts: AggregateOptions |
       sort_by: opts.sortBy ?? null,
       sort_dir: opts.sortDir ?? 'desc',
       limit: opts.limit ?? 200,
+      timezone: opts.timezone || tz || null,
     };
     fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
       method: 'POST',
@@ -627,6 +632,7 @@ const LineChart: React.FC<{
   serverSeries,
   resolvedXField,
 }) => {
+  const [tz] = useTimezone();
   const recs = records || [];
   const allFields = recs.length > 0 ? Object.keys(recs[0]) : [];
 
@@ -771,10 +777,14 @@ const LineChart: React.FC<{
             {(() => {
               const formatLabel = (x: string): string => {
                 if (x.length < 13) return x;             // already short (date-only)
-                const days = new Set(allXs.map((s) => s.slice(0, 10))).size;
-                if (days <= 1) return x.slice(11, 16);   // HH:MM
-                if (days <= 14) return x.slice(5, 16).replace('T', ' ');  // MM-DD HH:MM
-                return x.slice(0, 10);                    // YYYY-MM-DD
+                // All formatting goes through the user's TZ — server may
+                // bucket by UTC or by user TZ depending on the request,
+                // but display should always be the user's chosen zone.
+                const dateInTz = (s: string) => formatInTz(s, tz, 'date');
+                const days = new Set(allXs.map(dateInTz)).size;
+                if (days <= 1) return formatInTz(x, tz, 'time').slice(0, 5); // HH:MM
+                if (days <= 14) return formatInTz(x, tz, 'short');           // MM/DD HH:MM
+                return formatInTz(x, tz, 'date');                            // YYYY-MM-DD
               };
               return allXs.filter((_, i) => i % Math.max(1, Math.floor(allXs.length / 5)) === 0).map((x, i) => {
                 const idx = i * Math.max(1, Math.floor(allXs.length / 5));
@@ -2261,13 +2271,14 @@ const ServerAggPieChart: React.FC<{ comp: AppComponent; serverFilters?: Record<s
 // the response groups by labelField AND time bucket, so we get one line per
 // labelField value (e.g. one line per sensor / metric_type).
 const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const [tz] = useTimezone();
   const xField = pickXField(comp);
   const valueField = pickValueField(comp);
   const method = comp.aggregation || (valueField ? 'sum' : 'count');
   const interval = pickTimeBucket(comp);
   const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
   // Merge the user's filter list with the time-range preset (last_24h etc.)
-  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd);
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd, tz);
   const mergedFilters = rangeFilter
     ? { ...(serverFilters || {}), ...rangeFilter }
     : serverFilters;
@@ -2308,12 +2319,13 @@ const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
 };
 
 const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const [tz] = useTimezone();
   const xField = pickXField(comp);
   const valueField = pickValueField(comp);
   const method = comp.aggregation || (valueField ? 'sum' : 'count');
   const interval = pickTimeBucket(comp);
   const labelField = comp.labelField && comp.labelField !== xField ? comp.labelField : undefined;
-  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd);
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd, tz);
   const mergedFilters = rangeFilter
     ? { ...(serverFilters || {}), ...rangeFilter }
     : serverFilters;
@@ -2413,12 +2425,13 @@ const ServerPaginatedDataTable: React.FC<{ comp: AppComponent; serverFilters?: R
 // Solves the common "X by Y by Z" question without the AI having to write
 // fragile custom-code pivots.
 const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const [tz] = useTimezone();
   const labelField = comp.labelField || 'sensor_name';
   const xField = pickXField(comp);
   const valueField = pickValueField(comp);
   const interval = pickTimeBucket(comp);
   const method = comp.aggregation || (valueField ? 'sum' : 'count');
-  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd);
+  const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd, tz);
   const mergedFilters = rangeFilter ? { ...(serverFilters || {}), ...rangeFilter } : serverFilters;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
@@ -2450,10 +2463,14 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
   const rowKeys = Array.from(rowSet).sort();
 
   const fmtCol = (c: string): string => {
-    if (c.length < 13) return c;
-    const sameDay = cols.every((x) => x.slice(0, 10) === cols[0].slice(0, 10));
-    if (sameDay) return c.slice(11, 16);
-    return c.slice(5, 10);
+    if (c.length < 13) return c; // bare YYYY-MM-DD
+    // Reformat the bucket timestamp in the user's TZ. If every bucket is
+    // the same calendar day in that zone, show only HH:MM; otherwise show
+    // MM/DD. The server returns UTC-bucketed timestamps when no tz was
+    // sent; with tz, the buckets are already aligned to the user's day.
+    const allDates = cols.map((x) => formatInTz(x, tz, 'date'));
+    const sameDay = allDates.every((d) => d === allDates[0]);
+    return sameDay ? formatInTz(c, tz, 'hour') + 'h' : formatInTz(c, tz, 'day');
   };
 
   const fmtVal = (v: number | null | undefined): string => applyValueFormat(v, comp);

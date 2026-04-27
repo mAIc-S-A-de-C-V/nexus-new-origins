@@ -5,6 +5,7 @@
  * Kept side-effect-free and free of React so we can unit-test them.
  */
 import type { AppComponent, AppFilter } from '../../types/app';
+import { tzMidnight, tzWeekStart, tzMonthStart } from '../../lib/timezone';
 
 export interface CrossFilter {
   field: string;
@@ -32,6 +33,9 @@ export interface AggregateOptions {
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
   limit?: number;
+  // IANA timezone — when set, server buckets calendar intervals
+  // (date_trunc) at the boundaries of this zone instead of UTC.
+  timezone?: string;
 }
 
 export interface AggregateRow {
@@ -124,12 +128,31 @@ export function rangeToFilter(
   xField: string,
   customStart?: string,
   customEnd?: string,
+  tz?: string,
 ): Record<string, unknown> | undefined {
   if (!range || range === 'all_time' || !xField) return undefined;
   const now = Date.now();
   const oneMin = 60 * 1000;
   const oneHour = 60 * oneMin;
   const oneDay = 24 * oneHour;
+  // TZ is optional — without it, "today"/"this_week"/etc fall back to the
+  // browser's local zone (legacy behavior). With it, calendar boundaries
+  // are computed at midnight of the user's chosen timezone, regardless of
+  // where their browser thinks it is.
+  const tzMid = tz
+    ? (d: Date) => tzMidnight(tz, d)
+    : (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+  const tzWeek = tz
+    ? (d: Date) => tzWeekStart(tz, d)
+    : (d: Date) => {
+        const x = new Date(d); x.setHours(0, 0, 0, 0);
+        const dow = x.getDay() || 7;
+        x.setDate(x.getDate() - dow + 1);
+        return x;
+      };
+  const tzMonth = tz
+    ? (d: Date) => tzMonthStart(tz, d)
+    : (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(1); return x; };
 
   // Custom range short-circuits the preset switch.
   if (range === 'custom') {
@@ -159,26 +182,20 @@ export function rangeToFilter(
     case 'last_90d': from = now - 90 * oneDay; break;
     case 'last_year': from = now - 365 * oneDay; break;
     case 'today': {
-      const d = new Date(); d.setHours(0, 0, 0, 0);
-      from = d.getTime();
+      from = tzMid(new Date()).getTime();
       break;
     }
     case 'yesterday': {
-      const d = new Date(); d.setHours(0, 0, 0, 0);
-      to = d.getTime();
+      to = tzMid(new Date()).getTime();
       from = to - oneDay;
       break;
     }
     case 'this_week': {
-      const d = new Date(); d.setHours(0, 0, 0, 0);
-      const day = d.getDay() || 7; // 1=Mon, 7=Sun
-      d.setDate(d.getDate() - day + 1);
-      from = d.getTime();
+      from = tzWeek(new Date()).getTime();
       break;
     }
     case 'this_month': {
-      const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(1);
-      from = d.getTime();
+      from = tzMonth(new Date()).getTime();
       break;
     }
     default: return undefined;

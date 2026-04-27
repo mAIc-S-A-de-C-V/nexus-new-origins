@@ -8,6 +8,7 @@ import { PropertyList } from './PropertyList';
 import { SchemaDiffViewer } from './SchemaDiffViewer';
 import { Badge } from '../../design-system/components/Badge';
 import { useOntologyStore } from '../../store/ontologyStore';
+import { useTimezone, formatInTz } from '../../lib/timezone';
 import { usePipelineStore } from '../../store/pipelineStore';
 import { nodeColors } from '../../design-system/tokens';
 import { getTenantId } from '../../store/authStore';
@@ -1610,6 +1611,7 @@ const PipelineAuditTab: React.FC<{
 // ── Cell value renderer ─────────────────────────────────────────────────────
 
 function CellValue({ val, highlight }: { val: unknown; highlight: boolean }) {
+  const [tz] = useTimezone();
   if (val === null || val === undefined) {
     return <span style={{ color: '#CBD5E1', fontSize: '11px', fontStyle: 'italic' }}>null</span>;
   }
@@ -1628,12 +1630,18 @@ function CellValue({ val, highlight }: { val: unknown; highlight: boolean }) {
       </span>
     );
   }
-  const s = String(val);
+  const raw = String(val);
+  // ISO-like timestamps get reformatted in the user's TZ. Bare YYYY-MM-DD
+  // strings render as-is (no time component to convert). Full timestamps
+  // get the localized YYYY-MM-DD HH:MM and a tooltip with the original
+  // ISO string for users who want to see the source.
+  const isIso = typeof val === 'string' && raw.length >= 10 && raw[4] === '-' && raw[7] === '-' && /[T ]/.test(raw[10] || '');
+  const display = isIso ? formatInTz(raw, tz, 'datetime') : raw;
   return (
-    <span style={{ color: highlight ? '#92400E' : '#0D1117' }}>
+    <span style={{ color: highlight ? '#92400E' : '#0D1117' }} title={isIso ? raw : undefined}>
       {highlight ? (
-        <mark style={{ backgroundColor: '#FEF3C7', color: '#92400E', borderRadius: 2, padding: '0 1px' }}>{s}</mark>
-      ) : s}
+        <mark style={{ backgroundColor: '#FEF3C7', color: '#92400E', borderRadius: 2, padding: '0 1px' }}>{display}</mark>
+      ) : display}
     </span>
   );
 }

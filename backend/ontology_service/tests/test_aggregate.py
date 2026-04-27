@@ -248,6 +248,49 @@ def test_filters_operator_form():
     assert "data->>'amount' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$'" in sql
 
 
+def test_timezone_wraps_date_trunc_with_at_time_zone_round_trip():
+    """When the request includes a timezone, day/week/month buckets must
+    align to the user's calendar, not UTC. The SQL builder does this by
+    converting to the zone, truncating, then converting back."""
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[AggregationSpec(method="count")],
+        timezone="America/El_Salvador",
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # Round-trip: AT TIME ZONE on input AND on output. The bucket expr
+    # appears in both SELECT (for to_char) and GROUP BY, so each round-trip
+    # contributes 2 occurrences — total 4.
+    assert "AT TIME ZONE 'America/El_Salvador'" in sql
+    assert sql.count("AT TIME ZONE 'America/El_Salvador'") == 4
+    assert "date_trunc('day'" in sql
+
+
+def test_timezone_does_not_change_sub_hour_date_bin_buckets():
+    """date_bin is time-anchored — buckets every 5 minutes don't move
+    based on the user's calendar. Leave them in UTC."""
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="5_minutes"),
+        aggregations=[AggregationSpec(method="count")],
+        timezone="America/El_Salvador",
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "date_bin(" in sql
+    assert "AT TIME ZONE" not in sql
+
+
+def test_invalid_timezone_rejected():
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[AggregationSpec(method="count")],
+        timezone="'; DROP TABLE users; --",
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert exc.value.status_code == 400
+    assert "Invalid timezone" in exc.value.detail
+
+
 def test_filters_iso_date_uses_timestamptz_cast():
     """xAxisRange presets emit `time { $gte: '2026-04-25T...' }`. The filter
     handler must detect ISO date strings and cast both sides to timestamptz —
