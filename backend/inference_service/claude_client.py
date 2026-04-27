@@ -1741,13 +1741,22 @@ def _apply_query_plan(records: list[dict], plan: dict, fields: list[str]) -> obj
     import re
     from datetime import datetime as _dt
 
+    def _to_naive(d):
+        # Strip any tzinfo. Sensor data lands as offset-aware
+        # (e.g. "...+00:00"), while Claude's plan emits naive strings
+        # ("2026-04-27T00:00:00"). Mixing them in `<` / `>` raises
+        # "can't compare offset-naive and offset-aware datetimes".
+        # We don't need TZ precision here — these comparisons are
+        # against a sample for chat answer-grounding, not for storage.
+        return d.replace(tzinfo=None) if d is not None and d.tzinfo is not None else d
+
     def _coerce(raw) -> tuple:
         s = str(raw) if raw is not None else ""
         try: num = float(s)
         except: num = None
         date = None
         if re.search(r'\d{4}-\d{2}-\d{2}', s):
-            try: date = _dt.fromisoformat(s.replace("Z",""))
+            try: date = _to_naive(_dt.fromisoformat(s.replace("Z","+00:00")))
             except: pass
         elif re.match(r'^\d{10,13}$', s.strip()):
             ms = int(s) * (1000 if len(s) <= 10 else 1)
@@ -1764,7 +1773,7 @@ def _apply_query_plan(records: list[dict], plan: dict, fields: list[str]) -> obj
         except: fv_num = None
         fv_date = None
         if re.search(r'\d{4}-\d{2}-\d{2}', fv):
-            try: fv_date = _dt.fromisoformat(fv.replace("Z",""))
+            try: fv_date = _to_naive(_dt.fromisoformat(fv.replace("Z","+00:00")))
             except: pass
         if op == "eq": return s == fv
         if op == "neq": return s != fv
