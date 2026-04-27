@@ -33,7 +33,7 @@ const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localh
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface OTProp { name: string; semantic_type?: string; data_type?: string; display_name?: string }
-interface OntologyType { id: string; name: string; displayName: string; properties: OTProp[] }
+interface OntologyType { id: string; name: string; displayName: string; properties: OTProp[]; sourcePipelineId?: string }
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 
@@ -97,6 +97,9 @@ function useObjectTypes() {
         name: (o.name || o.display_name) as string,
         displayName: (o.display_name || o.name) as string,
         properties: ((o.properties || []) as OTProp[]),
+        // Backend returns this snake_cased; the SyncPanel needs it to
+        // look up which pipeline backs each OT.
+        sourcePipelineId: (o.source_pipeline_id as string | undefined) || undefined,
       }))))
       .catch(() => {});
   }, []);
@@ -2208,114 +2211,286 @@ const CodeEditor: React.FC<{
 
 // ── Sync Panel ────────────────────────────────────────────────────────────────
 
-const SYNC_INTERVALS = [
-  { value: 'manual', label: 'Manual only' },
-  { value: '1h',  label: 'Every hour' },
-  { value: '6h',  label: 'Every 6 hours' },
-  { value: '12h', label: 'Every 12 hours' },
-  { value: '24h', label: 'Every day' },
-  { value: '7d',  label: 'Every week' },
+// Each preset maps to a stock cron expression (UTC). 'manual' means no
+// schedule — the existing schedule (if any) is deleted when picked.
+const SCHEDULE_PRESETS: Array<{ value: string; label: string; cron: string | null }> = [
+  { value: 'manual', label: 'Manual only',     cron: null },
+  { value: '15m',    label: 'Every 15 min',    cron: '*/15 * * * *' },
+  { value: '1h',     label: 'Every hour',      cron: '0 * * * *' },
+  { value: '6h',     label: 'Every 6 hours',   cron: '0 */6 * * *' },
+  { value: '12h',    label: 'Every 12 hours',  cron: '0 */12 * * *' },
+  { value: '24h',    label: 'Every day',       cron: '0 0 * * *' },
+  { value: '7d',     label: 'Every week',      cron: '0 0 * * 0' },
 ];
+
+// Loose validator: 5 space-separated tokens, each containing only the
+// characters cron expressions allow. Server-side croniter is the real
+// authority — this just catches obvious typos before the network call.
+function isValidCronExpr(expr: string): boolean {
+  const trimmed = expr.trim();
+  const parts = trimmed.split(/\s+/);
+  if (parts.length !== 5) return false;
+  return parts.every((p) => /^[\d*/,\-]+$/.test(p));
+}
+
+// Reverse-derive which preset a cron expression matches; returns 'custom'
+// for anything we don't recognize (so the Custom input takes over).
+function presetForCron(cron: string): string {
+  const match = SCHEDULE_PRESETS.find((p) => p.cron === cron);
+  return match ? match.value : 'custom';
+}
+
+const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
+
+type PipelineScheduleLite = {
+  id: string;
+  pipeline_id: string;
+  name: string;
+  cron_expression: string;
+  enabled: boolean;
+  last_run_at: string | null;
+};
 
 const SyncPanel: React.FC<{ app: NexusApp; components: AppComponent[]; objectTypes: OntologyType[] }> = ({
   app, components, objectTypes,
 }) => {
-  const { updateApp } = useAppStore();
-  const [syncing, setSyncing] = useState<Record<string, boolean>>({});
-  const [lastSync, setLastSync] = useState<Record<string, string>>({});
-  const [syncIntervalVal, setSyncIntervalVal] = useState<string>(app.syncInterval || 'manual');
+  // Per-OT state for "Run now" feedback and inline custom-cron editing.
+  const [running, setRunning] = useState<Record<string, boolean>>({});
+  const [customCron, setCustomCron] = useState<Record<string, string>>({});
+  const [error, setError] = useState<Record<string, string>>({});
+  const [schedules, setSchedules] = useState<Record<string, PipelineScheduleLite | null>>({});
+  const [loaded, setLoaded] = useState(false);
 
-  // Get unique object type IDs used in this app
-  const usedOtIds = Array.from(new Set(components.map(c => c.objectTypeId).filter(Boolean)));
+  // Per-OT used in this app, deduped. Filter out entries without an
+  // object type (chat widgets etc. that don't bind to one).
+  const usedOtIds = Array.from(new Set(components.map((c) => c.objectTypeId).filter(Boolean))) as string[];
+  const otById = (otId: string) => objectTypes.find((o) => o.id === otId);
 
-  const saveInterval = async (val: string) => {
-    setSyncIntervalVal(val);
-    await updateApp(app.id, { syncInterval: val } as Partial<NexusApp>);
+  // Fetch the active schedule for each pipeline-backed OT once on mount.
+  // We pick the first enabled schedule per pipeline as "the" schedule —
+  // this UI manages a single auto-schedule per pipeline; users with more
+  // complex setups still go to the Pipeline Builder.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const next: Record<string, PipelineScheduleLite | null> = {};
+      for (const otId of usedOtIds) {
+        const ot = otById(otId);
+        if (!ot?.sourcePipelineId) { next[otId] = null; continue; }
+        try {
+          const r = await fetch(`${PIPELINE_API}/pipelines/${ot.sourcePipelineId}/schedules`, {
+            headers: { 'x-tenant-id': getTenantId() },
+          });
+          if (!r.ok) { next[otId] = null; continue; }
+          const list = await r.json();
+          const active = (Array.isArray(list) ? list : []).find((s: PipelineScheduleLite) => s.enabled) || (Array.isArray(list) ? list[0] : null) || null;
+          next[otId] = active;
+        } catch {
+          next[otId] = null;
+        }
+      }
+      if (!cancelled) { setSchedules(next); setLoaded(true); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usedOtIds.join(',')]);
+
+  // Apply a cron string to a pipeline. If schedule exists, update; else
+  // create. If cron is null (manual), delete any existing schedule.
+  const applyCron = async (otId: string, cron: string | null) => {
+    const ot = otById(otId);
+    if (!ot?.sourcePipelineId) {
+      setError((p) => ({ ...p, [otId]: 'No pipeline backs this object type' }));
+      return;
+    }
+    const pipelineId = ot.sourcePipelineId;
+    const existing = schedules[otId];
+    const headers = { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() };
+    setError((p) => ({ ...p, [otId]: '' }));
+    try {
+      if (cron === null) {
+        if (existing) {
+          await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules/${existing.id}`, { method: 'DELETE', headers });
+        }
+        setSchedules((p) => ({ ...p, [otId]: null }));
+        return;
+      }
+      if (!isValidCronExpr(cron)) {
+        setError((p) => ({ ...p, [otId]: 'Invalid cron expression — needs 5 space-separated fields' }));
+        return;
+      }
+      if (existing) {
+        const r = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules/${existing.id}`, {
+          method: 'PUT', headers,
+          body: JSON.stringify({ cron_expression: cron, enabled: true }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const updated = await r.json();
+        setSchedules((p) => ({ ...p, [otId]: updated }));
+      } else {
+        const r = await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ name: 'App schedule', cron_expression: cron, enabled: true }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const created = await r.json();
+        setSchedules((p) => ({ ...p, [otId]: created }));
+      }
+    } catch (e) {
+      setError((p) => ({ ...p, [otId]: e instanceof Error ? e.message.slice(0, 200) : 'Failed to save schedule' }));
+    }
   };
 
-  const runSync = async (otId: string) => {
-    setSyncing(p => ({ ...p, [otId]: true }));
+  const runNow = async (otId: string) => {
+    const ot = otById(otId);
+    if (!ot?.sourcePipelineId) return;
+    const pipelineId = ot.sourcePipelineId;
+    const sched = schedules[otId];
+    setRunning((p) => ({ ...p, [otId]: true }));
     try {
-      // Trigger a sync by calling the ontology service to refresh records
-      await fetch(`${ONTOLOGY_API}/object-types/${otId}/records/refresh`, {
-        method: 'POST',
-        headers: { 'x-tenant-id': getTenantId() },
-      }).catch(() => {});
-      setLastSync(p => ({ ...p, [otId]: new Date().toISOString() }));
+      if (sched) {
+        await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/schedules/${sched.id}/run-now`, {
+          method: 'POST', headers: { 'x-tenant-id': getTenantId() },
+        });
+      } else {
+        await fetch(`${PIPELINE_API}/pipelines/${pipelineId}/run`, {
+          method: 'POST', headers: { 'x-tenant-id': getTenantId() },
+        });
+      }
     } finally {
-      setSyncing(p => ({ ...p, [otId]: false }));
+      setRunning((p) => ({ ...p, [otId]: false }));
     }
   };
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 32, backgroundColor: '#F8FAFC' }}>
-      <div style={{ maxWidth: 640, margin: '0 auto' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto' }}>
         <div style={{ marginBottom: 28 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: '#0D1117', marginBottom: 4 }}>Data Sync</div>
-          <div style={{ fontSize: 13, color: '#64748B' }}>Configure sync frequency and trigger manual syncs for each data source.</div>
-        </div>
-
-        {/* Schedule */}
-        <div style={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, padding: 20, marginBottom: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginBottom: 12 }}>Sync Schedule</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-            {SYNC_INTERVALS.map(opt => (
-              <button
-                key={opt.value}
-                onClick={() => saveInterval(opt.value)}
-                style={{
-                  padding: '8px 10px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
-                  border: syncIntervalVal === opt.value ? '2px solid #2563EB' : '1px solid #E2E8F0',
-                  backgroundColor: syncIntervalVal === opt.value ? '#EFF6FF' : '#FAFAFA',
-                  color: syncIntervalVal === opt.value ? '#2563EB' : '#374151',
-                  fontSize: 12, fontWeight: syncIntervalVal === opt.value ? 600 : 400,
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
+          <div style={{ fontSize: 13, color: '#64748B' }}>
+            Each object type below is backed by a pipeline. Schedules here create, update, or delete a schedule on that pipeline directly — the platform&apos;s cron worker fires them every minute.
           </div>
-          {syncIntervalVal !== 'manual' && (
-            <div style={{ marginTop: 10, fontSize: 12, color: '#64748B', backgroundColor: '#F1F5F9', borderRadius: 6, padding: '8px 12px' }}>
-              This app syncs automatically <strong>{SYNC_INTERVALS.find(o => o.value === syncIntervalVal)?.label?.toLowerCase()}</strong>.
-            </div>
-          )}
         </div>
 
-        {/* Data sources */}
         <div style={{ backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginBottom: 12 }}>Data Sources</div>
           {usedOtIds.length === 0 && (
             <div style={{ fontSize: 13, color: '#94A3B8', textAlign: 'center', padding: '24px 0' }}>
               No data sources connected. Add widgets with object types first.
             </div>
           )}
-          {usedOtIds.map(otId => {
-            const ot = objectTypes.find(o => o.id === otId);
-            const isSyncing = syncing[otId!];
-            const ls = lastSync[otId!];
-            const usedByWidgets = components.filter(c => c.objectTypeId === otId).map(c => c.title || c.type);
+          {!loaded && usedOtIds.length > 0 && (
+            <div style={{ fontSize: 12, color: '#94A3B8', padding: '8px 0' }}>Loading schedules…</div>
+          )}
+          {loaded && usedOtIds.map((otId, idx) => {
+            const ot = otById(otId);
+            const sched = schedules[otId] || null;
+            const cron = sched?.enabled ? sched.cron_expression : null;
+            const activePreset = cron ? presetForCron(cron) : 'manual';
+            const inputCustom = customCron[otId] ?? (activePreset === 'custom' ? (cron || '') : '');
+            const usedByWidgets = components.filter((c) => c.objectTypeId === otId).map((c) => c.title || c.type);
+            const last = sched?.last_run_at;
+            const err = error[otId];
+
             return (
-              <div key={otId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: '1px solid #F1F5F9' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{ot?.displayName || ot?.name || 'Unknown'}</div>
-                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>
-                    Used by: {usedByWidgets.slice(0, 3).join(', ')}{usedByWidgets.length > 3 ? ` +${usedByWidgets.length - 3} more` : ''}
+              <div key={otId} style={{
+                paddingTop: idx === 0 ? 0 : 18,
+                paddingBottom: 18,
+                borderTop: idx === 0 ? 'none' : '1px solid #F1F5F9',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: '#0D1117' }}>{ot?.displayName || ot?.name || 'Unknown'}</div>
+                    <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>
+                      Used by: {usedByWidgets.slice(0, 3).join(', ')}{usedByWidgets.length > 3 ? ` +${usedByWidgets.length - 3} more` : ''}
+                    </div>
+                    {!ot?.sourcePipelineId && (
+                      <div style={{ fontSize: 11, color: '#B45309', backgroundColor: '#FEF3C7', borderRadius: 4, padding: '4px 8px', marginTop: 4, display: 'inline-block' }}>
+                        Not pipeline-backed — schedule via the source connector instead.
+                      </div>
+                    )}
+                    {ot?.sourcePipelineId && cron && (
+                      <div style={{ fontSize: 11, color: '#059669', marginTop: 4 }}>
+                        Active cron: <code style={{ fontFamily: 'var(--font-mono)' }}>{cron}</code>
+                        {last && <> · last ran {new Date(last).toLocaleString()}</>}
+                      </div>
+                    )}
+                    {ot?.sourcePipelineId && !cron && (
+                      <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>No automatic schedule — manual runs only.</div>
+                    )}
                   </div>
-                  {ls && <div style={{ fontSize: 11, color: '#059669', marginTop: 2 }}>Synced {new Date(ls).toLocaleTimeString()}</div>}
+                  <button
+                    onClick={() => runNow(otId)}
+                    disabled={running[otId] || !ot?.sourcePipelineId}
+                    style={{
+                      padding: '6px 14px', borderRadius: 6, border: '1px solid #E2E8F0',
+                      backgroundColor: running[otId] ? '#F1F5F9' : '#fff',
+                      color: running[otId] ? '#94A3B8' : '#374151',
+                      fontSize: 12, fontWeight: 500,
+                      cursor: running[otId] || !ot?.sourcePipelineId ? 'not-allowed' : 'pointer',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {running[otId] ? 'Running…' : 'Run now'}
+                  </button>
                 </div>
-                <button
-                  onClick={() => runSync(otId!)}
-                  disabled={isSyncing}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '6px 14px', borderRadius: 6, border: '1px solid #E2E8F0',
-                    backgroundColor: isSyncing ? '#F1F5F9' : '#fff', color: isSyncing ? '#94A3B8' : '#374151',
-                    fontSize: 12, fontWeight: 500, cursor: isSyncing ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  {isSyncing ? 'Syncing…' : 'Sync now'}
-                </button>
+
+                {ot?.sourcePipelineId && (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+                      {SCHEDULE_PRESETS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          onClick={() => applyCron(otId, opt.cron)}
+                          style={{
+                            padding: '8px 10px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+                            border: activePreset === opt.value ? '2px solid #2563EB' : '1px solid #E2E8F0',
+                            backgroundColor: activePreset === opt.value ? '#EFF6FF' : '#FAFAFA',
+                            color: activePreset === opt.value ? '#2563EB' : '#374151',
+                            fontSize: 12, fontWeight: activePreset === opt.value ? 600 : 400,
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: 11, color: '#64748B', flexShrink: 0 }}>Custom cron:</span>
+                      <input
+                        value={inputCustom}
+                        onChange={(e) => setCustomCron((p) => ({ ...p, [otId]: e.target.value }))}
+                        placeholder="*/5 * * * *"
+                        style={{
+                          flex: 1, height: 28, padding: '0 8px',
+                          fontFamily: 'var(--font-mono)', fontSize: 12,
+                          border: `1px solid ${activePreset === 'custom' ? '#2563EB' : '#E2E8F0'}`,
+                          borderRadius: 4, outline: 'none',
+                        }}
+                      />
+                      <button
+                        onClick={() => applyCron(otId, inputCustom.trim())}
+                        disabled={!inputCustom.trim()}
+                        style={{
+                          padding: '6px 12px', borderRadius: 4, border: '1px solid #2563EB',
+                          backgroundColor: inputCustom.trim() ? '#2563EB' : '#F1F5F9',
+                          color: inputCustom.trim() ? '#fff' : '#94A3B8',
+                          fontSize: 12, fontWeight: 500,
+                          cursor: inputCustom.trim() ? 'pointer' : 'not-allowed',
+                        }}
+                      >
+                        Apply
+                      </button>
+                      <a href="https://crontab.guru" target="_blank" rel="noreferrer" style={{ fontSize: 10, color: '#64748B', textDecoration: 'underline' }}>help</a>
+                    </div>
+                    {err && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: '#DC2626', backgroundColor: '#FEF2F2', borderRadius: 4, padding: '4px 8px' }}>
+                        {err}
+                      </div>
+                    )}
+                    <div style={{ marginTop: 6, fontSize: 10, color: '#94A3B8' }}>
+                      Cron is evaluated in UTC. For El Salvador time, add 6 hours (e.g. midnight CST = <code style={{ fontFamily: 'var(--font-mono)' }}>0 6 * * *</code>).
+                    </div>
+                  </>
+                )}
               </div>
             );
           })}
