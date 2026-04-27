@@ -123,6 +123,11 @@ export interface AppComponent {
   valueMultiplier?: number;
   valueDecimals?: number;
   valueUnit?: string;
+  // When 'custom', the editor's preset dropdown sticks on Custom even if
+  // the underlying values happen to match a named preset. Without this
+  // flag, picking Custom while the values still equal e.g. (1/3600, ' h')
+  // would auto-detect back to 'sec_to_hr' and the dropdown would jump.
+  valueFormatPreset?: 'custom';
   // Server-side pagination page size for data-table. Default 50.
   pageSize?: number;
   // map

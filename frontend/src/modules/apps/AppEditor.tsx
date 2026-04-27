@@ -1068,7 +1068,13 @@ type ValueFormatPreset =
 // Reverse-derive which preset the widget's current numeric config matches.
 // Anything that doesn't match a named preset (but has any field set) is
 // treated as 'custom' so the user keeps editing those fields manually.
+//
+// The explicit `valueFormatPreset === 'custom'` flag short-circuits the
+// auto-match — needed because the user may have picked Custom but kept
+// values that still happen to equal a named preset (e.g. starting from
+// "Seconds → Hours" then opening Custom to tweak the multiplier).
 function valueFormatPresetOf(comp: AppComponent): ValueFormatPreset {
+  if (comp.valueFormatPreset === 'custom') return 'custom';
   const m = comp.valueMultiplier;
   const u = comp.valueUnit;
   if (m == null && u == null) return 'none';
@@ -1083,18 +1089,19 @@ function valueFormatPresetOf(comp: AppComponent): ValueFormatPreset {
 
 // Build the patch that applying a preset should produce. Returns the
 // fields to merge into the widget — leaves decimals alone unless the user
-// hasn't set one yet.
+// hasn't set one yet. Also clears or sets the `valueFormatPreset` flag
+// so the dropdown sticks even when prior values match a named preset.
 function applyValueFormatPreset(comp: AppComponent, preset: ValueFormatPreset): Partial<AppComponent> {
   const keepDec = comp.valueDecimals;
   switch (preset) {
-    case 'none':       return { valueMultiplier: undefined, valueUnit: undefined, valueDecimals: undefined };
-    case 'sec_to_hr':  return { valueMultiplier: 1 / 3600, valueUnit: ' h',   valueDecimals: keepDec ?? 1 };
-    case 'sec_to_min': return { valueMultiplier: 1 / 60,   valueUnit: ' min', valueDecimals: keepDec ?? 1 };
-    case 'ms_to_sec':  return { valueMultiplier: 1 / 1000, valueUnit: ' s',   valueDecimals: keepDec ?? 2 };
-    case 'div_k':      return { valueMultiplier: 1 / 1000, valueUnit: 'k',    valueDecimals: keepDec ?? 1 };
-    case 'div_m':      return { valueMultiplier: 1 / 1_000_000, valueUnit: 'M', valueDecimals: keepDec ?? 1 };
-    case 'x100_pct':   return { valueMultiplier: 100,     valueUnit: '%',    valueDecimals: keepDec ?? 1 };
-    case 'custom':     return { valueMultiplier: comp.valueMultiplier ?? 1, valueUnit: comp.valueUnit ?? '' };
+    case 'none':       return { valueMultiplier: undefined, valueUnit: undefined, valueDecimals: undefined, valueFormatPreset: undefined };
+    case 'sec_to_hr':  return { valueMultiplier: 1 / 3600, valueUnit: ' h',   valueDecimals: keepDec ?? 1, valueFormatPreset: undefined };
+    case 'sec_to_min': return { valueMultiplier: 1 / 60,   valueUnit: ' min', valueDecimals: keepDec ?? 1, valueFormatPreset: undefined };
+    case 'ms_to_sec':  return { valueMultiplier: 1 / 1000, valueUnit: ' s',   valueDecimals: keepDec ?? 2, valueFormatPreset: undefined };
+    case 'div_k':      return { valueMultiplier: 1 / 1000, valueUnit: 'k',    valueDecimals: keepDec ?? 1, valueFormatPreset: undefined };
+    case 'div_m':      return { valueMultiplier: 1 / 1_000_000, valueUnit: 'M', valueDecimals: keepDec ?? 1, valueFormatPreset: undefined };
+    case 'x100_pct':   return { valueMultiplier: 100,     valueUnit: '%',    valueDecimals: keepDec ?? 1, valueFormatPreset: undefined };
+    case 'custom':     return { valueMultiplier: comp.valueMultiplier ?? 1, valueUnit: comp.valueUnit ?? '', valueFormatPreset: 'custom' };
   }
 }
 
