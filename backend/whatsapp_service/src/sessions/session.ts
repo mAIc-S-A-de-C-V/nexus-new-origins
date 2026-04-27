@@ -427,6 +427,22 @@ export class WhatsAppSession extends EventEmitter {
     );
   }
 
+  // Public wrapper for the "Re-link device" flow: stops the socket, blows
+  // away the cached auth, and clears the in-memory QR. Caller is expected
+  // to follow up with a fresh start() to generate a new QR.
+  async unlinkAndClearAuth(): Promise<void> {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.sock) {
+      try { this.sock.end(undefined); } catch { /* socket may already be dead */ }
+      this.sock = null;
+    }
+    await this.clearAuth();
+    this.qrDataUrl = null;
+    this.phoneNumber = null;
+    this.status = 'disconnected';
+    await this.updateDbStatus('disconnected', 'Unlinked — re-scan QR to reconnect');
+  }
+
   private async updateDbStatus(status: string, error?: string): Promise<void> {
     await pool.query(
       `UPDATE wa_sessions SET status = $1, last_error = $2, updated_at = NOW()

@@ -3735,6 +3735,9 @@ const WhatsAppTab: React.FC<{ connectorId: string }> = ({ connectorId }) => {
   const [chats, setChats] = React.useState<any[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [search, setSearch] = React.useState('');
+  const [qrDataUrl, setQrDataUrl] = React.useState<string | null>(null);
+  const [unlinking, setUnlinking] = React.useState(false);
+  const eventSourceRef = React.useRef<EventSource | null>(null);
 
   const tenantId = (() => {
     try {
@@ -3761,15 +3764,65 @@ const WhatsAppTab: React.FC<{ connectorId: string }> = ({ connectorId }) => {
     } catch { /* */ }
   };
 
+  // Subscribe to the QR SSE stream. Keeps the panel updated whenever the
+  // server has a new QR ready; flips to chat mode the moment status goes
+  // 'connected'.
+  const startQrStream = React.useCallback(() => {
+    if (eventSourceRef.current) eventSourceRef.current.close();
+    const es = new EventSource(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/qr`);
+    eventSourceRef.current = es;
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.qr) setQrDataUrl(data.qr);
+        if (data.status === 'connected') {
+          setQrDataUrl(null);
+          es.close();
+          eventSourceRef.current = null;
+          fetchStatus();
+          fetchChats();
+        }
+      } catch { /* */ }
+    };
+    es.onerror = () => { /* server may be restarting; let the poll catch up */ };
+  }, [connectorId]);
+
   React.useEffect(() => {
     (async () => {
       await fetchStatus();
       await fetchChats();
       setLoading(false);
     })();
-    const iv = setInterval(fetchStatus, 10000);
-    return () => clearInterval(iv);
+    return () => {
+      if (eventSourceRef.current) eventSourceRef.current.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectorId]);
+
+  // Faster poll while we're waiting for a scan or trying to reconnect —
+  // 10s is fine for a healthy session, but the user is sitting here
+  // staring at the QR and shouldn't wait that long for the "connected"
+  // banner to appear.
+  React.useEffect(() => {
+    const isWaiting = !status || status.status === 'qr_pending' || status.status === 'disconnected';
+    const ms = isWaiting ? 2500 : 10000;
+    const iv = setInterval(fetchStatus, ms);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.status]);
+
+  // Whenever the server says it's waiting for a scan, make sure the QR
+  // SSE is open. Idempotent — startQrStream closes any prior stream.
+  React.useEffect(() => {
+    if (status?.status === 'qr_pending' && !eventSourceRef.current) {
+      startQrStream();
+    }
+    if (status?.status === 'connected' && eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+      setQrDataUrl(null);
+    }
+  }, [status?.status, startQrStream]);
 
   const toggleMonitor = async (jid: string, monitored: boolean) => {
     setChats(prev => prev.map(c => c.jid === jid ? { ...c, isMonitored: monitored } : c));
@@ -3779,14 +3832,34 @@ const WhatsAppTab: React.FC<{ connectorId: string }> = ({ connectorId }) => {
   };
 
   const reconnect = async () => {
+    setQrDataUrl(null);
     await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/start`, {
       method: 'POST', headers, body: JSON.stringify({ tenantId }),
     });
-    setTimeout(fetchStatus, 2000);
+    // Open the QR stream immediately — if the server ends up needing a
+    // scan, the QR will arrive over this connection. If it reconnects
+    // silently with cached creds, the SSE just closes on 'connected'.
+    startQrStream();
+    setTimeout(fetchStatus, 1500);
+  };
+
+  const unlinkAndRelink = async () => {
+    if (!confirm("This will unlink WhatsApp and require scanning a new QR. Continue?")) return;
+    setUnlinking(true);
+    setQrDataUrl(null);
+    try {
+      await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/unlink`, {
+        method: 'POST', headers, body: JSON.stringify({ tenantId }),
+      });
+      startQrStream();
+      setTimeout(fetchStatus, 1500);
+    } finally { setUnlinking(false); }
   };
 
   const disconnect = async () => {
     await fetch(`${CONNECTOR_API}/connectors/${connectorId}/whatsapp/stop`, { method: 'DELETE', headers });
+    if (eventSourceRef.current) { eventSourceRef.current.close(); eventSourceRef.current = null; }
+    setQrDataUrl(null);
     await fetchStatus();
   };
 
@@ -3812,17 +3885,69 @@ const WhatsAppTab: React.FC<{ connectorId: string }> = ({ connectorId }) => {
             {status?.chatCount || 0} chats discovered &middot; {monitoredCount} monitored &middot; {status?.messageCount || 0} messages
           </div>
         </div>
-        <button
-          onClick={isConnected ? disconnect : reconnect}
-          style={{
-            padding: '6px 14px', borderRadius: 6, border: '1px solid #E2E8F0',
-            backgroundColor: '#FFFFFF', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-            color: isConnected ? '#DC2626' : '#25D366',
-          }}
-        >
-          {isConnected ? 'Disconnect' : 'Reconnect'}
-        </button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            onClick={isConnected ? disconnect : reconnect}
+            style={{
+              padding: '6px 14px', borderRadius: 6, border: '1px solid #E2E8F0',
+              backgroundColor: '#FFFFFF', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              color: isConnected ? '#DC2626' : '#25D366',
+            }}
+          >
+            {isConnected ? 'Disconnect' : 'Reconnect'}
+          </button>
+          <button
+            onClick={unlinkAndRelink}
+            disabled={unlinking}
+            title="Wipe stored credentials and force a new QR (use when switching phones or troubleshooting)."
+            style={{
+              padding: '6px 14px', borderRadius: 6, border: '1px solid #E2E8F0',
+              backgroundColor: '#FFFFFF', fontSize: 12, fontWeight: 600,
+              cursor: unlinking ? 'wait' : 'pointer', color: '#475569',
+              opacity: unlinking ? 0.6 : 1,
+            }}
+          >
+            {unlinking ? 'Unlinking…' : 'Re-link device'}
+          </button>
+        </div>
       </div>
+
+      {/* QR / waiting-for-scan panel — appears whenever the session is
+          waiting for the user to scan or actively trying to connect. */}
+      {!isConnected && (qrDataUrl || status?.status === 'qr_pending' || status?.status === 'disconnected') && (
+        <div style={{
+          padding: 18, borderRadius: 8, border: '1px solid #E2E8F0', backgroundColor: '#FAFBFC',
+          display: 'flex', alignItems: 'center', gap: 16,
+        }}>
+          <div style={{
+            width: 220, height: 220, borderRadius: 8, border: '1px solid #E2E8F0',
+            backgroundColor: '#FFFFFF', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0,
+          }}>
+            {qrDataUrl ? (
+              <img src={qrDataUrl} alt="WhatsApp QR Code" style={{ width: 200, height: 200, borderRadius: 4 }} />
+            ) : (
+              <div style={{ textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>
+                {status?.status === 'qr_pending' ? 'Waiting for QR…' : 'Click Reconnect to start'}
+              </div>
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginBottom: 6 }}>
+              Scan to link your device
+            </div>
+            <div style={{ fontSize: 12, color: '#64748B', lineHeight: 1.6 }}>
+              On your phone: open <strong>WhatsApp</strong> &rarr; <strong>Settings</strong> &rarr;
+              {' '}<strong>Linked Devices</strong> &rarr; <strong>Link a Device</strong>, then point the camera at this QR.
+            </div>
+            {status?.status === 'disconnected' && !qrDataUrl && (
+              <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 8 }}>
+                If you don&apos;t see a QR after Reconnect, hit <strong>Re-link device</strong> to force a fresh one.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Chat list */}
       {chats.length > 0 && (

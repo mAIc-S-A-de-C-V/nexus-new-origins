@@ -34,6 +34,30 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
+  // Unlink: clear auth and restart. Use this when the user wants a fresh
+  // QR (e.g. switching phones, suspecting stale creds). Plain start does
+  // not regenerate a QR if the cached creds still work.
+  app.post<{ Params: { connectorId: string }; Body: { tenantId?: string } }>(
+    '/sessions/:connectorId/unlink',
+    async (req, reply) => {
+      const { connectorId } = req.params;
+      let tenantId = req.headers['x-tenant-id'] as string || req.body?.tenantId || '';
+      if (!tenantId) {
+        try {
+          const CONNECTOR_URL = process.env.CONNECTOR_SERVICE_URL || 'http://connector-service:8001';
+          const r = await fetch(`${CONNECTOR_URL}/connectors/${connectorId}`);
+          if (r.ok) {
+            const c = await r.json() as any;
+            tenantId = c.tenant_id || '';
+          }
+        } catch {}
+      }
+      if (!tenantId) tenantId = 'tenant-001';
+      const session = await sessionManager.unlinkAndRestart(connectorId, tenantId);
+      return { status: session.status, connectorId };
+    }
+  );
+
   // Get session status
   app.get<{ Params: { connectorId: string } }>(
     '/sessions/:connectorId/status',

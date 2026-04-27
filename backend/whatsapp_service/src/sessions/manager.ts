@@ -43,6 +43,25 @@ class SessionManager {
     }
   }
 
+  // Unlink the device entirely: stop the socket, wipe the auth blob, and
+  // restart so a fresh QR is generated. The "Re-link device" button maps
+  // here. Plain stopSession() leaves the auth on disk and lets Baileys
+  // reconnect silently next time — that's the right behavior for routine
+  // pause/resume but the wrong one when the user wants a new QR.
+  async unlinkAndRestart(connectorId: string, tenantId: string): Promise<WhatsAppSession> {
+    const existing = this.sessions.get(connectorId);
+    if (existing) {
+      await existing.unlinkAndClearAuth();
+      this.sessions.delete(connectorId);
+    } else {
+      // No live session — wipe the persisted creds directly via a throwaway
+      // session object so the next start() definitely generates a QR.
+      const tmp = new WhatsAppSession(connectorId, tenantId);
+      await tmp.unlinkAndClearAuth();
+    }
+    return this.startSession(connectorId, tenantId);
+  }
+
   getSession(connectorId: string): WhatsAppSession | undefined {
     return this.sessions.get(connectorId);
   }

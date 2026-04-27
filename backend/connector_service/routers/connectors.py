@@ -875,6 +875,21 @@ async def wa_stop_session(
     return await _wa_proxy("delete", f"/api/v1/sessions/{connector_id}/stop", x_tenant_id or "tenant-001")
 
 
+@router.post("/{connector_id}/whatsapp/unlink")
+async def wa_unlink(
+    connector_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Wipe stored auth and restart — produces a fresh QR. Use when the
+    user wants to re-link the device (different phone, stale creds, etc.)."""
+    row = (await db.execute(select(ConnectorRow).where(ConnectorRow.id == connector_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    tenant = x_tenant_id or row.tenant_id or "tenant-001"
+    return await _wa_proxy("post", f"/api/v1/sessions/{connector_id}/unlink", tenant, {"tenantId": tenant})
+
+
 @router.get("/{connector_id}/whatsapp/status")
 async def wa_status(
     connector_id: str,
