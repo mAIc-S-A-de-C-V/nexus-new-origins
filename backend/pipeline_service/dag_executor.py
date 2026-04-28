@@ -2074,7 +2074,6 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
                         max_tokens=4096,
                         temperature=0.1,
                         messages=_to_openai_messages(system_prompt, [{"role": "user", "content": user_msg}]),
-                        response_format={"type": "json_object"},
                     )
                     oai_resp = await asyncio.wait_for(
                         client.chat.completions.create(**oai_kwargs),
