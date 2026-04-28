@@ -2010,7 +2010,7 @@ BASURA: SOLO si el mensaje completo es un saludo sin contenido policial (ej: sol
 IMPORTANTE: Si un mensaje COMIENZA con un saludo ("Buen día", "Buenos días") pero CONTIENE un reporte policial (homicidio, detención, operatividad, etc.), NO es BASURA — clasifícalo según su contenido real. Lee el mensaje COMPLETO antes de clasificar.
 Si es OPERATIVIDAD (patrullaje, charla, seguridad escolar sin incidentes): devuelve categoria="OPERATIVIDAD" y solo los campos relevantes.
 
-Responde SOLO con el JSON. Sin texto adicional."""
+IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después. Sin bloques ```json```. Sin explicaciones. Solo el JSON puro."""
 
     tenant_id = pipeline.tenant_id or "tenant-001"
     provider_cfg = await resolve_provider_for_model(tenant_id, model)
@@ -2069,13 +2069,15 @@ Responde SOLO con el JSON. Sin texto adicional."""
         try:
             async with semaphore:
                 if is_openai:
+                    oai_kwargs: dict = dict(
+                        model=provider_cfg.model,
+                        max_tokens=4096,
+                        temperature=0.1,
+                        messages=_to_openai_messages(system_prompt, [{"role": "user", "content": user_msg}]),
+                        response_format={"type": "json_object"},
+                    )
                     oai_resp = await asyncio.wait_for(
-                        client.chat.completions.create(
-                            model=provider_cfg.model,
-                            max_tokens=4096,
-                            temperature=0.1,
-                            messages=_to_openai_messages(system_prompt, [{"role": "user", "content": user_msg}]),
-                        ),
+                        client.chat.completions.create(**oai_kwargs),
                         timeout=llm_timeout_s + 5,
                     )
                     raw_text = (oai_resp.choices[0].message.content or "").strip()
@@ -2105,6 +2107,13 @@ Responde SOLO con el JSON. Sin texto adicional."""
                 match = re.search(r"```(?:json)?\s*([\s\S]*?)```", json_text)
                 if match:
                     json_text = match.group(1).strip()
+            # Some models wrap the JSON in extra prose — find the first [ or {
+            if json_text and json_text[0] not in ("[", "{"):
+                bracket = json_text.find("[")
+                brace = json_text.find("{")
+                start = min(p for p in (bracket, brace) if p >= 0) if max(bracket, brace) >= 0 else -1
+                if start >= 0:
+                    json_text = json_text[start:]
 
             parsed = _json.loads(json_text)
             if isinstance(parsed, dict) and not isinstance(parsed, list):
@@ -2150,12 +2159,12 @@ Responde SOLO con el JSON. Sin texto adicional."""
             return out
 
         except Exception as e:
-            logger.error(f"[LLM_CLASSIFY] Batch {batch_idx + 1}/{len(batches)} failed: {e}")
+            logger.error(f"[LLM_CLASSIFY] Batch {batch_idx + 1}/{len(batches)} failed: {repr(e)}", exc_info=True)
             out = []
             for record in batch:
                 r = dict(record)
                 r["llm_categoria"] = "ERROR"
-                r["llm_error"] = str(e)[:200]
+                r["llm_error"] = repr(e)[:200]
                 out.append(r)
             return out
 
