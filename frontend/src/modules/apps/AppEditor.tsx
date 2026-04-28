@@ -1541,6 +1541,25 @@ const ConfigPanel: React.FC<{
             <Row label="VALUE (BLANK = COUNT)">
               <FieldPicker value={comp.valueField} onPick={(f) => set({ valueField: f })} placeholder="Count (auto)" />
             </Row>
+            <Row label="AGGREGATION">
+              <select
+                value={comp.aggregation || (comp.valueField ? 'sum' : 'count')}
+                onChange={(e) => set({ aggregation: e.target.value as AppComponent['aggregation'] })}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0', borderRadius: 4, fontSize: 12, outline: 'none' }}
+              >
+                <option value="count">Count</option>
+                <option value="sum">Sum</option>
+                <option value="avg">Average</option>
+                <option value="min">Min</option>
+                <option value="max">Max</option>
+                <option value="runtime">Runtime</option>
+              </select>
+            </Row>
+            {comp.aggregation === 'runtime' && (
+              <Row label="TIMESTAMP FIELD">
+                <FieldPicker value={comp.tsField} onPick={(f) => set({ tsField: f })} />
+              </Row>
+            )}
           </>
         )}
 

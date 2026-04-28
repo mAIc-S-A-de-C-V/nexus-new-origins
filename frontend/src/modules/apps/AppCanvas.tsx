@@ -2224,14 +2224,16 @@ const LoadingTile: React.FC = () => (
   </div>
 );
 
-// Server-side BarChart: groupBy + sum/count, returns up to 50 groups.
+// Server-side BarChart: groupBy + agg method, returns up to 50 groups.
 const ServerAggBarChart: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const labelField = pickLabelField(comp);
   const valueField = pickValueField(comp);
-  const method = valueField ? 'sum' : 'count';
+  const method = (comp.aggregation || (valueField ? 'sum' : 'count')) as AggregateSpec['method'];
+  const aggSpec: AggregateSpec = { field: method === 'count' ? undefined : valueField, method };
+  if (method === 'runtime' && comp.tsField) aggSpec.ts_field = comp.tsField;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
-    aggregations: [{ field: valueField, method }],
+    aggregations: [aggSpec],
     filters: serverFilters,
     sortBy: 'agg_0',
     sortDir: 'desc',
