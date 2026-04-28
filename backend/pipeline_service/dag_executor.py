@@ -2020,7 +2020,7 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
 
     is_openai = provider_cfg.provider_type in OPENAI_COMPAT_TYPES
     llm_timeout_s = float(os.environ.get("LLM_CLASSIFY_TIMEOUT_S", "300"))
-    concurrency = max(1, int(os.environ.get("LLM_CLASSIFY_CONCURRENCY", "2")))
+    concurrency = max(1, int(os.environ.get("LLM_CLASSIFY_CONCURRENCY", "1")))
     if is_openai:
         client = make_openai_compat_client(provider_cfg, async_client=True)
     else:
@@ -2167,9 +2167,11 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
                 out.append(r)
             return out
 
-    # asyncio.gather preserves input order → output order matches input order
-    batch_results = await asyncio.gather(*[_run_batch(i, b) for i, b in enumerate(batches)])
-    enriched: list[dict] = [r for batch in batch_results for r in batch]
+    # Run batches sequentially — local models can only handle one at a time
+    enriched: list[dict] = []
+    for i, b in enumerate(batches):
+        result = await _run_batch(i, b)
+        enriched.extend(result)
 
     # Create Human Actions for CRITICO/URGENTE items
     if create_actions:
