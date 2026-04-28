@@ -48,7 +48,7 @@ const FILTER_OPS = [
   { value: 'is_not_null', label: 'is set' },
 ];
 
-const AGG_FUNCS = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'];
+const AGG_FUNCS = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'RUNTIME'];
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -346,7 +346,11 @@ const ChartView: React.FC<{
       name: String(r.group_key ?? r[groupBy || ''] ?? ''),
       value: Number(r.agg_value ?? 0),
     })).slice(0, 30);
-    label = aggregate ? `${aggregate.function}(${aggregate.field === '*' ? 'records' : aggregate.field})` : 'Value';
+    label = aggregate
+      ? aggregate.function === 'RUNTIME'
+        ? 'Runtime'
+        : `${aggregate.function}(${aggregate.field === '*' ? 'records' : aggregate.field})`
+      : 'Value';
   } else {
     // Compute client-side groupby
     const activeX = xField || fields[0] || '';
@@ -454,9 +458,25 @@ const ChartView: React.FC<{
             textAnchor="end"
             interval={0}
           />
-          <YAxis tick={{ fontSize: 11, fill: C.muted }} tickFormatter={(v) => fmtNum(v)} />
+          <YAxis tick={{ fontSize: 11, fill: C.muted }} tickFormatter={(v) => {
+            if (label === 'Runtime') {
+              if (v >= 3600) return `${(v / 3600).toFixed(1)}h`;
+              if (v >= 60) return `${(v / 60).toFixed(0)}m`;
+              return `${v}s`;
+            }
+            return fmtNum(v);
+          }} />
           <Tooltip
-            formatter={(v) => [fmtNum(v as number), label]}
+            formatter={(v) => {
+              const n = v as number;
+              if (label === 'Runtime') {
+                const s = Math.round(n);
+                if (s >= 3600) return [`${(s / 3600).toFixed(1)}h`, label];
+                if (s >= 60) return [`${(s / 60).toFixed(1)}m`, label];
+                return [`${s}s`, label];
+              }
+              return [fmtNum(n), label];
+            }}
             contentStyle={{ backgroundColor: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
           />
           <Bar dataKey="value" radius={[3, 3, 0, 0]}>
@@ -1210,6 +1230,7 @@ const DataExplorer: React.FC = () => {
   const [aggFunc, setAggFunc] = useState<AggregateSpec['function']>('COUNT');
   const [aggField, setAggField] = useState('*');
   const [aggGroupBy, setAggGroupBy] = useState('');
+  const [aggTsField, setAggTsField] = useState('');
   const [showAggPanel, setShowAggPanel] = useState(false);
 
   useEffect(() => {
@@ -1226,7 +1247,9 @@ const DataExplorer: React.FC = () => {
 
   const handleRun = useCallback((p = 1) => {
     if (showAggPanel && aggGroupBy) {
-      setAggregate({ function: aggFunc, field: aggField });
+      const spec: AggregateSpec = { function: aggFunc, field: aggField };
+      if (aggFunc === 'RUNTIME' && aggTsField) spec.ts_field = aggTsField;
+      setAggregate(spec);
       setGroupBy(aggGroupBy);
     } else {
       setAggregate(null);
@@ -1235,7 +1258,7 @@ const DataExplorer: React.FC = () => {
     setPage(p);
     runQuery(PAGE_SIZE, (p - 1) * PAGE_SIZE);
     if (showAggPanel && aggGroupBy) setActiveTab('chart');
-  }, [showAggPanel, aggFunc, aggField, aggGroupBy, runQuery, setAggregate, setGroupBy]);
+  }, [showAggPanel, aggFunc, aggField, aggGroupBy, aggTsField, runQuery, setAggregate, setGroupBy]);
 
   const handlePageChange = (p: number) => {
     setPage(p);
@@ -1452,8 +1475,17 @@ const DataExplorer: React.FC = () => {
                 </select>
                 {aggFunc !== 'COUNT' && (
                   <>
-                    <span style={{ fontSize: 11, color: C.muted }}>of</span>
+                    <span style={{ fontSize: 11, color: C.muted }}>{aggFunc === 'RUNTIME' ? 'status field' : 'of'}</span>
                     <select value={aggField} onChange={(e) => setAggField(e.target.value)} style={{ ...selectStyle, height: 28 }}>
+                      {fields.map((f) => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                  </>
+                )}
+                {aggFunc === 'RUNTIME' && (
+                  <>
+                    <span style={{ fontSize: 11, color: C.muted }}>timestamp</span>
+                    <select value={aggTsField} onChange={(e) => setAggTsField(e.target.value)} style={{ ...selectStyle, height: 28 }}>
+                      <option value="">Select field…</option>
                       {fields.map((f) => <option key={f} value={f}>{f}</option>)}
                     </select>
                   </>

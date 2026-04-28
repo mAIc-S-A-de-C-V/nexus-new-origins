@@ -18,11 +18,12 @@ export type TimeBucket =
   | 'minute' | '5_minutes' | '15_minutes' | '30_minutes'
   | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
 
-export type AggregateMethod = 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct';
+export type AggregateMethod = 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct' | 'runtime';
 
 export interface AggregateSpec {
   field?: string;
   method: AggregateMethod;
+  ts_field?: string;
 }
 
 export interface AggregateOptions {

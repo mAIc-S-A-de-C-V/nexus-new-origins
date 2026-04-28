@@ -11,8 +11,9 @@ export interface FilterRow {
 }
 
 export interface AggregateSpec {
-  function: 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX';
+  function: 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'RUNTIME';
   field: string;
+  ts_field?: string;
 }
 
 export interface ExplorerObjectType {

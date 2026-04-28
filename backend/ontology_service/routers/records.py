@@ -222,7 +222,7 @@ async def list_records(
 # ── Aggregate (server-side rollup for dashboard widgets) ───────────────────
 
 _FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
-_AGG_METHODS = {"count", "sum", "avg", "min", "max", "count_distinct"}
+_AGG_METHODS = {"count", "sum", "avg", "min", "max", "count_distinct", "runtime"}
 
 # Coarse buckets handled by Postgres date_trunc.
 _TRUNC_BUCKETS = {"hour", "day", "week", "month", "quarter", "year"}
@@ -253,6 +253,7 @@ def _safe_field(name: str) -> str:
 class AggregationSpec(BaseModel):
     field: Optional[str] = None
     method: str = "count"
+    ts_field: Optional[str] = None  # timestamp field (required for runtime)
 
 
 class TimeBucketSpec(BaseModel):
@@ -300,6 +301,7 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     if body.time_bucket and body.time_bucket.interval not in _BUCKETS:
         raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(_BUCKETS)}")
 
+    has_runtime = False
     for agg in body.aggregations:
         if agg.method not in _AGG_METHODS:
             raise HTTPException(status_code=400, detail=f"Unknown aggregation method: {agg.method}")
@@ -307,6 +309,11 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             raise HTTPException(status_code=400, detail=f"Aggregation '{agg.method}' requires a field")
         if agg.field:
             _safe_field(agg.field)
+        if agg.method == "runtime":
+            has_runtime = True
+            if not agg.ts_field:
+                raise HTTPException(status_code=400, detail="runtime aggregation requires ts_field")
+            _safe_field(agg.ts_field)
 
     select_parts: list[str] = []
     bind_params: dict[str, Any] = {"tid": tenant_id, "otid": ot_id}
@@ -383,9 +390,31 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     if not has_time and not has_group:
         select_parts.append("'_total' AS grp")
 
+    # runtime_cte_parts collects CTE column definitions when runtime agg is used.
+    runtime_cte_parts: list[tuple[int, str, str]] = []  # (index, status_expr, ts_safe)
+
     for i, agg in enumerate(body.aggregations):
         alias = f"agg_{i}"
-        if agg.method == "count":
+        if agg.method == "runtime":
+            f = _safe_field(agg.field)  # type: ignore[arg-type]
+            ts_f = _safe_field(agg.ts_field)  # type: ignore[arg-type]
+            status_expr = (
+                f"CASE WHEN data->>'{f}' ~ '^[01]$' "
+                f"THEN (data->>'{f}')::int ELSE 0 END"
+            )
+            ts_safe = (
+                f"(CASE WHEN data->>'{ts_f}' ~ "
+                f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+                f"THEN NULLIF(data->>'{ts_f}', '')::timestamptz "
+                f"ELSE NULL END)"
+            )
+            runtime_cte_parts.append((i, status_expr, ts_safe))
+            # Placeholder — replaced by CTE-based query below
+            select_parts.append(
+                f"COALESCE(SUM(CASE WHEN _rt_status_{i} = 1 "
+                f"THEN _rt_delta_{i} ELSE 0 END), 0) AS {alias}"
+            )
+        elif agg.method == "count":
             select_parts.append(f"COUNT(*) AS {alias}")
         elif agg.method == "count_distinct":
             f = _safe_field(agg.field)  # type: ignore[arg-type]
@@ -555,7 +584,46 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     if series_clause:
         group_by_cols.append("series")
 
-    if group_by_cols:
+    # ── Build final SQL, wrapping in a CTE when runtime agg is present ─────
+    if runtime_cte_parts:
+        # Build CTE that adds per-row LEAD-based time deltas and status cols.
+        # The partition for LEAD uses the group_by field so deltas stay within
+        # each group (e.g. per sensor).
+        partition_expr = group_clause or "'_all'"
+        cte_extra_cols = []
+        for idx, status_expr, ts_safe in runtime_cte_parts:
+            cte_extra_cols.append(f"{status_expr} AS _rt_status_{idx}")
+            cte_extra_cols.append(
+                f"EXTRACT(EPOCH FROM ("
+                f"LEAD({ts_safe}) OVER (PARTITION BY {partition_expr} ORDER BY {ts_safe}) "
+                f"- {ts_safe})) AS _rt_delta_{idx}"
+            )
+        cte_cols_sql = ", ".join(cte_extra_cols)
+
+        if group_by_cols:
+            sql = (
+                f"WITH _rt AS ("
+                f"SELECT *, {cte_cols_sql} "
+                f"FROM object_records "
+                f"WHERE {where_sql}"
+                f") "
+                f"SELECT {', '.join(select_parts)} "
+                f"FROM _rt "
+                f"GROUP BY {', '.join(group_by_cols)} "
+                f"{order_sql} "
+                f"LIMIT {safe_limit}"
+            )
+        else:
+            sql = (
+                f"WITH _rt AS ("
+                f"SELECT *, {cte_cols_sql} "
+                f"FROM object_records "
+                f"WHERE {where_sql}"
+                f") "
+                f"SELECT {', '.join(select_parts)} "
+                f"FROM _rt"
+            )
+    elif group_by_cols:
         sql = (
             f"SELECT {', '.join(select_parts)} "
             f"FROM object_records "

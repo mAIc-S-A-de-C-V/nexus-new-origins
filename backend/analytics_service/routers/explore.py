@@ -21,8 +21,9 @@ class FilterRow(BaseModel):
 
 
 class AggregateSpec(BaseModel):
-    function: str = "COUNT"   # COUNT | SUM | AVG | MIN | MAX
+    function: str = "COUNT"   # COUNT | SUM | AVG | MIN | MAX | RUNTIME
     field: str = "*"
+    ts_field: str | None = None  # timestamp field (required for RUNTIME)
 
 
 class OrderSpec(BaseModel):

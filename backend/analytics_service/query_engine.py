@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 VALID_OPS = {"eq", "neq", "gt", "gte", "lt", "lte", "contains", "starts_with", "is_null", "is_not_null"}
-VALID_AGG_FUNCS = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
+VALID_AGG_FUNCS = {"COUNT", "SUM", "AVG", "MIN", "MAX", "RUNTIME"}
 VALID_DIRECTIONS = {"asc", "desc"}
 
 
@@ -102,40 +102,106 @@ async def run_explore_query(
         agg_field = aggregate.get("field", "*")
         group_field_expr = _field_expr(group_by)
 
-        if agg_func == "COUNT":
-            agg_expr = "COUNT(*)"
-        else:
-            af_expr = _field_expr(agg_field)
-            agg_expr = f"{agg_func}(({af_expr})::numeric)"
-
-        # Count query
-        count_sql = text(f"""
-            SELECT COUNT(DISTINCT {group_field_expr}) AS cnt
-            FROM object_records
-            WHERE {where_sql}
-        """)
-        count_result = await session.execute(count_sql, params)
-        total = count_result.scalar() or 0
-
         direction = "DESC"
         if order_by:
             d = order_by.get("direction", "desc").upper()
             if d in ("ASC", "DESC"):
                 direction = d
 
-        data_sql = text(f"""
-            SELECT {group_field_expr} AS group_key, {agg_expr} AS agg_value
-            FROM object_records
-            WHERE {where_sql}
-            GROUP BY {group_field_expr}
-            ORDER BY agg_value {direction}
-            LIMIT :limit OFFSET :offset
-        """)
-        params["limit"] = min(limit, 1000)
-        params["offset"] = offset
-        result = await session.execute(data_sql, params)
-        rows = [{"group_key": r.group_key, "agg_value": r.agg_value} for r in result]
-        columns = ["group_key", "agg_value"]
+        if agg_func == "RUNTIME":
+            # RUNTIME aggregation: sums the time intervals where a 0/1 status
+            # field equals 1. Uses LEAD() to compute the delta between
+            # consecutive readings partitioned by the group_by field, ordered
+            # by ts_field. Result is in seconds.
+            ts_field = aggregate.get("ts_field") or "time"
+            status_expr = _field_expr(agg_field)
+            ts_expr = _field_expr(ts_field)
+            ts_safe = (
+                f"(CASE WHEN {ts_expr} ~ "
+                f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+                f"THEN NULLIF({ts_expr}, '')::timestamptz "
+                f"ELSE NULL END)"
+            )
+            status_safe = (
+                f"CASE WHEN {status_expr} ~ '^[01]$' "
+                f"THEN ({status_expr})::int ELSE 0 END"
+            )
+
+            count_sql = text(f"""
+                SELECT COUNT(DISTINCT {group_field_expr}) AS cnt
+                FROM object_records
+                WHERE {where_sql}
+            """)
+            count_result = await session.execute(count_sql, params)
+            total = count_result.scalar() or 0
+
+            data_sql = text(f"""
+                WITH deltas AS (
+                    SELECT
+                        {group_field_expr} AS group_key,
+                        {status_safe} AS status_val,
+                        EXTRACT(EPOCH FROM (
+                            LEAD({ts_safe}) OVER (
+                                PARTITION BY {group_field_expr}
+                                ORDER BY {ts_safe}
+                            ) - {ts_safe}
+                        )) AS delta_seconds
+                    FROM object_records
+                    WHERE {where_sql}
+                )
+                SELECT group_key,
+                       COALESCE(SUM(CASE WHEN status_val = 1 THEN delta_seconds ELSE 0 END), 0) AS agg_value
+                FROM deltas
+                WHERE group_key IS NOT NULL
+                GROUP BY group_key
+                ORDER BY agg_value {direction}
+                LIMIT :limit OFFSET :offset
+            """)
+            params["limit"] = min(limit, 1000)
+            params["offset"] = offset
+            result = await session.execute(data_sql, params)
+            rows_raw = result.fetchall()
+            rows = []
+            for r in rows_raw:
+                secs = float(r.agg_value) if r.agg_value else 0
+                if secs >= 3600:
+                    label = f"{secs / 3600:.1f}h"
+                elif secs >= 60:
+                    label = f"{secs / 60:.1f}m"
+                else:
+                    label = f"{secs:.0f}s"
+                rows.append({"group_key": r.group_key, "agg_value": secs, "agg_label": label})
+            columns = ["group_key", "agg_value", "agg_label"]
+
+        else:
+            if agg_func == "COUNT":
+                agg_expr = "COUNT(*)"
+            else:
+                af_expr = _field_expr(agg_field)
+                agg_expr = f"{agg_func}(({af_expr})::numeric)"
+
+            # Count query
+            count_sql = text(f"""
+                SELECT COUNT(DISTINCT {group_field_expr}) AS cnt
+                FROM object_records
+                WHERE {where_sql}
+            """)
+            count_result = await session.execute(count_sql, params)
+            total = count_result.scalar() or 0
+
+            data_sql = text(f"""
+                SELECT {group_field_expr} AS group_key, {agg_expr} AS agg_value
+                FROM object_records
+                WHERE {where_sql}
+                GROUP BY {group_field_expr}
+                ORDER BY agg_value {direction}
+                LIMIT :limit OFFSET :offset
+            """)
+            params["limit"] = min(limit, 1000)
+            params["offset"] = offset
+            result = await session.execute(data_sql, params)
+            rows = [{"group_key": r.group_key, "agg_value": r.agg_value} for r in result]
+            columns = ["group_key", "agg_value"]
 
     else:
         # Raw records query
