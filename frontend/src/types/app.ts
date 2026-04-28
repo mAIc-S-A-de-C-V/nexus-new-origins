@@ -90,7 +90,8 @@ export interface AppComponent {
   widgetSourceIds?: string[];   // chat-widget: sibling widget IDs as context
   // metric-card / kpi-banner
   field?: string;
-  aggregation?: 'count' | 'sum' | 'avg' | 'max' | 'min';
+  aggregation?: 'count' | 'sum' | 'avg' | 'max' | 'min' | 'runtime';
+  tsField?: string; // timestamp field for runtime aggregation
   // data-table
   columns?: string[];
   maxRows?: number;

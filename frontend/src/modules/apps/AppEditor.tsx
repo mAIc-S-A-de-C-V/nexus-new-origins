@@ -987,7 +987,7 @@ const FilterBuilder: React.FC<{
 
 // ── Right config panel ────────────────────────────────────────────────────────
 
-const AGG_OPTIONS = ['count', 'sum', 'avg', 'max', 'min'];
+const AGG_OPTIONS = ['count', 'sum', 'avg', 'max', 'min', 'runtime'];
 const COLSPAN_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
 // CRITICAL: these are at module scope on purpose. If you move them inside
@@ -1807,8 +1807,14 @@ const ConfigPanel: React.FC<{
                 <option value="avg">Average</option>
                 <option value="min">Min</option>
                 <option value="max">Max</option>
+                <option value="runtime">Runtime</option>
               </select>
             </Row>
+            {comp.aggregation === 'runtime' && (
+              <Row label="TIMESTAMP FIELD">
+                <FieldPicker value={comp.tsField} onPick={(f) => set({ tsField: f })} />
+              </Row>
+            )}
           </>
         )}
 

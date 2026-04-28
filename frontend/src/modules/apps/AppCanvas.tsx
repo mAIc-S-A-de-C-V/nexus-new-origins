@@ -2433,10 +2433,12 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
   const method = comp.aggregation || (valueField ? 'sum' : 'count');
   const rangeFilter = rangeToFilter(comp.xAxisRange, xField, comp.xAxisCustomStart, comp.xAxisCustomEnd, tz);
   const mergedFilters = rangeFilter ? { ...(serverFilters || {}), ...rangeFilter } : serverFilters;
+  const aggSpec: AggregateSpec = { field: valueField, method: method as AggregateSpec['method'] };
+  if (method === 'runtime' && comp.tsField) aggSpec.ts_field = comp.tsField;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
     timeBucket: { field: xField, interval },
-    aggregations: [{ field: valueField, method: method as AggregateSpec['method'] }],
+    aggregations: [aggSpec],
     filters: mergedFilters,
     sortBy: 'group',
     sortDir: 'asc',

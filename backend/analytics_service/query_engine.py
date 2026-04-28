@@ -123,8 +123,8 @@ async def run_explore_query(
                 f"ELSE NULL END)"
             )
             status_safe = (
-                f"CASE WHEN {status_expr} ~ '^[01]$' "
-                f"THEN ({status_expr})::int ELSE 0 END"
+                f"CASE WHEN {status_expr} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                f"THEN ({status_expr})::numeric ELSE 0 END"
             )
 
             count_sql = text(f"""
@@ -150,7 +150,7 @@ async def run_explore_query(
                     WHERE {where_sql}
                 )
                 SELECT group_key,
-                       COALESCE(SUM(CASE WHEN status_val = 1 THEN delta_seconds ELSE 0 END), 0) AS agg_value
+                       COALESCE(SUM(CASE WHEN status_val >= 1 THEN delta_seconds ELSE 0 END), 0) AS agg_value
                 FROM deltas
                 WHERE group_key IS NOT NULL
                 GROUP BY group_key

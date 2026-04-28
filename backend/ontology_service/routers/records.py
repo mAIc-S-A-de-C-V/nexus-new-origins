@@ -399,8 +399,8 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             f = _safe_field(agg.field)  # type: ignore[arg-type]
             ts_f = _safe_field(agg.ts_field)  # type: ignore[arg-type]
             status_expr = (
-                f"CASE WHEN data->>'{f}' ~ '^[01]$' "
-                f"THEN (data->>'{f}')::int ELSE 0 END"
+                f"CASE WHEN data->>'{f}' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                f"THEN (data->>'{f}')::numeric ELSE 0 END"
             )
             ts_safe = (
                 f"(CASE WHEN data->>'{ts_f}' ~ "
@@ -411,7 +411,7 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             runtime_cte_parts.append((i, status_expr, ts_safe))
             # Placeholder — replaced by CTE-based query below
             select_parts.append(
-                f"COALESCE(SUM(CASE WHEN _rt_status_{i} = 1 "
+                f"COALESCE(SUM(CASE WHEN _rt_status_{i} >= 1 "
                 f"THEN _rt_delta_{i} ELSE 0 END), 0) AS {alias}"
             )
         elif agg.method == "count":
