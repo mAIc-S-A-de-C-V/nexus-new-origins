@@ -1951,7 +1951,10 @@ async def _llm_classify(node, records_in: list[dict], pipeline: Pipeline) -> lis
       createActions — if true, create Human Actions for CRITICO/URGENTE items (default: true)
     """
     import json as _json
-    import anthropic
+    from shared.llm_router import (
+        resolve_provider_for_model, make_async_anthropic_client,
+        make_openai_compat_client, OPENAI_COMPAT_TYPES, _to_openai_messages,
+    )
 
     cfg = node.config or {}
     text_field = cfg.get("textField") or cfg.get("text_field") or "text"
@@ -2008,14 +2011,20 @@ Si es OPERATIVIDAD (patrullaje, charla, seguridad escolar sin incidentes): devue
 
 Responde SOLO con el JSON. Sin texto adicional."""
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        logger.error("[LLM_CLASSIFY] ANTHROPIC_API_KEY not set — skipping classification")
+    tenant_id = pipeline.tenant_id or "tenant-001"
+    provider_cfg = await resolve_provider_for_model(tenant_id, model)
+    if not provider_cfg.api_key and provider_cfg.provider_type != "local":
+        logger.error("[LLM_CLASSIFY] No API key for provider %s — skipping classification", provider_cfg.provider_type)
         return records_in
 
+    is_openai = provider_cfg.provider_type in OPENAI_COMPAT_TYPES
     llm_timeout_s = float(os.environ.get("LLM_CLASSIFY_TIMEOUT_S", "120"))
     concurrency = max(1, int(os.environ.get("LLM_CLASSIFY_CONCURRENCY", "8")))
-    client = anthropic.AsyncAnthropic(api_key=api_key, timeout=llm_timeout_s)
+    if is_openai:
+        client = make_openai_compat_client(provider_cfg, async_client=True)
+    else:
+        client = make_async_anthropic_client(provider_cfg)
+    logger.info("[LLM_CLASSIFY] Using provider=%s type=%s model=%s", provider_cfg.provider_name or "env", provider_cfg.provider_type, provider_cfg.model)
 
     # Pre-filter: DROP records with no text entirely (reactions, read receipts,
     # decryption failures with message_type "other", etc.).  These are noise —
@@ -2058,22 +2067,38 @@ Responde SOLO con el JSON. Sin texto adicional."""
 
         try:
             async with semaphore:
-                resp = await asyncio.wait_for(
-                    client.messages.create(
-                        model=model,
-                        max_tokens=4096,
-                        temperature=0.1,
-                        system=system_prompt,
-                        messages=[{"role": "user", "content": user_msg}],
-                    ),
-                    timeout=llm_timeout_s + 5,
-                )
+                if is_openai:
+                    oai_resp = await asyncio.wait_for(
+                        client.chat.completions.create(
+                            model=provider_cfg.model,
+                            max_tokens=4096,
+                            temperature=0.1,
+                            messages=_to_openai_messages(system_prompt, [{"role": "user", "content": user_msg}]),
+                        ),
+                        timeout=llm_timeout_s + 5,
+                    )
+                    raw_text = (oai_resp.choices[0].message.content or "").strip()
+                    usage = getattr(oai_resp, "usage", None)
+                    in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
+                    out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
+                else:
+                    resp = await asyncio.wait_for(
+                        client.messages.create(
+                            model=provider_cfg.model,
+                            max_tokens=4096,
+                            temperature=0.1,
+                            system=system_prompt,
+                            messages=[{"role": "user", "content": user_msg}],
+                        ),
+                        timeout=llm_timeout_s + 5,
+                    )
+                    raw_text = resp.content[0].text.strip()
+                    in_tok = resp.usage.input_tokens
+                    out_tok = resp.usage.output_tokens
             track_token_usage(
-                pipeline.tenant_id or "unknown", "pipeline_service", model,
-                resp.usage.input_tokens, resp.usage.output_tokens,
+                pipeline.tenant_id or "unknown", "pipeline_service", provider_cfg.model,
+                in_tok, out_tok,
             )
-
-            raw_text = resp.content[0].text.strip()
             json_text = raw_text
             if "```" in json_text:
                 match = re.search(r"```(?:json)?\s*([\s\S]*?)```", json_text)

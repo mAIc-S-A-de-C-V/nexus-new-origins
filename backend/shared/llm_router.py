@@ -75,6 +75,55 @@ def _default_model_for(provider_type: str, models_list: list) -> str:
     return DEFAULT_ANTHROPIC_MODEL
 
 
+async def resolve_provider_for_model(
+    tenant_id: str,
+    model_id: str,
+) -> ProviderConfig:
+    """Resolve which provider owns a given model ID.
+
+    Scans the tenant's enabled providers looking for one whose ``models``
+    JSON array contains an entry with ``{"id": model_id}``.  Falls back to
+    ``resolve_provider`` (default provider) if no match is found.  Built-in
+    Claude model IDs (starting with ``claude-``) short-circuit to the env
+    fallback so they always use the Anthropic API key.
+    """
+    if not model_id or model_id.startswith("claude-"):
+        return _env_fallback(model_id)
+
+    try:
+        from sqlalchemy import text
+        engine = _get_engine()
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT id, name, provider_type, api_key_encrypted, base_url, models, enabled "
+                    "FROM model_providers "
+                    "WHERE tenant_id = :t AND enabled = true"
+                ),
+                {"t": tenant_id},
+            )
+            for row in result:
+                pid, pname, ptype, key, base_url, models_list, enabled = row
+                for m in (models_list or []):
+                    mid = m.get("id") if isinstance(m, dict) else m
+                    if mid == model_id:
+                        api_key = (key or "").strip()
+                        if not api_key and ptype != "local":
+                            api_key = os.environ.get("ANTHROPIC_API_KEY", "") if ptype == "anthropic" else ""
+                        return ProviderConfig(
+                            provider_type=ptype,
+                            api_key=api_key,
+                            base_url=base_url,
+                            model=model_id,
+                            provider_id=pid,
+                            provider_name=pname,
+                        )
+    except Exception as exc:
+        logger.warning("resolve_provider_for_model failed for tenant=%s model=%s: %s", tenant_id, model_id, exc)
+
+    return _env_fallback(model_id)
+
+
 async def resolve_provider(
     tenant_id: str,
     provider_id: Optional[str] = None,
