@@ -2019,8 +2019,8 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
         return records_in
 
     is_openai = provider_cfg.provider_type in OPENAI_COMPAT_TYPES
-    llm_timeout_s = float(os.environ.get("LLM_CLASSIFY_TIMEOUT_S", "120"))
-    concurrency = max(1, int(os.environ.get("LLM_CLASSIFY_CONCURRENCY", "8")))
+    llm_timeout_s = float(os.environ.get("LLM_CLASSIFY_TIMEOUT_S", "300"))
+    concurrency = max(1, int(os.environ.get("LLM_CLASSIFY_CONCURRENCY", "2")))
     if is_openai:
         client = make_openai_compat_client(provider_cfg, async_client=True)
     else:
