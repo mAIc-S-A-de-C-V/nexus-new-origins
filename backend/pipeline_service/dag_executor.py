@@ -414,6 +414,7 @@ class DagExecutor:
             ))
 
         except Exception as e:
+            logger.error("Pipeline %s FAILED: %s", pipeline.id, e, exc_info=True)
             finished_at = datetime.now(timezone.utc).isoformat()
             run.update({
                 "status": "FAILED",
