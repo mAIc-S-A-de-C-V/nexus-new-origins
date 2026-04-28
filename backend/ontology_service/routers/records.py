@@ -587,9 +587,11 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     # ── Build final SQL, wrapping in a CTE when runtime agg is present ─────
     if runtime_cte_parts:
         # Build CTE that adds per-row LEAD-based time deltas and status cols.
-        # The partition for LEAD uses the group_by field so deltas stay within
-        # each group (e.g. per sensor).
-        partition_expr = group_clause or "'_all'"
+        # Partition by the categorical dimension (series in pivot mode, or the
+        # group_clause when group_by is the only dim) so each LEAD picks the
+        # NEXT event from the same sensor — never a different sensor's row that
+        # happens to fall in the same time bucket.
+        partition_expr = series_clause or group_clause or "'_all'"
         cte_extra_cols = []
         for idx, status_expr, ts_safe in runtime_cte_parts:
             cte_extra_cols.append(f"{status_expr} AS _rt_status_{idx}")
