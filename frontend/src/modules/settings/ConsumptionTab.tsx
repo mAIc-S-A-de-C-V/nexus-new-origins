@@ -69,6 +69,11 @@ interface LiveUsage {
   agents_active: number;
   pipelines_total: number;
   pipelines_running: number;
+  storage_bytes: number;
+  concurrent_users: number;
+  daily_active_users: number;
+  rag_corpus_bytes: number | null;   // null = not configured
+  db_connections_process: number;
 }
 
 // Fallback values used only while loading or if the endpoint is unreachable.
@@ -79,14 +84,8 @@ const FALLBACK_USAGE: LiveUsage = {
   daily_history: [],
   ontology_records: 0, agents_total: 0, agents_active: 0,
   pipelines_total: 0, pipelines_running: 0,
-};
-
-// These are not yet measured per-tenant on the backend. Marked ESTIMATED in UI.
-const ESTIMATED = {
-  concurrentUsersPeak: 67,   // would need session tracker
-  ragCorpusGB: 7.2,          // would need vector-store size endpoint
-  dbConnectionsPeak: 287,    // pg_stat_activity is process-wide, not tenant-scoped
-  storageGB: 287,            // pg_database_size is process-wide
+  storage_bytes: 0, concurrent_users: 0, daily_active_users: 0,
+  rag_corpus_bytes: null, db_connections_process: 0,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -170,6 +169,65 @@ const UsageMetric: React.FC<{
   );
 };
 
+// Shown when a feature isn't deployed/applicable for this tenant — honest "—" instead of fake.
+const UsageMetricNotConfigured: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  reason?: string;
+}> = ({ icon, label, reason }) => (
+  <div style={{
+    padding: '14px 16px', backgroundColor: C.panel,
+    border: `1px dashed ${C.border}`, borderRadius: 6,
+    position: 'relative',
+  }}>
+    <span style={{
+      position: 'absolute', top: 8, right: 8,
+      fontSize: 8.5, fontWeight: 700, letterSpacing: '0.06em',
+      padding: '2px 5px', borderRadius: 3,
+      backgroundColor: '#F1F5F9', color: C.muted,
+    }}>
+      N/A
+    </span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: C.muted, marginBottom: 8 }}>
+      {icon}
+      <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em' }}>{label.toUpperCase()}</span>
+    </div>
+    <div style={{ fontSize: 22, fontWeight: 700, color: C.dim, fontFamily: 'monospace' }}>—</div>
+    <div style={{ fontSize: 10.5, color: C.dim, fontStyle: 'italic', marginTop: 6 }}>
+      {reason || 'Not configured'}
+    </div>
+  </div>
+);
+
+// Shown for measurements that are real but not tenant-scoped (e.g. process-wide DB conns).
+const UsageMetricInfo: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  current: number;
+  note: string;
+}> = ({ icon, label, current, note }) => (
+  <div style={{
+    padding: '14px 16px', backgroundColor: C.panel,
+    border: `1px solid ${C.border}`, borderRadius: 6,
+    position: 'relative',
+  }}>
+    <span style={{
+      position: 'absolute', top: 8, right: 8,
+      fontSize: 8.5, fontWeight: 700, letterSpacing: '0.06em',
+      padding: '2px 5px', borderRadius: 3,
+      backgroundColor: '#DBEAFE', color: '#1E40AF',
+    }}>
+      INFO
+    </span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: C.muted, marginBottom: 8 }}>
+      {icon}
+      <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em' }}>{label.toUpperCase()}</span>
+    </div>
+    <div style={{ fontSize: 22, fontWeight: 700, color: C.text, fontFamily: 'monospace' }}>{current}</div>
+    <div style={{ fontSize: 10.5, color: C.muted, fontStyle: 'italic', marginTop: 6 }}>{note}</div>
+  </div>
+);
+
 // Inline 30-day sparkline / bar chart
 const TokenChart: React.FC<{ data: number[]; limit: number }> = ({ data, limit }) => {
   const max = Math.max(limit, ...data) * 1.05;
@@ -250,13 +308,17 @@ const computeSaturation = (usage: LiveUsage): SaturationRow[] => {
   const tokenPct = (projectedMonthlyTokens / tier.tokensPerMonthM) * 100;
   const agentPct = (usage.agents_active / (tier.agents as number)) * 100;
 
+  const storageMB = usage.storage_bytes / 1_048_576;
+  const storageGBLimit = tier.storageGB;
+  const storagePct = (storageMB / 1024) / storageGBLimit * 100;
+  const dbProcessPct = usage.db_connections_process;  // raw count; treat as informational, no fixed limit
+
   return [
     { resource: 'Tokens (bucket)',    utilization: tokenPct, status: tokenPct > 85 ? 'critical' : tokenPct > 60 ? 'watch' : 'healthy', signal: `Projected EOM: ${projectedMonthlyTokens.toFixed(0)}M / ${tier.tokensPerMonthM}M`, remediation: 'Activate aggressive caching · route more to Haiku · upgrade tier' },
-    { resource: 'App tier (compute)', utilization: 42, status: 'healthy', signal: 'CPU avg 42% (peak 71%) · estimated', remediation: 'Auto Scaling responds <90s' },
-    { resource: 'Database',           utilization: (ESTIMATED.dbConnectionsPeak / (tier.dbConnections as number)) * 100, status: 'healthy', signal: `${ESTIMATED.dbConnectionsPeak}/${tier.dbConnections} connections · estimated`, remediation: 'Add read replica · vacuum schedule' },
-    { resource: 'Vector store / RAG', utilization: (ESTIMATED.ragCorpusGB / tier.ragGB) * 100, status: (ESTIMATED.ragCorpusGB / tier.ragGB) > 0.7 ? 'watch' : 'healthy', signal: `Retrieval P95: 412ms · estimated`, remediation: 'Increase OCU · pre-filter queries' },
-    { resource: 'Cache (Redis)',      utilization: 68, status: 'watch',   signal: 'Hit rate 71% · evictions rising · estimated', remediation: 'Upgrade memory · tune TTL' },
-    { resource: 'Network',            utilization: 23, status: 'healthy', signal: 'VPN HA 23% sustained · estimated', remediation: 'Headroom 4× current load' },
+    { resource: 'Storage (records)',  utilization: storagePct, status: storagePct > 85 ? 'critical' : storagePct > 60 ? 'watch' : 'healthy', signal: `${storageMB.toFixed(2)} MB of object_records payload · ${storageGBLimit} GB allowance`, remediation: 'Archive cold partitions · enable compression' },
+    { resource: 'Database (process)', utilization: Math.min(dbProcessPct, 100), status: dbProcessPct > 70 ? 'watch' : 'healthy', signal: `${usage.db_connections_process} active connections (process-wide via pg_stat_activity)`, remediation: 'Add read replica · pgbouncer pool' },
+    { resource: 'Vector store / RAG', utilization: 0, status: 'healthy', signal: usage.rag_corpus_bytes === null ? 'Not configured on this deployment' : `${(usage.rag_corpus_bytes / 1_073_741_824).toFixed(2)} GB`, remediation: usage.rag_corpus_bytes === null ? '— no action needed' : 'Increase OCU · pre-filter queries' },
+    { resource: 'Concurrent users',   utilization: (usage.concurrent_users / (tier.concurrentUsers as number)) * 100, status: 'healthy', signal: `${usage.concurrent_users} active in last 60s · ${usage.daily_active_users} today (from audit_events)`, remediation: 'Scale app tier if sustained > 70%' },
     { resource: 'Agent runtime',      utilization: agentPct, status: agentPct > 70 ? 'watch' : 'healthy', signal: `${usage.agents_active}/${tier.agents} agents enabled · ${usage.pipelines_running} pipelines running`, remediation: 'Larger pool · stateless mode' },
   ];
 };
@@ -506,8 +568,10 @@ export const ConsumptionTab: React.FC = () => {
         </div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
           Real-time monitoring of bucket consumption against your contracted Tier {currentTier} allowance.
-          Tokens · invocations · agents · ontology records · pipelines come from <code style={{ fontFamily: 'monospace' }}>/admin/me/consumption</code>.
-          Concurrent users · RAG corpus · DB connections · storage are still estimated (not yet measured per-tenant).
+          All values come from <code style={{ fontFamily: 'monospace' }}>/admin/me/consumption</code>: tokens from <code>token_usage</code>,
+          records from <code>object_records</code>, agents from <code>agent_configs</code>, pipelines from <code>pipeline_runs</code>,
+          concurrent users from <code>audit_events</code>, storage via <code>pg_column_size</code>.
+          DB connections is process-wide (no tenant scope). RAG corpus shows N/A because no vector store is deployed in this stack.
         </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -635,17 +699,18 @@ export const ConsumptionTab: React.FC = () => {
         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
         gap: 10, marginBottom: 24,
       }}>
-        <UsageMetric source="live" icon={<Zap size={13} />}        label="Tokens (mes)"        current={tokensMonthM}              limit={tier.tokensPerMonthM} unit="M" formatter={(n) => n.toFixed(1)} />
-        <UsageMetric source="live" icon={<TrendingUp size={13} />} label="Tokens (hoy)"        current={tokensTodayM}              limit={tier.tokensPerDayM}   unit="M" formatter={(n) => n.toFixed(2)} />
+        <UsageMetric source="live" icon={<Zap size={13} />}        label="Tokens (month)"      current={tokensMonthM}              limit={tier.tokensPerMonthM} unit="M" formatter={(n) => n.toFixed(1)} />
+        <UsageMetric source="live" icon={<TrendingUp size={13} />} label="Tokens (today)"      current={tokensTodayM}              limit={tier.tokensPerDayM}   unit="M" formatter={(n) => n.toFixed(2)} />
         <UsageMetric source="live" icon={<Bot size={13} />}        label="Active agents"       current={usage.agents_active}       limit={tier.agents as number} />
-        <UsageMetric source="live" icon={<Clock size={13} />}      label="Invocations (hoy)"   current={usage.invocations_today}   limit={tier.invocationsPerDay} formatter={fmtCompact} />
+        <UsageMetric source="live" icon={<Clock size={13} />}      label="Invocations (today)" current={usage.invocations_today}   limit={tier.invocationsPerDay} formatter={fmtCompact} />
         <UsageMetric source="live" icon={<Database size={13} />}   label="Ontology records"    current={usage.ontology_records}    limit={tier.ontologyRecords} formatter={fmtCompact} />
         <UsageMetric source="live" icon={<Workflow size={13} />}   label="Pipelines running"   current={usage.pipelines_running}   limit={tier.pipelinesParallel as number} />
+        <UsageMetric source="live" icon={<Users size={13} />}      label="Concurrent users"    current={usage.concurrent_users}    limit={tier.concurrentUsers} />
+        <UsageMetric source="live" icon={<HardDrive size={13} />}  label="Storage"             current={usage.storage_bytes / 1_073_741_824} limit={tier.storageGB} unit=" GB" formatter={(n) => n < 0.01 ? n.toFixed(3) : n.toFixed(2)} />
 
-        <UsageMetric source="estimated" icon={<Users size={13} />}     label="Concurrent users"    current={ESTIMATED.concurrentUsersPeak} limit={tier.concurrentUsers} />
-        <UsageMetric source="estimated" icon={<FileText size={13} />}  label="RAG corpus"          current={ESTIMATED.ragCorpusGB}      limit={tier.ragGB} unit=" GB" formatter={(n) => n.toFixed(1)} />
-        <UsageMetric source="estimated" icon={<Database size={13} />}  label="DB connections"      current={ESTIMATED.dbConnectionsPeak} limit={tier.dbConnections} />
-        <UsageMetric source="estimated" icon={<HardDrive size={13} />} label="Storage"             current={ESTIMATED.storageGB}        limit={tier.storageGB} unit=" GB" />
+        {/* RAG: not configured on this deployment — show as honest "—" instead of fake bar. */}
+        <UsageMetricNotConfigured icon={<FileText size={13} />} label="RAG corpus" reason={usage.rag_corpus_bytes === null ? 'Vector store not deployed' : undefined} />
+        <UsageMetricInfo icon={<Database size={13} />} label="DB connections" current={usage.db_connections_process} note="process-wide" />
       </div>
 
       {/* Saturation analysis */}

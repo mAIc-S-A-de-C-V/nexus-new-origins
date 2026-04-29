@@ -343,16 +343,38 @@ async def my_consumption(user: AuthUser = Depends(require_auth)):
         except Exception:
             return 0
 
-    records, agents_total, agents_enabled, pipelines_total, pipelines_running = await asyncio.gather(
+    (
+        records, agents_total, agents_enabled,
+        pipelines_total, pipelines_running,
+        storage_bytes, concurrent_actors_60s, distinct_users_today,
+    ) = await asyncio.gather(
         safe_count("SELECT COUNT(*) FROM object_records WHERE tenant_id = $1"),
         safe_count("SELECT COUNT(*) FROM agent_configs WHERE tenant_id = $1"),
         safe_count("SELECT COUNT(*) FROM agent_configs WHERE tenant_id = $1 AND enabled = TRUE"),
         safe_count("SELECT COUNT(*) FROM pipelines WHERE tenant_id = $1"),
         safe_count("SELECT COUNT(*) FROM pipeline_runs WHERE tenant_id = $1 AND status IN ('RUNNING','PENDING','QUEUED')"),
+        # Real per-tenant storage from row payload byte sizes (object_records is the dominant table)
+        safe_count("SELECT COALESCE(SUM(pg_column_size(data))::bigint, 0) FROM object_records WHERE tenant_id = $1"),
+        # Distinct actors in audit log over the last 60 seconds = concurrent users
+        safe_count("SELECT COUNT(DISTINCT actor_id) FROM audit_events WHERE tenant_id = $1 AND occurred_at > NOW() - INTERVAL '60 seconds'"),
+        # Distinct actors active today = total daily active users
+        safe_count("SELECT COUNT(DISTINCT actor_id) FROM audit_events WHERE tenant_id = $1 AND occurred_at >= date_trunc('day', NOW())"),
     )
 
     bucket_row = await pool.fetchrow("SELECT bucket_tier FROM tenants WHERE id = $1", tid)
     bucket_tier = bucket_row["bucket_tier"] if bucket_row else "S"
+
+    # DB connection count is process-wide (pg_stat_activity), not tenant-scoped.
+    try:
+        db_active = await pool.fetchval(
+            "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() AND state IS NOT NULL"
+        ) or 0
+    except Exception:
+        db_active = 0
+
+    # Vector store / RAG: the platform doesn't ship one. Report null so the UI
+    # can render "Not configured" instead of a fake bar.
+    rag_corpus_bytes = None
 
     return {
         "tenant_id": tid,
@@ -374,6 +396,12 @@ async def my_consumption(user: AuthUser = Depends(require_auth)):
         "agents_active": agents_enabled,
         "pipelines_total": pipelines_total,
         "pipelines_running": pipelines_running,
+        # New: real measurements replacing the prior estimates.
+        "storage_bytes": int(storage_bytes or 0),
+        "concurrent_users": int(concurrent_actors_60s or 0),
+        "daily_active_users": int(distinct_users_today or 0),
+        "rag_corpus_bytes": rag_corpus_bytes,            # null = not configured on this deployment
+        "db_connections_process": int(db_active or 0),   # process-wide, not tenant-scoped
     }
 
 
