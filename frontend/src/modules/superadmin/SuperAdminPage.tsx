@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Building2, Activity, BarChart3, Users, RefreshCw,
-  Shield, Globe, Trash2, ChevronRight, Plus, UserPlus, X,
+  Shield, Globe, Trash2, Plus, UserPlus, X,
 } from 'lucide-react';
 import { getAccessToken } from '../../store/authStore';
 import { usePermission } from '../../hooks/usePermission';
@@ -184,18 +184,9 @@ const TenantsTab: React.FC = () => {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [usage, setUsage] = useState<Record<string, TenantUsage>>({});
   const [loading, setLoading] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ name: '', slug: '', plan: 'free' });
   const [creating, setCreating] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${ADMIN_API}/admin/tenants`, { headers: authHeaders() });
-      if (res.ok) setTenants(await res.json());
-    } finally { setLoading(false); }
-  }, []);
 
   const loadUsage = useCallback(async (tid: string) => {
     const res = await fetch(`${ADMIN_API}/admin/tenants/${tid}/usage`, { headers: authHeaders() });
@@ -205,13 +196,19 @@ const TenantsTab: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${ADMIN_API}/admin/tenants`, { headers: authHeaders() });
+      if (!res.ok) return;
+      const data: Tenant[] = await res.json();
+      setTenants(data);
+      // Fan out usage fetches for every tenant in parallel — N is small.
+      data.forEach(t => loadUsage(t.id));
+    } finally { setLoading(false); }
+  }, [loadUsage]);
 
-  const toggle = (tid: string) => {
-    if (expandedId === tid) { setExpandedId(null); return; }
-    setExpandedId(tid);
-    if (!usage[tid]) loadUsage(tid);
-  };
+  useEffect(() => { load(); }, [load]);
 
   const createTenant = async () => {
     if (!form.name || !form.slug) return;
@@ -289,75 +286,85 @@ const TenantsTab: React.FC = () => {
       <table style={S.table}>
         <thead>
           <tr>
-            <th style={S.th}></th>
             <th style={S.th}>ID</th>
             <th style={S.th}>Name</th>
             <th style={S.th}>Plan</th>
             <th style={S.th}>Bucket</th>
             <th style={S.th}>Status</th>
+            <th style={{ ...S.th, textAlign: 'right' as const }}>Records</th>
+            <th style={{ ...S.th, textAlign: 'right' as const }}>Agents</th>
+            <th style={{ ...S.th, textAlign: 'right' as const }}>Pipelines</th>
+            <th style={{ ...S.th, textAlign: 'right' as const }}>Tokens (in/out)</th>
             <th style={S.th}>Created</th>
           </tr>
         </thead>
         <tbody>
-          {tenants.map(t => (
-            <React.Fragment key={t.id}>
-              <tr onClick={() => toggle(t.id)} style={{ cursor: 'pointer' }}>
-                <td style={S.td}>
-                  <ChevronRight size={14} style={{
-                    transform: expandedId === t.id ? 'rotate(90deg)' : 'none',
-                    transition: 'transform 0.15s', color: '#94A3B8',
-                  }} />
-                </td>
-                <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11 }}>{t.id}</td>
-                <td style={{ ...S.td, fontWeight: 500 }}>{t.name}</td>
-                <td style={S.td}>
-                  <span style={{
-                    fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
-                    backgroundColor: t.plan === 'enterprise' ? '#F5F3FF' : '#F1F5F9',
-                    color: t.plan === 'enterprise' ? '#7C3AED' : '#64748B',
-                  }}>{t.plan.toUpperCase()}</span>
-                </td>
-                <td style={S.td} onClick={e => e.stopPropagation()}>
-                  <BucketPicker
-                    tenantId={t.id}
-                    current={t.bucket_tier || 'S'}
-                    onChanged={(newTier) => setTenants(prev => prev.map(x => x.id === t.id ? { ...x, bucket_tier: newTier } : x))}
-                  />
-                </td>
-                <td style={S.td}>
-                  <span style={{
-                    fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
-                    color: statusColor(t.status), backgroundColor: `${statusColor(t.status)}15`,
-                  }}>{t.status.toUpperCase()}</span>
-                </td>
-                <td style={{ ...S.td, fontSize: 11, color: '#94A3B8' }}>
-                  {new Date(t.created_at).toLocaleDateString()}
-                </td>
-              </tr>
-              {expandedId === t.id && usage[t.id] && (
+          {tenants.map(t => {
+            const u = usage[t.id];
+            const loaded = !!u;
+            return (
+              <React.Fragment key={t.id}>
                 <tr>
-                  <td colSpan={7} style={{ padding: '12px 24px', backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                      {[
-                        ['Records', usage[t.id].records],
-                        ['Object Types', usage[t.id].object_types],
-                        ['Connectors', usage[t.id].connectors],
-                        ['Pipelines', usage[t.id].pipelines],
-                        ['Agents', usage[t.id].agents],
-                        ['Input Tokens', usage[t.id].total_input_tokens],
-                        ['Output Tokens', usage[t.id].total_output_tokens],
-                      ].map(([label, val]) => (
-                        <div key={label as string} style={S.metric}>
-                          <div style={S.metricLabel}>{label}</div>
-                          <div style={S.metricValue}>{fmtNum(val as number)}</div>
-                        </div>
-                      ))}
-                    </div>
+                  <td style={{ ...S.td, fontFamily: 'monospace', fontSize: 11 }}>{t.id}</td>
+                  <td style={{ ...S.td, fontWeight: 500 }}>{t.name}</td>
+                  <td style={S.td}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                      backgroundColor: t.plan === 'enterprise' ? '#F5F3FF' : '#F1F5F9',
+                      color: t.plan === 'enterprise' ? '#7C3AED' : '#64748B',
+                    }}>{t.plan.toUpperCase()}</span>
+                  </td>
+                  <td style={S.td}>
+                    <BucketPicker
+                      tenantId={t.id}
+                      current={t.bucket_tier || 'S'}
+                      onChanged={(newTier) => setTenants(prev => prev.map(x => x.id === t.id ? { ...x, bucket_tier: newTier } : x))}
+                    />
+                  </td>
+                  <td style={S.td}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                      color: statusColor(t.status), backgroundColor: `${statusColor(t.status)}15`,
+                    }}>{t.status.toUpperCase()}</span>
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12 }}>
+                    {loaded ? fmtNum(u.records) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12 }}>
+                    {loaded ? fmtNum(u.agents) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12 }}>
+                    {loaded ? fmtNum(u.pipelines) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 11, color: '#475569' }}>
+                    {loaded ? (
+                      <span title={`${fmtNum(u.total_input_tokens)} input · ${fmtNum(u.total_output_tokens)} output`}>
+                        {fmtTokens(u.total_input_tokens)} <span style={{ color: '#94A3B8' }}>/</span> {fmtTokens(u.total_output_tokens)}
+                      </span>
+                    ) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
+                  <td style={{ ...S.td, fontSize: 11, color: '#94A3B8' }}>
+                    {new Date(t.created_at).toLocaleDateString()}
                   </td>
                 </tr>
-              )}
-            </React.Fragment>
-          ))}
+                {loaded && (u.object_types > 0 || u.connectors > 0) && (
+                  <tr>
+                    <td colSpan={10} style={{ padding: '4px 16px 10px 16px', backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: '#64748B' }}>
+                        <span><strong style={{ color: '#0D1117' }}>{fmtNum(u.object_types)}</strong> object types</span>
+                        <span>·</span>
+                        <span><strong style={{ color: '#0D1117' }}>{fmtNum(u.connectors)}</strong> connectors</span>
+                        <span>·</span>
+                        <span><strong style={{ color: '#0D1117' }}>{fmtNum(u.pipeline_runs)}</strong> pipeline runs</span>
+                        <span>·</span>
+                        <span><strong style={{ color: '#0D1117' }}>{fmtNum(u.logic_functions)}</strong> logic fns</span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
