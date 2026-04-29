@@ -46,6 +46,23 @@ interface TenantUsage {
   pipelines_running: number;
   month_input_tokens: number;
   month_output_tokens: number;
+  // Real cost (Bedrock per-model pricing × actual tokens, plus storage estimate).
+  cost?: {
+    tokens_cost_lifetime_usd: number;
+    tokens_cost_month_usd: number;
+    storage_cost_month_usd: number;
+    total_cost_month_usd: number;
+    storage_bytes: number;
+    per_model: {
+      model: string;
+      input_tokens: number;
+      output_tokens: number;
+      input_price_per_m: number;
+      output_price_per_m: number;
+      cost_lifetime_usd: number;
+      cost_month_usd: number;
+    }[];
+  };
 }
 
 // Tier limits — lifted from the proposal so the SuperAdmin table can compute %.
@@ -221,6 +238,91 @@ const BucketPicker: React.FC<{
   );
 };
 
+// ── Real cost cell — month total + per-model hover breakdown ────────────────
+const fmtUSD = (n: number, decimals = 2) =>
+  '$' + n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+
+const CostCell: React.FC<{
+  cost: NonNullable<TenantUsage['cost']>;
+  bucketTier: 'S' | 'M' | 'L' | 'XL' | 'XXL';
+}> = ({ cost, bucketTier }) => {
+  const [open, setOpen] = useState(false);
+  const monthTotal = cost.total_cost_month_usd;
+  const lifetime = cost.tokens_cost_lifetime_usd;
+  const tierMonthly = BUCKET_MONTHLY[bucketTier];
+  const utilizationPct = tierMonthly > 0 ? (monthTotal / tierMonthly) * 100 : 0;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        title={`Lifetime LLM spend: ${fmtUSD(lifetime)}`}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          padding: 0, font: 'inherit', color: '#0D1117', textAlign: 'right',
+          width: '100%',
+        }}
+      >
+        <div style={{ fontWeight: 600 }}>{fmtUSD(monthTotal, monthTotal < 10 ? 4 : 2)}</div>
+        <div style={{ fontSize: 9.5, color: '#94A3B8', marginTop: 1 }}>
+          this month · {utilizationPct < 0.05 ? '<0.05' : utilizationPct.toFixed(1)}% of bucket
+        </div>
+      </button>
+      {open && (
+        <div
+          onMouseLeave={() => setOpen(false)}
+          style={{
+            position: 'absolute', top: '100%', right: 0, zIndex: 20,
+            marginTop: 4, padding: 12, minWidth: 320,
+            backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 6,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.12)', textAlign: 'left',
+          }}
+        >
+          <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600, letterSpacing: '0.04em', marginBottom: 8 }}>
+            COST BREAKDOWN · MONTH-TO-DATE
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 4, fontSize: 11 }}>
+            <span style={{ color: '#64748B' }}>Bucket allowance</span>
+            <span style={{ fontFamily: 'monospace', color: '#0D1117' }}>{fmtUSD(tierMonthly, 0)}</span>
+            <span style={{ color: '#64748B' }}>Storage est.</span>
+            <span style={{ fontFamily: 'monospace', color: '#0D1117' }}>{fmtUSD(cost.storage_cost_month_usd, 4)}</span>
+            <span style={{ color: '#64748B' }}>Tokens (this mo)</span>
+            <span style={{ fontFamily: 'monospace', color: '#0D1117' }}>{fmtUSD(cost.tokens_cost_month_usd)}</span>
+            <span style={{ color: '#0D1117', fontWeight: 600, borderTop: '1px solid #E2E8F0', paddingTop: 4 }}>Total this month</span>
+            <span style={{ fontFamily: 'monospace', color: '#0D1117', fontWeight: 700, borderTop: '1px solid #E2E8F0', paddingTop: 4 }}>{fmtUSD(monthTotal)}</span>
+          </div>
+          <div style={{ fontSize: 11, color: '#64748B', fontWeight: 600, letterSpacing: '0.04em', margin: '12px 0 6px' }}>
+            BY MODEL
+          </div>
+          {cost.per_model.length === 0 ? (
+            <div style={{ fontSize: 11, color: '#94A3B8', fontStyle: 'italic' }}>No token usage recorded</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '3px 10px', fontSize: 11 }}>
+              <span style={{ fontSize: 9.5, fontWeight: 600, color: '#94A3B8', letterSpacing: '0.04em' }}>MODEL</span>
+              <span style={{ fontSize: 9.5, fontWeight: 600, color: '#94A3B8', letterSpacing: '0.04em', textAlign: 'right' }}>MONTH</span>
+              <span style={{ fontSize: 9.5, fontWeight: 600, color: '#94A3B8', letterSpacing: '0.04em', textAlign: 'right' }}>LIFETIME</span>
+              {cost.per_model
+                .slice()
+                .sort((a, b) => b.cost_lifetime_usd - a.cost_lifetime_usd)
+                .map(m => (
+                  <React.Fragment key={m.model}>
+                    <span style={{ color: '#0D1117', fontFamily: 'monospace', fontSize: 10.5 }} title={`$${m.input_price_per_m}/$${m.output_price_per_m} per 1M tokens`}>{m.model}</span>
+                    <span style={{ color: '#0D1117', fontFamily: 'monospace', textAlign: 'right' }}>{fmtUSD(m.cost_month_usd)}</span>
+                    <span style={{ color: '#64748B', fontFamily: 'monospace', textAlign: 'right' }}>{fmtUSD(m.cost_lifetime_usd)}</span>
+                  </React.Fragment>
+                ))}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 10, borderTop: '1px solid #F1F5F9', paddingTop: 6, fontStyle: 'italic' }}>
+            Pricing from the maic hosting proposal. Storage = $0.10/GB/mo blended (RDS + S3).
+            Infra baseline ($2,340/mo) is fixed and not allocated per tenant here.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Tenants Tab ───────────────────────────────────────────────────────────────
 
 const inputStyle = {
@@ -343,6 +445,7 @@ const TenantsTab: React.FC = () => {
             <th style={{ ...S.th, textAlign: 'right' as const }}>Agents</th>
             <th style={{ ...S.th, textAlign: 'right' as const }}>Pipelines</th>
             <th style={{ ...S.th, textAlign: 'right' as const }}>Tokens (in/out)</th>
+            <th style={{ ...S.th, textAlign: 'right' as const }}>Real cost</th>
             <th style={S.th}>Created</th>
           </tr>
         </thead>
@@ -425,13 +528,18 @@ const TenantsTab: React.FC = () => {
                       </>
                     ) : <span style={{ color: '#CBD5E1' }}>…</span>}
                   </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12, minWidth: 130 }}>
+                    {loaded && u.cost ? (
+                      <CostCell cost={u.cost} bucketTier={u.bucket_tier ?? t.bucket_tier ?? 'S'} />
+                    ) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
                   <td style={{ ...S.td, fontSize: 11, color: '#94A3B8' }}>
                     {new Date(t.created_at).toLocaleDateString()}
                   </td>
                 </tr>
                 {loaded && (u.object_types > 0 || u.connectors > 0) && (
                   <tr>
-                    <td colSpan={10} style={{ padding: '4px 16px 10px 16px', backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                    <td colSpan={11} style={{ padding: '4px 16px 10px 16px', backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
                       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11, color: '#64748B' }}>
                         <span><strong style={{ color: '#0D1117' }}>{fmtNum(u.object_types)}</strong> object types</span>
                         <span>·</span>

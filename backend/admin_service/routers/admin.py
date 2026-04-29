@@ -111,6 +111,36 @@ async def delete_tenant(tenant_id: str, user: AuthUser = Depends(require_superad
         raise HTTPException(status_code=404, detail="Tenant not found")
 
 
+# ── Bedrock per-model pricing (USD per 1M tokens) ────────────────────────────
+# Source: maic hosting proposal. Used to compute the real LLM cost per tenant.
+# Models we don't recognize fall back to Sonnet pricing as a conservative default.
+MODEL_PRICES_PER_M = {
+    "claude-opus-4-7":     (5.00,  25.00),
+    "claude-opus-4.7":     (5.00,  25.00),
+    "claude-sonnet-4-6":   (3.00,  15.00),
+    "claude-sonnet-4.6":   (3.00,  15.00),
+    "claude-haiku-4-5":    (1.00,   5.00),
+    "claude-haiku-4-5-20251001": (1.00, 5.00),
+    "amazon-nova-premier": (2.50,  12.50),
+    "amazon-nova-pro":     (0.80,   3.20),
+    "amazon-nova-lite":    (0.06,   0.24),
+    "amazon-nova-micro":   (0.035,  0.14),
+    "deepseek-v3-2":       (0.62,   1.85),
+    "mistral-large-3":     (2.00,   6.00),
+    "mistral-small-3":     (0.20,   0.60),
+    "llama-4-scout-fp8":   (0.20,   0.60),
+    "llama-4-maverick":    (0.27,   0.85),
+}
+_DEFAULT_PRICE = (3.00, 15.00)  # Sonnet — conservative for unknown models
+
+# Storage: AWS RDS gp3 ≈ $0.115/GB/mo. S3 ≈ $0.023/GB/mo. Blended estimate.
+STORAGE_COST_PER_GB_MONTH = 0.10
+
+
+def _price_for(model: str) -> tuple[float, float]:
+    return MODEL_PRICES_PER_M.get(model, _DEFAULT_PRICE)
+
+
 @router.get("/tenants/{tenant_id}/usage")
 async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_superadmin)):
     """Cross-table usage statistics for a tenant, including LLM token consumption."""
@@ -174,6 +204,37 @@ async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_supe
         row = await pool.fetchrow("SELECT bucket_tier FROM tenants WHERE id = $1", tenant_id)
         return row["bucket_tier"] if row else "S"
 
+    async def cost_breakdown() -> dict:
+        """Compute LLM cost per model for this tenant — lifetime + month-to-date."""
+        rows = await pool.fetch(
+            "SELECT model, "
+            "       COALESCE(SUM(input_tokens), 0) AS input_total, "
+            "       COALESCE(SUM(output_tokens), 0) AS output_total, "
+            "       COALESCE(SUM(input_tokens) FILTER (WHERE created_at >= date_trunc('month', NOW())), 0) AS input_month, "
+            "       COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= date_trunc('month', NOW())), 0) AS output_month "
+            "FROM token_usage WHERE tenant_id = $1 GROUP BY model",
+            tenant_id,
+        )
+        per_model = []
+        lifetime = 0.0
+        month = 0.0
+        for r in rows:
+            in_p, out_p = _price_for(r["model"])
+            cost_lifetime = (r["input_total"] / 1_000_000) * in_p + (r["output_total"] / 1_000_000) * out_p
+            cost_month = (r["input_month"] / 1_000_000) * in_p + (r["output_month"] / 1_000_000) * out_p
+            lifetime += cost_lifetime
+            month += cost_month
+            per_model.append({
+                "model": r["model"],
+                "input_price_per_m": in_p,
+                "output_price_per_m": out_p,
+                "input_tokens": int(r["input_total"]),
+                "output_tokens": int(r["output_total"]),
+                "cost_lifetime_usd": round(cost_lifetime, 4),
+                "cost_month_usd": round(cost_month, 4),
+            })
+        return {"per_model": per_model, "tokens_cost_lifetime_usd": round(lifetime, 4), "tokens_cost_month_usd": round(month, 4)}
+
     results = await asyncio.gather(
         count("object_types"),
         count("object_records"),
@@ -189,6 +250,7 @@ async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_supe
         pipelines_running_count(),
         events_count(),
         bucket_tier_for(),
+        cost_breakdown(),
         return_exceptions=True,
     )
 
@@ -210,6 +272,42 @@ async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_supe
     # Combined record count across both stores (Postgres + TimescaleDB).
     usage["records_combined"]   = (usage["records"] or 0) + usage["events"]
     usage["bucket_tier"]        = results[13] if isinstance(results[13], str) else "S"
+
+    cost = results[14] if isinstance(results[14], dict) else {
+        "per_model": [], "tokens_cost_lifetime_usd": 0.0, "tokens_cost_month_usd": 0.0,
+    }
+
+    # Approximate storage cost from byte sizes (object_records.data + events.attributes).
+    obj_bytes = 0
+    try:
+        obj_bytes = await pool.fetchval(
+            "SELECT COALESCE(SUM(pg_column_size(data))::bigint, 0) FROM object_records WHERE tenant_id = $1",
+            tenant_id,
+        ) or 0
+    except Exception:
+        pass
+    evt_bytes = 0
+    events_pool = await get_events_pool()
+    if events_pool:
+        try:
+            evt_bytes = await events_pool.fetchval(
+                "SELECT COALESCE(SUM(pg_column_size(attributes))::bigint, 0) FROM events WHERE tenant_id = $1",
+                tenant_id,
+            ) or 0
+        except Exception:
+            pass
+    total_bytes = int(obj_bytes) + int(evt_bytes)
+    storage_gb = total_bytes / 1_073_741_824
+    storage_cost_month = round(storage_gb * STORAGE_COST_PER_GB_MONTH, 4)
+
+    usage["cost"] = {
+        "tokens_cost_lifetime_usd": cost["tokens_cost_lifetime_usd"],
+        "tokens_cost_month_usd":    cost["tokens_cost_month_usd"],
+        "storage_cost_month_usd":   storage_cost_month,
+        "total_cost_month_usd":     round(cost["tokens_cost_month_usd"] + storage_cost_month, 4),
+        "per_model":                cost["per_model"],
+        "storage_bytes":            total_bytes,
+    }
 
     return usage
 
