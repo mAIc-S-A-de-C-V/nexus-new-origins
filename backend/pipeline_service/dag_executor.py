@@ -1760,7 +1760,18 @@ async def _update_object_type_schema(
 
 
 async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
-    """Convert records flowing through the pipeline into process mining events."""
+    """Convert records flowing through the pipeline into process mining events.
+
+    Phase 2 — process-aware fields:
+      processId            — links emitted events to a Process definition
+      caseKeyField         — record field holding the cross-object business key
+                              (e.g. patient_mrn). When set, case_id is set from
+                              this value AND attributes.case_key mirrors it, so
+                              events from different objects can be joined.
+      relatedObjectFields  — list of {objectTypeId, recordField} declaring which
+                              other objects this event touches. Stored in
+                              attributes.related_objects (consumed in Phase 6).
+    """
     cfg = node.config or {}
     object_type_id = (
         cfg.get("objectTypeId")
@@ -1771,6 +1782,9 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
     case_id_field = cfg.get("caseIdField") or cfg.get("case_id_field", "id")
     activity_field = cfg.get("activityField") or cfg.get("activity_field", "")
     timestamp_field = cfg.get("timestampField") or cfg.get("timestamp_field", "")
+    process_id = cfg.get("processId") or cfg.get("process_id") or ""
+    case_key_field = cfg.get("caseKeyField") or cfg.get("case_key_field") or ""
+    related_object_fields = cfg.get("relatedObjectFields") or cfg.get("related_object_fields") or []
     connector_id = pipeline.connector_ids[0] if pipeline.connector_ids else ""
 
     # If records are flowing through the pipeline, use them directly
@@ -1811,7 +1825,12 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
 
     events = []
     for record in records:
-        case_id = _pick_val(record, case_id_field, str(record.get("id", str(uuid4()))))
+        source_record_id = str(record.get("id", str(uuid4())))
+        legacy_case_id = _pick_val(record, case_id_field, source_record_id)
+        # When caseKeyField is set, the cross-object case key wins for case_id
+        # so events from different object types naturally cluster on it.
+        case_key_value = _pick_val(record, case_key_field, "") if case_key_field else ""
+        case_id = case_key_value if case_key_value else legacy_case_id
         activity = _pick_val(record, activity_field, "RECORD_SYNCED")
         ts = _pick_ts(record, timestamp_field)
 
@@ -1820,6 +1839,33 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
                 ts = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc).isoformat()
             except Exception:
                 pass
+
+        related_objects = []
+        for rof in related_object_fields:
+            try:
+                ot = (rof.get("objectTypeId") if isinstance(rof, dict) else None) or ""
+                fld = (rof.get("recordField") if isinstance(rof, dict) else None) or ""
+                if not ot or not fld:
+                    continue
+                val = record.get(fld)
+                if val is None or val == "":
+                    continue
+                related_objects.append({"object_type_id": ot, "object_id": str(val)})
+            except Exception:
+                continue
+
+        attributes: dict = {
+            k: v for k, v in record.items()
+            if k not in (case_id_field, activity_field, timestamp_field, case_key_field)
+            and not isinstance(v, (list, dict))
+        }
+        if process_id:
+            attributes["process_id"] = process_id
+        if case_key_value:
+            attributes["case_key"] = case_key_value
+            attributes["source_record_id"] = source_record_id
+        if related_objects:
+            attributes["related_objects"] = related_objects
 
         events.append({
             "id": str(uuid4()),
@@ -1831,11 +1877,7 @@ async def _sink_event(node, records_in: list[dict], pipeline: Pipeline) -> list[
             "pipeline_id": pipeline.id,
             "connector_id": connector_id,
             "tenant_id": pipeline.tenant_id or "tenant-001",
-            "attributes": {
-                k: v for k, v in record.items()
-                if k not in (case_id_field, activity_field, timestamp_field)
-                and not isinstance(v, (list, dict))
-            },
+            "attributes": attributes,
         })
 
     written = 0

@@ -25,6 +25,7 @@ const DataHubPage     = lazy(() => import('./modules/data/DataHubPage'));
 const AdminHubPage    = lazy(() => import('./modules/admin/AdminHubPage'));
 const ValuePage       = lazy(() => import('./modules/value/ValuePage'));
 const SuperAdminPage  = lazy(() => import('./modules/superadmin/SuperAdminPage'));
+const ProcessMiningV2 = lazy(() => import('./modules/process_v2/ProcessMiningV2'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -142,6 +143,16 @@ const AuthGate: React.FC = () => {
 
   if (!isAuthenticated) return <LoginPage />;
   if (currentUser?.mustChangePassword) return <ChangePasswordPage />;
+
+  // Hidden route: object-centric process mining v2. Not linked from nav —
+  // accessible only by typing /pminingv2 in the URL bar.
+  if (window.location.pathname === '/pminingv2') {
+    return (
+      <Suspense fallback={<LoadingSpinner message="Loading Process Mining v2..." />}>
+        <ProcessMiningV2 />
+      </Suspense>
+    );
+  }
 
   return (
     <>

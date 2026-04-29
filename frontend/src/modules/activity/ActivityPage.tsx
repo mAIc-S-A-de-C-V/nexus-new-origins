@@ -4,7 +4,7 @@ import { Activity, ScrollText, ScanSearch } from 'lucide-react';
 // Lazy-load the sub-pages to avoid bundling everything upfront
 const EventLog     = React.lazy(() => import('../events/EventLog'));
 const AuditLogPage = React.lazy(() => import('../audit/AuditLogPage'));
-const ProcessMining = React.lazy(() => import('../process/ProcessMining'));
+const ProcessMining = React.lazy(() => import('../process_v2/ProcessMiningV2'));
 
 type Tab = 'events' | 'audit' | 'process';
 

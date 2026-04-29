@@ -249,6 +249,56 @@ class EventLogQualityScore(BaseModel):
     event_count: int = 0
 
 
+class Process(BaseModel):
+    """A cross-object process definition for object-centric process mining."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    tenant_id: str
+    name: str
+    description: Optional[str] = None
+    case_key_attribute: Optional[str] = None
+    included_object_type_ids: list[str] = Field(default_factory=list)
+    included_activities: Optional[list[str]] = None
+    excluded_activities: Optional[list[str]] = None
+    default_model_id: Optional[str] = None
+    is_implicit: bool = False
+    status: str = "active"
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ProcessCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    case_key_attribute: Optional[str] = None
+    included_object_type_ids: list[str]
+    included_activities: Optional[list[str]] = None
+    excluded_activities: Optional[list[str]] = None
+    default_model_id: Optional[str] = None
+    status: str = "active"
+
+
+class ProcessUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    case_key_attribute: Optional[str] = None
+    included_object_type_ids: Optional[list[str]] = None
+    included_activities: Optional[list[str]] = None
+    excluded_activities: Optional[list[str]] = None
+    default_model_id: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ProcessDiscoverySuggestion(BaseModel):
+    """A candidate cross-object process suggested by auto-discovery."""
+    suggested_name: str
+    case_key_attribute: str
+    included_object_type_ids: list[str]
+    candidate_case_count: int
+    sample_case_keys: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+    rationale: str = ""
+
+
 class AuditEvent(BaseModel):
     """Immutable audit trail event."""
     id: str = Field(default_factory=lambda: str(uuid4()))

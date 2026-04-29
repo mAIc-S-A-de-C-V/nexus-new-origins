@@ -82,6 +82,9 @@ DDL_STATEMENTS = [
     """
     ALTER TABLE alert_notifications ADD COLUMN IF NOT EXISTS snoozed_until TIMESTAMPTZ
     """,
+    # Phase 4: alert rules can target a Process (alongside or instead of object_type_id)
+    "ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS process_id TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_alert_rules_process ON alert_rules (tenant_id, process_id)",
     """
     CREATE TABLE IF NOT EXISTS alert_channels (
         id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),

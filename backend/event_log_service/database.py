@@ -47,6 +47,23 @@ async def init_db():
     except Exception:
         pass  # hypertable already exists or TimescaleDB extension not available
 
+    # Phase 6: indexes for object-centric (OCEL) queries.
+    # case_key: shared business key written by SINK_EVENT v2 / process backfill.
+    # related_objects: array of {object_type_id, object_id} the event touches besides
+    # its primary object — powers find_object_touchpoints and dossier views.
+    # JSON column → cast to JSONB in expression indexes (the cast is index-safe).
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS events_case_key_idx "
+        "ON events (((attributes::jsonb)->>'case_key'))",
+        "CREATE INDEX IF NOT EXISTS events_related_objects_gin "
+        "ON events USING GIN (((attributes::jsonb)->'related_objects'))",
+    ):
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
+        except Exception:
+            pass
+
 
 async def get_session() -> AsyncSession:
     async with AsyncSessionLocal() as session:

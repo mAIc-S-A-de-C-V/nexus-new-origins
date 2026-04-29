@@ -2,9 +2,11 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
-from database_pg import init_pg_db
+from database_pg import init_pg_db, discover_implicit_processes
 from routers import process
 from routers import conformance
+from routers import processes
+from routers import by_process
 
 # CORS
 _raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
@@ -22,12 +24,21 @@ app.add_middleware(
 
 app.include_router(process.router, prefix="/process", tags=["process"])
 app.include_router(conformance.router, prefix="/process/conformance", tags=["conformance"])
+app.include_router(processes.router, prefix="/process/processes", tags=["processes"])
+app.include_router(by_process.router, prefix="/process/by-process", tags=["by-process"])
 
 
 @app.on_event("startup")
 async def startup():
     await init_db()
     await init_pg_db()
+    try:
+        await discover_implicit_processes()
+    except Exception as exc:
+        import logging
+        logging.getLogger("process_engine").warning(
+            f"discover_implicit_processes on startup failed: {exc}"
+        )
 
 
 @app.get("/health")

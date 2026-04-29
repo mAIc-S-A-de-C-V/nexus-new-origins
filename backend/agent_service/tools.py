@@ -14,6 +14,7 @@ AGENT_URL      = os.environ.get("AGENT_SERVICE_URL",      "http://agent-service:
 UTILITY_URL    = os.environ.get("UTILITY_SERVICE_URL",    "http://utility-service:8014")
 PIPELINE_URL   = os.environ.get("PIPELINE_SERVICE_URL",   "http://pipeline-service:8002")
 CONNECTOR_URL  = os.environ.get("CONNECTOR_SERVICE_URL",  "http://connector-service:8001")
+PROCESS_URL    = os.environ.get("PROCESS_ENGINE_URL",     "http://process-engine-service:8009")
 
 
 # ── Tool definitions (sent to Claude as tools=[...]) ─────────────────────────
@@ -245,6 +246,62 @@ TOOL_DEFINITIONS = {
                 },
             },
             "required": ["object_type", "case_id_field", "activity_field"],
+        },
+    },
+    "query_process": {
+        "name": "query_process",
+        "description": (
+            "Query a defined cross-object process for stats, top variants, and bottlenecks. "
+            "Use this when the user asks about a process that spans multiple object types "
+            "(e.g. 'how does the patient journey usually go', 'where do loan applications get stuck'). "
+            "Call list_processes_v2 first if you don't know the process_id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "process_id": {"type": "string", "description": "Process definition ID"},
+                "include": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["stats", "variants", "bottlenecks"]},
+                    "description": "Which sections to include. Defaults to all.",
+                },
+                "variant_limit": {"type": "integer", "default": 5},
+                "bottleneck_limit": {"type": "integer", "default": 5},
+            },
+            "required": ["process_id"],
+        },
+    },
+    "list_processes_v2": {
+        "name": "list_processes_v2",
+        "description": (
+            "List defined cross-object processes (object-centric process mining). "
+            "Returns id, name, included object types, case_key_attribute, is_implicit. "
+            "Implicit processes are auto-generated single-object placeholders."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_implicit": {"type": "boolean", "default": False},
+            },
+            "required": [],
+        },
+    },
+    "find_object_touchpoints": {
+        "name": "find_object_touchpoints",
+        "description": (
+            "Return every event that touched a specific object instance — across all object types and pipelines. "
+            "Includes events emitted directly from this object's pipeline AND events from other objects "
+            "that referenced this one (OCEL multi-object events). Use this for 'what happened with X' "
+            "or 'show me the full history of patient/claim/loan Y' questions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "object_type_id": {"type": "string"},
+                "object_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 200},
+            },
+            "required": ["object_type_id", "object_id"],
         },
     },
     "utility_run": {
@@ -776,6 +833,87 @@ async def execute_tool(
                     ]
 
                 return result
+
+            elif tool_name == "list_processes_v2":
+                include_implicit = bool(tool_input.get("include_implicit", False))
+                r = await client.get(
+                    f"{PROCESS_URL}/process/processes",
+                    params={"include_implicit": str(include_implicit).lower()},
+                    headers=headers,
+                )
+                if not r.is_success:
+                    return {"error": f"process service error: {r.status_code}"}
+                items = r.json()
+                return {
+                    "count": len(items),
+                    "processes": [
+                        {
+                            "id": p["id"], "name": p["name"],
+                            "included_object_type_ids": p["included_object_type_ids"],
+                            "case_key_attribute": p.get("case_key_attribute"),
+                            "is_implicit": p.get("is_implicit", False),
+                            "description": p.get("description"),
+                        }
+                        for p in items
+                    ],
+                }
+
+            elif tool_name == "query_process":
+                process_id = tool_input.get("process_id", "")
+                if not process_id:
+                    return {"error": "process_id required"}
+                include = tool_input.get("include") or ["stats", "variants", "bottlenecks"]
+                vlim = int(tool_input.get("variant_limit", 5))
+                blim = int(tool_input.get("bottleneck_limit", 5))
+                out: dict[str, Any] = {"process_id": process_id}
+
+                if "stats" in include:
+                    r = await client.get(f"{PROCESS_URL}/process/by-process/stats/{process_id}", headers=headers)
+                    if r.is_success:
+                        out["stats"] = r.json()
+                if "variants" in include:
+                    r = await client.get(
+                        f"{PROCESS_URL}/process/by-process/variants/{process_id}",
+                        params={"limit": vlim}, headers=headers,
+                    )
+                    if r.is_success:
+                        v = r.json()
+                        out["variants"] = {
+                            "total_cases": v.get("total_cases"),
+                            "spans_objects": v.get("spans_objects"),
+                            "top": v.get("variants", []),
+                        }
+                if "bottlenecks" in include:
+                    r = await client.get(
+                        f"{PROCESS_URL}/process/by-process/bottlenecks/{process_id}",
+                        params={"top_n": blim}, headers=headers,
+                    )
+                    if r.is_success:
+                        out["bottlenecks"] = r.json().get("bottlenecks", [])
+                return out
+
+            elif tool_name == "find_object_touchpoints":
+                otid = tool_input.get("object_type_id", "")
+                oid = tool_input.get("object_id", "")
+                lim = int(tool_input.get("limit", 200))
+                if not otid or not oid:
+                    return {"error": "object_type_id and object_id required"}
+                r = await client.get(
+                    f"{PROCESS_URL}/process/by-process/by-object-instance/{otid}/{oid}/touchpoints",
+                    params={"limit": lim}, headers=headers,
+                )
+                if not r.is_success:
+                    return {"error": f"process service error: {r.status_code}"}
+                data = r.json()
+                # Trim attributes blob from each event to keep token cost down
+                for e in data.get("events", []):
+                    attrs = e.get("attributes") or {}
+                    e["attributes_summary"] = {
+                        k: attrs.get(k) for k in ("case_key", "process_id", "related_objects")
+                        if k in attrs
+                    }
+                    e.pop("attributes", None)
+                return data
 
             elif tool_name == "utility_list":
                 category = tool_input.get("category")

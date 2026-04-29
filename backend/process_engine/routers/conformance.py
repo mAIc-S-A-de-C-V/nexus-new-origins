@@ -40,6 +40,165 @@ class ModelUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+# ── Phase 4: process-scoped conformance ──────────────────────────────────────
+# Declared BEFORE the parameterized /models/{object_type_id}/{model_id} routes
+# so /models/by-process/... and /check/by-process/... win route matching.
+
+class ProcessModelCreate(BaseModel):
+    name: str
+    activities: list[str]
+    is_active: bool = True
+
+
+@router.get("/models/by-process/{process_id}")
+async def list_process_models(
+    process_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    pg: AsyncSession = Depends(get_pg_session),
+):
+    tenant_id = x_tenant_id or "tenant-001"
+    rows = await pg.execute(
+        text(
+            "SELECT * FROM conformance_models "
+            "WHERE tenant_id = :tid AND process_id = :pid "
+            "ORDER BY created_at"
+        ),
+        {"tid": tenant_id, "pid": process_id},
+    )
+    models = []
+    for r in rows.fetchall():
+        d = dict(r._mapping)
+        d["created_at"] = d["created_at"].isoformat()
+        d["updated_at"] = d["updated_at"].isoformat()
+        models.append(d)
+    return {"models": models}
+
+
+@router.post("/models/by-process/{process_id}", status_code=201)
+async def create_process_model(
+    process_id: str,
+    body: ProcessModelCreate,
+    x_tenant_id: Optional[str] = Header(None),
+    pg: AsyncSession = Depends(get_pg_session),
+):
+    tenant_id = x_tenant_id or "tenant-001"
+    if not body.activities:
+        raise HTTPException(400, "activities must not be empty")
+    row = await pg.execute(
+        text(
+            "INSERT INTO conformance_models "
+            "(tenant_id, object_type_id, process_id, name, activities, is_active) "
+            "VALUES (:tid, '__process__', :pid, :name, :acts, :active) "
+            "RETURNING *"
+        ),
+        {
+            "tid": tenant_id,
+            "pid": process_id,
+            "name": body.name,
+            "acts": body.activities,
+            "active": body.is_active,
+        },
+    )
+    await pg.commit()
+    d = dict(row.fetchone()._mapping)
+    d["created_at"] = d["created_at"].isoformat()
+    d["updated_at"] = d["updated_at"].isoformat()
+    return d
+
+
+@router.get("/check/by-process/{process_id}/{model_id}")
+async def check_conformance_for_process(
+    process_id: str,
+    model_id: str,
+    conformance_threshold: float = Query(0.7, ge=0.0, le=1.0),
+    limit: int = Query(500, le=2000),
+    x_tenant_id: Optional[str] = Header(None),
+    pg: AsyncSession = Depends(get_pg_session),
+    ts: AsyncSession = Depends(get_ts_session),
+):
+    """Run conformance check for cases of a Process against a model."""
+    tenant_id = x_tenant_id or "tenant-001"
+
+    pres = await pg.execute(
+        text("SELECT * FROM processes WHERE id = :id AND tenant_id = :tid"),
+        {"id": process_id, "tid": tenant_id},
+    )
+    proc = pres.fetchone()
+    if not proc:
+        raise HTTPException(404, "Process not found")
+
+    mres = await pg.execute(
+        text(
+            "SELECT * FROM conformance_models "
+            "WHERE id = :id AND tenant_id = :tid "
+            "AND (process_id = :pid OR object_type_id = ANY(:ots))"
+        ),
+        {
+            "id": model_id,
+            "tid": tenant_id,
+            "pid": process_id,
+            "ots": list(proc.included_object_type_ids or []),
+        },
+    )
+    model_row = mres.fetchone()
+    if not model_row:
+        raise HTTPException(404, "Model not found")
+    model_activities = list(model_row._mapping["activities"])
+
+    cid_expr = "COALESCE(NULLIF(attributes->>'case_key',''), case_id)"
+    sql = text(f"""
+        SELECT {cid_expr} AS case_id,
+               array_agg(activity ORDER BY timestamp) AS activities
+        FROM events
+        WHERE tenant_id = :tid
+          AND object_type_id = ANY(:ots)
+          AND ({cid_expr}) != ''
+          {_SYSTEM_EXCL}
+        GROUP BY {cid_expr}
+        LIMIT :lim
+    """)
+    cases_rows = await ts.execute(sql, {
+        "tid": tenant_id,
+        "ots": list(proc.included_object_type_ids or []),
+        "lim": limit,
+    })
+
+    results = []
+    for r in cases_rows.fetchall():
+        results.append(check_conformance(
+            case_id=r.case_id,
+            actual_sequence=list(r.activities),
+            model_activities=model_activities,
+            conformance_threshold=conformance_threshold,
+        ))
+    aggregate = aggregate_conformance(results)
+
+    return {
+        "model_id": model_id,
+        "model_name": model_row._mapping["name"],
+        "model_activities": model_activities,
+        "process_id": process_id,
+        "conformance_threshold": conformance_threshold,
+        "aggregate": aggregate,
+        "cases": [
+            {
+                "case_id": r.case_id,
+                "fitness": r.fitness,
+                "is_conformant": r.is_conformant,
+                "matched": r.matched,
+                "expected_total": r.expected_total,
+                "actual_total": r.actual_total,
+                "deviations": [
+                    {"type": d.type, "activity": d.activity,
+                     "position": d.position, "detail": d.detail}
+                    for d in r.deviations
+                ],
+            }
+            for r in results
+        ],
+    }
+
+
 @router.get("/models/{object_type_id}")
 async def list_models(
     object_type_id: str,
