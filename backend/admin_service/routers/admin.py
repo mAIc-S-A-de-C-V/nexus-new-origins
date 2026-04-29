@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
-from database import get_pool
+from database import get_pool, get_events_pool
 from shared.auth_middleware import require_auth, require_superadmin, AuthUser
 
 router = APIRouter()
@@ -376,6 +376,25 @@ async def my_consumption(user: AuthUser = Depends(require_auth)):
     # can render "Not configured" instead of a fake bar.
     rag_corpus_bytes = None
 
+    # Events live in TimescaleDB (separate database). They're emitted by pipelines
+    # and process-mining flows and dwarf object_records in volume. Count them too.
+    events_count = 0
+    events_bytes = 0
+    events_pool = await get_events_pool()
+    if events_pool:
+        try:
+            events_count = await events_pool.fetchval(
+                "SELECT COUNT(*) FROM events WHERE tenant_id = $1", tid
+            ) or 0
+            events_bytes = await events_pool.fetchval(
+                "SELECT COALESCE(SUM(pg_column_size(attributes))::bigint, 0) FROM events WHERE tenant_id = $1", tid
+            ) or 0
+        except Exception:
+            pass
+
+    total_records = (records or 0) + int(events_count or 0)
+    total_storage_bytes = int(storage_bytes or 0) + int(events_bytes or 0)
+
     return {
         "tenant_id": tid,
         "bucket_tier": bucket_tier,
@@ -391,13 +410,21 @@ async def my_consumption(user: AuthUser = Depends(require_auth)):
             {"day": r["day"].isoformat(), "tokens": int(r["tokens"] or 0), "calls": int(r["calls"] or 0)}
             for r in daily_rows
         ],
-        "ontology_records": records,
+        # Combined record/storage totals across object_records (Postgres) + events (TimescaleDB).
+        "ontology_records": int(total_records),
+        "ontology_records_breakdown": {
+            "object_records": int(records or 0),
+            "events": int(events_count or 0),
+        },
+        "storage_bytes": int(total_storage_bytes),
+        "storage_breakdown": {
+            "object_records_bytes": int(storage_bytes or 0),
+            "events_bytes": int(events_bytes or 0),
+        },
         "agents_total": agents_total,
         "agents_active": agents_enabled,
         "pipelines_total": pipelines_total,
         "pipelines_running": pipelines_running,
-        # New: real measurements replacing the prior estimates.
-        "storage_bytes": int(storage_bytes or 0),
         "concurrent_users": int(concurrent_actors_60s or 0),
         "daily_active_users": int(distinct_users_today or 0),
         "rag_corpus_bytes": rag_corpus_bytes,            # null = not configured on this deployment
