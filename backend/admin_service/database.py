@@ -35,6 +35,21 @@ CREATE TABLE IF NOT EXISTS token_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_token_usage_tenant ON token_usage(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_token_usage_created ON token_usage(created_at);
+
+-- Bucket tier per tenant (S/M/L/XL/XXL). Default S for new tenants.
+-- Validation happens at the API layer.
+ALTER TABLE tenants
+    ADD COLUMN IF NOT EXISTS bucket_tier TEXT NOT NULL DEFAULT 'S';
+
+-- Per-tenant Bedrock model enablement. Rows present here are ENABLED.
+CREATE TABLE IF NOT EXISTS tenant_bedrock_models (
+    tenant_id   TEXT NOT NULL,
+    model_id    TEXT NOT NULL,
+    enabled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    enabled_by  TEXT,
+    PRIMARY KEY (tenant_id, model_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tbm_tenant ON tenant_bedrock_models(tenant_id);
 """
 
 

@@ -21,6 +21,7 @@ def _row_to_dict(row: asyncpg.Record) -> dict:
         "slug": row["slug"],
         "plan": row["plan"],
         "status": row["status"],
+        "bucket_tier": row["bucket_tier"] if "bucket_tier" in row.keys() else "S",
         "allowed_modules": list(row["allowed_modules"]) if row["allowed_modules"] else [],
         "settings": json.loads(row["settings"]) if isinstance(row["settings"], str) else (row["settings"] or {}),
         "created_at": row["created_at"].isoformat(),
@@ -154,6 +155,226 @@ async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_supe
     usage.update(tokens)
 
     return usage
+
+
+# ── Bucket tier (per-tenant subscription level) ─────────────────────────────
+
+VALID_TIERS = {"S", "M", "L", "XL", "XXL"}
+
+
+class BucketTierUpdate(BaseModel):
+    bucket_tier: str
+
+
+@router.get("/me/bucket")
+async def my_bucket(user: AuthUser = Depends(require_auth)):
+    """The caller's tenant bucket tier. Read-only for normal users."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT bucket_tier FROM tenants WHERE id = $1", user.tenant_id
+    )
+    return {"tenant_id": user.tenant_id, "bucket_tier": (row["bucket_tier"] if row else "S")}
+
+
+@router.patch("/tenants/{tenant_id}/bucket")
+async def update_tenant_bucket(
+    tenant_id: str,
+    body: BucketTierUpdate,
+    user: AuthUser = Depends(require_superadmin),
+):
+    """Superadmin-only: change a tenant's bucket tier."""
+    if body.bucket_tier not in VALID_TIERS:
+        raise HTTPException(400, f"Invalid tier. Must be one of {sorted(VALID_TIERS)}")
+    pool = await get_pool()
+    res = await pool.execute(
+        "UPDATE tenants SET bucket_tier = $1, updated_at = NOW() WHERE id = $2",
+        body.bucket_tier, tenant_id,
+    )
+    if res.endswith("0"):
+        raise HTTPException(404, "Tenant not found")
+    return {"tenant_id": tenant_id, "bucket_tier": body.bucket_tier}
+
+
+# ── Bedrock model catalog (enable/disable per tenant) ───────────────────────
+
+# Tier → highest model class included. Enforced server-side.
+# S: only Haiku-class & open-weight economic
+# M: + Sonnet, Nova Pro, Mistral Small
+# L: + Opus, DeepSeek, Mistral Large, Nova Premier, Llama 4 Scout
+# XL: everything
+# XXL: everything + Provisioned Throughput (no extra models, just guarantees)
+TIER_RANK = {"S": 0, "M": 1, "L": 2, "XL": 3, "XXL": 4}
+
+# Min tier required for each model (mirrors the catalog in the frontend)
+MODEL_MIN_TIER = {
+    # Anthropic
+    "claude-haiku-4-5":      "S",
+    "claude-sonnet-4-6":     "M",
+    "claude-opus-4-7":       "L",
+    # Amazon Nova
+    "amazon-nova-micro":     "S",
+    "amazon-nova-lite":      "S",
+    "amazon-nova-pro":       "M",
+    "amazon-nova-premier":   "L",
+    # Meta Llama 4
+    "llama-4-scout-fp8":     "S",   # open-weight, cheap
+    "llama-4-maverick":      "L",
+    # Mistral
+    "mistral-small-3":       "S",
+    "mistral-large-3":       "L",
+    # DeepSeek
+    "deepseek-v3-2":         "L",
+}
+
+
+def _model_allowed_for_tier(model_id: str, tier: str) -> bool:
+    min_tier = MODEL_MIN_TIER.get(model_id, "XXL")  # unknown models = highest tier
+    return TIER_RANK.get(tier, -1) >= TIER_RANK.get(min_tier, 999)
+
+
+@router.get("/me/bedrock-models")
+async def my_bedrock_models(user: AuthUser = Depends(require_auth)):
+    """List all catalog models with their per-tenant status (enabled / available / restricted)."""
+    pool = await get_pool()
+    tier_row = await pool.fetchrow(
+        "SELECT bucket_tier FROM tenants WHERE id = $1", user.tenant_id
+    )
+    tier = tier_row["bucket_tier"] if tier_row else "S"
+
+    enabled_rows = await pool.fetch(
+        "SELECT model_id FROM tenant_bedrock_models WHERE tenant_id = $1",
+        user.tenant_id,
+    )
+    enabled_set = {r["model_id"] for r in enabled_rows}
+
+    out = []
+    for model_id, min_tier in MODEL_MIN_TIER.items():
+        if model_id in enabled_set:
+            status = "enabled"
+        elif _model_allowed_for_tier(model_id, tier):
+            status = "available"
+        else:
+            status = "restricted"
+        out.append({"model_id": model_id, "status": status, "min_tier": min_tier})
+
+    return {"tenant_id": user.tenant_id, "bucket_tier": tier, "models": out}
+
+
+class ModelToggle(BaseModel):
+    enabled: bool
+
+
+@router.post("/me/bedrock-models/{model_id}")
+async def toggle_my_bedrock_model(
+    model_id: str,
+    body: ModelToggle,
+    user: AuthUser = Depends(require_auth),
+):
+    """Enable or disable a Bedrock model for the caller's tenant.
+    Tenant admin role required to enable; anyone authed can read state.
+    """
+    if user.role not in ("admin", "superadmin"):
+        raise HTTPException(403, "Tenant admin required")
+
+    if model_id not in MODEL_MIN_TIER:
+        raise HTTPException(404, f"Unknown model: {model_id}")
+
+    pool = await get_pool()
+    tier_row = await pool.fetchrow(
+        "SELECT bucket_tier FROM tenants WHERE id = $1", user.tenant_id
+    )
+    tier = tier_row["bucket_tier"] if tier_row else "S"
+
+    if body.enabled:
+        if not _model_allowed_for_tier(model_id, tier):
+            raise HTTPException(
+                403,
+                f"Model {model_id} requires tier {MODEL_MIN_TIER[model_id]}+, "
+                f"current bucket is {tier}. Ask superadmin to upgrade."
+            )
+        await pool.execute(
+            "INSERT INTO tenant_bedrock_models (tenant_id, model_id, enabled_by) "
+            "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            user.tenant_id, model_id, user.email,
+        )
+    else:
+        await pool.execute(
+            "DELETE FROM tenant_bedrock_models WHERE tenant_id = $1 AND model_id = $2",
+            user.tenant_id, model_id,
+        )
+    return {"model_id": model_id, "enabled": body.enabled, "tier": tier}
+
+
+# ── Per-tenant consumption (caller's own tenant) ────────────────────────────
+
+@router.get("/me/consumption")
+async def my_consumption(user: AuthUser = Depends(require_auth)):
+    """Live capacity utilization for the caller's tenant. Used by Settings → Consumption."""
+    pool = await get_pool()
+    tid = user.tenant_id
+
+    today = await pool.fetchrow(
+        "SELECT COALESCE(SUM(input_tokens),0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens),0) AS output_tokens, "
+        "COUNT(*) AS calls "
+        "FROM token_usage WHERE tenant_id = $1 AND created_at >= date_trunc('day', NOW())",
+        tid,
+    )
+    month = await pool.fetchrow(
+        "SELECT COALESCE(SUM(input_tokens),0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens),0) AS output_tokens, "
+        "COUNT(*) AS calls "
+        "FROM token_usage WHERE tenant_id = $1 AND created_at >= date_trunc('month', NOW())",
+        tid,
+    )
+    daily_rows = await pool.fetch(
+        "SELECT DATE(created_at) AS day, "
+        "SUM(input_tokens) + SUM(output_tokens) AS tokens, "
+        "COUNT(*) AS calls "
+        "FROM token_usage WHERE tenant_id = $1 AND created_at > NOW() - INTERVAL '30 days' "
+        "GROUP BY DATE(created_at) ORDER BY day",
+        tid,
+    )
+
+    async def safe_count(sql: str) -> int:
+        try:
+            v = await pool.fetchval(sql, tid)
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    records, agents_total, agents_enabled, pipelines_total, pipelines_running = await asyncio.gather(
+        safe_count("SELECT COUNT(*) FROM object_records WHERE tenant_id = $1"),
+        safe_count("SELECT COUNT(*) FROM agent_configs WHERE tenant_id = $1"),
+        safe_count("SELECT COUNT(*) FROM agent_configs WHERE tenant_id = $1 AND enabled = TRUE"),
+        safe_count("SELECT COUNT(*) FROM pipelines WHERE tenant_id = $1"),
+        safe_count("SELECT COUNT(*) FROM pipeline_runs WHERE tenant_id = $1 AND status IN ('RUNNING','PENDING','QUEUED')"),
+    )
+
+    bucket_row = await pool.fetchrow("SELECT bucket_tier FROM tenants WHERE id = $1", tid)
+    bucket_tier = bucket_row["bucket_tier"] if bucket_row else "S"
+
+    return {
+        "tenant_id": tid,
+        "bucket_tier": bucket_tier,
+        "tokens_today": int(today["input_tokens"] + today["output_tokens"]),
+        "tokens_today_input": int(today["input_tokens"]),
+        "tokens_today_output": int(today["output_tokens"]),
+        "invocations_today": int(today["calls"]),
+        "tokens_month": int(month["input_tokens"] + month["output_tokens"]),
+        "tokens_month_input": int(month["input_tokens"]),
+        "tokens_month_output": int(month["output_tokens"]),
+        "invocations_month": int(month["calls"]),
+        "daily_history": [
+            {"day": r["day"].isoformat(), "tokens": int(r["tokens"] or 0), "calls": int(r["calls"] or 0)}
+            for r in daily_rows
+        ],
+        "ontology_records": records,
+        "agents_total": agents_total,
+        "agents_active": agents_enabled,
+        "pipelines_total": pipelines_total,
+        "pipelines_running": pipelines_running,
+    }
 
 
 # ── Token Usage (service-to-service + superadmin query) ──────────────────────

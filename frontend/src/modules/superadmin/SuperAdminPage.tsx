@@ -18,10 +18,15 @@ interface Tenant {
   slug: string;
   plan: string;
   status: string;
+  bucket_tier?: 'S' | 'M' | 'L' | 'XL' | 'XXL';
   allowed_modules: string[];
   created_at: string;
   updated_at: string;
 }
+
+const BUCKET_TIERS: ('S' | 'M' | 'L' | 'XL' | 'XXL')[] = ['S', 'M', 'L', 'XL', 'XXL'];
+const BUCKET_LABELS: Record<string, string> = { S: 'Pilot', M: 'Growth', L: 'Scale', XL: 'Production', XXL: 'Enterprise' };
+const BUCKET_MONTHLY: Record<string, number> = { S: 2_667, M: 5_333, L: 10_583, XL: 26_500, XXL: 291_083 };
 
 interface TenantUsage {
   object_types: number;
@@ -110,6 +115,63 @@ function authHeaders(): Record<string, string> {
   if (token) h['Authorization'] = `Bearer ${token}`;
   return h;
 }
+
+// ── Bucket Picker (superadmin-only inline editor) ─────────────────────────────
+
+const BucketPicker: React.FC<{
+  tenantId: string;
+  current: 'S' | 'M' | 'L' | 'XL' | 'XXL';
+  onChanged: (tier: 'S' | 'M' | 'L' | 'XL' | 'XXL') => void;
+}> = ({ tenantId, current, onChanged }) => {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newTier = e.target.value as 'S' | 'M' | 'L' | 'XL' | 'XXL';
+    if (newTier === current) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await fetch(`${ADMIN_API}/admin/tenants/${tenantId}/bucket`, {
+        method: 'PATCH', headers: authHeaders(),
+        body: JSON.stringify({ bucket_tier: newTier }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${r.status}`);
+      }
+      onChanged(newTier);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <select
+        value={current}
+        onChange={handleChange}
+        disabled={saving}
+        style={{
+          fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 4,
+          border: `1px solid ${error ? '#FCA5A5' : '#E2E8F0'}`,
+          backgroundColor: '#FFF', color: '#7C3AED',
+          fontFamily: 'monospace', cursor: saving ? 'wait' : 'pointer',
+        }}
+      >
+        {BUCKET_TIERS.map(t => (
+          <option key={t} value={t}>
+            {t} · {BUCKET_LABELS[t]} (${BUCKET_MONTHLY[t].toLocaleString()}/mo)
+          </option>
+        ))}
+      </select>
+      {saving && <RefreshCw size={11} style={{ animation: 'spin 0.6s linear infinite', color: '#94A3B8' }} />}
+      {error && <span title={error} style={{ fontSize: 10, color: '#DC2626' }}>!</span>}
+    </div>
+  );
+};
 
 // ── Tenants Tab ───────────────────────────────────────────────────────────────
 
@@ -231,6 +293,7 @@ const TenantsTab: React.FC = () => {
             <th style={S.th}>ID</th>
             <th style={S.th}>Name</th>
             <th style={S.th}>Plan</th>
+            <th style={S.th}>Bucket</th>
             <th style={S.th}>Status</th>
             <th style={S.th}>Created</th>
           </tr>
@@ -254,6 +317,13 @@ const TenantsTab: React.FC = () => {
                     color: t.plan === 'enterprise' ? '#7C3AED' : '#64748B',
                   }}>{t.plan.toUpperCase()}</span>
                 </td>
+                <td style={S.td} onClick={e => e.stopPropagation()}>
+                  <BucketPicker
+                    tenantId={t.id}
+                    current={t.bucket_tier || 'S'}
+                    onChanged={(newTier) => setTenants(prev => prev.map(x => x.id === t.id ? { ...x, bucket_tier: newTier } : x))}
+                  />
+                </td>
                 <td style={S.td}>
                   <span style={{
                     fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
@@ -266,7 +336,7 @@ const TenantsTab: React.FC = () => {
               </tr>
               {expandedId === t.id && usage[t.id] && (
                 <tr>
-                  <td colSpan={6} style={{ padding: '12px 24px', backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                  <td colSpan={7} style={{ padding: '12px 24px', backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
                     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                       {[
                         ['Records', usage[t.id].records],

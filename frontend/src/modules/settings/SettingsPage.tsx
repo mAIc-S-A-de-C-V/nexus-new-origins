@@ -3,7 +3,7 @@ import {
   Settings, Building2, Bell, Key, Database, Check, X, RefreshCw,
   Eye, EyeOff, Plus, Trash2, Copy, AlertCircle, CheckCircle2,
   ToggleLeft, ToggleRight, Zap, Link, Mail, ShieldCheck,
-  Globe, Activity, Cpu, Edit2, Star, StarOff,
+  Globe, Activity, Cpu, Edit2, Star, StarOff, Boxes, Gauge,
 } from 'lucide-react';
 
 import { useAuth } from '../../shell/TenantContext';
@@ -14,17 +14,21 @@ import { uuid } from '../../lib/uuid';
 const AlertsPage         = React.lazy(() => import('../alerts/AlertsPage'));
 const ApiGatewayPage     = React.lazy(() => import('../gateway/ApiGatewayPage'));
 const PlatformHealthPage = React.lazy(() => import('../health/PlatformHealthPage'));
+const ModelCatalogTab    = React.lazy(() => import('./ModelCatalogTab'));
+const ConsumptionTab     = React.lazy(() => import('./ConsumptionTab'));
 
 const AUTH_API = import.meta.env.VITE_AUTH_SERVICE_URL || 'http://localhost:8011';
 const EVENT_API = import.meta.env.VITE_EVENT_LOG_SERVICE_URL || 'http://localhost:8005';
 const AUDIT_API = import.meta.env.VITE_AUDIT_SERVICE_URL || 'http://localhost:8006';
 const AGENT_API = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
 
-type TabId = 'general' | 'notifications' | 'api-keys' | 'providers' | 'retention' | 'permissions' | 'alerts' | 'gateway' | 'health';
+type TabId = 'general' | 'notifications' | 'api-keys' | 'providers' | 'catalog' | 'consumption' | 'retention' | 'permissions' | 'alerts' | 'gateway' | 'health';
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'general',       label: 'General',         icon: <Building2 size={13} /> },
   { id: 'providers',     label: 'AI Models',       icon: <Cpu size={13} /> },
+  { id: 'catalog',       label: 'Bedrock Catalog', icon: <Boxes size={13} /> },
+  { id: 'consumption',   label: 'Consumption',     icon: <Gauge size={13} /> },
   { id: 'notifications', label: 'Notifications',   icon: <Bell size={13} /> },
   { id: 'api-keys',      label: 'API Keys',        icon: <Key size={13} /> },
   { id: 'retention',     label: 'Data Retention',  icon: <Database size={13} /> },
@@ -1256,6 +1260,16 @@ export const SettingsPage: React.FC = () => {
         <div style={{ flex: 1, overflow: 'auto', padding: 28 }}>
           {activeTab === 'general' && <GeneralTab />}
           {activeTab === 'providers' && <ProvidersTab />}
+          {activeTab === 'catalog' && (
+            <React.Suspense fallback={<div style={{ padding: 32, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>Loading catalog…</div>}>
+              <ModelCatalogTab />
+            </React.Suspense>
+          )}
+          {activeTab === 'consumption' && (
+            <React.Suspense fallback={<div style={{ padding: 32, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>Loading consumption…</div>}>
+              <ConsumptionTab />
+            </React.Suspense>
+          )}
           {activeTab === 'notifications' && <NotificationsTab />}
           {activeTab === 'api-keys' && <ApiKeysTab />}
           {activeTab === 'retention' && <RetentionTab />}
