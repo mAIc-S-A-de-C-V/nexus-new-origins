@@ -418,8 +418,20 @@ async def my_consumption(user: AuthUser = Depends(require_auth)):
         safe_count("SELECT COUNT(DISTINCT actor_id) FROM audit_events WHERE tenant_id = $1 AND occurred_at >= date_trunc('day', NOW())"),
     )
 
-    bucket_row = await pool.fetchrow("SELECT bucket_tier FROM tenants WHERE id = $1", tid)
+    bucket_row = await pool.fetchrow("SELECT bucket_tier, name FROM tenants WHERE id = $1", tid)
     bucket_tier = bucket_row["bucket_tier"] if bucket_row else "S"
+    tenant_name = bucket_row["name"] if bucket_row else tid
+
+    # Pipelines: this codebase writes only terminal statuses (COMPLETED/FAILED) to
+    # pipeline_runs, so a "currently running" count is always 0 here. Surface
+    # configured pipelines and recent-run activity instead — those are real.
+    try:
+        pipelines_recent_24h = await pool.fetchval(
+            "SELECT COUNT(*) FROM pipeline_runs WHERE tenant_id = $1 AND started_at > NOW() - INTERVAL '24 hours'",
+            tid,
+        ) or 0
+    except Exception:
+        pipelines_recent_24h = 0
 
     # DB connection count is process-wide (pg_stat_activity), not tenant-scoped.
     try:
@@ -468,6 +480,7 @@ async def my_consumption(user: AuthUser = Depends(require_auth)):
             for r in daily_rows
         ],
         # Combined record/storage totals across object_records (Postgres) + events (TimescaleDB).
+        "tenant_name": tenant_name,
         "ontology_records": int(total_records),
         "ontology_records_breakdown": {
             "object_records": int(records or 0),
@@ -482,6 +495,7 @@ async def my_consumption(user: AuthUser = Depends(require_auth)):
         "agents_active": agents_enabled,
         "pipelines_total": pipelines_total,
         "pipelines_running": pipelines_running,
+        "pipelines_recent_24h": int(pipelines_recent_24h or 0),
         "concurrent_users": int(concurrent_actors_60s or 0),
         "daily_active_users": int(distinct_users_today or 0),
         "rag_corpus_bytes": rag_corpus_bytes,            # null = not configured on this deployment

@@ -58,6 +58,8 @@ const BUCKETS: BucketTier[] = [
 // than silently mocked.
 
 interface LiveUsage {
+  tenant_id: string;
+  tenant_name?: string;
   bucket_tier: TierId;
   tokens_today: number;
   tokens_month: number;
@@ -70,6 +72,7 @@ interface LiveUsage {
   agents_active: number;
   pipelines_total: number;
   pipelines_running: number;
+  pipelines_recent_24h?: number;
   storage_bytes: number;
   storage_breakdown?: { object_records_bytes: number; events_bytes: number };
   concurrent_users: number;
@@ -81,11 +84,12 @@ interface LiveUsage {
 // Fallback values used only while loading or if the endpoint is unreachable.
 // Not used for display once the live response arrives.
 const FALLBACK_USAGE: LiveUsage = {
+  tenant_id: '',
   bucket_tier: 'S',
   tokens_today: 0, tokens_month: 0, invocations_today: 0, invocations_month: 0,
   daily_history: [],
   ontology_records: 0, agents_total: 0, agents_active: 0,
-  pipelines_total: 0, pipelines_running: 0,
+  pipelines_total: 0, pipelines_running: 0, pipelines_recent_24h: 0,
   storage_bytes: 0, concurrent_users: 0, daily_active_users: 0,
   rag_corpus_bytes: null, db_connections_process: 0,
 };
@@ -574,12 +578,21 @@ export const ConsumptionTab: React.FC = () => {
           )}
         </div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+          {usage.tenant_id && (
+            <span style={{
+              display: 'inline-block', marginRight: 8,
+              padding: '2px 7px', borderRadius: 3, backgroundColor: C.bg,
+              fontFamily: 'monospace', fontSize: 11, color: C.text,
+              border: `1px solid ${C.border}`,
+            }}>
+              {usage.tenant_id}{usage.tenant_name ? ` · ${usage.tenant_name}` : ''}
+            </span>
+          )}
           Real-time monitoring of bucket consumption against your contracted Tier {currentTier} allowance.
-          All values come from <code style={{ fontFamily: 'monospace' }}>/admin/me/consumption</code>: tokens from <code>token_usage</code>,
-          records from <code>object_records</code> (Postgres) + <code>events</code> (TimescaleDB),
-          agents from <code>agent_configs</code>, pipelines from <code>pipeline_runs</code>,
+          Tokens from <code>token_usage</code>, records = <code>object_records</code> (Postgres) + <code>events</code> (TimescaleDB),
+          agents from <code>agent_configs</code>, pipeline configs from <code>pipelines</code> (recent runs from <code>pipeline_runs</code>),
           concurrent users from <code>audit_events</code>, storage via <code>pg_column_size</code> on both stores.
-          DB connections is process-wide (no tenant scope). RAG corpus shows N/A because no vector store is deployed in this stack.
+          DB connections is process-wide. RAG corpus shows N/A because no vector store is deployed in this stack.
         </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -721,7 +734,12 @@ export const ConsumptionTab: React.FC = () => {
             ? `object_records (Postgres): ${fmt(usage.ontology_records_breakdown.object_records)}\nevents (TimescaleDB): ${fmt(usage.ontology_records_breakdown.events)}`
             : undefined}
         />
-        <UsageMetric source="live" icon={<Workflow size={13} />}   label="Pipelines running"   current={usage.pipelines_running}   limit={tier.pipelinesParallel as number} />
+        <UsageMetric
+          source="live" icon={<Workflow size={13} />} label="Pipeline configs"
+          current={usage.pipelines_total} limit={tier.pipelinesParallel as number}
+          subline={`${usage.pipelines_recent_24h ?? 0} runs in last 24h · ${usage.pipelines_running} mid-flight`}
+          hoverDetail={`This codebase only persists terminal pipeline_runs statuses (COMPLETED/FAILED). The "configs" count is what your bucket actually limits.`}
+        />
         <UsageMetric source="live" icon={<Users size={13} />}      label="Concurrent users"    current={usage.concurrent_users}    limit={tier.concurrentUsers} />
         <UsageMetric
           source="live" icon={<HardDrive size={13} />} label="Storage"
