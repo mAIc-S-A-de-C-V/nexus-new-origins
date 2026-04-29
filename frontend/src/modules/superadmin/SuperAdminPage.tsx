@@ -38,7 +38,26 @@ interface TenantUsage {
   logic_functions: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  // Enriched fields used for bucket-utilization bars.
+  bucket_tier: 'S' | 'M' | 'L' | 'XL' | 'XXL';
+  records_combined: number;       // object_records + events
+  events: number;
+  agents_active: number;
+  pipelines_running: number;
+  month_input_tokens: number;
+  month_output_tokens: number;
 }
+
+// Tier limits — lifted from the proposal so the SuperAdmin table can compute %.
+const TIER_LIMITS: Record<'S' | 'M' | 'L' | 'XL' | 'XXL', {
+  records: number; agents: number; pipelines: number | null; tokensMonth: number;
+}> = {
+  S:   { records: 100_000,     agents: 3,     pipelines: 5,    tokensMonth: 60_000_000 },
+  M:   { records: 500_000,     agents: 10,    pipelines: 20,   tokensMonth: 300_000_000 },
+  L:   { records: 2_000_000,   agents: 30,    pipelines: 60,   tokensMonth: 750_000_000 },
+  XL:  { records: 10_000_000,  agents: 80,    pipelines: 200,  tokensMonth: 2_400_000_000 },
+  XXL: { records: 100_000_000, agents: 500,   pipelines: null, tokensMonth: 24_000_000_000 },
+};
 
 interface TokenSummary {
   by_tenant: { tenant_id: string; input_tokens: number; output_tokens: number; calls: number }[];
@@ -108,6 +127,35 @@ const S = {
 
 const fmtNum = (n: number) => n.toLocaleString();
 const fmtTokens = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : `${n}`;
+
+// ── Tier-utilization mini bar ────────────────────────────────────────────────
+// Shown under each metric cell in the tenants table. Color tracks remaining
+// headroom: green < 60%, amber < 85%, red beyond.
+const BucketBar: React.FC<{
+  current: number;
+  limit: number | null;       // null = unlimited tier — render no bar
+  hint?: string;
+}> = ({ current, limit, hint }) => {
+  if (limit === null) {
+    return <div style={{ fontSize: 9, color: '#94A3B8', marginTop: 3, fontFamily: 'monospace' }}>unlimited</div>;
+  }
+  const pct = limit > 0 ? (current / limit) * 100 : 0;
+  const clamped = Math.min(pct, 100);
+  const overage = pct > 100;
+  const color = overage ? '#DC2626' : pct < 60 ? '#16A34A' : pct < 85 ? '#D97706' : '#DC2626';
+  const labelColor = overage ? '#DC2626' : '#94A3B8';
+
+  return (
+    <div title={hint} style={{ marginTop: 4 }}>
+      <div style={{ height: 4, backgroundColor: '#F1F5F9', borderRadius: 2, overflow: 'hidden' }}>
+        <div style={{ width: `${clamped}%`, height: '100%', backgroundColor: color, transition: 'width 200ms' }} />
+      </div>
+      <div style={{ fontSize: 9, color: labelColor, marginTop: 2, fontFamily: 'monospace', fontWeight: overage ? 600 : 400 }}>
+        {pct.toFixed(0)}% of {fmtTokens(limit)}{overage ? ' · OVER' : ''}
+      </div>
+    </div>
+  );
+};
 
 function authHeaders(): Record<string, string> {
   const token = getAccessToken();
@@ -327,20 +375,54 @@ const TenantsTab: React.FC = () => {
                       color: statusColor(t.status), backgroundColor: `${statusColor(t.status)}15`,
                     }}>{t.status.toUpperCase()}</span>
                   </td>
-                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12 }}>
-                    {loaded ? fmtNum(u.records) : <span style={{ color: '#CBD5E1' }}>…</span>}
-                  </td>
-                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12 }}>
-                    {loaded ? fmtNum(u.agents) : <span style={{ color: '#CBD5E1' }}>…</span>}
-                  </td>
-                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12 }}>
-                    {loaded ? fmtNum(u.pipelines) : <span style={{ color: '#CBD5E1' }}>…</span>}
-                  </td>
-                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 11, color: '#475569' }}>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12, minWidth: 110 }}>
                     {loaded ? (
-                      <span title={`${fmtNum(u.total_input_tokens)} input · ${fmtNum(u.total_output_tokens)} output`}>
-                        {fmtTokens(u.total_input_tokens)} <span style={{ color: '#94A3B8' }}>/</span> {fmtTokens(u.total_output_tokens)}
-                      </span>
+                      <>
+                        <div title={`${fmtNum(u.records)} object_records + ${fmtNum(u.events)} events`}>{fmtNum(u.records_combined ?? u.records)}</div>
+                        <BucketBar
+                          current={u.records_combined ?? u.records}
+                          limit={TIER_LIMITS[u.bucket_tier ?? t.bucket_tier ?? 'S'].records}
+                          hint={`${fmtNum(u.records)} object records + ${fmtNum(u.events)} events vs. tier ${u.bucket_tier} limit`}
+                        />
+                      </>
+                    ) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12, minWidth: 90 }}>
+                    {loaded ? (
+                      <>
+                        <div title={`${u.agents_active ?? 0} of ${u.agents} configured agents enabled`}>{fmtNum(u.agents_active ?? u.agents)}</div>
+                        <BucketBar
+                          current={u.agents_active ?? u.agents}
+                          limit={TIER_LIMITS[u.bucket_tier ?? t.bucket_tier ?? 'S'].agents}
+                          hint={`Active agents vs. tier ${u.bucket_tier} limit`}
+                        />
+                      </>
+                    ) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 12, minWidth: 100 }}>
+                    {loaded ? (
+                      <>
+                        <div title={`${u.pipelines_running ?? 0} running of ${u.pipelines} configured`}>{fmtNum(u.pipelines_running ?? u.pipelines)}</div>
+                        <BucketBar
+                          current={u.pipelines_running ?? 0}
+                          limit={TIER_LIMITS[u.bucket_tier ?? t.bucket_tier ?? 'S'].pipelines}
+                          hint={`Running pipelines vs. tier ${u.bucket_tier} parallel limit`}
+                        />
+                      </>
+                    ) : <span style={{ color: '#CBD5E1' }}>…</span>}
+                  </td>
+                  <td style={{ ...S.td, textAlign: 'right' as const, fontFamily: 'monospace', fontSize: 11, color: '#475569', minWidth: 140 }}>
+                    {loaded ? (
+                      <>
+                        <span title={`This month: ${fmtNum((u.month_input_tokens ?? 0) + (u.month_output_tokens ?? 0))} · Lifetime: ${fmtNum(u.total_input_tokens + u.total_output_tokens)}`}>
+                          {fmtTokens(u.total_input_tokens)} <span style={{ color: '#94A3B8' }}>/</span> {fmtTokens(u.total_output_tokens)}
+                        </span>
+                        <BucketBar
+                          current={(u.month_input_tokens ?? 0) + (u.month_output_tokens ?? 0)}
+                          limit={TIER_LIMITS[u.bucket_tier ?? t.bucket_tier ?? 'S'].tokensMonth}
+                          hint={`Month-to-date tokens vs. tier ${u.bucket_tier} monthly bucket`}
+                        />
+                      </>
                     ) : <span style={{ color: '#CBD5E1' }}>…</span>}
                   </td>
                   <td style={{ ...S.td, fontSize: 11, color: '#94A3B8' }}>

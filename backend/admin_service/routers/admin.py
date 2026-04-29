@@ -125,11 +125,54 @@ async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_supe
     async def token_totals() -> dict:
         row = await pool.fetchrow(
             "SELECT COALESCE(SUM(input_tokens), 0) AS total_input, "
-            "COALESCE(SUM(output_tokens), 0) AS total_output "
+            "COALESCE(SUM(output_tokens), 0) AS total_output, "
+            "COALESCE(SUM(input_tokens) FILTER (WHERE created_at >= date_trunc('month', NOW())), 0) AS month_input, "
+            "COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= date_trunc('month', NOW())), 0) AS month_output "
             "FROM token_usage WHERE tenant_id = $1",
             tenant_id,
         )
-        return {"total_input_tokens": row["total_input"], "total_output_tokens": row["total_output"]}
+        return {
+            "total_input_tokens": row["total_input"],
+            "total_output_tokens": row["total_output"],
+            "month_input_tokens": row["month_input"],
+            "month_output_tokens": row["month_output"],
+        }
+
+    async def agents_active_count() -> int:
+        try:
+            v = await pool.fetchval(
+                "SELECT COUNT(*) FROM agent_configs WHERE tenant_id = $1 AND enabled = TRUE",
+                tenant_id,
+            )
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    async def pipelines_running_count() -> int:
+        try:
+            v = await pool.fetchval(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE tenant_id = $1 AND status IN ('RUNNING','PENDING','QUEUED')",
+                tenant_id,
+            )
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    async def events_count() -> int:
+        events_pool = await get_events_pool()
+        if not events_pool:
+            return 0
+        try:
+            v = await events_pool.fetchval(
+                "SELECT COUNT(*) FROM events WHERE tenant_id = $1", tenant_id
+            )
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    async def bucket_tier_for() -> str:
+        row = await pool.fetchrow("SELECT bucket_tier FROM tenants WHERE id = $1", tenant_id)
+        return row["bucket_tier"] if row else "S"
 
     results = await asyncio.gather(
         count("object_types"),
@@ -142,6 +185,10 @@ async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_supe
         count("comments"),
         count("api_keys"),
         token_totals(),
+        agents_active_count(),
+        pipelines_running_count(),
+        events_count(),
+        bucket_tier_for(),
         return_exceptions=True,
     )
 
@@ -151,8 +198,18 @@ async def get_tenant_usage(tenant_id: str, user: AuthUser = Depends(require_supe
     for label, val in zip(labels, results[:9]):
         usage[label] = val if isinstance(val, int) else 0
 
-    tokens = results[9] if isinstance(results[9], dict) else {"total_input_tokens": 0, "total_output_tokens": 0}
+    tokens = results[9] if isinstance(results[9], dict) else {
+        "total_input_tokens": 0, "total_output_tokens": 0,
+        "month_input_tokens": 0, "month_output_tokens": 0,
+    }
     usage.update(tokens)
+
+    usage["agents_active"]      = results[10] if isinstance(results[10], int) else 0
+    usage["pipelines_running"]  = results[11] if isinstance(results[11], int) else 0
+    usage["events"]             = results[12] if isinstance(results[12], int) else 0
+    # Combined record count across both stores (Postgres + TimescaleDB).
+    usage["records_combined"]   = (usage["records"] or 0) + usage["events"]
+    usage["bucket_tier"]        = results[13] if isinstance(results[13], str) else "S"
 
     return usage
 
