@@ -33,3 +33,10 @@ Thumbs.db
 # Docker volumes / local data
 postgres_data/
 redis_data/
+
+# Test / QA artifacts (videos, screenshots, traces — kept locally only)
+qa/results/
+qa/test-results/
+
+# Local Claude Code session config
+.claude/
