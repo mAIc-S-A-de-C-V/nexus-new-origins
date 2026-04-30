@@ -3160,11 +3160,28 @@ async function runAppAction(action: AppAction, input: ActionRunInput): Promise<A
   try {
     if (action.kind === 'createObject') {
       if (!action.objectTypeId) return { ok: false, error: 'Action missing objectTypeId' };
-      const r = await fetch(`${ONTOLOGY_API}/object-types/${action.objectTypeId}/records`, {
-        method: 'POST', headers, body: JSON.stringify({ properties: buildPayload() }),
+      // /records/ingest is the only POST that creates records on this service.
+      // It expects an array shape and a pk_field, even for a single record.
+      // Auto-generate an id when the action's mappings don't include one so
+      // ingest doesn't dedupe-collide on missing primary key.
+      const payload = buildPayload();
+      if (!payload.id) {
+        payload.id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : `rec-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+      const r = await fetch(`${ONTOLOGY_API}/object-types/${action.objectTypeId}/records/ingest`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ records: [payload], pk_field: 'id', pipeline_id: 'app-action' }),
       });
-      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
-      return { ok: true, data: await r.json() };
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        return { ok: false, error: `HTTP ${r.status}: ${text.slice(0, 200)}` };
+      }
+      const data = await r.json().catch(() => ({}));
+      // Echo the new record id so onSuccess handlers (setVariable from
+      // response.id) can read it.
+      return { ok: true, data: { ...data, id: payload.id } };
     }
     if (action.kind === 'updateObject') {
       if (!action.objectTypeId) return { ok: false, error: 'Action missing objectTypeId' };
