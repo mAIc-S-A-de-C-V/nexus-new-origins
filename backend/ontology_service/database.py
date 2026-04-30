@@ -69,9 +69,23 @@ class AppRow(Base):
     object_type_id = Column(String, nullable=False, index=True)
     object_type_ids = Column(JSON, nullable=True, default=list)
     components = Column(JSON, nullable=False, default=list)
-    # App-level settings — currently holds the dashboard filter bar config
-    # (single source of truth for time range / group filter across widgets).
+    # App-level settings — holds dashboard filter bar config, declared
+    # actions, variables, events, and other free-form per-app metadata.
     settings = Column(JSON, nullable=True, default=dict)
+    # Phase G — distinguishes 'dashboard' (read-only viz) from 'app'
+    # (interactive/transactional). Two list pages filter by this.
+    kind = Column(String, nullable=False, default="dashboard", index=True)
+    # Phase E — ephemeral generated dashboards. Expire after 7 days unless
+    # explicitly saved. parent_app_id / generated_from_widget_id link back
+    # to the dashboard+widget that triggered the generation.
+    is_ephemeral = Column(Boolean, nullable=False, default=False, index=True)
+    parent_app_id = Column(String, nullable=True, index=True)
+    generated_from_widget_id = Column(String, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    # Phase J — system-managed home dashboards (slug='dashboards-home' /
+    # 'apps-home'). Cannot be deleted; drive the list pages.
+    is_system = Column(Boolean, nullable=False, default=False, index=True)
+    slug = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -152,6 +166,66 @@ async def init_db():
                     ALTER TABLE apps ADD COLUMN settings JSON DEFAULT '{}';
                 END IF;
             END $$;
+        """))
+        # Phase E/G/J columns. Single DO block keeps the migration idempotent
+        # and cheap on subsequent boots (each NOT EXISTS check is index-only).
+        await conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'kind'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN kind VARCHAR(20) DEFAULT 'dashboard';
+                    CREATE INDEX IF NOT EXISTS ix_apps_kind ON apps(kind);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'is_ephemeral'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN is_ephemeral BOOLEAN DEFAULT false;
+                    CREATE INDEX IF NOT EXISTS ix_apps_is_ephemeral ON apps(is_ephemeral);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'parent_app_id'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN parent_app_id VARCHAR(64);
+                    CREATE INDEX IF NOT EXISTS ix_apps_parent_app_id ON apps(parent_app_id);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'generated_from_widget_id'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN generated_from_widget_id VARCHAR(64);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'expires_at'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN expires_at TIMESTAMP WITH TIME ZONE;
+                    CREATE INDEX IF NOT EXISTS ix_apps_expires_at ON apps(expires_at);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'is_system'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN is_system BOOLEAN DEFAULT false;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'apps' AND column_name = 'slug'
+                ) THEN
+                    ALTER TABLE apps ADD COLUMN slug VARCHAR(100);
+                    CREATE INDEX IF NOT EXISTS ix_apps_slug ON apps(slug);
+                END IF;
+            END $$;
+        """))
+        # Sweep expired ephemeral apps each boot — one cheap DELETE keeps
+        # the cache from growing without a separate cron service.
+        await conn.execute(text("""
+            DELETE FROM apps
+            WHERE is_ephemeral = true AND expires_at IS NOT NULL AND expires_at < NOW();
         """))
 
 

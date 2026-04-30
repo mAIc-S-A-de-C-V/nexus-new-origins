@@ -1238,6 +1238,192 @@ The 'code' value must be a JSON string — escape all double quotes as \\", newl
         result = self._call(prompt)
         return result
 
+    def generate_composite(
+        self,
+        description: str,
+        object_type_id: str,
+        object_type_name: str,
+        properties: list[str],
+        sample_rows: list[dict] | None = None,
+    ) -> dict:
+        """
+        Generate a composite "card" widget — a single AppComponent of
+        type='composite' containing 2-5 child widgets in a nested 12-col
+        grid. Used by the "AI CARD" button in the editor.
+        """
+        sample_rows = sample_rows or []
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        sample_preview = ""
+        if sample_rows:
+            all_keys = list(dict.fromkeys(k for row in sample_rows for k in row))[:25]
+            header = "\t".join(all_keys)
+            rows_text = "\n".join(
+                "\t".join(str(row.get(k, ""))[:35] for k in all_keys)
+                for row in sample_rows[:5]
+            )
+            sample_preview = f"\nSample data:\n{header}\n{rows_text}"
+
+        prompt = f"""You are a dashboard card composer. Generate ONE composite widget — a card containing several child widgets in a nested grid.
+
+Today: {today}
+User request: "{description}"
+Object type: "{object_type_name}" (id: {object_type_id})
+Available fields: {json.dumps(properties[:60])}{sample_preview}
+
+Return a SINGLE JSON object (no markdown, no extra text) describing a composite widget:
+{{
+  "id": "card-1",
+  "type": "composite",
+  "title": "Descriptive card title",
+  "objectTypeId": "{object_type_id}",
+  "colSpan": 12,
+  "innerGridCols": 12,
+  "cardLayout": "grid | banner-main | hero-sidebar | split",
+  "shareDataSource": true,
+  "shareFilters": true,
+  "children": [
+    {{
+      "id": "c1",
+      "type": "kpi-banner",
+      "title": "Overview",
+      "colSpan": 12,
+      "aggregation": "count"
+    }},
+    {{
+      "id": "c2",
+      "type": "line-chart",
+      "title": "Trend",
+      "xField": "<date field>",
+      "timeBucket": "month",
+      "colSpan": 8
+    }},
+    {{
+      "id": "c3",
+      "type": "bar-chart",
+      "title": "By category",
+      "labelField": "<categorical field>",
+      "colSpan": 4
+    }}
+  ]
+}}
+
+Rules:
+- Children inherit objectTypeId automatically (shareDataSource: true). DO NOT repeat objectTypeId on each child.
+- 2-5 children. Pick child types from: kpi-banner, metric-card, bar-chart, line-chart, pie-chart, area-chart, data-table, stat-card, text-block.
+- Layout templates set sensible colSpan defaults BUT explicit colSpans on children win.
+- 'banner-main' = first child full-width, rest below in 12-col grid.
+- 'hero-sidebar' = first child large (8 cols), second small (4 cols), rest below.
+- 'split' = first two children half-half (6 cols each).
+- 'grid' = free-form 12-col, you set colSpan on each child.
+- Field names MUST be copied character-for-character from the available fields list. Never invent.
+- For line/area charts, always set xField (a date field) and timeBucket.
+- For bar/pie charts, always set labelField (a low-cardinality categorical field).
+"""
+
+        result = self._call(prompt)
+        return result
+
+    def generate_dashboard(
+        self,
+        prompt_text: str,
+        available_object_types: list[dict],
+        source_context: dict | None = None,
+    ) -> dict:
+        """
+        Generate a focused drill-down dashboard from a prompt + click context.
+        Returns a NexusApp-shaped dict with name, description, components.
+        Bias the prompt toward small (3-6 widget) dashboards that explain
+        the source context, preferring composite cards.
+        """
+        source_context = source_context or {}
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Compact representation of available object types so the prompt
+        # stays under token budget.
+        ots_compact = []
+        for ot in available_object_types[:12]:
+            props = [p.get("name") for p in (ot.get("properties") or [])[:25] if isinstance(p, dict)]
+            ots_compact.append({
+                "id": ot.get("id"),
+                "name": ot.get("display_name") or ot.get("name"),
+                "fields": props,
+                "sample": (ot.get("sample_records") or [])[:2],
+            })
+
+        ctx_lines = []
+        if source_context.get("clicked_value"):
+            ctx_lines.append(f"User clicked value: {source_context['clicked_value']}")
+        if source_context.get("clicked_field"):
+            ctx_lines.append(f"On field: {source_context['clicked_field']}")
+        if source_context.get("source_widget_type"):
+            ctx_lines.append(f"Source widget type: {source_context['source_widget_type']}")
+        if source_context.get("source_dashboard_name"):
+            ctx_lines.append(f"From dashboard: {source_context['source_dashboard_name']}")
+
+        ctx_block = "\n".join(ctx_lines) if ctx_lines else "(no click context)"
+
+        prompt = f"""You are a dashboard generator producing focused drill-down views.
+
+Today: {today}
+User prompt: "{prompt_text}"
+
+Click context:
+{ctx_block}
+
+Available object types (pick 1-3 most relevant):
+{json.dumps(ots_compact, default=str)[:6000]}
+
+Produce a NexusApp shaped JSON. Keep it FOCUSED: 3-6 widgets MAX. Prefer ONE composite card with child widgets that explain the click. Always include a kpi-banner or stat-card as the first widget showing a top-level summary.
+
+Return JSON only, no markdown:
+{{
+  "name": "Detail: <click value>",
+  "description": "Drill-down explaining ...",
+  "components": [
+    {{
+      "id": "c1",
+      "type": "composite",
+      "title": "Overview",
+      "objectTypeId": "<picked id>",
+      "colSpan": 12,
+      "cardLayout": "hero-sidebar",
+      "shareDataSource": true,
+      "shareFilters": true,
+      "filters": [
+        {{ "id": "f1", "field": "<click field>", "operator": "eq", "value": "<click value>" }}
+      ],
+      "children": [
+        {{ "id": "k1", "type": "kpi-banner", "title": "Total records", "aggregation": "count", "colSpan": 8 }},
+        {{ "id": "b1", "type": "bar-chart", "title": "By type", "labelField": "<low-cardinality field>", "colSpan": 4 }}
+      ]
+    }},
+    {{
+      "id": "c2",
+      "type": "line-chart",
+      "title": "Trend",
+      "objectTypeId": "<picked id>",
+      "xField": "<date field>",
+      "timeBucket": "month",
+      "filters": [
+        {{ "id": "f1", "field": "<click field>", "operator": "eq", "value": "<click value>" }}
+      ],
+      "colSpan": 12
+    }}
+  ]
+}}
+
+Rules:
+- Apply the click context as a filter on widgets that need it (the clicked field/value pair).
+- Pick xField only from date-typed fields.
+- Pick labelField only from low-cardinality categorical fields.
+- All field names character-for-character from the picked object type.
+- Default each top-level widget to colSpan 12 unless they're meant to share a row.
+"""
+
+        result = self._call(prompt)
+        return result
+
     def chat_with_data(
         self,
         question: str,

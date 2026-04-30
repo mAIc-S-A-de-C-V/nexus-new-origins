@@ -84,6 +84,7 @@ const renderPage = (page: string): React.ReactNode => {
     case 'pipelines':
       return <Suspense fallback={<LoadingSpinner message="Loading pipelines..." />}><PipelineBuilder /></Suspense>;
     case 'apps':
+    case 'apps-app':
       return <Suspense fallback={<LoadingSpinner message="Loading apps..." />}><AppsPage /></Suspense>;
     case 'workbench':
       return <Suspense fallback={<LoadingSpinner message="Loading workbench..." />}><WorkbenchPage /></Suspense>;

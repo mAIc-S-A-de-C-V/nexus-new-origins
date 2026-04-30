@@ -1,11 +1,49 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, ExternalLink, Sparkles, Loader, LayoutDashboard } from 'lucide-react';
+import { Plus, Trash2, ExternalLink, Sparkles, Loader, LayoutDashboard, ChevronRight, X, Save, Home } from 'lucide-react';
 import { useAppStore } from '../../store/appStore';
 import { useNavigationStore } from '../../store/navigationStore';
+import { useDashboardStackStore } from '../../store/dashboardStackStore';
 import { NexusApp, AppComponent } from '../../types/app';
 import { getTenantId } from '../../store/authStore';
 import AppEditor from './AppEditor';
+import AppCanvas from './AppCanvas';
 import { uuid as genId } from '../../lib/uuid';
+
+const ONTOLOGY_API_BASE = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
+
+// Phase J — fetch the system dashboard by slug. Returns null if not found,
+// the caller is expected to seed one.
+async function fetchSystemDashboard(slug: string): Promise<NexusApp | null> {
+  try {
+    const r = await fetch(`${ONTOLOGY_API_BASE}/apps/by-slug/${slug}`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    if (!r.ok) return null;
+    const raw = await r.json() as Record<string, unknown>;
+    const settings = (raw.settings as Record<string, unknown>) || {};
+    return {
+      id: raw.id as string,
+      name: raw.name as string,
+      description: (raw.description as string) || '',
+      icon: (raw.icon as string) || '',
+      components: (raw.components as AppComponent[]) || [],
+      objectTypeIds:
+        Array.isArray(raw.object_type_ids) && (raw.object_type_ids as string[]).length > 0
+          ? (raw.object_type_ids as string[]) : [],
+      createdAt: (raw.created_at as string) || '',
+      updatedAt: (raw.updated_at as string) || '',
+      kind: (raw.kind as 'dashboard' | 'app') || 'dashboard',
+      isSystem: Boolean(raw.is_system),
+      slug: raw.slug as string,
+      filterBar: settings.filter_bar as NexusApp['filterBar'] | undefined,
+      actions: ((settings.actions as NexusApp['actions']) || []) as NexusApp['actions'],
+      events: ((settings.events as NexusApp['events']) || []) as NexusApp['events'],
+      variables: ((settings.variables as NexusApp['variables']) || []) as NexusApp['variables'],
+    };
+  } catch {
+    return null;
+  }
+}
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -466,16 +504,235 @@ const AppCard: React.FC<{
   </div>
 );
 
+// ── Drill stack overlay (Phase D / E) ──────────────────────────────────────
+// Renders breadcrumbs + modal/sidepanel/replace dashboards driven by the
+// global dashboardStackStore. Wraps the underlying AppsPage so any drill
+// fired from inside an open dashboard surfaces here.
+
+const DrillStackOverlay: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const stack = useDashboardStackStore((s) => s.stack);
+  const pop = useDashboardStackStore((s) => s.pop);
+  const jumpTo = useDashboardStackStore((s) => s.jumpTo);
+  const clear = useDashboardStackStore((s) => s.clear);
+  const { addApp, savePermanently } = useAppStore();
+  const [savingPermanently, setSavingPermanently] = useState(false);
+
+  const replaceEntry = [...stack].reverse().find((e) => e.displayMode === 'replace') || null;
+  const modalEntry = [...stack].reverse().find((e) => e.displayMode === 'modal') || null;
+  const sidepanelEntry = [...stack].reverse().find((e) => e.displayMode === 'sidepanel') || null;
+
+  const handleSavePermanent = async (app: NexusApp) => {
+    if (!app || !app.isEphemeral) return;
+    setSavingPermanently(true);
+    try {
+      // The generated dashboard was already persisted as ephemeral. We
+      // just flip the flag — keeps the same id/components and shows up
+      // in the regular Dashboards list.
+      const startsWithGen = String(app.id).startsWith('gen-');
+      if (startsWithGen) {
+        // Wasn't persisted (offline or backend error during generation).
+        // Fall back to a fresh create.
+        const saved = await addApp({ ...app, isEphemeral: false });
+        // eslint-disable-next-line no-alert
+        alert(`Saved as "${saved.name}".`);
+      } else {
+        const saved = await savePermanently(app.id);
+        // eslint-disable-next-line no-alert
+        alert(`Saved as "${saved.name}".`);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      alert(`Failed to save: ${String(e)}`);
+    } finally {
+      setSavingPermanently(false);
+    }
+  };
+
+  // Breadcrumb strip — only when stack is non-empty.
+  const breadcrumb = stack.length > 0 ? (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6, padding: '8px 24px',
+      backgroundColor: '#FAF5FF', borderBottom: '1px solid #E9D5FF',
+      fontSize: 11, color: '#6D28D9',
+    }}>
+      <button
+        onClick={() => clear()}
+        style={{
+          padding: '2px 8px', border: '1px solid #DDD6FE', borderRadius: 4,
+          background: '#fff', color: '#7C3AED', fontSize: 11, cursor: 'pointer',
+        }}
+      >
+        ← Home
+      </button>
+      {stack.map((entry, i) => (
+        <React.Fragment key={`${entry.dashboardId}-${i}`}>
+          <ChevronRight size={12} />
+          <button
+            onClick={() => jumpTo(i)}
+            style={{
+              padding: '2px 6px', border: 'none', background: 'transparent',
+              color: i === stack.length - 1 ? '#0D1117' : '#7C3AED',
+              fontWeight: i === stack.length - 1 ? 600 : 500,
+              cursor: 'pointer', fontSize: 11,
+            }}
+          >
+            {entry.title}
+            {entry.source === 'generated' && (
+              <span style={{
+                marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 8,
+                backgroundColor: '#EDE9FE', color: '#7C3AED',
+              }}>AI</span>
+            )}
+          </button>
+        </React.Fragment>
+      ))}
+      <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        {stack.length > 0 && stack[stack.length - 1].ephemeralApp?.isEphemeral && (
+          <button
+            onClick={() => handleSavePermanent(stack[stack.length - 1].ephemeralApp!)}
+            disabled={savingPermanently}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '3px 10px', border: '1px solid #7C3AED', borderRadius: 4,
+              backgroundColor: '#7C3AED', color: '#fff', fontSize: 11, cursor: 'pointer',
+            }}
+          >
+            <Save size={11} />
+            {savingPermanently ? 'Saving…' : 'Save view'}
+          </button>
+        )}
+        <button
+          onClick={() => pop()}
+          style={{
+            padding: '3px 10px', border: '1px solid #DDD6FE', borderRadius: 4,
+            background: '#fff', color: '#7C3AED', fontSize: 11, cursor: 'pointer',
+          }}
+        >
+          ← Back
+        </button>
+      </span>
+    </div>
+  ) : null;
+
+  // Replace mode — render the top-of-stack dashboard in place of children.
+  let mainContent: React.ReactNode;
+  if (replaceEntry && replaceEntry.ephemeralApp) {
+    mainContent = (
+      <div style={{ flex: 1, overflow: 'auto', backgroundColor: '#F8FAFC' }}>
+        <AppCanvas app={replaceEntry.ephemeralApp} drilldownContext={replaceEntry.initialContext} />
+      </div>
+    );
+  } else {
+    mainContent = children;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {breadcrumb}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {mainContent}
+        </div>
+
+        {/* Sidepanel mode */}
+        {sidepanelEntry && sidepanelEntry.ephemeralApp && (
+          <div style={{
+            width: 480, borderLeft: '1px solid #E2E8F0', backgroundColor: '#fff',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{
+              padding: '10px 16px', borderBottom: '1px solid #E2E8F0',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>
+                {sidepanelEntry.title}
+              </span>
+              <button
+                onClick={() => pop()}
+                style={{
+                  width: 24, height: 24, border: 'none', backgroundColor: 'transparent',
+                  cursor: 'pointer', color: '#64748B',
+                }}
+              ><X size={16} /></button>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto' }}>
+              <AppCanvas app={sidepanelEntry.ephemeralApp} drilldownContext={sidepanelEntry.initialContext} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Modal mode */}
+      {modalEntry && modalEntry.ephemeralApp && (
+        <div
+          onClick={(e) => e.target === e.currentTarget && pop()}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9000,
+            backgroundColor: 'rgba(15, 23, 42, 0.4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 32,
+          }}
+        >
+          <div style={{
+            backgroundColor: '#F8FAFC', borderRadius: 12,
+            width: '90vw', maxWidth: 1280, height: '85vh',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            boxShadow: '0 30px 80px rgba(0,0,0,0.25)',
+          }}>
+            <div style={{
+              padding: '12px 18px', borderBottom: '1px solid #E2E8F0',
+              backgroundColor: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#0D1117' }}>
+                {modalEntry.title}
+                {modalEntry.source === 'generated' && (
+                  <span style={{
+                    marginLeft: 8, fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                    backgroundColor: '#EDE9FE', color: '#7C3AED', fontWeight: 500,
+                  }}>AI generated</span>
+                )}
+              </span>
+              <button
+                onClick={() => pop()}
+                style={{
+                  width: 28, height: 28, border: 'none', backgroundColor: 'transparent',
+                  cursor: 'pointer', color: '#64748B',
+                }}
+              ><X size={18} /></button>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto' }}>
+              <AppCanvas app={modalEntry.ephemeralApp} drilldownContext={modalEntry.initialContext} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Apps Page ──────────────────────────────────────────────────────────────
 
-const AppsPage: React.FC = () => {
-  const { apps, addApp, deleteApp, fetchApps } = useAppStore();
+const AppsPageInner: React.FC = () => {
+  const { apps, addApp, deleteApp, fetchApps, fetchRecentGenerated } = useAppStore();
   const { navigateTo, currentPage } = useNavigationStore();
   const [showNew, setShowNew] = useState(false);
+  const [recentGenerated, setRecentGenerated] = useState<NexusApp[]>([]);
+
+  // Phase G — read kind from current route. 'apps-app' = Apps section.
+  const kind: 'dashboard' | 'app' = currentPage === 'apps-app' ? 'app' : 'dashboard';
+  const sectionLabel = kind === 'app' ? 'Apps' : 'Dashboards';
+  const baseRoute = kind === 'app' ? 'apps-app' : 'apps';
+  const homeSlug = kind === 'app' ? 'apps-home' : 'dashboards-home';
+
+  // Phase J — when a system dashboard exists for this section, render it
+  // at the top. Editable by anyone with access to its slug.
+  const [systemDashboard, setSystemDashboard] = useState<NexusApp | null>(null);
 
   useEffect(() => {
-    fetchApps();
-  }, []);
+    fetchApps(kind);
+    fetchRecentGenerated().then(setRecentGenerated);
+    fetchSystemDashboard(homeSlug).then(setSystemDashboard);
+  }, [kind]);
 
   // Support direct nav via app-{id} route
   const routeAppId = currentPage.startsWith('app-') ? currentPage.slice(4) : null;
@@ -484,7 +741,7 @@ const AppsPage: React.FC = () => {
   // Sync if route changes
   React.useEffect(() => {
     if (routeAppId) setOpenAppId(routeAppId);
-    else if (currentPage === 'apps') setOpenAppId(null);
+    else if (currentPage === 'apps' || currentPage === 'apps-app') setOpenAppId(null);
   }, [currentPage, routeAppId]);
 
   const openApp = apps.find((a) => a.id === openAppId);
@@ -499,16 +756,58 @@ const AppsPage: React.FC = () => {
     const now = new Date().toISOString();
     const blank: NexusApp = {
       id: genId(),
-      name: 'Untitled App',
-      description: 'Blank app',
+      name: kind === 'app' ? 'Untitled App' : 'Untitled Dashboard',
+      description: kind === 'app' ? 'Blank app' : 'Blank dashboard',
       icon: '',
       components: [],
       objectTypeIds: [],
       createdAt: now,
       updatedAt: now,
+      kind,
     };
     const created = await addApp(blank);
     setOpenAppId(created.id);
+  };
+
+  const handleConfigureHome = async () => {
+    let home = systemDashboard;
+    if (!home) {
+      const now = new Date().toISOString();
+      const seed: NexusApp = {
+        id: genId(),
+        name: kind === 'app' ? 'Apps Home' : 'Dashboards Home',
+        description: kind === 'app'
+          ? 'Editable home for the Apps section.'
+          : 'Editable home for the Dashboards section.',
+        icon: '',
+        components: [
+          {
+            id: 'banner-1',
+            type: 'kpi-banner',
+            title: kind === 'app' ? 'Your apps' : 'Your dashboards',
+            colSpan: 12,
+          },
+          {
+            id: 'text-1',
+            type: 'text-block',
+            title: 'Welcome',
+            colSpan: 12,
+            content: kind === 'app'
+              ? '## Welcome\n\nThis is your Apps home. Add KPIs, lists of recently used apps, action buttons, or any composite card that makes sense as a landing page.'
+              : '## Welcome\n\nThis is your Dashboards home. Drop in graph widgets, KPI banners, or links to your most-used dashboards. Click *Edit* to configure.',
+          },
+        ],
+        objectTypeIds: [],
+        createdAt: now,
+        updatedAt: now,
+        kind,
+        isSystem: true,
+        slug: homeSlug,
+      };
+      home = await addApp(seed);
+      setSystemDashboard(home);
+    }
+    setOpenAppId(home.id);
   };
 
   // If viewing an app
@@ -527,7 +826,7 @@ const AppsPage: React.FC = () => {
           flexShrink: 0,
         }}>
           <button
-            onClick={() => { setOpenAppId(null); navigateTo('apps'); }}
+            onClick={() => { setOpenAppId(null); navigateTo(baseRoute); }}
             style={{
               padding: '4px 10px',
               border: '1px solid #E2E8F0',
@@ -588,7 +887,7 @@ const AppsPage: React.FC = () => {
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h1 style={{ fontSize: 16, fontWeight: 500, color: '#0D1117' }}>Dashboards</h1>
+          <h1 style={{ fontSize: 16, fontWeight: 500, color: '#0D1117' }}>{sectionLabel}</h1>
           <span style={{
             fontSize: 11,
             backgroundColor: '#EFF6FF',
@@ -602,6 +901,18 @@ const AppsPage: React.FC = () => {
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           <button
+            onClick={handleConfigureHome}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 14px', border: '1px solid #DDD6FE',
+              borderRadius: 6, fontSize: 13, fontWeight: 500,
+              cursor: 'pointer', backgroundColor: '#FAF5FF', color: '#7C3AED',
+            }}
+          >
+            <Home size={14} />
+            {systemDashboard ? 'Edit home' : 'Set up home'}
+          </button>
+          <button
             onClick={handleBlank}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
@@ -611,7 +922,7 @@ const AppsPage: React.FC = () => {
             }}
           >
             <Plus size={14} />
-            Blank App
+            {kind === 'app' ? 'Blank App' : 'Blank Dashboard'}
           </button>
           <button
             onClick={() => setShowNew(true)}
@@ -630,6 +941,16 @@ const AppsPage: React.FC = () => {
 
       {/* Content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+        {/* Phase J — system dashboard rendered at the top of the section. */}
+        {systemDashboard && (
+          <div style={{
+            marginBottom: 24, backgroundColor: '#fff',
+            border: '1px solid #E2E8F0', borderRadius: 8, overflow: 'hidden',
+          }}>
+            <AppCanvas app={systemDashboard} />
+          </div>
+        )}
+
         {apps.length === 0 ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -679,20 +1000,67 @@ const AppsPage: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-            gap: 16,
-          }}>
-            {apps.map((app) => (
-              <AppCard
-                key={app.id}
-                app={app}
-                onOpen={() => setOpenAppId(app.id)}
-                onDelete={() => deleteApp(app.id)}
-              />
-            ))}
-          </div>
+          <>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+              gap: 16,
+            }}>
+              {apps.map((app) => (
+                <AppCard
+                  key={app.id}
+                  app={app}
+                  onOpen={() => setOpenAppId(app.id)}
+                  onDelete={() => deleteApp(app.id)}
+                />
+              ))}
+            </div>
+
+            {/* Phase E — Recently generated ephemeral dashboards. */}
+            {recentGenerated.length > 0 && (
+              <div style={{ marginTop: 32 }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
+                }}>
+                  <Sparkles size={14} color="#7C3AED" />
+                  <h2 style={{ fontSize: 14, fontWeight: 600, color: '#0D1117' }}>
+                    Recently generated
+                  </h2>
+                  <span style={{ fontSize: 11, color: '#94A3B8' }}>
+                    auto-cached drill-down views (expire in 7 days)
+                  </span>
+                </div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: 12,
+                }}>
+                  {recentGenerated.slice(0, 12).map((app) => (
+                    <div
+                      key={app.id}
+                      onClick={() => setOpenAppId(app.id)}
+                      style={{
+                        backgroundColor: '#FAF5FF', border: '1px solid #EDE9FE',
+                        borderRadius: 8, padding: '14px', cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                        <span style={{
+                          fontSize: 9, fontWeight: 600, color: '#7C3AED',
+                          backgroundColor: '#fff', border: '1px solid #DDD6FE',
+                          padding: '1px 6px', borderRadius: 3,
+                        }}>AI</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#0D1117' }}>{app.name}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#64748B', lineHeight: 1.4 }}>
+                        {app.description || `${app.components.length} widgets`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -705,6 +1073,12 @@ const AppsPage: React.FC = () => {
     </div>
   );
 };
+
+const AppsPage: React.FC = () => (
+  <DrillStackOverlay>
+    <AppsPageInner />
+  </DrillStackOverlay>
+);
 
 // ── Template fallback (client-side) ───────────────────────────────────────
 

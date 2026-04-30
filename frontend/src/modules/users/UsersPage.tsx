@@ -4,6 +4,7 @@ import {
   Copy, Check, RefreshCw, ToggleLeft, ToggleRight, KeyRound, LayoutGrid,
 } from 'lucide-react';
 import { useAuth, MaicUser, UserRole } from '../../shell/TenantContext';
+import { usePermission } from '../../hooks/usePermission';
 
 // ── Module access config ────────────────────────────────────────────────────
 
@@ -539,7 +540,11 @@ const UsersPage: React.FC = () => {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [createdCreds, setCreatedCreds] = useState<{ user: MaicUser; tempPassword: string } | null>(null);
 
-  const isAdmin = currentUser?.role === 'ADMIN';
+  // Accept both the JWT-backed roles (admin/superadmin from auth-service)
+  // and the legacy TenantContext uppercase 'ADMIN'. Without this, the
+  // "+ Create user" button is hidden from JWT-authenticated admins.
+  const { isAdmin: isAdminJwt } = usePermission();
+  const isAdmin = isAdminJwt || currentUser?.role === 'ADMIN';
 
   const handleCreate = ({ name, email, role, password, allowed_modules }: { name: string; email: string; role: UserRole; password: string; allowed_modules?: string[] }) => {
     const user = addUser({ name, email, role, password, active: true, mustChangePassword: true, createdBy: currentUser?.id, allowed_modules });

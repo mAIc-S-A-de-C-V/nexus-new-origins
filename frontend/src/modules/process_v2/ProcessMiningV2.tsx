@@ -1432,7 +1432,7 @@ const InsightsPane: React.FC<{ process: Process; otName: (id: string | null | un
               <XAxis dataKey="rank" tick={{ fontSize: 10, fill: T.textMuted, fontFamily: T.mono }} stroke={T.border} label={{ value: 'Variant rank', position: 'insideBottom', offset: -5, fontSize: 10 }} />
               <YAxis yAxisId="left" tick={{ fontSize: 10, fill: T.textMuted, fontFamily: T.mono }} stroke={T.border} domain={[0, 100]} unit="%" />
               <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: T.textMuted, fontFamily: T.mono }} stroke={T.border} />
-              <Tooltip wrapperStyle={{ fontSize: 11, fontFamily: T.mono }} contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 2, color: T.text }} labelStyle={{ color: T.textMuted }} formatter={(v: any, name: string) => name === 'cumPct' ? `${v}%` : v.toLocaleString()} />
+              <Tooltip wrapperStyle={{ fontSize: 11, fontFamily: T.mono }} contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 2, color: T.text }} labelStyle={{ color: T.textMuted }} formatter={(v: any, name) => name === 'cumPct' ? `${v}%` : v.toLocaleString()} />
               <Bar yAxisId="right" dataKey="cases" fill={T.accent} opacity={0.5} />
               <Line yAxisId="left" dataKey="cumPct" stroke="#F59E0B" strokeWidth={2} dot={false} />
             </ComposedChart>

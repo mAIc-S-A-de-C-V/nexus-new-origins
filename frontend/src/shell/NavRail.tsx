@@ -55,6 +55,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'apps',          label: 'Dashboards',   i18nKey: 'nav.dashboards',  icon: <LayoutDashboard size={16} />, active: true, path: 'apps' },
+  { id: 'apps-app',      label: 'Apps',         i18nKey: 'nav.apps',        icon: <LayoutDashboard size={16} />, active: true, path: 'apps-app' },
   { id: 'workbench',     label: 'Workbench',    i18nKey: 'nav.workbench',   icon: <BookOpen size={16} />,        active: true, path: 'workbench', alwaysVisible: true },
   { id: 'connectors',    label: 'Connectors',   i18nKey: 'nav.connectors',  icon: <Plug size={16} />,            active: true, path: 'connectors' },
   { id: 'ontology',      label: 'Ontology',     i18nKey: 'nav.ontology',    icon: <Network size={16} />,         active: true, path: 'ontology' },
@@ -211,9 +212,11 @@ export const NavRail: React.FC<NavRailProps> = ({ currentPage, onNavigate }) => 
             if (item.alwaysVisible) return item.active;
             if (item.superadminOnly) return isSuperAdmin;
             if (item.adminOnly && !isAdmin) return false;
-            if (modules.length > 0 && !canAccess(item.path)) return false;
+            // 'apps-app' is a second view of the 'apps' module; gate it by the same module id.
+            const moduleForPath = item.path === 'apps-app' ? 'apps' : item.path;
+            if (modules.length > 0 && !canAccess(moduleForPath)) return false;
             // Legacy TenantContext module check when no JWT modules present
-            if (modules.length === 0 && !canSee(item.path)) return false;
+            if (modules.length === 0 && !canSee(moduleForPath)) return false;
             return item.active;
           })
           .map((item) => {
