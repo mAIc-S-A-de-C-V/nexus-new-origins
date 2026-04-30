@@ -1140,26 +1140,49 @@ const FieldsEditor: React.FC<{
               style={{ height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
             />
           )}
-          {f.type === 'record-select' && (
-            <>
-              <select
-                value={f.recordTypeId || ''}
-                onChange={(e) => update(i, { recordTypeId: e.target.value })}
-                style={{ height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
-              >
-                <option value="">— pick object type —</option>
-                {objectTypes.map((ot) => (
-                  <option key={ot.id} value={ot.id}>{ot.displayName || ot.name}</option>
-                ))}
-              </select>
-              <input
-                value={f.recordDisplayField || ''}
-                onChange={(e) => update(i, { recordDisplayField: e.target.value })}
-                placeholder="display field (default: name)"
-                style={{ height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
-              />
-            </>
-          )}
+          {f.type === 'record-select' && (() => {
+            const pickedType = objectTypes.find((ot) => ot.id === f.recordTypeId);
+            const propNames = (pickedType?.properties || []).map((p) => p.name).filter(Boolean);
+            // When the user picks an object type for the first time, default
+            // the display field to 'name' if it exists, otherwise the first
+            // property — saves a click in the common case.
+            const handleTypePick = (typeId: string) => {
+              const t = objectTypes.find((ot) => ot.id === typeId);
+              const names = (t?.properties || []).map((p) => p.name).filter(Boolean);
+              const autoDisplay = !f.recordDisplayField
+                ? (names.includes('name') ? 'name' : (names[0] || ''))
+                : f.recordDisplayField;
+              update(i, { recordTypeId: typeId, recordDisplayField: autoDisplay });
+            };
+            return (
+              <>
+                <select
+                  value={f.recordTypeId || ''}
+                  onChange={(e) => handleTypePick(e.target.value)}
+                  style={{ height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+                >
+                  <option value="">— pick object type —</option>
+                  {objectTypes.map((ot) => (
+                    <option key={ot.id} value={ot.id}>{ot.displayName || ot.name}</option>
+                  ))}
+                </select>
+                {pickedType ? (
+                  <select
+                    value={f.recordDisplayField || ''}
+                    onChange={(e) => update(i, { recordDisplayField: e.target.value })}
+                    style={{ height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+                  >
+                    <option value="">— pick display field —</option>
+                    {propNames.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                ) : (
+                  <div style={{ fontSize: 9, color: '#CBD5E1', fontStyle: 'italic', padding: '2px 0' }}>
+                    Pick an object type above to see its properties.
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       ))}
       <button
