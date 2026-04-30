@@ -263,8 +263,20 @@ export interface AppComponent {
   // dropdown-filter config
   variableId?: string;
   options?: string[];
-  // form config — `options` only used when type === 'select'
-  fields?: { name: string; label: string; type: 'text' | 'number' | 'boolean' | 'textarea' | 'select' | 'date'; options?: string[] }[];
+  // form config.
+  //   `options` only used when type === 'select'
+  //   `recordTypeId` + `recordDisplayField` only used when type === 'record-select'.
+  //     The runtime fetches /object-types/{recordTypeId}/records and renders a
+  //     dropdown where each option's label = record[recordDisplayField] (default: 'name')
+  //     and the submitted value = record.id.
+  fields?: {
+    name: string;
+    label: string;
+    type: 'text' | 'number' | 'boolean' | 'textarea' | 'select' | 'date' | 'record-select';
+    options?: string[];
+    recordTypeId?: string;
+    recordDisplayField?: string;
+  }[];
   actionName?: string;
   // Phase H — typed action reference (replaces actionName when set).
   // The widget resolves this against NexusApp.actions[] to find an AppAction.

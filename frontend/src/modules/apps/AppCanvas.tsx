@@ -1827,6 +1827,78 @@ const DropdownFilterWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
 
 // ── Form Widget ──────────────────────────────────────────────────────────
 
+// RecordSelectField — fetches records from the configured object type and
+// renders them as a dropdown. Each option's label = record[displayField]
+// (defaults to 'name'), value = record.id. Used by form, record-creator,
+// and object-editor widgets when a field's type is 'record-select'.
+//
+// Fetch is capped at 200 records — for object types with more, swap to a
+// search-as-you-type variant later.
+const RecordSelectField: React.FC<{
+  recordTypeId?: string;
+  displayField?: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}> = ({ recordTypeId, displayField, value, onChange, placeholder }) => {
+  const [records, setRecords] = useState<Array<{ id: string; label: string }>>([]);
+  const [error, setError] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!recordTypeId) { setRecords([]); return; }
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    const field = displayField || 'name';
+    fetch(`${ONTOLOGY_API}/object-types/${recordTypeId}/records?limit=200`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    })
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+      .then((data) => {
+        if (cancelled) return;
+        const rows: Record<string, unknown>[] = Array.isArray(data) ? data : (data.records || []);
+        const opts = rows.map((row) => {
+          const id = String(row.id ?? row.source_id ?? '');
+          const labelRaw = row[field] ?? row.name ?? id;
+          return { id, label: String(labelRaw || id) };
+        }).filter((o) => o.id);
+        setRecords(opts);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(typeof e === 'string' ? e : 'Failed to load records');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [recordTypeId, displayField]);
+
+  if (!recordTypeId) {
+    return (
+      <div style={{ fontSize: 11, color: '#94A3B8', fontStyle: 'italic' }}>
+        Pick an object type for this field in the editor.
+      </div>
+    );
+  }
+
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        width: '100%', height: 30, padding: '0 8px', border: '1px solid #CBD5E1',
+        borderRadius: 4, fontSize: 12, color: '#0D1117', boxSizing: 'border-box',
+        outline: 'none', backgroundColor: '#fff',
+      }}
+    >
+      <option value="">{loading ? 'Loading…' : (placeholder || '— select —')}</option>
+      {records.map((r) => (
+        <option key={r.id} value={r.id}>{r.label}</option>
+      ))}
+      {error && <option value="" disabled>{error}</option>}
+    </select>
+  );
+};
+
 const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   const formFields = comp.fields || [];
   const { actions } = useContext(AppContext);
@@ -1925,6 +1997,13 @@ const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
               <option value="">— select —</option>
               {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
             </select>
+          ) : f.type === 'record-select' ? (
+            <RecordSelectField
+              recordTypeId={f.recordTypeId}
+              displayField={f.recordDisplayField}
+              value={values[f.name] ?? ''}
+              onChange={(v) => setValues((vs) => ({ ...vs, [f.name]: v }))}
+            />
           ) : (
             <input
               type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
@@ -3478,6 +3557,13 @@ const RecordCreatorWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => 
                 <option value="">— select —</option>
                 {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
+            ) : f.type === 'record-select' ? (
+              <RecordSelectField
+                recordTypeId={f.recordTypeId}
+                displayField={f.recordDisplayField}
+                value={values[f.name] || ''}
+                onChange={(v) => setValues((vs) => ({ ...vs, [f.name]: v }))}
+              />
             ) : f.type === 'boolean' ? (
               <select
                 value={values[f.name] || ''}

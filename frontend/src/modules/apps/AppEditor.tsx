@@ -1073,13 +1073,19 @@ const FieldPickerCmp: React.FC<{ fields: string[]; value: string | undefined; on
   </div>
 );
 
-// FieldsEditor — visual editor for AppComponent.fields[]. Used by form
-// and record-creator widgets. Each field is { name, label, type }.
+// FieldsEditor — visual editor for AppComponent.fields[]. Used by form,
+// record-creator, and object-editor widgets. Each field is { name, label,
+// type, ...optional config }.
+//
+// Two field types take extra config rows in the UI:
+//   · select        → comma-separated `options` string
+//   · record-select → object type picker + display field
 type FormField = NonNullable<AppComponent['fields']>[number];
 const FieldsEditor: React.FC<{
   fields: FormField[];
   onChange: (next: FormField[]) => void;
-}> = ({ fields, onChange }) => {
+  objectTypes?: OntologyType[];
+}> = ({ fields, onChange, objectTypes = [] }) => {
   const update = (i: number, patch: Partial<FormField>) => {
     const next = [...fields];
     next[i] = { ...next[i], ...patch };
@@ -1117,6 +1123,7 @@ const FieldsEditor: React.FC<{
               <option value="textarea">textarea</option>
               <option value="select">select</option>
               <option value="date">date</option>
+              <option value="record-select">record picker</option>
             </select>
             <button
               onClick={() => remove(i)}
@@ -1132,6 +1139,26 @@ const FieldsEditor: React.FC<{
               placeholder="options (comma-separated, e.g. in, out, transfer)"
               style={{ height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
             />
+          )}
+          {f.type === 'record-select' && (
+            <>
+              <select
+                value={f.recordTypeId || ''}
+                onChange={(e) => update(i, { recordTypeId: e.target.value })}
+                style={{ height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+              >
+                <option value="">— pick object type —</option>
+                {objectTypes.map((ot) => (
+                  <option key={ot.id} value={ot.id}>{ot.displayName || ot.name}</option>
+                ))}
+              </select>
+              <input
+                value={f.recordDisplayField || ''}
+                onChange={(e) => update(i, { recordDisplayField: e.target.value })}
+                placeholder="display field (default: name)"
+                style={{ height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+              />
+            </>
           )}
         </div>
       ))}
@@ -2148,6 +2175,7 @@ const ConfigPanel: React.FC<{
             <Row label="FIELDS">
               <FieldsEditor
                 fields={comp.fields || []}
+                objectTypes={objectTypes}
                 onChange={(next) => set({ fields: next })}
               />
             </Row>
@@ -2160,6 +2188,7 @@ const ConfigPanel: React.FC<{
             <Row label="FIELDS">
               <FieldsEditor
                 fields={comp.fields || []}
+                objectTypes={objectTypes}
                 onChange={(next) => {
                   // When a field is renamed/removed, prune dangling refs from steps.
                   const validNames = new Set(next.map((f) => f.name));
@@ -2187,6 +2216,7 @@ const ConfigPanel: React.FC<{
           <Row label="FIELDS">
             <FieldsEditor
               fields={comp.fields || []}
+              objectTypes={objectTypes}
               onChange={(next) => set({ fields: next })}
             />
           </Row>
