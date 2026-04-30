@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { NexusApp, AppComponent, AppFilter, AppEvent, AppAction, DashboardFilterBar as DashboardFilterBarConfig, RangePreset, CompositeLayout } from '../../types/app';
 import { useTimezone, formatInTz } from '../../lib/timezone';
-import { getTenantId } from '../../store/authStore';
+import { getTenantId, getAccessToken } from '../../store/authStore';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 import { colors as tokens, chartPalette } from '../../design-system/tokens';
 import { useDashboardStackStore, DashboardStackEntry } from '../../store/dashboardStackStore';
@@ -3155,7 +3155,15 @@ async function runAppAction(action: AppAction, input: ActionRunInput): Promise<A
     return null;
   };
 
-  const headers = { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() };
+  // PATCH/DELETE on /records require auth; ingest only needs tenant. Include
+  // the Authorization header on every call — harmless on ingest, required for
+  // updateObject / deleteObject.
+  const token = getAccessToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-tenant-id': getTenantId(),
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   try {
     if (action.kind === 'createObject') {
@@ -3186,21 +3194,29 @@ async function runAppAction(action: AppAction, input: ActionRunInput): Promise<A
     if (action.kind === 'updateObject') {
       if (!action.objectTypeId) return { ok: false, error: 'Action missing objectTypeId' };
       const recId = resolveRecordId();
-      if (!recId) return { ok: false, error: 'Could not resolve record id' };
+      if (!recId) return { ok: false, error: 'Could not resolve record id (configure recordIdSource on the action)' };
+      // Backend expects flat properties at the top level — `merged_data.update(payload)`
+      // — not wrapped in `{properties}`.
       const r = await fetch(`${ONTOLOGY_API}/object-types/${action.objectTypeId}/records/${recId}`, {
-        method: 'PATCH', headers, body: JSON.stringify({ properties: buildPayload() }),
+        method: 'PATCH', headers, body: JSON.stringify(buildPayload()),
       });
-      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        return { ok: false, error: `HTTP ${r.status}: ${text.slice(0, 200)}` };
+      }
       return { ok: true, data: await r.json() };
     }
     if (action.kind === 'deleteObject') {
       if (!action.objectTypeId) return { ok: false, error: 'Action missing objectTypeId' };
       const recId = resolveRecordId();
-      if (!recId) return { ok: false, error: 'Could not resolve record id' };
+      if (!recId) return { ok: false, error: 'Could not resolve record id (configure recordIdSource on the action)' };
       const r = await fetch(`${ONTOLOGY_API}/object-types/${action.objectTypeId}/records/${recId}`, {
         method: 'DELETE', headers,
       });
-      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        return { ok: false, error: `HTTP ${r.status}: ${text.slice(0, 200)}` };
+      }
       return { ok: true };
     }
     if (action.kind === 'webhook') {

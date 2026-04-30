@@ -27,6 +27,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from database import get_session, ObjectTypeRow, ObjectRecordRow, OntologyLinkRow
 from shared.auth_middleware import require_auth, AuthUser
 from shared import query_cache, index_advisor, rollup_promoter
+from event_emit import emit_record_event, emit_record_event_batch
 
 logger = logging.getLogger(__name__)
 
@@ -1227,6 +1228,7 @@ async def update_record(
     if not row:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    before_state = dict(row.data)
     merged_data = dict(row.data)
     merged_data.update(payload)
     row.data = merged_data
@@ -1235,6 +1237,22 @@ async def update_record(
 
     await db.commit()
     asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
+
+    # Audit + process-mining event for this update.
+    ot_lookup = await db.execute(select(ObjectTypeRow.name).where(ObjectTypeRow.id == ot_id))
+    ot_name = ot_lookup.scalar() or ot_id
+    emit_record_event(
+        tenant_id=tenant_id,
+        object_type_id=ot_id,
+        object_type_name=ot_name,
+        record_id=record_id,
+        activity=f"{ot_name}.updated",
+        actor_id=user.id,
+        actor_role=user.role,
+        before_state=before_state,
+        after_state=merged_data,
+    )
+
     return {
         "record": row.data,
         "source_id": row.source_id,
@@ -1309,9 +1327,24 @@ async def delete_record(
     if not row:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    before_state = dict(row.data)
     await db.delete(row)
     await db.commit()
     asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
+
+    ot_lookup = await db.execute(select(ObjectTypeRow.name).where(ObjectTypeRow.id == ot_id))
+    ot_name = ot_lookup.scalar() or ot_id
+    emit_record_event(
+        tenant_id=tenant_id,
+        object_type_id=ot_id,
+        object_type_name=ot_name,
+        record_id=record_id,
+        activity=f"{ot_name}.deleted",
+        actor_id=user.id,
+        actor_role=user.role,
+        before_state=before_state,
+    )
+
     return {"deleted": True, "source_id": record_id}
 
 
@@ -1493,6 +1526,7 @@ async def ingest_records(
     run_at = datetime.now(timezone.utc).isoformat()
     ingested = 0
     new_source_ids: list[str] = []
+    updated_source_ids: list[str] = []
 
     for record in records:
         record = dict(record)
@@ -1512,6 +1546,7 @@ async def ingest_records(
         if row:
             row.data = record
             row.updated_at = datetime.now(timezone.utc)
+            updated_source_ids.append(source_id)
         else:
             db.add(ObjectRecordRow(
                 id=str(uuid4()),
@@ -1525,6 +1560,36 @@ async def ingest_records(
 
     await db.commit()
     asyncio.create_task(query_cache.invalidate_object_type(tenant_id, ot_id))
+
+    # Audit + process-mining events. Anonymous on /ingest (no auth required)
+    # so actor is the pipeline_id when present, otherwise "system". For high-
+    # volume ingests (pipelines doing 100k+ records), capping is the next
+    # optimization — for now we emit one event per record.
+    ot_name = ot_row.name
+    actor = pipeline_id or "system"
+    if new_source_ids:
+        emit_record_event_batch(
+            tenant_id=tenant_id,
+            object_type_id=ot_id,
+            object_type_name=ot_name,
+            record_ids=new_source_ids,
+            activity=f"{ot_name}.created",
+            actor_id=actor,
+            actor_role="service",
+            pipeline_id=pipeline_id,
+        )
+    if updated_source_ids:
+        emit_record_event_batch(
+            tenant_id=tenant_id,
+            object_type_id=ot_id,
+            object_type_name=ot_name,
+            record_ids=updated_source_ids,
+            activity=f"{ot_name}.upserted",
+            actor_id=actor,
+            actor_role="service",
+            pipeline_id=pipeline_id,
+        )
+
     return {
         "ingested": ingested,
         "new_count": len(new_source_ids),

@@ -3508,6 +3508,35 @@ const ActionsList: React.FC<{
                     {objectTypes.map((ot) => <option key={ot.id} value={ot.id}>{ot.displayName || ot.name}</option>)}
                   </select>
                 )}
+                {/* Record ID source — only meaningful for update/delete. */}
+                {(a.kind === 'updateObject' || a.kind === 'deleteObject') && (
+                  <>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: '#7C3AED', marginTop: 4 }}>
+                      RECORD ID SOURCE
+                    </div>
+                    <select
+                      value={a.recordIdSource || ''}
+                      onChange={(e) => update(a.id, { recordIdSource: e.target.value as AppAction['recordIdSource'] })}
+                      style={{ height: 22, padding: '0 4px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                    >
+                      <option value="">— pick source —</option>
+                      <option value="formField">From a form field</option>
+                      <option value="variable">From a dashboard variable</option>
+                      <option value="selectedRow">From the selected table row</option>
+                    </select>
+                    <input
+                      value={a.recordIdField || ''}
+                      onChange={(e) => update(a.id, { recordIdField: e.target.value })}
+                      placeholder={
+                        a.recordIdSource === 'formField' ? 'form field name (e.g. "id")'
+                        : a.recordIdSource === 'variable' ? 'variable id'
+                        : a.recordIdSource === 'selectedRow' ? 'row field name (e.g. "id")'
+                        : 'name'
+                      }
+                      style={{ height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                    />
+                  </>
+                )}
                 {a.kind === 'webhook' && (
                   <input
                     value={a.webhookUrl || ''}
