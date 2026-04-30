@@ -1,11 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { NexusApp, AppComponent, AppFilter, AppEvent, DashboardFilterBar as DashboardFilterBarConfig, RangePreset } from '../../types/app';
+import { NexusApp, AppComponent, AppFilter, AppEvent, AppAction, DashboardFilterBar as DashboardFilterBarConfig, RangePreset, CompositeLayout } from '../../types/app';
 import { useTimezone, formatInTz } from '../../lib/timezone';
 import { getTenantId } from '../../store/authStore';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 import { colors as tokens, chartPalette } from '../../design-system/tokens';
+import { useDashboardStackStore, DashboardStackEntry } from '../../store/dashboardStackStore';
 import {
   buildServerFilters,
   pickLabelField,
@@ -286,22 +287,29 @@ const MetricCard: React.FC<{ comp: AppComponent; records?: Record<string, unknow
   records,
   serverValue,
 }) => {
-  // Honor the widget's value-format config (multiplier / decimals / unit).
-  // Falls back to a sensible default when nothing is configured.
+  const { fireEvent } = useContext(AppContext);
   const value = serverValue != null
     ? applyValueFormat(serverValue, comp)
     : aggregate(records || [], comp.field, comp.aggregation || 'count');
+  const drillable = (comp.drillEnabled ?? false);
   return (
-    <div style={{
-      backgroundColor: '#fff',
-      border: '1px solid #E2E8F0',
-      borderRadius: 8,
-      padding: '20px 24px',
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'space-between',
-    }}>
+    <div
+      onClick={drillable ? () => fireEvent?.(comp.id, 'onKpiClick', { value: String(value), field: comp.field }) : undefined}
+      style={{
+        backgroundColor: '#fff',
+        border: '1px solid #E2E8F0',
+        borderRadius: 8,
+        padding: '20px 24px',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        cursor: drillable ? 'pointer' : 'default',
+        transition: 'box-shadow 120ms',
+      }}
+      onMouseEnter={drillable ? (e) => ((e.currentTarget as HTMLElement).style.boxShadow = '0 2px 8px rgba(124,58,237,0.16)') : undefined}
+      onMouseLeave={drillable ? (e) => ((e.currentTarget as HTMLElement).style.boxShadow = 'none') : undefined}
+    >
       <div style={{ fontSize: 13, color: '#64748B', fontWeight: 500 }}>{comp.title}</div>
       <div>
         <div style={{ fontSize: 36, fontWeight: 700, color: '#0D1117', lineHeight: 1.1 }}>
@@ -320,6 +328,7 @@ const KpiBanner: React.FC<{ comp: AppComponent; records?: Record<string, unknown
   records,
   serverKpis,
 }) => {
+  const { fireEvent } = useContext(AppContext);
   const recs = records || [];
   const kpis = serverKpis
     ? [
@@ -335,17 +344,24 @@ const KpiBanner: React.FC<{ comp: AppComponent; records?: Record<string, unknown
         { label: 'Last Updated', value: 'Live' },
       ];
 
+  const drillable = (comp.drillEnabled ?? false);
   return (
-    <div style={{
-      backgroundColor: '#fff',
-      border: '1px solid #E2E8F0',
-      borderRadius: 8,
-      padding: '16px 24px',
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 8,
-    }}>
+    <div
+      onClick={drillable ? () => fireEvent?.(comp.id, 'onKpiClick', { value: String(kpis[0].value), field: comp.field }) : undefined}
+      style={{
+        backgroundColor: '#fff',
+        border: '1px solid #E2E8F0',
+        borderRadius: 8,
+        padding: '16px 24px',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        cursor: drillable ? 'pointer' : 'default',
+      }}
+      onMouseEnter={drillable ? (e) => ((e.currentTarget as HTMLElement).style.boxShadow = '0 2px 8px rgba(124,58,237,0.16)') : undefined}
+      onMouseLeave={drillable ? (e) => ((e.currentTarget as HTMLElement).style.boxShadow = 'none') : undefined}
+    >
       <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
       <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
         {kpis.map((k) => (
@@ -365,6 +381,7 @@ const DataTable: React.FC<{
   serverPage?: { rows: Record<string, unknown>[]; total: number; page: number; pageSize: number; loading: boolean };
   onPage?: (next: number) => void;
 }> = ({ comp, records, serverPage, onPage }) => {
+  const { fireEvent } = useContext(AppContext);
   const useServer = !!serverPage;
   const rows = useServer ? serverPage!.rows : (records || []).slice(0, comp.maxRows || 10);
   const total = useServer ? serverPage!.total : (records || []).length;
@@ -413,21 +430,38 @@ const DataTable: React.FC<{
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid #F1F5F9' }}>
-                {cols.map((c) => {
-                  const val = resolveRaw(row, c);
-                  return (
-                    <td key={c} style={{
-                      padding: '7px 12px', color: '#374151', maxWidth: 200,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      {Array.isArray(val) ? `[${(val as unknown[]).length} items]` : String(val ?? '')}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
+            {rows.map((row, i) => {
+              const drillable = (comp.drillEnabled ?? false);
+              return (
+                <tr
+                  key={i}
+                  onClick={drillable ? () => fireEvent?.(comp.id, 'onRowClick', { row }) : undefined}
+                  style={{
+                    borderBottom: '1px solid #F1F5F9',
+                    cursor: drillable ? 'pointer' : 'default',
+                  }}
+                >
+                  {cols.map((c) => {
+                    const val = resolveRaw(row, c);
+                    return (
+                      <td
+                        key={c}
+                        onClick={drillable ? (e) => {
+                          e.stopPropagation();
+                          fireEvent?.(comp.id, 'onCellClick', { row, value: String(val ?? ''), field: c });
+                        } : undefined}
+                        style={{
+                          padding: '7px 12px', color: '#374151', maxWidth: 200,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {Array.isArray(val) ? `[${(val as unknown[]).length} items]` : String(val ?? '')}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         {rows.length === 0 && !(useServer && serverPage!.loading) && (
@@ -477,6 +511,7 @@ const BarChart: React.FC<{
   resolvedLabelField,
 }) => {
   const { filter: crossFilter, setFilter: setCrossFilter } = useContext(CrossFilterContext);
+  const { fireEvent } = useContext(AppContext);
 
   // ── Server-side path: trust the precomputed rows ──
   let labelField: string;
@@ -578,6 +613,7 @@ const BarChart: React.FC<{
                   onClick={() => {
                     if (isActive) setCrossFilter(null);
                     else setCrossFilter({ field: labelField, value: label === '(empty)' ? '' : label, sourceId: comp.id });
+                    fireEvent?.(comp.id, 'onBarClick', { value: label === '(empty)' ? '' : label, field: labelField });
                   }}
                 >
                   <text
@@ -817,6 +853,7 @@ const PieChartWidget: React.FC<{
   resolvedLabelField?: string;
 }> = ({ comp, records, serverRows, resolvedLabelField }) => {
   const { filter: crossFilter, setFilter: setCrossFilter } = useContext(CrossFilterContext);
+  const { fireEvent } = useContext(AppContext);
   const recs = records || [];
   const labelField = resolvedLabelField || comp.labelField || (recs.length ? Object.keys(recs[0])[0] : 'name');
 
@@ -875,6 +912,7 @@ const PieChartWidget: React.FC<{
                     onClick={() => {
                       if (isActive) setCrossFilter(null);
                       else setCrossFilter({ field: labelField, value: a.label === '(empty)' ? '' : a.label, sourceId: comp.id });
+                      fireEvent?.(comp.id, 'onBarClick', { value: a.label === '(empty)' ? '' : a.label, field: labelField });
                     }}
                   >
                     <title>{a.label}: {applyValueFormat(a.val, comp)} ({a.pct}%)</title>
@@ -1791,19 +1829,44 @@ const DropdownFilterWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
 
 const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   const formFields = comp.fields || [];
+  const { actions } = useContext(AppContext);
   const [values, setValues] = useState<Record<string, any>>({});
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Phase H — actionId is the new typed reference; actionName is the legacy
+  // free-string. Prefer actionId when set, fall back to actionName so
+  // existing forms keep working.
+  const boundAction = comp.actionId ? actions.find((a) => a.id === comp.actionId) : null;
+
   const handleSubmit = async () => {
-    if (!comp.actionName) return;
+    if (!comp.actionId && !comp.actionName) return;
     setSubmitting(true);
     setStatus('idle');
     setErrorMsg('');
+
+    if (boundAction) {
+      const err = validateActionInput(boundAction, values);
+      if (err) {
+        setStatus('error'); setErrorMsg(err); setSubmitting(false);
+        return;
+      }
+      const result = await runAppAction(boundAction, { formValues: values });
+      if (result.ok) {
+        setStatus('success');
+        setTimeout(() => setStatus('idle'), 3000);
+        setValues({});
+      } else {
+        setStatus('error'); setErrorMsg(result.error || 'Error');
+      }
+      setSubmitting(false);
+      return;
+    }
+
+    // Legacy actionName path — POST to the standalone action runner.
     try {
-      const ACTION_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
-      const res = await fetch(`${ACTION_API}/actions/${comp.actionName}/run`, {
+      const res = await fetch(`${ONTOLOGY_API}/actions/${comp.actionName}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
         body: JSON.stringify({ inputs: values }),
@@ -1849,9 +1912,22 @@ const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
                 boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit',
               }}
             />
+          ) : f.type === 'select' ? (
+            <select
+              value={values[f.name] ?? ''}
+              onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+              style={{
+                width: '100%', height: 30, padding: '0 8px', border: '1px solid #E2E8F0',
+                borderRadius: 4, fontSize: 12, color: '#0D1117', boxSizing: 'border-box',
+                outline: 'none', backgroundColor: '#fff',
+              }}
+            >
+              <option value="">— select —</option>
+              {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
           ) : (
             <input
-              type={f.type === 'number' ? 'number' : 'text'}
+              type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
               value={values[f.name] ?? ''}
               onChange={(e) => setValues((v) => ({ ...v, [f.name]: f.type === 'number' ? Number(e.target.value) : e.target.value }))}
               style={{
@@ -1863,7 +1939,7 @@ const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
           )}
         </div>
       ))}
-      {comp.actionName && (
+      {(comp.actionId || comp.actionName) && (
         <button
           onClick={handleSubmit}
           disabled={submitting}
@@ -1875,7 +1951,7 @@ const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
             alignSelf: 'flex-start',
           }}
         >
-          {submitting ? 'Submitting...' : 'Submit'}
+          {submitting ? 'Submitting...' : (boundAction?.name || 'Submit')}
         </button>
       )}
       {status === 'success' && (
@@ -2532,7 +2608,7 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
   );
 };
 
-const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp: rawComp, events, allComponents }) => {
+export const ComponentRenderer: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp: rawComp, events, allComponents }) => {
   const { filter: crossFilter } = useContext(CrossFilterContext);
   const dash = useContext(DashboardFilterContext);
 
@@ -2614,6 +2690,15 @@ const RECORDS_FREE_TYPES = new Set([
   'form',            // posts to an action; no records
   'object-table',    // has its own data path
   'date-picker',     // pure UI
+  // Composite is a container — children fetch their own data through
+  // the recursive ComponentRenderer call. The composite shell itself
+  // never fetches records.
+  'composite',
+  // Phase I — action widgets are interactive, not data-driven.
+  'action-button',
+  'object-editor',
+  'record-creator',
+  'approval-queue',
 ]);
 
 const ComponentRendererNoRecords: React.FC<{ comp: AppComponent; allComponents?: AppComponent[] }> = ({ comp, allComponents }) => {
@@ -2625,9 +2710,154 @@ const ComponentRendererNoRecords: React.FC<{ comp: AppComponent; allComponents?:
     case 'form': return <FormWidget comp={comp} />;
     case 'object-table': return <ObjectTableWidget comp={comp} />;
     case 'date-picker': return <DatePickerWidget comp={comp} records={[]} />;
+    case 'composite': return <CompositeWidget comp={comp} />;
+    case 'action-button': return <ActionButtonWidget comp={comp} />;
+    case 'object-editor': return <ObjectEditorWidget comp={comp} />;
+    case 'record-creator': return <RecordCreatorWidget comp={comp} />;
+    case 'approval-queue': return <ApprovalQueueWidget comp={comp} />;
     default: return null;
   }
 };
+
+// ── Composite widget ──────────────────────────────────────────────────────
+// A recursive container. Children render through ComponentRenderer in a
+// nested 12-col grid. Layout templates apply colSpan defaults to children
+// when they don't specify their own. shareDataSource / shareFilters let
+// children inherit the composite's objectTypeId and filters.
+
+function applyCompositeLayout(
+  children: AppComponent[],
+  layout: CompositeLayout,
+  cols: number,
+): AppComponent[] {
+  const half = Math.ceil(cols / 2);
+  const sidebarCols = Math.max(3, Math.floor(cols / 3));
+  const heroCols = cols - sidebarCols;
+  return children.map((child, i) => {
+    if (child.colSpan != null) return child;
+    let span = half;
+    if (layout === 'banner-main') {
+      span = i === 0 ? cols : cols;
+    } else if (layout === 'hero-sidebar') {
+      span = i === 0 ? heroCols : i === 1 ? sidebarCols : cols;
+    } else if (layout === 'split') {
+      span = i < 2 ? half : cols;
+    }
+    return { ...child, colSpan: span };
+  });
+}
+
+const CompositeWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const cols = comp.innerGridCols && comp.innerGridCols > 0 && comp.innerGridCols <= 12
+    ? comp.innerGridCols : 12;
+  const layout: CompositeLayout = comp.cardLayout || 'grid';
+  const cardStyle = comp.cardStyle || {};
+  const titleStyle = cardStyle.titleStyle || 'bold';
+  const children = comp.children || [];
+
+  const positioned = applyCompositeLayout(children, layout, cols);
+
+  // Inheritance — children opt into the composite's data source / filters
+  // when they don't set their own. shareDataSource/shareFilters default
+  // to true so generated composites with a single source "just work."
+  const inherited = positioned.map((child) => {
+    const out: AppComponent = { ...child };
+    if ((comp.shareDataSource ?? true) && !out.objectTypeId && comp.objectTypeId) {
+      out.objectTypeId = comp.objectTypeId;
+    }
+    if ((comp.shareFilters ?? true) && comp.filters && comp.filters.length > 0) {
+      out.filters = [...comp.filters, ...(out.filters || [])];
+    }
+    return out;
+  });
+
+  return (
+    <div
+      style={{
+        backgroundColor: cardStyle.background || '#fff',
+        border: cardStyle.border || '1px solid #E2E8F0',
+        borderRadius: 8,
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      {comp.title && titleStyle !== 'hidden' && (
+        <div
+          style={{
+            padding: '10px 16px',
+            borderBottom: '1px solid #E2E8F0',
+            fontSize: titleStyle === 'subtle' ? 11 : 13,
+            fontWeight: titleStyle === 'subtle' ? 500 : 600,
+            color: titleStyle === 'subtle' ? '#64748B' : '#0D1117',
+            letterSpacing: titleStyle === 'subtle' ? '0.04em' : 0,
+            textTransform: titleStyle === 'subtle' ? 'uppercase' : 'none',
+          }}
+        >
+          {comp.title}
+        </div>
+      )}
+      {children.length === 0 ? (
+        <div
+          style={{
+            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#94A3B8', fontSize: 12, padding: 24, textAlign: 'center',
+          }}
+        >
+          Empty card — add child widgets in the editor.
+        </div>
+      ) : (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${cols}, 1fr)`,
+            gap: 12,
+            padding: cardStyle.padding ?? 12,
+            flex: 1,
+            alignItems: 'start',
+          }}
+        >
+          {inherited.map((child) => {
+            const span = Math.max(1, Math.min(cols, child.colSpan || Math.ceil(cols / 2)));
+            const fixedH = child.gridH ? child.gridH * 60 : undefined;
+            const defaultMin =
+              child.type === 'data-table' || child.type === 'object-table' ? 240 :
+              child.type === 'bar-chart' || child.type === 'line-chart' ? 220 :
+              child.type === 'composite' ? 200 :
+              120;
+            return (
+              <div
+                key={child.id}
+                style={{
+                  gridColumn: `span ${span}`,
+                  height: fixedH,
+                  minHeight: fixedH ? undefined : defaultMin,
+                }}
+              >
+                <ComponentRenderer comp={child} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Phase I — action widget stubs. Real implementations later in this file.
+const ActionButtonWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => (
+  <ActionButtonWidgetImpl comp={comp} />
+);
+const ObjectEditorWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => (
+  <ObjectEditorWidgetImpl comp={comp} />
+);
+const RecordCreatorWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => (
+  <RecordCreatorWidgetImpl comp={comp} />
+);
+const ApprovalQueueWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => (
+  <ApprovalQueueWidgetImpl comp={comp} />
+);
 
 const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, allComponents }) => {
   const { records: rawRecords, loading, total: recordsTotal } = useRecords(comp.objectTypeId);
@@ -2678,6 +2908,11 @@ const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; 
     case 'dropdown-filter': return <DropdownFilterWidget comp={comp} />;
     case 'form': return <FormWidget comp={comp} />;
     case 'object-table': return <ObjectTableWidget comp={comp} />;
+    case 'composite': return <CompositeWidget comp={comp} />;
+    case 'action-button': return <ActionButtonWidget comp={comp} />;
+    case 'object-editor': return <ObjectEditorWidget comp={comp} />;
+    case 'record-creator': return <RecordCreatorWidget comp={comp} />;
+    case 'approval-queue': return <ApprovalQueueWidget comp={comp} />;
     default: return null;
   }
 };
@@ -2843,13 +3078,822 @@ const DashboardFilterBarUI: React.FC<{
   );
 };
 
+// ── App-level context (Phase H) ────────────────────────────────────────────
+// Lets nested widgets reach the app's actions[], variables, and event-dispatch
+// helpers without prop-drilling through composites.
+
+interface AppContextValue {
+  app: NexusApp;
+  actions: AppAction[];
+  // Phase D — runtime drill-down dispatcher; populated by AppCanvas.
+  fireEvent?: (
+    sourceWidgetId: string,
+    trigger: AppEvent['trigger'],
+    payload?: { value?: string; field?: string; row?: Record<string, unknown> },
+  ) => void;
+}
+
+const AppContext = createContext<AppContextValue>({
+  app: {
+    id: '', name: '', description: '', icon: '', components: [],
+    objectTypeIds: [], createdAt: '', updatedAt: '',
+  },
+  actions: [],
+});
+
+export const useAppContext = () => useContext(AppContext);
+
+// ── Action runner (Phase H) ────────────────────────────────────────────────
+// Resolves an AppAction into an actual mutation. Object actions translate to
+// the existing /objects endpoints in ontology-service. Other kinds defer to
+// the action runner (already used by FormWidget) or to webhooks/utilities.
+
+interface ActionRunInput {
+  formValues?: Record<string, unknown>;
+  selectedRow?: Record<string, unknown>;
+  variables?: Record<string, unknown>;
+}
+
+interface ActionRunResult {
+  ok: boolean;
+  data?: Record<string, unknown>;
+  error?: string;
+}
+
+async function runAppAction(action: AppAction, input: ActionRunInput): Promise<ActionRunResult> {
+  // Apply field mappings → payload.
+  const mapValue = (m: { formField: string; transform?: string; literalValue?: string }): unknown => {
+    if (m.transform === 'literal') return m.literalValue ?? '';
+    const raw = input.formValues?.[m.formField] ?? input.selectedRow?.[m.formField];
+    if (raw == null) return null;
+    if (m.transform === 'asNumber') return Number(raw);
+    if (m.transform === 'asDate') return new Date(String(raw)).toISOString();
+    if (m.transform === 'asUuid') return String(raw);
+    return raw;
+  };
+
+  const buildPayload = (): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const m of action.fieldMappings || []) {
+      out[m.targetProperty] = mapValue(m);
+    }
+    return out;
+  };
+
+  // Resolve record id for update/delete.
+  const resolveRecordId = (): string | null => {
+    if (!action.recordIdSource) return null;
+    if (action.recordIdSource === 'formField' && action.recordIdField) {
+      return String(input.formValues?.[action.recordIdField] ?? '') || null;
+    }
+    if (action.recordIdSource === 'variable' && action.recordIdField) {
+      return String(input.variables?.[action.recordIdField] ?? '') || null;
+    }
+    if (action.recordIdSource === 'selectedRow' && action.recordIdField) {
+      return String(input.selectedRow?.[action.recordIdField] ?? '') || null;
+    }
+    return null;
+  };
+
+  const headers = { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() };
+
+  try {
+    if (action.kind === 'createObject') {
+      if (!action.objectTypeId) return { ok: false, error: 'Action missing objectTypeId' };
+      const r = await fetch(`${ONTOLOGY_API}/object-types/${action.objectTypeId}/records`, {
+        method: 'POST', headers, body: JSON.stringify({ properties: buildPayload() }),
+      });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      return { ok: true, data: await r.json() };
+    }
+    if (action.kind === 'updateObject') {
+      if (!action.objectTypeId) return { ok: false, error: 'Action missing objectTypeId' };
+      const recId = resolveRecordId();
+      if (!recId) return { ok: false, error: 'Could not resolve record id' };
+      const r = await fetch(`${ONTOLOGY_API}/object-types/${action.objectTypeId}/records/${recId}`, {
+        method: 'PATCH', headers, body: JSON.stringify({ properties: buildPayload() }),
+      });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      return { ok: true, data: await r.json() };
+    }
+    if (action.kind === 'deleteObject') {
+      if (!action.objectTypeId) return { ok: false, error: 'Action missing objectTypeId' };
+      const recId = resolveRecordId();
+      if (!recId) return { ok: false, error: 'Could not resolve record id' };
+      const r = await fetch(`${ONTOLOGY_API}/object-types/${action.objectTypeId}/records/${recId}`, {
+        method: 'DELETE', headers,
+      });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      return { ok: true };
+    }
+    if (action.kind === 'webhook') {
+      if (!action.webhookUrl) return { ok: false, error: 'Action missing webhookUrl' };
+      const r = await fetch(action.webhookUrl, {
+        method: action.webhookMethod || 'POST', headers,
+        body: JSON.stringify(buildPayload()),
+      });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      return { ok: true, data: await r.json().catch(() => ({})) };
+    }
+    if (action.kind === 'callUtility') {
+      if (!action.utilityId) return { ok: false, error: 'Action missing utilityId' };
+      const r = await fetch(`${INFERENCE_API}/utilities/${action.utilityId}/run`, {
+        method: 'POST', headers, body: JSON.stringify({ inputs: buildPayload() }),
+      });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      return { ok: true, data: await r.json().catch(() => ({})) };
+    }
+    if (action.kind === 'runWorkflow') {
+      if (!action.workflowId) return { ok: false, error: 'Action missing workflowId' };
+      const r = await fetch(`${ONTOLOGY_API}/workflows/${action.workflowId}/run`, {
+        method: 'POST', headers, body: JSON.stringify({ inputs: buildPayload() }),
+      });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
+      return { ok: true, data: await r.json().catch(() => ({})) };
+    }
+    return { ok: false, error: `Unknown action kind: ${action.kind}` };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+// Validation check for an action's input.
+function validateActionInput(
+  action: AppAction,
+  formValues: Record<string, unknown>,
+): string | null {
+  for (const v of action.validations || []) {
+    const raw = formValues[v.field];
+    const str = String(raw ?? '');
+    if (v.rule === 'required' && !str) return v.message || `${v.field} is required`;
+    if (v.rule === 'regex' && v.value && !new RegExp(v.value).test(str)) {
+      return v.message || `${v.field} format invalid`;
+    }
+    if (v.rule === 'min' && v.value && Number(str) < Number(v.value)) {
+      return v.message || `${v.field} must be ≥ ${v.value}`;
+    }
+    if (v.rule === 'max' && v.value && Number(str) > Number(v.value)) {
+      return v.message || `${v.field} must be ≤ ${v.value}`;
+    }
+  }
+  return null;
+}
+
+// ── Phase I — action widgets ───────────────────────────────────────────────
+
+const ActionButtonWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const { actions } = useAppContext();
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const action = actions.find((a) => a.id === comp.actionId);
+
+  const onClick = async () => {
+    if (!action) {
+      setFeedback({ ok: false, msg: 'No action configured' });
+      return;
+    }
+    if (action.confirmation && !window.confirm(`${action.confirmation.title}\n\n${action.confirmation.body}`)) {
+      return;
+    }
+    setBusy(true);
+    setFeedback(null);
+    const result = await runAppAction(action, { formValues: {} });
+    setBusy(false);
+    setFeedback({ ok: result.ok, msg: result.ok ? 'Done' : (result.error || 'Error') });
+    setTimeout(() => setFeedback(null), 3000);
+  };
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      padding: 16, height: '100%', display: 'flex', flexDirection: 'column',
+      alignItems: 'flex-start', gap: 8,
+    }}>
+      {comp.title && (
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+      )}
+      <button
+        onClick={onClick}
+        disabled={busy || !action}
+        style={{
+          padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+          backgroundColor: action ? '#7C3AED' : '#94A3B8',
+          color: '#fff', border: 'none',
+          cursor: action && !busy ? 'pointer' : 'default',
+        }}
+      >
+        {busy ? 'Running…' : (action?.name || 'Configure action')}
+      </button>
+      {feedback && (
+        <div style={{ fontSize: 11, color: feedback.ok ? '#16A34A' : '#DC2626' }}>
+          {feedback.msg}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ObjectEditorWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const { actions } = useAppContext();
+  const action = actions.find((a) => a.id === comp.actionId);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Pre-populate from existing record when objectTypeId + recordIdValue are set.
+  useEffect(() => {
+    if (!comp.objectTypeId || !comp.recordIdValue) return;
+    let cancelled = false;
+    fetch(`${ONTOLOGY_API}/object-types/${comp.objectTypeId}/records/${comp.recordIdValue}`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => {
+        if (cancelled || !d) return;
+        const props = (d.properties || d) as Record<string, unknown>;
+        const initial: Record<string, string> = {};
+        for (const f of comp.fields || []) initial[f.name] = String(props[f.name] ?? '');
+        setValues(initial);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [comp.objectTypeId, comp.recordIdValue, comp.fields]);
+
+  const onSave = async () => {
+    if (!action) { setFeedback({ ok: false, msg: 'No action configured' }); return; }
+    const err = validateActionInput(action, values);
+    if (err) { setFeedback({ ok: false, msg: err }); return; }
+    setBusy(true);
+    const result = await runAppAction(action, { formValues: values });
+    setBusy(false);
+    setFeedback({ ok: result.ok, msg: result.ok ? 'Saved' : (result.error || 'Error') });
+  };
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      padding: 16, height: '100%', overflow: 'auto',
+    }}>
+      {comp.title && (
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginBottom: 12 }}>
+          {comp.title}
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {(comp.fields || []).map((f) => (
+          <label key={f.name} style={{ fontSize: 11, color: '#475569' }}>
+            <div style={{ marginBottom: 4 }}>{f.label || f.name}</div>
+            {f.type === 'textarea' ? (
+              <textarea
+                value={values[f.name] || ''}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                rows={3}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12 }}
+              />
+            ) : (
+              <input
+                type={f.type === 'number' ? 'number' : 'text'}
+                value={values[f.name] || ''}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12 }}
+              />
+            )}
+          </label>
+        ))}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+        <button
+          onClick={onSave}
+          disabled={busy || !action}
+          style={{
+            padding: '7px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+            backgroundColor: action ? '#7C3AED' : '#94A3B8', color: '#fff',
+            border: 'none', cursor: action && !busy ? 'pointer' : 'default',
+          }}
+        >
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+        {feedback && (
+          <span style={{ fontSize: 11, color: feedback.ok ? '#16A34A' : '#DC2626' }}>
+            {feedback.msg}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const RecordCreatorWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const { actions } = useAppContext();
+  const action = actions.find((a) => a.id === comp.actionId);
+  const allFields = comp.fields || [];
+  const steps = comp.steps && comp.steps.length > 0
+    ? comp.steps
+    : [{ title: comp.title || 'New record', fields: allFields.map((f) => f.name) }];
+  const [stepIdx, setStepIdx] = useState(0);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const currentStep = steps[stepIdx];
+  const stepFields = allFields.filter((f) => currentStep?.fields.includes(f.name));
+
+  const onSubmit = async () => {
+    if (!action) { setFeedback({ ok: false, msg: 'No action configured' }); return; }
+    const err = validateActionInput(action, values);
+    if (err) { setFeedback({ ok: false, msg: err }); return; }
+    setBusy(true);
+    const result = await runAppAction(action, { formValues: values });
+    setBusy(false);
+    setFeedback({ ok: result.ok, msg: result.ok ? 'Created' : (result.error || 'Error') });
+    if (result.ok) {
+      setValues({});
+      setStepIdx(0);
+    }
+  };
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      padding: 16, height: '100%', display: 'flex', flexDirection: 'column',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        {comp.title && (
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+        )}
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94A3B8' }}>
+          Step {stepIdx + 1} of {steps.length}: {currentStep?.title}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1, overflow: 'auto' }}>
+        {stepFields.map((f) => (
+          <label key={f.name} style={{ fontSize: 11, color: '#475569' }}>
+            <div style={{ marginBottom: 4 }}>{f.label || f.name}</div>
+            {f.type === 'textarea' ? (
+              <textarea
+                value={values[f.name] || ''}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                rows={3}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12 }}
+              />
+            ) : f.type === 'select' ? (
+              <select
+                value={values[f.name] || ''}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12, backgroundColor: '#fff' }}
+              >
+                <option value="">— select —</option>
+                {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            ) : f.type === 'boolean' ? (
+              <select
+                value={values[f.name] || ''}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12, backgroundColor: '#fff' }}
+              >
+                <option value="">—</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            ) : (
+              <input
+                type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                value={values[f.name] || ''}
+                onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                style={{ width: '100%', padding: '6px 8px', border: '1px solid #CBD5E1', borderRadius: 4, fontSize: 12 }}
+              />
+            )}
+          </label>
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
+        <button
+          onClick={() => setStepIdx((i) => Math.max(0, i - 1))}
+          disabled={stepIdx === 0}
+          style={{
+            padding: '6px 12px', borderRadius: 6, fontSize: 12,
+            backgroundColor: stepIdx === 0 ? '#F1F5F9' : '#fff',
+            border: '1px solid #E2E8F0', color: '#475569',
+            cursor: stepIdx === 0 ? 'default' : 'pointer',
+          }}
+        >Back</button>
+        {stepIdx < steps.length - 1 ? (
+          <button
+            onClick={() => setStepIdx((i) => Math.min(steps.length - 1, i + 1))}
+            style={{
+              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+              backgroundColor: '#7C3AED', color: '#fff', border: 'none', cursor: 'pointer',
+            }}
+          >Next →</button>
+        ) : (
+          <button
+            onClick={onSubmit}
+            disabled={busy || !action}
+            style={{
+              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+              backgroundColor: action ? '#7C3AED' : '#94A3B8', color: '#fff',
+              border: 'none', cursor: action && !busy ? 'pointer' : 'default',
+            }}
+          >{busy ? 'Submitting…' : 'Submit'}</button>
+        )}
+      </div>
+      {feedback && (
+        <div style={{ marginTop: 8, fontSize: 11, color: feedback.ok ? '#16A34A' : '#DC2626' }}>
+          {feedback.msg}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ApprovalQueueWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const { actions } = useAppContext();
+  const approveAction = actions.find((a) => a.id === comp.approveActionId);
+  const rejectAction = actions.find((a) => a.id === comp.rejectActionId);
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    if (!comp.objectTypeId) return;
+    let cancelled = false;
+    setLoading(true);
+    const params = new URLSearchParams({ limit: String(comp.maxRows || 25) });
+    if (comp.filters && comp.filters.length > 0) {
+      const m: Record<string, unknown> = {};
+      for (const f of comp.filters) m[f.field] = f.value;
+      params.set('filter', JSON.stringify(m));
+    }
+    fetch(`${ONTOLOGY_API}/object-types/${comp.objectTypeId}/records?${params}`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    })
+      .then((r) => r.ok ? r.json() : { records: [] })
+      .then((d) => { if (!cancelled) setRows(d.records || []); })
+      .catch(() => { if (!cancelled) setRows([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [comp.objectTypeId, comp.maxRows, JSON.stringify(comp.filters || []), refreshTick]);
+
+  const fire = async (action: AppAction | undefined, row: Record<string, unknown>) => {
+    if (!action) return;
+    const id = String(row.id ?? '');
+    setBusyId(id);
+    await runAppAction(action, { selectedRow: row });
+    setBusyId(null);
+    setRefreshTick((t) => t + 1);
+  };
+
+  const cols = comp.columns && comp.columns.length > 0
+    ? comp.columns
+    : (rows[0] ? Object.keys(rows[0]).slice(0, 4) : []);
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+    }}>
+      {comp.title && (
+        <div style={{
+          padding: '10px 16px', borderBottom: '1px solid #E2E8F0',
+          fontSize: 13, fontWeight: 600, color: '#0D1117',
+        }}>
+          {comp.title}
+        </div>
+      )}
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        {loading ? (
+          <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>Loading…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>Queue is empty.</div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ backgroundColor: '#F8FAFC' }}>
+                {cols.map((c) => (
+                  <th key={c} style={{ textAlign: 'left', padding: '8px 12px', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>
+                    {c}
+                  </th>
+                ))}
+                <th style={{ textAlign: 'right', padding: '8px 12px', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => {
+                const id = String(row.id ?? i);
+                return (
+                  <tr key={id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                    {cols.map((c) => (
+                      <td key={c} style={{ padding: '7px 12px', color: '#0D1117' }}>
+                        {String(row[c] ?? '')}
+                      </td>
+                    ))}
+                    <td style={{ padding: '7px 12px', textAlign: 'right' }}>
+                      <button
+                        onClick={() => fire(approveAction, row)}
+                        disabled={busyId === id || !approveAction}
+                        style={{
+                          marginRight: 6, padding: '3px 10px', borderRadius: 4, fontSize: 11,
+                          backgroundColor: approveAction ? '#16A34A' : '#94A3B8',
+                          color: '#fff', border: 'none', cursor: approveAction && busyId !== id ? 'pointer' : 'default',
+                        }}
+                      >Approve</button>
+                      <button
+                        onClick={() => fire(rejectAction, row)}
+                        disabled={busyId === id || !rejectAction}
+                        style={{
+                          padding: '3px 10px', borderRadius: 4, fontSize: 11,
+                          backgroundColor: rejectAction ? '#DC2626' : '#94A3B8',
+                          color: '#fff', border: 'none', cursor: rejectAction && busyId !== id ? 'pointer' : 'default',
+                        }}
+                      >Reject</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ── Drill-down dispatcher (Phase D / E / F) ────────────────────────────────
+// Resolves AppEvent rows on the dashboard against widget click payloads and
+// pushes results onto the dashboard stack. Used by AppCanvas via fireEvent
+// in the AppContext.
+
+interface ClickPayload {
+  value?: string;
+  field?: string;
+  row?: Record<string, unknown>;
+}
+
+function resolveBindings(
+  bindings: import('../../types/app').ContextBinding[] | undefined,
+  payload: ClickPayload,
+): { variables: Record<string, unknown>; filters: AppFilter[] } {
+  const variables: Record<string, unknown> = {};
+  const filters: AppFilter[] = [];
+  for (const b of bindings || []) {
+    let value: unknown = '';
+    if (b.sourceFrom === 'clickedValue') value = payload.value ?? '';
+    else if (b.sourceFrom === 'clickedField') value = payload.field ?? '';
+    else if (b.sourceFrom === 'clickedRow') value = payload.row ?? {};
+    else if (b.sourceFrom === 'rowField' && b.rowField) value = payload.row?.[b.rowField] ?? '';
+    else if (b.sourceFrom === 'literal') value = b.literal ?? '';
+
+    if (b.apply === 'setVariable' && b.targetVariableId) {
+      variables[b.targetVariableId] = value;
+    } else if (b.apply === 'addFilter' && b.filterField) {
+      filters.push({
+        id: `__drill_${b.filterField}_${Math.random().toString(36).slice(2, 8)}`,
+        field: b.filterField,
+        operator: (b.filterOp || 'eq') as AppFilter['operator'],
+        value: String(value ?? ''),
+      });
+    }
+  }
+  return { variables, filters };
+}
+
+async function fetchDashboardById(dashboardId: string): Promise<NexusApp | null> {
+  try {
+    const r = await fetch(`${ONTOLOGY_API}/apps/${dashboardId}`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    if (!r.ok) return null;
+    const raw = await r.json() as Record<string, unknown>;
+    const settings = (raw.settings as Record<string, unknown>) || {};
+    return {
+      id: raw.id as string,
+      name: raw.name as string,
+      description: (raw.description as string) || '',
+      icon: (raw.icon as string) || '',
+      components: (raw.components as NexusApp['components']) || [],
+      objectTypeIds:
+        Array.isArray(raw.object_type_ids) && (raw.object_type_ids as string[]).length > 0
+          ? (raw.object_type_ids as string[])
+          : raw.object_type_id ? [raw.object_type_id as string] : [],
+      createdAt: (raw.created_at as string) || '',
+      updatedAt: (raw.updated_at as string) || '',
+      filterBar: settings.filter_bar as NexusApp['filterBar'] | undefined,
+      kind: (raw.kind as 'dashboard' | 'app') || (settings.kind as 'dashboard' | 'app') || 'dashboard',
+      actions: ((settings.actions as AppAction[]) || (raw.actions as AppAction[]) || []),
+      variables: ((settings.variables as NexusApp['variables']) || raw.variables as NexusApp['variables']) || [],
+      events: ((settings.events as AppEvent[]) || (raw.events as AppEvent[]) || []),
+      isEphemeral: Boolean(raw.is_ephemeral || settings.is_ephemeral),
+      parentAppId: (raw.parent_app_id as string) || (settings.parent_app_id as string) || undefined,
+      generatedFromWidgetId:
+        (raw.generated_from_widget_id as string) || (settings.generated_from_widget_id as string) || undefined,
+      expiresAt: (raw.expires_at as string) || (settings.expires_at as string) || undefined,
+      isSystem: Boolean(raw.is_system || settings.is_system),
+      slug: (raw.slug as string) || (settings.slug as string) || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function generateDrilldownDashboard(
+  prompt: string,
+  availableObjectTypeIds: string[],
+  sourceContext: Record<string, unknown>,
+  parentAppId?: string,
+  generatedFromWidgetId?: string,
+): Promise<NexusApp | null> {
+  try {
+    const r = await fetch(`${INFERENCE_API}/infer/generate-dashboard`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+      body: JSON.stringify({
+        prompt,
+        available_object_type_ids: availableObjectTypeIds,
+        source_context: sourceContext,
+      }),
+    });
+    if (!r.ok) return null;
+    const data = await r.json() as Record<string, unknown>;
+    const ephemeral: NexusApp = {
+      id: `gen-${Date.now()}`,
+      name: (data.name as string) || 'Generated detail',
+      description: (data.description as string) || '',
+      icon: '',
+      components: (data.components as NexusApp['components']) || [],
+      objectTypeIds: (data.object_type_ids as string[]) || availableObjectTypeIds,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      isEphemeral: true,
+      parentAppId,
+      generatedFromWidgetId,
+    };
+    // Persist to the auto-cache so this generated view appears in
+    // "Recently generated." Best-effort — if the backend rejects, we
+    // still display the ephemeral view in-session.
+    try {
+      const persistResp = await fetch(`${ONTOLOGY_API}/apps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+        body: JSON.stringify({
+          name: ephemeral.name,
+          description: ephemeral.description,
+          icon: '',
+          object_type_ids: ephemeral.objectTypeIds,
+          components: ephemeral.components,
+          is_ephemeral: true,
+          parent_app_id: parentAppId,
+          generated_from_widget_id: generatedFromWidgetId,
+        }),
+      });
+      if (persistResp.ok) {
+        const persisted = await persistResp.json() as Record<string, unknown>;
+        ephemeral.id = persisted.id as string;
+      }
+    } catch { /* keep client-side ephemeral id */ }
+    return ephemeral;
+  } catch {
+    return null;
+  }
+}
+
+function interpolatePromptTemplate(template: string, payload: ClickPayload): string {
+  return template
+    .replace(/\{\{value\}\}/g, payload.value ?? '')
+    .replace(/\{\{field\}\}/g, payload.field ?? '')
+    .replace(/\{\{row\.([\w_]+)\}\}/g, (_, k) => String(payload.row?.[k] ?? ''));
+}
+
+function useDrillDispatcher(app: NexusApp) {
+  const push = useDashboardStackStore((s) => s.push);
+  const wouldOverflow = useDashboardStackStore((s) => s.wouldOverflow);
+  return useCallback(
+    async (sourceWidgetId: string, trigger: AppEvent['trigger'], payload: ClickPayload = {}) => {
+      const events = (app.events || []).filter(
+        (e) => e.sourceWidgetId === sourceWidgetId && e.trigger === trigger,
+      );
+      if (events.length === 0) return;
+      for (const ev of events) {
+        for (const action of ev.actions) {
+          if (
+            action.type !== 'openDashboard' &&
+            action.type !== 'openDashboardModal' &&
+            action.type !== 'generateDashboard'
+          ) continue;
+          if (wouldOverflow()) {
+            // eslint-disable-next-line no-console
+            console.warn('Drill-down depth limit reached');
+            return;
+          }
+          const { variables, filters } = resolveBindings(action.contextBindings, payload);
+          const widget = app.components.find((c) => c.id === sourceWidgetId);
+          const sourceLabel = widget?.title || sourceWidgetId;
+          const displayMode = action.displayMode
+            || (action.type === 'openDashboardModal' ? 'modal' : 'replace');
+          const triggeredFrom = {
+            dashboardId: app.id,
+            widgetId: sourceWidgetId,
+            label: sourceLabel,
+          };
+
+          if (action.type === 'generateDashboard') {
+            const tmpl = action.generatePromptTemplate || 'Show details for {{value}} in {{field}}';
+            const promptText = interpolatePromptTemplate(tmpl, payload);
+            const ots = action.generateObjectTypeIds && action.generateObjectTypeIds.length > 0
+              ? action.generateObjectTypeIds
+              : app.objectTypeIds || [];
+            const ephemeral = await generateDrilldownDashboard(
+              promptText,
+              ots,
+              {
+                clicked_value: payload.value || '',
+                clicked_field: payload.field || '',
+                source_widget_type: widget?.type || '',
+                source_dashboard_name: app.name,
+                parent_app_id: app.id,
+                generated_from_widget_id: sourceWidgetId,
+              },
+              app.id,
+              sourceWidgetId,
+            );
+            if (!ephemeral) continue;
+            const entry: DashboardStackEntry = {
+              dashboardId: ephemeral.id,
+              source: 'generated',
+              ephemeralApp: ephemeral,
+              initialContext: {
+                variables,
+                addedFilters: filters.map((filter) => ({ filter })),
+              },
+              triggeredFrom,
+              displayMode,
+              title: ephemeral.name,
+            };
+            push(entry);
+          } else {
+            if (!action.targetDashboardId) continue;
+            const target = await fetchDashboardById(action.targetDashboardId);
+            if (!target) continue;
+            const entry: DashboardStackEntry = {
+              dashboardId: target.id,
+              source: 'saved',
+              ephemeralApp: target,
+              initialContext: {
+                variables,
+                addedFilters: filters.map((filter) => ({ filter })),
+              },
+              triggeredFrom,
+              displayMode,
+              title: target.name,
+            };
+            push(entry);
+          }
+        }
+      }
+    },
+    [app, push, wouldOverflow],
+  );
+}
+
+// Apply initialContext on top of the app — adds drill-down filters to every
+// widget that doesn't already define a filter on the same field. Variables
+// will be plumbed through via the AppVariableProvider's defaultValue path.
+function applyDrilldownContext(
+  app: NexusApp,
+  ctx?: { variables: Record<string, unknown>; addedFilters: Array<{ widgetId?: string; filter: AppFilter }> },
+): NexusApp {
+  if (!ctx || (ctx.addedFilters.length === 0 && Object.keys(ctx.variables).length === 0)) {
+    return app;
+  }
+  const components = app.components.map((comp) => {
+    const extras = ctx.addedFilters
+      .filter((f) => !f.widgetId || f.widgetId === comp.id)
+      .map((f) => f.filter)
+      .filter((f) => !(comp.filters || []).some((existing) => existing.field === f.field));
+    if (extras.length === 0) return comp;
+    return { ...comp, filters: [...(comp.filters || []), ...extras] };
+  });
+  // Apply variable overrides as defaults on the matching variable entries.
+  const variables = (app.variables || []).map((v) => (
+    Object.prototype.hasOwnProperty.call(ctx.variables, v.id)
+      ? { ...v, defaultValue: ctx.variables[v.id] }
+      : v
+  ));
+  return { ...app, components, variables };
+}
+
 // ── App Canvas ─────────────────────────────────────────────────────────────
 
 interface Props {
   app: NexusApp;
+  drilldownContext?: { variables: Record<string, unknown>; addedFilters: Array<{ widgetId?: string; filter: AppFilter }> };
 }
 
-const AppCanvas: React.FC<Props> = ({ app }) => {
+const AppCanvas: React.FC<Props> = ({ app: rawApp, drilldownContext }) => {
+  const app = applyDrilldownContext(rawApp, drilldownContext);
+  const fireEvent = useDrillDispatcher(app);
   const [crossFilter, setCrossFilter] = useState<CrossFilter | null>(null);
 
   // Dashboard filter bar live state. Initialized from the app's saved
@@ -2875,6 +3919,7 @@ const AppCanvas: React.FC<Props> = ({ app }) => {
   const firstOtId = app.components.find((c) => !!c.objectTypeId)?.objectTypeId;
 
   return (
+    <AppContext.Provider value={{ app, actions: app.actions || [], fireEvent }}>
     <AppVariableProvider definitions={app.variables || []}>
       <CrossFilterContext.Provider value={{ filter: crossFilter, setFilter: setCrossFilter }}>
        <DashboardFilterContext.Provider value={dashboardState}>
@@ -2940,6 +3985,7 @@ const AppCanvas: React.FC<Props> = ({ app }) => {
        </DashboardFilterContext.Provider>
       </CrossFilterContext.Provider>
     </AppVariableProvider>
+    </AppContext.Provider>
   );
 };
 

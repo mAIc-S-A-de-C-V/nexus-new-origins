@@ -21,8 +21,9 @@ import {
   BarChart2, LineChart, Table, Hash, AlignLeft, Gauge, SlidersHorizontal,
   Database, Tag, MessageSquare, Sparkles, Loader, Braces, MapPin, Wrench,
   PieChart, AreaChart, TrendingUp, ListFilter, FileText, TableProperties, Variable,
+  Layers, Play, FilePlus, CheckSquare, Edit3,
 } from 'lucide-react';
-import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable, DashboardFilterBar, RangePreset } from '../../types/app';
+import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable, DashboardFilterBar, RangePreset, AppEvent, AppEventAction, ContextBinding, AppAction, ActionKind } from '../../types/app';
 import { suggestedBucketForRange, detectEavPattern, type EavPattern } from './queryBuilder';
 import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
@@ -128,6 +129,11 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'dropdown-filter', label: 'Dropdown Filter', icon: <ListFilter size={13} />,   defaultColSpan: 3,  description: 'Dropdown that sets a variable' },
   { type: 'form',            label: 'Form',            icon: <FileText size={13} />,      defaultColSpan: 6,  description: 'Input form with submit action' },
   { type: 'object-table',    label: 'Object Table',    icon: <TableProperties size={13} />, defaultColSpan: 12, description: 'Sortable table with variable bindings' },
+  { type: 'composite',       label: 'Card (Composite)', icon: <Layers size={13} />,        defaultColSpan: 12, description: 'Container card holding nested widgets' },
+  { type: 'action-button',   label: 'Action Button',   icon: <Play size={13} />,           defaultColSpan: 4,  description: 'Button that fires a typed action' },
+  { type: 'object-editor',   label: 'Object Editor',   icon: <Edit3 size={13} />,          defaultColSpan: 6,  description: 'Read+write form for a single record' },
+  { type: 'record-creator',  label: 'Record Creator',  icon: <FilePlus size={13} />,       defaultColSpan: 6,  description: 'Multi-step wizard to create records' },
+  { type: 'approval-queue',  label: 'Approval Queue',  icon: <CheckSquare size={13} />,    defaultColSpan: 12, description: 'Table with per-row approve/reject buttons' },
 ];
 
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -143,7 +149,7 @@ const SEMANTIC_ICON: Record<string, string> = {
 const LeftSidebar: React.FC<{
   objectTypes: OntologyType[];
   onAddWidget: (type: ComponentType, otId?: string) => void;
-  onAddWidgetFromNL: (prompt: string, otId: string, forceCode?: boolean) => Promise<void>;
+  onAddWidgetFromNL: (prompt: string, otId: string, mode?: 'widget' | 'code' | 'card') => Promise<void>;
   onClickField: (field: string) => void;
   variables: AppVariable[];
   onVariablesChange: (vars: AppVariable[]) => void;
@@ -153,7 +159,7 @@ const LeftSidebar: React.FC<{
   const [nlOtId, setNlOtId] = useState('');
   const [nlLoading, setNlLoading] = useState(false);
   const [nlError, setNlError] = useState('');
-  const [forceCode, setForceCode] = useState(false);
+  const [genMode, setGenMode] = useState<'widget' | 'code' | 'card'>('widget');
   const nlRef = useRef<HTMLTextAreaElement>(null);
 
   const handleNlGenerate = async () => {
@@ -161,7 +167,7 @@ const LeftSidebar: React.FC<{
     setNlLoading(true);
     setNlError('');
     try {
-      await onAddWidgetFromNL(nlPrompt.trim(), nlOtId, forceCode);
+      await onAddWidgetFromNL(nlPrompt.trim(), nlOtId, genMode);
       setNlPrompt('');
     } catch (e: unknown) {
       setNlError(e instanceof Error ? e.message : 'Failed to generate widget');
@@ -218,29 +224,39 @@ const LeftSidebar: React.FC<{
         {nlError && (
           <div style={{ fontSize: 10, color: '#DC2626', marginTop: 4 }}>{nlError}</div>
         )}
-        {/* Code mode toggle */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, cursor: 'pointer', userSelect: 'none' }}>
-          <div
-            onClick={() => setForceCode((v) => !v)}
-            style={{
-              width: 28, height: 16, borderRadius: 8, position: 'relative', flexShrink: 0,
-              backgroundColor: forceCode ? '#7C3AED' : '#CBD5E1',
-              transition: 'background 0.2s',
-            }}
-          >
-            <div style={{
-              position: 'absolute', top: 2, left: forceCode ? 14 : 2,
-              width: 12, height: 12, borderRadius: '50%', backgroundColor: '#fff',
-              transition: 'left 0.2s',
-            }} />
-          </div>
-          <span style={{ fontSize: 10, color: forceCode ? '#7C3AED' : '#64748B', fontWeight: 600 }}>
-            {forceCode ? 'Custom Code' : 'Smart Widget'}
-          </span>
-        </label>
-        {forceCode && (
+        {/* Mode selector — Widget / Code / Card */}
+        <div style={{
+          display: 'flex', marginTop: 6, gap: 0,
+          border: '1px solid #DDD6FE', borderRadius: 5, overflow: 'hidden',
+        }}>
+          {(['widget', 'code', 'card'] as const).map((m) => {
+            const active = genMode === m;
+            const label = m === 'widget' ? 'Widget' : m === 'code' ? 'Code' : 'Card';
+            return (
+              <button
+                key={m}
+                onClick={() => setGenMode(m)}
+                style={{
+                  flex: 1, padding: '4px 0', border: 'none', borderRight: m !== 'card' ? '1px solid #DDD6FE' : 'none',
+                  fontSize: 10, fontWeight: 600,
+                  color: active ? '#fff' : '#7C3AED',
+                  backgroundColor: active ? '#7C3AED' : '#FAF5FF',
+                  cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {genMode === 'code' && (
           <div style={{ fontSize: 10, color: '#7C3AED', marginTop: 3, lineHeight: 1.4 }}>
-            AI writes code for anything you want — pie charts, rankings, custom tables, calculations.
+            AI writes code for anything you want — custom charts, rankings, calculations.
+          </div>
+        )}
+        {genMode === 'card' && (
+          <div style={{ fontSize: 10, color: '#7C3AED', marginTop: 3, lineHeight: 1.4 }}>
+            AI builds a composite card — a banner + chart + sidebar layout in one container.
           </div>
         )}
         <button
@@ -257,9 +273,11 @@ const LeftSidebar: React.FC<{
         >
           {nlLoading
             ? <><Loader size={10} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</>
-            : forceCode
-              ? <><Sparkles size={10} /> Generate Custom Code</>
-              : <><Sparkles size={10} /> Generate Widget</>}
+            : genMode === 'code'
+              ? <><Sparkles size={10} /> Generate Code</>
+              : genMode === 'card'
+                ? <><Sparkles size={10} /> Generate Card</>
+                : <><Sparkles size={10} /> Generate Widget</>}
         </button>
       </div>
 
@@ -1055,6 +1073,158 @@ const FieldPickerCmp: React.FC<{ fields: string[]; value: string | undefined; on
   </div>
 );
 
+// FieldsEditor — visual editor for AppComponent.fields[]. Used by form
+// and record-creator widgets. Each field is { name, label, type }.
+type FormField = NonNullable<AppComponent['fields']>[number];
+const FieldsEditor: React.FC<{
+  fields: FormField[];
+  onChange: (next: FormField[]) => void;
+}> = ({ fields, onChange }) => {
+  const update = (i: number, patch: Partial<FormField>) => {
+    const next = [...fields];
+    next[i] = { ...next[i], ...patch };
+    onChange(next);
+  };
+  const remove = (i: number) => onChange(fields.filter((_, idx) => idx !== i));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {fields.length === 0 && (
+        <div style={{ fontSize: 10, color: '#CBD5E1' }}>No fields. Add at least one.</div>
+      )}
+      {fields.map((f, i) => (
+        <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 3, padding: 4, border: '1px solid #F1F5F9', borderRadius: 3 }}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <input
+              value={f.name}
+              onChange={(e) => update(i, { name: e.target.value })}
+              placeholder="name"
+              style={{ flex: 1, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            />
+            <input
+              value={f.label}
+              onChange={(e) => update(i, { label: e.target.value })}
+              placeholder="label"
+              style={{ flex: 1, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            />
+            <select
+              value={f.type}
+              onChange={(e) => update(i, { type: e.target.value as FormField['type'] })}
+              style={{ width: 78, height: 22, padding: '0 4px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            >
+              <option value="text">text</option>
+              <option value="number">number</option>
+              <option value="boolean">boolean</option>
+              <option value="textarea">textarea</option>
+              <option value="select">select</option>
+              <option value="date">date</option>
+            </select>
+            <button
+              onClick={() => remove(i)}
+              style={{ width: 22, height: 22, fontSize: 10, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+            >×</button>
+          </div>
+          {f.type === 'select' && (
+            <input
+              value={(f.options || []).join(', ')}
+              onChange={(e) => update(i, {
+                options: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+              })}
+              placeholder="options (comma-separated, e.g. in, out, transfer)"
+              style={{ height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+            />
+          )}
+        </div>
+      ))}
+      <button
+        onClick={() => onChange([...fields, { name: '', label: '', type: 'text' }])}
+        style={{
+          padding: '3px 0', fontSize: 10, color: '#7C3AED',
+          border: '1px dashed #DDD6FE', borderRadius: 3,
+          backgroundColor: 'transparent', cursor: 'pointer',
+        }}
+      >+ Field</button>
+    </div>
+  );
+};
+
+// StepsEditor — visual editor for AppComponent.steps[] (record-creator
+// multi-step wizard). Each step has a title and a list of field names that
+// must already exist in `fields`.
+type WizardStep = NonNullable<AppComponent['steps']>[number];
+const StepsEditor: React.FC<{
+  steps: WizardStep[];
+  fieldNames: string[];
+  onChange: (next: WizardStep[]) => void;
+}> = ({ steps, fieldNames, onChange }) => {
+  const update = (i: number, patch: Partial<WizardStep>) => {
+    const next = [...steps];
+    next[i] = { ...next[i], ...patch };
+    onChange(next);
+  };
+  const remove = (i: number) => onChange(steps.filter((_, idx) => idx !== i));
+  const toggleField = (stepIdx: number, name: string) => {
+    const step = steps[stepIdx];
+    const has = step.fields.includes(name);
+    update(stepIdx, {
+      fields: has ? step.fields.filter((f) => f !== name) : [...step.fields, name],
+    });
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {steps.length === 0 && (
+        <div style={{ fontSize: 10, color: '#CBD5E1' }}>
+          No wizard steps — all fields appear on a single page.
+        </div>
+      )}
+      {steps.map((s, i) => (
+        <div key={i} style={{ border: '1px solid #F1F5F9', borderRadius: 3, padding: 6 }}>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+            <input
+              value={s.title}
+              onChange={(e) => update(i, { title: e.target.value })}
+              placeholder={`Step ${i + 1} title`}
+              style={{ flex: 1, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            />
+            <button
+              onClick={() => remove(i)}
+              style={{ width: 22, height: 22, fontSize: 10, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+            >×</button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+            {fieldNames.length === 0 && (
+              <span style={{ fontSize: 9, color: '#CBD5E1' }}>Add fields above first.</span>
+            )}
+            {fieldNames.map((name) => {
+              const on = s.fields.includes(name);
+              return (
+                <button
+                  key={name}
+                  onClick={() => toggleField(i, name)}
+                  style={{
+                    padding: '2px 6px', fontSize: 9,
+                    border: `1px solid ${on ? '#7C3AED' : '#E2E8F0'}`,
+                    backgroundColor: on ? '#FAF5FF' : '#fff',
+                    color: on ? '#7C3AED' : '#64748B',
+                    borderRadius: 3, cursor: 'pointer',
+                  }}
+                >{name}</button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <button
+        onClick={() => onChange([...steps, { title: `Step ${steps.length + 1}`, fields: [] }])}
+        style={{
+          padding: '3px 0', fontSize: 10, color: '#7C3AED',
+          border: '1px dashed #DDD6FE', borderRadius: 3,
+          backgroundColor: 'transparent', cursor: 'pointer',
+        }}
+      >+ Step</button>
+    </div>
+  );
+};
+
 // Widget types where the VALUE FORMAT control is meaningful — anything
 // that ends up rendering aggregated numbers. Filters / forms / chat etc.
 // don't show the section.
@@ -1114,7 +1284,12 @@ const ConfigPanel: React.FC<{
   allComponents: AppComponent[];
   onChange: (c: AppComponent) => void;
   onDelete: () => void;
-}> = ({ comp, objectTypes, allComponents, onChange, onDelete }) => {
+  events?: AppEvent[];
+  onEventsChange?: (evs: AppEvent[]) => void;
+  actions?: AppAction[];
+  variables?: AppVariable[];
+  appId?: string;
+}> = ({ comp, objectTypes, allComponents, onChange, onDelete, events, onEventsChange, actions, variables, appId }) => {
   const set = (patch: Partial<AppComponent>) => onChange({ ...comp, ...patch });
   const selectedOt = objectTypes.find((o) => o.id === comp.objectTypeId);
   const declaredFields = (selectedOt?.properties || [])
@@ -1970,26 +2145,51 @@ const ConfigPanel: React.FC<{
             <Row label="ACTION NAME">
               {inp(comp.actionName, (v) => set({ actionName: v }), 'e.g. create-ticket')}
             </Row>
-            <Row label="FIELDS (JSON ARRAY)">
-              <textarea
-                value={JSON.stringify(comp.fields || [], null, 2)}
-                onChange={(e) => {
-                  try {
-                    const parsed = JSON.parse(e.target.value);
-                    if (Array.isArray(parsed)) set({ fields: parsed });
-                  } catch { /* ignore parse errors while typing */ }
-                }}
-                rows={6}
-                placeholder={'[\n  { "name": "title", "label": "Title", "type": "text" }\n]'}
-                style={{
-                  width: '100%', padding: '6px 8px', border: '1px solid #E2E8F0',
-                  borderRadius: 4, fontSize: 10, color: '#0D1117',
-                  resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5,
-                  fontFamily: 'var(--font-mono)', outline: 'none',
-                }}
+            <Row label="FIELDS">
+              <FieldsEditor
+                fields={comp.fields || []}
+                onChange={(next) => set({ fields: next })}
               />
             </Row>
           </>
+        )}
+
+        {/* record-creator */}
+        {comp.type === 'record-creator' && (
+          <>
+            <Row label="FIELDS">
+              <FieldsEditor
+                fields={comp.fields || []}
+                onChange={(next) => {
+                  // When a field is renamed/removed, prune dangling refs from steps.
+                  const validNames = new Set(next.map((f) => f.name));
+                  const prunedSteps = (comp.steps || []).map((s) => ({
+                    ...s,
+                    fields: s.fields.filter((n) => validNames.has(n)),
+                  }));
+                  set({ fields: next, steps: prunedSteps });
+                }}
+              />
+            </Row>
+            <Row label="WIZARD STEPS">
+              <StepsEditor
+                steps={comp.steps || []}
+                fieldNames={(comp.fields || []).map((f) => f.name).filter(Boolean)}
+                onChange={(next) => set({ steps: next })}
+              />
+            </Row>
+          </>
+        )}
+
+        {/* object-editor — same shape as record-creator (single-page form)
+            but writes against an existing record id. */}
+        {comp.type === 'object-editor' && (
+          <Row label="FIELDS">
+            <FieldsEditor
+              fields={comp.fields || []}
+              onChange={(next) => set({ fields: next })}
+            />
+          </Row>
         )}
 
         {/* object-table */}
@@ -2071,6 +2271,46 @@ const ConfigPanel: React.FC<{
           />
         )}
 
+        {/* ── Drill-down (Phase F) ── */}
+        {events && onEventsChange && (
+          <DrillDownSection
+            comp={comp}
+            events={events}
+            onEventsChange={onEventsChange}
+            allDashboardSiblings={allComponents}
+            currentAppId={appId || ''}
+            objectTypes={objectTypes}
+            variables={variables || []}
+            onCompChange={set}
+          />
+        )}
+
+        {/* ── Action binding (Phase H) — for action widgets ── */}
+        {(comp.type === 'action-button' || comp.type === 'object-editor' || comp.type === 'record-creator') && actions && (
+          <ActionBindingSection
+            comp={comp}
+            actions={actions}
+            onCompChange={set}
+            variables={variables || []}
+          />
+        )}
+        {comp.type === 'approval-queue' && actions && (
+          <ApprovalActionSection
+            comp={comp}
+            actions={actions}
+            onCompChange={set}
+          />
+        )}
+
+        {/* ── Composite child editor (Phase B) ── */}
+        {comp.type === 'composite' && (
+          <CompositeChildEditor
+            comp={comp}
+            onCompChange={set}
+            objectTypes={objectTypes}
+          />
+        )}
+
         {/* JSON preview for this widget */}
         <div style={{ marginTop: 8, borderTop: '1px solid #F1F5F9', paddingTop: 10 }}>
           <Lbl>JSON</Lbl>
@@ -2084,6 +2324,538 @@ const ConfigPanel: React.FC<{
           </pre>
         </div>
       </div>
+    </div>
+  );
+};
+
+// ── Drill-down section (Phase F) ─────────────────────────────────────────
+// Lets the user attach drill-down events to a widget. Triggers default to
+// the widget type's natural click semantic (kpi → onKpiClick, bar → onBarClick,
+// etc). Actions: open saved dashboard, generate dashboard, set variable.
+
+const TRIGGERS_BY_TYPE: Partial<Record<ComponentType, AppEvent['trigger'][]>> = {
+  'metric-card': ['onKpiClick'],
+  'kpi-banner': ['onKpiClick'],
+  'stat-card': ['onKpiClick'],
+  'bar-chart': ['onBarClick'],
+  'pie-chart': ['onBarClick'],
+  'data-table': ['onRowClick', 'onCellClick'],
+  'object-table': ['onRowClick'],
+};
+
+// ContextBindingsEditor — editor for the AppEventAction.contextBindings[]
+// array. Default mode is the original simple form (one clickedValue→filter
+// row). Toggle "Advanced" to expose the full array, with sourceFrom (6
+// options), apply (setVariable | addFilter), and target pickers per row.
+//
+// The simple form maps to a single row of the canonical shape:
+//   { sourceFrom: 'clickedValue', apply: 'addFilter', filterField, filterOp: 'eq' }
+// Switching out of advanced after editing more rows preserves them; the
+// simple input edits row 0 only.
+const ContextBindingsEditor: React.FC<{
+  bindings: ContextBinding[];
+  onChange: (next: ContextBinding[]) => void;
+  variables: AppVariable[];
+}> = ({ bindings, onChange, variables }) => {
+  const [advanced, setAdvanced] = useState<boolean>(() => {
+    // Auto-open advanced if any binding can't be represented by the simple form.
+    if (bindings.length > 1) return true;
+    const b = bindings[0];
+    if (!b) return false;
+    return !(b.sourceFrom === 'clickedValue' && b.apply === 'addFilter' && b.filterOp === 'eq');
+  });
+
+  const updateRow = (i: number, patch: Partial<ContextBinding>) => {
+    const next = [...bindings];
+    next[i] = { ...next[i], ...patch };
+    onChange(next);
+  };
+  const removeRow = (i: number) => onChange(bindings.filter((_, idx) => idx !== i));
+
+  const headerRow = (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+      <div style={{ fontSize: 9, color: '#7C3AED', fontWeight: 600 }}>
+        Pass click context to target
+      </div>
+      <button
+        onClick={() => setAdvanced((v) => !v)}
+        style={{
+          padding: '1px 6px', fontSize: 9, color: advanced ? '#7C3AED' : '#94A3B8',
+          border: `1px solid ${advanced ? '#DDD6FE' : '#E2E8F0'}`,
+          backgroundColor: advanced ? '#FAF5FF' : 'transparent',
+          borderRadius: 3, cursor: 'pointer',
+        }}
+      >{advanced ? 'Simple' : 'Advanced'}</button>
+    </div>
+  );
+
+  if (!advanced) {
+    return (
+      <>
+        {headerRow}
+        <input
+          value={bindings[0]?.filterField || ''}
+          onChange={(e) => {
+            const filterField = e.target.value;
+            const next: ContextBinding[] = filterField
+              ? [{ sourceFrom: 'clickedValue', apply: 'addFilter', filterField, filterOp: 'eq' }]
+              : [];
+            onChange(next);
+          }}
+          placeholder="filter on field (e.g. account_id)"
+          style={{ height: 22, fontSize: 10, padding: '0 6px', border: '1px solid #DDD6FE', borderRadius: 3, marginTop: 4 }}
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      {headerRow}
+      {bindings.length === 0 && (
+        <div style={{ fontSize: 9, color: '#CBD5E1', padding: '4px 0' }}>
+          No bindings — target opens with no extra context.
+        </div>
+      )}
+      {bindings.map((b, i) => (
+        <div key={i} style={{
+          marginTop: 4, padding: 4, backgroundColor: '#fff',
+          border: '1px solid #EDE9FE', borderRadius: 3,
+          display: 'flex', flexDirection: 'column', gap: 3,
+        }}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <select
+              value={b.sourceFrom}
+              onChange={(e) => updateRow(i, { sourceFrom: e.target.value as ContextBinding['sourceFrom'] })}
+              style={{ flex: 1, height: 20, fontSize: 9, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+              title="Where to pull the value from"
+            >
+              <option value="clickedValue">clicked value</option>
+              <option value="clickedField">clicked field</option>
+              <option value="clickedRow">clicked row</option>
+              <option value="rowField">row field</option>
+              <option value="literal">literal</option>
+            </select>
+            <button
+              onClick={() => removeRow(i)}
+              style={{ width: 20, height: 20, fontSize: 9, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+            >×</button>
+          </div>
+          {b.sourceFrom === 'rowField' && (
+            <input
+              value={b.rowField || ''}
+              onChange={(e) => updateRow(i, { rowField: e.target.value })}
+              placeholder="row field name"
+              style={{ height: 20, fontSize: 9, padding: '0 6px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+            />
+          )}
+          {b.sourceFrom === 'literal' && (
+            <input
+              value={b.literal || ''}
+              onChange={(e) => updateRow(i, { literal: e.target.value })}
+              placeholder="literal value"
+              style={{ height: 20, fontSize: 9, padding: '0 6px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+            />
+          )}
+          <select
+            value={b.apply}
+            onChange={(e) => updateRow(i, { apply: e.target.value as ContextBinding['apply'] })}
+            style={{ height: 20, fontSize: 9, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+          >
+            <option value="addFilter">add filter on target</option>
+            <option value="setVariable">set variable on target</option>
+          </select>
+          {b.apply === 'addFilter' && (
+            <div style={{ display: 'flex', gap: 4 }}>
+              <input
+                value={b.filterField || ''}
+                onChange={(e) => updateRow(i, { filterField: e.target.value })}
+                placeholder="filter field"
+                style={{ flex: 2, height: 20, fontSize: 9, padding: '0 6px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+              />
+              <select
+                value={b.filterOp || 'eq'}
+                onChange={(e) => updateRow(i, { filterOp: e.target.value as ContextBinding['filterOp'] })}
+                style={{ flex: 1, height: 20, fontSize: 9, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+              >
+                <option value="eq">eq</option>
+                <option value="neq">neq</option>
+                <option value="in">in</option>
+              </select>
+            </div>
+          )}
+          {b.apply === 'setVariable' && (
+            <select
+              value={b.targetVariableId || ''}
+              onChange={(e) => updateRow(i, { targetVariableId: e.target.value })}
+              style={{ height: 20, fontSize: 9, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+            >
+              <option value="">— pick variable —</option>
+              {variables.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          )}
+        </div>
+      ))}
+      <button
+        onClick={() => onChange([
+          ...bindings,
+          { sourceFrom: 'clickedValue', apply: 'addFilter', filterField: '', filterOp: 'eq' },
+        ])}
+        style={{
+          marginTop: 4, padding: '2px 0', fontSize: 9, color: '#7C3AED',
+          border: '1px dashed #DDD6FE', borderRadius: 3,
+          backgroundColor: 'transparent', cursor: 'pointer',
+        }}
+      >+ Binding</button>
+    </>
+  );
+};
+
+const DrillDownSection: React.FC<{
+  comp: AppComponent;
+  events: AppEvent[];
+  onEventsChange: (evs: AppEvent[]) => void;
+  allDashboardSiblings: AppComponent[];
+  currentAppId: string;
+  objectTypes: OntologyType[];
+  variables: AppVariable[];
+  onCompChange: (patch: Partial<AppComponent>) => void;
+}> = ({ comp, events, onEventsChange, currentAppId, objectTypes, variables, onCompChange }) => {
+  const widgetEvents = events.filter((e) => e.sourceWidgetId === comp.id);
+  const possibleTriggers = TRIGGERS_BY_TYPE[comp.type] || ['onClick'];
+  const [savedDashboards, setSavedDashboards] = useState<NexusApp[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${ONTOLOGY_API2}/apps`, { headers: { 'x-tenant-id': getTenantId() } })
+      .then((r) => r.ok ? r.json() : [])
+      .then((d: Record<string, unknown>[]) => {
+        if (cancelled) return;
+        const apps = d
+          .filter((row) => row.id !== currentAppId)
+          .map((row) => ({
+            id: row.id as string,
+            name: row.name as string,
+            description: '',
+            icon: '',
+            components: [],
+            objectTypeIds: [],
+            createdAt: '',
+            updatedAt: '',
+          } as NexusApp));
+        setSavedDashboards(apps);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [currentAppId]);
+
+  const updateEvent = (idx: number, patch: Partial<AppEvent>) => {
+    const next = events.map((e) => e === widgetEvents[idx] ? { ...e, ...patch } : e);
+    onEventsChange(next);
+  };
+  const updateAction = (evIdx: number, actIdx: number, patch: Partial<AppEventAction>) => {
+    const ev = widgetEvents[evIdx];
+    const newActions = ev.actions.map((a, i) => i === actIdx ? { ...a, ...patch } : a);
+    updateEvent(evIdx, { actions: newActions });
+  };
+  const addEvent = () => {
+    const ev: AppEvent = {
+      id: `ev-${Date.now()}`,
+      sourceWidgetId: comp.id,
+      trigger: possibleTriggers[0],
+      actions: [{ type: 'openDashboard', displayMode: 'replace' }],
+    };
+    onEventsChange([...events, ev]);
+    onCompChange({ drillEnabled: true });
+  };
+  const removeEvent = (idx: number) => {
+    const ev = widgetEvents[idx];
+    onEventsChange(events.filter((e) => e !== ev));
+  };
+
+  return (
+    <div style={{ marginTop: 8, borderTop: '1px solid #F1F5F9', paddingTop: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <Lbl>DRILL-DOWN</Lbl>
+        <button
+          onClick={addEvent}
+          style={{
+            padding: '2px 8px', fontSize: 10, fontWeight: 600,
+            border: '1px solid #DDD6FE', borderRadius: 3,
+            backgroundColor: '#FAF5FF', color: '#7C3AED', cursor: 'pointer',
+          }}
+        >+ Add</button>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#64748B', marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={!!comp.drillEnabled}
+          onChange={(e) => onCompChange({ drillEnabled: e.target.checked })}
+        />
+        Enable click-to-drill on this widget
+      </label>
+      {widgetEvents.length === 0 && (
+        <div style={{ fontSize: 10, color: '#CBD5E1', padding: '6px 0' }}>
+          No drill-downs configured.
+        </div>
+      )}
+      {widgetEvents.map((ev, i) => (
+        <div key={ev.id} style={{
+          marginBottom: 8, padding: '8px', backgroundColor: '#FAF5FF',
+          border: '1px solid #EDE9FE', borderRadius: 4,
+        }}>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+            <select
+              value={ev.trigger}
+              onChange={(e) => updateEvent(i, { trigger: e.target.value as AppEvent['trigger'] })}
+              style={{ flex: 1, height: 22, fontSize: 10, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+            >
+              {possibleTriggers.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <button
+              onClick={() => removeEvent(i)}
+              style={{ width: 22, height: 22, fontSize: 10, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+            >×</button>
+          </div>
+          {ev.actions.map((a, aIdx) => (
+            <div key={aIdx} style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 4 }}>
+              <select
+                value={a.type}
+                onChange={(e) => updateAction(i, aIdx, { type: e.target.value as AppEventAction['type'] })}
+                style={{ height: 22, fontSize: 10, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+              >
+                <option value="openDashboard">Open saved dashboard</option>
+                <option value="openDashboardModal">Open in modal</option>
+                <option value="generateDashboard">Generate dashboard with AI</option>
+                <option value="setVariable">Set variable</option>
+              </select>
+              {(a.type === 'openDashboard' || a.type === 'openDashboardModal') && (
+                <select
+                  value={a.targetDashboardId || ''}
+                  onChange={(e) => updateAction(i, aIdx, { targetDashboardId: e.target.value })}
+                  style={{ height: 22, fontSize: 10, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+                >
+                  <option value="">— pick dashboard —</option>
+                  {savedDashboards.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              )}
+              {a.type === 'generateDashboard' && (
+                <>
+                  <textarea
+                    value={a.generatePromptTemplate || 'Show details for {{value}} in {{field}}'}
+                    onChange={(e) => updateAction(i, aIdx, { generatePromptTemplate: e.target.value })}
+                    rows={2}
+                    style={{ fontSize: 10, padding: '4px 6px', border: '1px solid #DDD6FE', borderRadius: 3, resize: 'vertical' }}
+                  />
+                  <select
+                    multiple
+                    value={a.generateObjectTypeIds || []}
+                    onChange={(e) => updateAction(i, aIdx, {
+                      generateObjectTypeIds: Array.from(e.target.selectedOptions).map((o) => o.value),
+                    })}
+                    style={{ fontSize: 10, padding: '4px 6px', border: '1px solid #DDD6FE', borderRadius: 3, minHeight: 50 }}
+                  >
+                    {objectTypes.map((ot) => <option key={ot.id} value={ot.id}>{ot.displayName || ot.name}</option>)}
+                  </select>
+                </>
+              )}
+              <select
+                value={a.displayMode || 'replace'}
+                onChange={(e) => updateAction(i, aIdx, { displayMode: e.target.value as AppEventAction['displayMode'] })}
+                style={{ height: 22, fontSize: 10, padding: '0 4px', border: '1px solid #DDD6FE', borderRadius: 3 }}
+              >
+                <option value="replace">Replace canvas</option>
+                <option value="modal">Modal</option>
+                <option value="sidepanel">Side panel</option>
+              </select>
+              <ContextBindingsEditor
+                bindings={a.contextBindings || []}
+                onChange={(next) => updateAction(i, aIdx, { contextBindings: next })}
+                variables={variables}
+              />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ── Action binding section (Phase H) ─────────────────────────────────────
+
+const ActionBindingSection: React.FC<{
+  comp: AppComponent;
+  actions: AppAction[];
+  variables: AppVariable[];
+  onCompChange: (patch: Partial<AppComponent>) => void;
+}> = ({ comp, actions, variables, onCompChange }) => {
+  return (
+    <div style={{ marginTop: 8, borderTop: '1px solid #F1F5F9', paddingTop: 10 }}>
+      <Lbl>ACTION</Lbl>
+      <Row label="Bound action">
+        {sel(
+          comp.actionId || '',
+          actions.map((a) => a.id),
+          actions.map((a) => `${a.name} (${a.kind})`),
+          (v) => onCompChange({ actionId: v }),
+          '— pick action —',
+        )}
+      </Row>
+      {comp.type === 'object-editor' && (
+        <>
+          <Row label="Record id from">
+            {sel(
+              comp.recordIdSource || '',
+              ['variable', 'literal', 'crossFilter'],
+              ['Variable', 'Literal', 'Cross-filter'],
+              (v) => onCompChange({ recordIdSource: v as AppComponent['recordIdSource'] }),
+              '— pick source —',
+            )}
+          </Row>
+          {comp.recordIdSource === 'variable' && (
+            <Row label="Variable">
+              {sel(
+                comp.recordIdValue || '',
+                variables.map((v) => v.id),
+                variables.map((v) => v.name),
+                (v) => onCompChange({ recordIdValue: v }),
+                '— pick variable —',
+              )}
+            </Row>
+          )}
+          {comp.recordIdSource === 'literal' && (
+            <Row label="Record id">
+              {inp(comp.recordIdValue, (v) => onCompChange({ recordIdValue: v }), 'record id')}
+            </Row>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+const ApprovalActionSection: React.FC<{
+  comp: AppComponent;
+  actions: AppAction[];
+  onCompChange: (patch: Partial<AppComponent>) => void;
+}> = ({ comp, actions, onCompChange }) => (
+  <div style={{ marginTop: 8, borderTop: '1px solid #F1F5F9', paddingTop: 10 }}>
+    <Lbl>APPROVAL ACTIONS</Lbl>
+    <Row label="Approve action">
+      {sel(comp.approveActionId || '', actions.map((a) => a.id), actions.map((a) => a.name),
+        (v) => onCompChange({ approveActionId: v }), '— pick action —')}
+    </Row>
+    <Row label="Reject action">
+      {sel(comp.rejectActionId || '', actions.map((a) => a.id), actions.map((a) => a.name),
+        (v) => onCompChange({ rejectActionId: v }), '— pick action —')}
+    </Row>
+  </div>
+);
+
+// ── Composite child editor (Phase B) ─────────────────────────────────────
+
+const CompositeChildEditor: React.FC<{
+  comp: AppComponent;
+  onCompChange: (patch: Partial<AppComponent>) => void;
+  objectTypes: OntologyType[];
+}> = ({ comp, onCompChange }) => {
+  const children = comp.children || [];
+  const addChild = (type: ComponentType) => {
+    const def = WIDGET_DEFS.find((w) => w.type === type)!;
+    const child: AppComponent = {
+      id: `child-${Date.now()}`,
+      type,
+      title: def.label,
+      colSpan: def.defaultColSpan,
+    };
+    onCompChange({ children: [...children, child] });
+  };
+  const removeChild = (id: string) => {
+    onCompChange({ children: children.filter((c) => c.id !== id) });
+  };
+  const updateChild = (id: string, patch: Partial<AppComponent>) => {
+    onCompChange({ children: children.map((c) => c.id === id ? { ...c, ...patch } : c) });
+  };
+  const childOptions: ComponentType[] = [
+    'kpi-banner', 'metric-card', 'stat-card',
+    'bar-chart', 'line-chart', 'pie-chart', 'area-chart',
+    'data-table', 'pivot-table', 'text-block', 'composite',
+  ];
+  return (
+    <div style={{ marginTop: 8, borderTop: '1px solid #F1F5F9', paddingTop: 10 }}>
+      <Lbl>CARD LAYOUT</Lbl>
+      <Row label="Layout template">
+        {sel(
+          comp.cardLayout || 'grid',
+          ['grid', 'banner-main', 'hero-sidebar', 'split'],
+          ['Free-form grid', 'Banner + content', 'Hero + sidebar', 'Split (50/50)'],
+          (v) => onCompChange({ cardLayout: v as AppComponent['cardLayout'] }),
+        )}
+      </Row>
+      <Row label="Inner grid columns">
+        {sel(
+          String(comp.innerGridCols || 12),
+          ['4', '6', '8', '12'],
+          undefined,
+          (v) => onCompChange({ innerGridCols: parseInt(v, 10) }),
+        )}
+      </Row>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#64748B', marginBottom: 6 }}>
+        <input type="checkbox" checked={comp.shareDataSource ?? true}
+          onChange={(e) => onCompChange({ shareDataSource: e.target.checked })} />
+        Share data source with children
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#64748B', marginBottom: 12 }}>
+        <input type="checkbox" checked={comp.shareFilters ?? true}
+          onChange={(e) => onCompChange({ shareFilters: e.target.checked })} />
+        Share filters with children
+      </label>
+      <Lbl>CHILD WIDGETS</Lbl>
+      <div style={{ marginBottom: 6 }}>
+        <select
+          onChange={(e) => { if (e.target.value) { addChild(e.target.value as ComponentType); e.target.value = ''; } }}
+          style={{ width: '100%', height: 26, fontSize: 11, padding: '0 6px', border: '1px solid #DDD6FE', borderRadius: 4 }}
+          value=""
+        >
+          <option value="">+ Add child widget…</option>
+          {childOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+      {children.length === 0 && (
+        <div style={{ fontSize: 10, color: '#CBD5E1', padding: '4px 0' }}>
+          No children yet — add one above.
+        </div>
+      )}
+      {children.map((child) => (
+        <div key={child.id} style={{
+          marginBottom: 6, padding: 6,
+          border: '1px solid #E2E8F0', borderRadius: 4,
+          fontSize: 11,
+        }}>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+            <input
+              value={child.title}
+              onChange={(e) => updateChild(child.id, { title: e.target.value })}
+              style={{ flex: 1, height: 22, padding: '0 6px', fontSize: 11, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            />
+            <button
+              onClick={() => removeChild(child.id)}
+              style={{ width: 22, height: 22, fontSize: 10, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+            >×</button>
+          </div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <span style={{ fontSize: 9, color: '#94A3B8' }}>{child.type}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 9, color: '#94A3B8' }}>span:</span>
+            <select
+              value={child.colSpan || 6}
+              onChange={(e) => updateChild(child.id, { colSpan: parseInt(e.target.value, 10) })}
+              style={{ height: 18, fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            >
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+        </div>
+      ))}
     </div>
   );
 };
@@ -2539,12 +3311,426 @@ const APP_RANGE_OPTS: Array<{ value: RangePreset; label: string }> = [
   { value: 'custom',    label: 'Custom range' },
 ];
 
+// ── Actions list (Phase H) ──────────────────────────────────────────────
+// Right-panel section listing all declared AppAction[] for the app.
+// Each action has a kind, a target object type / utility / workflow / webhook,
+// field mappings, and (for object updates) a record id resolution strategy.
+
+// PostFlightEditor — a compact editor for AppEventAction used inline in the
+// action panel (onSuccess / onError handlers). Covers the common subset of
+// AppEventAction fields. Set type='' to clear.
+const PostFlightEditor: React.FC<{
+  label: string;
+  value: AppEventAction | undefined;
+  onChange: (v: AppEventAction | undefined) => void;
+}> = ({ label, value, onChange }) => {
+  const set = (patch: Partial<AppEventAction>) => {
+    onChange({ ...(value || { type: 'setVariable' as const }), ...patch });
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 6 }}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: '#7C3AED' }}>{label}</div>
+      <select
+        value={value?.type || ''}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (!v) onChange(undefined);
+          else set({ type: v as AppEventAction['type'] });
+        }}
+        style={{ height: 22, padding: '0 4px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+      >
+        <option value="">— none —</option>
+        <option value="setVariable">Set variable</option>
+        <option value="refreshWidget">Refresh widget</option>
+        <option value="openDashboard">Open dashboard</option>
+        <option value="openDashboardModal">Open dashboard (modal)</option>
+        <option value="generateDashboard">Generate dashboard</option>
+        <option value="runAction">Run another action</option>
+      </select>
+      {value?.type === 'setVariable' && (
+        <>
+          <input
+            value={value.variableId || ''}
+            onChange={(e) => set({ variableId: e.target.value })}
+            placeholder="variable id"
+            style={{ height: 20, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+          />
+          <input
+            value={value.valueFrom || ''}
+            onChange={(e) => set({ valueFrom: e.target.value })}
+            placeholder="value from (e.g. response.id)"
+            style={{ height: 20, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+          />
+        </>
+      )}
+      {value?.type === 'refreshWidget' && (
+        <input
+          value={value.targetWidgetId || ''}
+          onChange={(e) => set({ targetWidgetId: e.target.value })}
+          placeholder="widget id to refresh"
+          style={{ height: 20, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+        />
+      )}
+      {(value?.type === 'openDashboard' || value?.type === 'openDashboardModal') && (
+        <>
+          <input
+            value={value.targetDashboardId || ''}
+            onChange={(e) => set({ targetDashboardId: e.target.value })}
+            placeholder="target dashboard id"
+            style={{ height: 20, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+          />
+          <select
+            value={value.displayMode || 'replace'}
+            onChange={(e) => set({ displayMode: e.target.value as AppEventAction['displayMode'] })}
+            style={{ height: 20, padding: '0 4px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+          >
+            <option value="replace">replace</option>
+            <option value="modal">modal</option>
+            <option value="sidepanel">sidepanel</option>
+          </select>
+        </>
+      )}
+      {value?.type === 'generateDashboard' && (
+        <textarea
+          value={value.generatePromptTemplate || ''}
+          onChange={(e) => set({ generatePromptTemplate: e.target.value })}
+          placeholder="prompt template"
+          rows={2}
+          style={{ padding: '4px 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3, resize: 'vertical', fontFamily: 'inherit' }}
+        />
+      )}
+      {value?.type === 'runAction' && (
+        <input
+          value={value.actionId || ''}
+          onChange={(e) => set({ actionId: e.target.value })}
+          placeholder="action id"
+          style={{ height: 20, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+        />
+      )}
+    </div>
+  );
+};
+
+const ActionsList: React.FC<{
+  actions: AppAction[];
+  onChange: (a: AppAction[]) => void;
+  objectTypes: OntologyType[];
+}> = ({ actions, onChange, objectTypes }) => {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const add = () => {
+    const a: AppAction = {
+      id: `act-${Date.now()}`,
+      name: `Action ${actions.length + 1}`,
+      kind: 'createObject',
+      fieldMappings: [],
+    };
+    onChange([...actions, a]);
+    setExpanded(a.id);
+  };
+  const update = (id: string, patch: Partial<AppAction>) => {
+    onChange(actions.map((a) => a.id === id ? { ...a, ...patch } : a));
+  };
+  const remove = (id: string) => {
+    onChange(actions.filter((a) => a.id !== id));
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>
+          Actions
+        </div>
+        <button
+          onClick={add}
+          style={{
+            padding: '3px 10px', fontSize: 11, fontWeight: 500,
+            border: '1px solid #DDD6FE', borderRadius: 4,
+            backgroundColor: '#FAF5FF', color: '#7C3AED', cursor: 'pointer',
+          }}
+        >+ Action</button>
+      </div>
+      {actions.length === 0 && (
+        <div style={{ fontSize: 11, color: '#CBD5E1', padding: '4px 0' }}>
+          No actions declared. Forms and action-buttons need an action to wire to.
+        </div>
+      )}
+      {actions.map((a) => {
+        const open = expanded === a.id;
+        return (
+          <div key={a.id} style={{
+            marginBottom: 6, border: '1px solid #E2E8F0', borderRadius: 5,
+            backgroundColor: '#fff',
+          }}>
+            <div
+              onClick={() => setExpanded(open ? null : a.id)}
+              style={{
+                padding: '6px 10px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6, fontSize: 11,
+              }}
+            >
+              <span style={{ fontWeight: 600, color: '#0D1117' }}>{a.name}</span>
+              <span style={{ fontSize: 9, color: '#64748B', backgroundColor: '#F1F5F9', padding: '1px 6px', borderRadius: 3 }}>
+                {a.kind}
+              </span>
+              <button
+                onClick={(e) => { e.stopPropagation(); remove(a.id); }}
+                style={{ marginLeft: 'auto', width: 20, height: 20, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', color: '#DC2626', fontSize: 11 }}
+              >×</button>
+            </div>
+            {open && (
+              <div style={{ padding: '8px 10px', borderTop: '1px solid #F1F5F9', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <input
+                  value={a.name}
+                  onChange={(e) => update(a.id, { name: e.target.value })}
+                  placeholder="Name"
+                  style={{ height: 24, padding: '0 6px', fontSize: 11, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                />
+                <select
+                  value={a.kind}
+                  onChange={(e) => update(a.id, { kind: e.target.value as ActionKind })}
+                  style={{ height: 24, padding: '0 4px', fontSize: 11, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                >
+                  <option value="createObject">Create object</option>
+                  <option value="updateObject">Update object</option>
+                  <option value="deleteObject">Delete object</option>
+                  <option value="callUtility">Call utility</option>
+                  <option value="runWorkflow">Run workflow</option>
+                  <option value="webhook">Webhook</option>
+                </select>
+                {(a.kind === 'createObject' || a.kind === 'updateObject' || a.kind === 'deleteObject') && (
+                  <select
+                    value={a.objectTypeId || ''}
+                    onChange={(e) => update(a.id, { objectTypeId: e.target.value })}
+                    style={{ height: 24, padding: '0 4px', fontSize: 11, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                  >
+                    <option value="">— pick object type —</option>
+                    {objectTypes.map((ot) => <option key={ot.id} value={ot.id}>{ot.displayName || ot.name}</option>)}
+                  </select>
+                )}
+                {a.kind === 'webhook' && (
+                  <input
+                    value={a.webhookUrl || ''}
+                    onChange={(e) => update(a.id, { webhookUrl: e.target.value })}
+                    placeholder="https://…"
+                    style={{ height: 24, padding: '0 6px', fontSize: 11, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                  />
+                )}
+                {a.kind === 'callUtility' && (
+                  <input
+                    value={a.utilityId || ''}
+                    onChange={(e) => update(a.id, { utilityId: e.target.value })}
+                    placeholder="utility id"
+                    style={{ height: 24, padding: '0 6px', fontSize: 11, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                  />
+                )}
+                {a.kind === 'runWorkflow' && (
+                  <input
+                    value={a.workflowId || ''}
+                    onChange={(e) => update(a.id, { workflowId: e.target.value })}
+                    placeholder="workflow id"
+                    style={{ height: 24, padding: '0 6px', fontSize: 11, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                  />
+                )}
+                {/* Field mappings — formField → targetProperty (+ optional transform) */}
+                <div style={{ fontSize: 10, fontWeight: 600, color: '#7C3AED', marginTop: 4 }}>
+                  FIELD MAPPINGS
+                </div>
+                {(a.fieldMappings || []).map((m, i) => {
+                  const updateMapping = (patch: Partial<typeof m>) => {
+                    const next = [...(a.fieldMappings || [])];
+                    next[i] = { ...m, ...patch };
+                    update(a.id, { fieldMappings: next });
+                  };
+                  return (
+                    <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 3, padding: 4, border: '1px solid #F1F5F9', borderRadius: 3 }}>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <input
+                          value={m.formField}
+                          onChange={(e) => updateMapping({ formField: e.target.value })}
+                          placeholder="form field"
+                          style={{ flex: 1, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                        />
+                        <span style={{ alignSelf: 'center', fontSize: 10, color: '#94A3B8' }}>→</span>
+                        <input
+                          value={m.targetProperty}
+                          onChange={(e) => updateMapping({ targetProperty: e.target.value })}
+                          placeholder="target property"
+                          style={{ flex: 1, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                        />
+                        <button
+                          onClick={() => {
+                            const next = (a.fieldMappings || []).filter((_, idx) => idx !== i);
+                            update(a.id, { fieldMappings: next });
+                          }}
+                          style={{ width: 22, height: 22, fontSize: 10, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+                        >×</button>
+                      </div>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <select
+                          value={m.transform || ''}
+                          onChange={(e) => updateMapping({ transform: (e.target.value || undefined) as typeof m.transform })}
+                          style={{ flex: 1, height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+                          title="Cast incoming form value before submitting"
+                        >
+                          <option value="">no transform (string)</option>
+                          <option value="asNumber">as number</option>
+                          <option value="asDate">as date</option>
+                          <option value="asUuid">as uuid</option>
+                          <option value="literal">literal value</option>
+                        </select>
+                        {m.transform === 'literal' && (
+                          <input
+                            value={m.literalValue || ''}
+                            onChange={(e) => updateMapping({ literalValue: e.target.value })}
+                            placeholder="literal value"
+                            style={{ flex: 1, height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={() => update(a.id, {
+                    fieldMappings: [...(a.fieldMappings || []), { formField: '', targetProperty: '' }],
+                  })}
+                  style={{
+                    padding: '3px 0', fontSize: 10, color: '#7C3AED',
+                    border: '1px dashed #DDD6FE', borderRadius: 3,
+                    backgroundColor: 'transparent', cursor: 'pointer',
+                  }}
+                >+ Mapping</button>
+
+                {/* Confirmation dialog */}
+                <div style={{ fontSize: 10, fontWeight: 600, color: '#7C3AED', marginTop: 8 }}>
+                  CONFIRMATION DIALOG (optional)
+                </div>
+                <input
+                  value={a.confirmation?.title || ''}
+                  onChange={(e) => update(a.id, {
+                    confirmation: { title: e.target.value, body: a.confirmation?.body || '' },
+                  })}
+                  placeholder="dialog title (e.g. Post this transaction?)"
+                  style={{ height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                />
+                <textarea
+                  value={a.confirmation?.body || ''}
+                  onChange={(e) => update(a.id, {
+                    confirmation: { title: a.confirmation?.title || '', body: e.target.value },
+                  })}
+                  placeholder="dialog body (shown beneath the title)"
+                  rows={2}
+                  style={{ padding: '4px 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3, resize: 'vertical', fontFamily: 'inherit' }}
+                />
+                {a.confirmation?.title && (
+                  <button
+                    onClick={() => update(a.id, { confirmation: undefined })}
+                    style={{ alignSelf: 'flex-start', padding: '2px 6px', fontSize: 9, color: '#94A3B8', border: '1px solid #E2E8F0', borderRadius: 3, backgroundColor: 'transparent', cursor: 'pointer' }}
+                  >clear confirmation</button>
+                )}
+
+                {/* Validations */}
+                <div style={{ fontSize: 10, fontWeight: 600, color: '#7C3AED', marginTop: 8 }}>
+                  VALIDATIONS (optional)
+                </div>
+                {(a.validations || []).map((v, i) => {
+                  const updateVal = (patch: Partial<typeof v>) => {
+                    const next = [...(a.validations || [])];
+                    next[i] = { ...v, ...patch };
+                    update(a.id, { validations: next });
+                  };
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: 4 }}>
+                      <input
+                        value={v.field}
+                        onChange={(e) => updateVal({ field: e.target.value })}
+                        placeholder="form field"
+                        style={{ flex: 1, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                      />
+                      <select
+                        value={v.rule}
+                        onChange={(e) => updateVal({ rule: e.target.value as typeof v.rule })}
+                        style={{ width: 70, height: 22, padding: '0 4px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                      >
+                        <option value="required">required</option>
+                        <option value="regex">regex</option>
+                        <option value="min">min</option>
+                        <option value="max">max</option>
+                      </select>
+                      {(v.rule === 'regex' || v.rule === 'min' || v.rule === 'max') && (
+                        <input
+                          value={v.value || ''}
+                          onChange={(e) => updateVal({ value: e.target.value })}
+                          placeholder={v.rule === 'regex' ? '^[a-z]+$' : 'value'}
+                          style={{ width: 70, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+                        />
+                      )}
+                      <button
+                        onClick={() => update(a.id, {
+                          validations: (a.validations || []).filter((_, idx) => idx !== i),
+                        })}
+                        style={{ width: 22, height: 22, fontSize: 10, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+                      >×</button>
+                    </div>
+                  );
+                })}
+                {(a.validations || []).map((v, i) => v.message !== undefined && (
+                  <input
+                    key={`msg-${i}`}
+                    value={v.message || ''}
+                    onChange={(e) => {
+                      const next = [...(a.validations || [])];
+                      next[i] = { ...v, message: e.target.value };
+                      update(a.id, { validations: next });
+                    }}
+                    placeholder={`error message for "${v.field || 'field'}"`}
+                    style={{ height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+                  />
+                ))}
+                <button
+                  onClick={() => update(a.id, {
+                    validations: [...(a.validations || []), { field: '', rule: 'required', message: '' }],
+                  })}
+                  style={{
+                    padding: '3px 0', fontSize: 10, color: '#7C3AED',
+                    border: '1px dashed #DDD6FE', borderRadius: 3,
+                    backgroundColor: 'transparent', cursor: 'pointer',
+                  }}
+                >+ Validation</button>
+
+                {/* Post-flight handlers */}
+                <PostFlightEditor
+                  label="ON SUCCESS"
+                  value={a.onSuccess}
+                  onChange={(v) => update(a.id, { onSuccess: v })}
+                />
+                <PostFlightEditor
+                  label="ON ERROR"
+                  value={a.onError}
+                  onChange={(v) => update(a.id, { onError: v })}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const AppSettingsPanel: React.FC<{
   filterBar: DashboardFilterBar | undefined;
   onChange: (fb: DashboardFilterBar | undefined) => void;
   components: AppComponent[];
   objectTypes: OntologyType[];
-}> = ({ filterBar, onChange, components, objectTypes }) => {
+  kind?: 'dashboard' | 'app';
+  onKindChange?: (k: 'dashboard' | 'app') => void;
+  actions?: AppAction[];
+  onActionsChange?: (a: AppAction[]) => void;
+  events?: AppEvent[];
+  onEventsChange?: (e: AppEvent[]) => void;
+}> = ({ filterBar, onChange, components, objectTypes, kind = 'dashboard', onKindChange, actions, onActionsChange }) => {
   // Use the first widget with an objectTypeId as the source of fields for
   // the time/group field pickers. The user can still type any field name
   // manually if their dashboard mixes object types.
@@ -2580,6 +3766,43 @@ const AppSettingsPanel: React.FC<{
         </div>
       </div>
       <div style={{ flex: 1, padding: '14px', overflowY: 'auto' }}>
+        {/* ── Phase G — kind toggle ── */}
+        {onKindChange && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 8 }}>
+              Lives in
+            </div>
+            <div style={{ display: 'flex', gap: 0, border: '1px solid #E2E8F0', borderRadius: 6, overflow: 'hidden' }}>
+              {(['dashboard', 'app'] as const).map((k) => {
+                const active = kind === k;
+                return (
+                  <button
+                    key={k}
+                    onClick={() => onKindChange(k)}
+                    style={{
+                      flex: 1, padding: '6px 0', border: 'none', borderRight: k === 'dashboard' ? '1px solid #E2E8F0' : 'none',
+                      fontSize: 12, fontWeight: 600,
+                      color: active ? '#fff' : '#475569',
+                      backgroundColor: active ? '#7C3AED' : '#fff',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {k === 'dashboard' ? 'Dashboards' : 'Apps'}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 4 }}>
+              Dashboards are read-only viz. Apps include forms, action buttons, and writes.
+            </div>
+          </div>
+        )}
+
+        {/* ── Phase H — Actions ── */}
+        {actions && onActionsChange && (
+          <ActionsList actions={actions} onChange={onActionsChange} objectTypes={objectTypes} />
+        )}
+
         <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 10 }}>
           Dashboard Filter Bar
         </div>
@@ -2697,6 +3920,9 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   const [components, setComponents] = useState<AppComponent[]>(app.components);
   const [variables, setVariables] = useState<AppVariable[]>(app.variables || []);
   const [filterBar, setFilterBar] = useState<DashboardFilterBar | undefined>(app.filterBar);
+  const [events, setEvents] = useState<AppEvent[]>(app.events || []);
+  const [actions, setActions] = useState<AppAction[]>(app.actions || []);
+  const [appKind, setAppKind] = useState<'dashboard' | 'app'>(app.kind || 'dashboard');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -2720,11 +3946,17 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   const mark = (comps: AppComponent[]) => { setComponents(comps); setDirty(true); };
   const markVars = (vars: AppVariable[]) => { setVariables(vars); setDirty(true); };
   const markFilterBar = (fb: DashboardFilterBar | undefined) => { setFilterBar(fb); setDirty(true); };
+  const markEvents = (evs: AppEvent[]) => { setEvents(evs); setDirty(true); };
+  const markActions = (acts: AppAction[]) => { setActions(acts); setDirty(true); };
+  const markKind = (k: 'dashboard' | 'app') => { setAppKind(k); setDirty(true); };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await updateApp(app.id, { components, variables, filterBar, updatedAt: new Date().toISOString() });
+      await updateApp(app.id, {
+        components, variables, filterBar, events, actions, kind: appKind,
+        updatedAt: new Date().toISOString(),
+      });
       setDirty(false);
       setMode('view');
     } finally { setSaving(false); }
@@ -2743,12 +3975,11 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
     if (mode !== 'edit') setMode('edit');
   };
 
-  const addWidgetFromNL = async (prompt: string, otId: string, forceCode = false) => {
+  const addWidgetFromNL = async (prompt: string, otId: string, genMode: 'widget' | 'code' | 'card' = 'widget') => {
     const ot = objectTypes.find((o) => o.id === otId);
     if (!ot) throw new Error('Object type not found');
     const fields = ot.properties.filter((p) => !p.name.endsWith('[]')).map((p) => p.name);
 
-    // Fetch sample records for context
     let sampleRows: Record<string, unknown>[] = [];
     try {
       const r = await fetch(`${ONTOLOGY_API2}/object-types/${otId}/records`, {
@@ -2758,7 +3989,10 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
       sampleRows = (d.records || []).slice(0, 10);
     } catch { /* ignore */ }
 
-    const endpoint = forceCode ? 'generate-code' : 'generate-widget';
+    const endpoint =
+      genMode === 'code' ? 'generate-code' :
+      genMode === 'card' ? 'generate-composite' :
+      'generate-widget';
     const res = await fetch(`${INFERENCE_API}/infer/${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2768,7 +4002,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
         object_type_name: ot.displayName || ot.name,
         properties: fields,
         sample_rows: sampleRows,
-        force_code: forceCode,
+        force_code: genMode === 'code',
       }),
     });
     if (!res.ok) {
@@ -2904,6 +4138,11 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
                 allComponents={components}
                 onChange={(c) => mark(components.map((x) => x.id === c.id ? c : x))}
                 onDelete={() => del(selectedComp.id)}
+                events={events}
+                onEventsChange={markEvents}
+                actions={actions}
+                variables={variables}
+                appId={app.id}
               />
             )}
             {!selectedComp && (
@@ -2912,6 +4151,12 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
                 onChange={markFilterBar}
                 components={components}
                 objectTypes={objectTypes}
+                kind={appKind}
+                onKindChange={markKind}
+                actions={actions}
+                onActionsChange={markActions}
+                events={events}
+                onEventsChange={markEvents}
               />
             )}
           </>

@@ -90,12 +90,29 @@ async function fetchLiveContext(currentPage: string) {
 }
 
 // ── Action types ─────────────────────────────────────────────────────────────
+type NexusActionType =
+  | 'create_connector'
+  | 'create_object_type'
+  | 'create_pipeline'
+  | 'create_logic'
+  | 'run_pipeline'
+  | 'create_ontology_link'
+  | 'ingest_records'
+  | 'create_app'
+  | 'create_app_action';
+
 interface NexusAction {
-  type: 'create_connector' | 'create_object_type' | 'create_pipeline' | 'create_logic' | 'run_pipeline';
+  type: NexusActionType;
   name: string;
   summary: string[];
   payload: Record<string, unknown>;
 }
+
+const ALL_ACTION_TYPES: NexusActionType[] = [
+  'create_connector', 'create_object_type', 'create_pipeline', 'create_logic',
+  'run_pipeline', 'create_ontology_link', 'ingest_records', 'create_app',
+  'create_app_action',
+];
 
 const ACTION_LABELS: Record<string, string> = {
   create_connector: 'Create Connector',
@@ -103,6 +120,10 @@ const ACTION_LABELS: Record<string, string> = {
   create_pipeline: 'Create Pipeline',
   create_logic: 'Create Logic Function',
   run_pipeline: 'Run Pipeline',
+  create_ontology_link: 'Create Ontology Link',
+  ingest_records: 'Ingest Records',
+  create_app: 'Create App / Dashboard',
+  create_app_action: 'Add Action to App',
 };
 
 const ACTION_ICONS: Record<string, React.ReactNode> = {
@@ -111,6 +132,10 @@ const ACTION_ICONS: Record<string, React.ReactNode> = {
   create_pipeline: <GitBranch size={14} />,
   create_logic: <Code size={14} />,
   run_pipeline: <Play size={14} />,
+  create_ontology_link: <GitBranch size={14} />,
+  ingest_records: <Database size={14} />,
+  create_app: <Layers size={14} />,
+  create_app_action: <Code size={14} />,
 };
 
 function ActionConfirmCard({
@@ -240,12 +265,12 @@ function Markdown({ text }: { text: string }) {
       if (!isAction) {
         try {
           const obj = JSON.parse(codeText);
-          if (obj?.type && obj?.summary && ['create_pipeline', 'create_logic', 'run_pipeline'].includes(obj.type)) {
+          if (obj?.type && obj?.summary && ALL_ACTION_TYPES.includes(obj.type)) {
             isAction = true;
           }
         } catch {
           // Try to find action JSON even if there's extra whitespace/content
-          if (codeText.includes('"create_pipeline"') || codeText.includes('"create_logic"') || codeText.includes('"run_pipeline"')) {
+          if (ALL_ACTION_TYPES.some((t) => codeText.includes(`"${t}"`))) {
             const found = extractAction(codeText);
             if (found) isAction = true;
           }
@@ -264,7 +289,7 @@ function Markdown({ text }: { text: string }) {
       }
     } else if (line === '') {
       if (i > 0 && lines[i - 1] !== '') elements.push(<div key={i} style={{ height: 6 }} />);
-    } else if (line.trimStart().startsWith('{"type"') && (line.includes('"create_pipeline"') || line.includes('"create_logic"') || line.includes('"run_pipeline"'))) {
+    } else if (line.trimStart().startsWith('{"type"') && ALL_ACTION_TYPES.some((t) => line.includes(`"${t}"`))) {
       // Bare action JSON line — skip rendering, handled by ActionConfirmCard
     } else {
       elements.push(<div key={i} style={{ marginBottom: 2 }}>{inlineFormat(line)}</div>);
@@ -278,7 +303,7 @@ function Markdown({ text }: { text: string }) {
 function extractAction(text: string): NexusAction | null {
   // Find the start of an action-shaped JSON anywhere in the text
   const needle = '"type"';
-  const actionTypes = ['create_connector', 'create_object_type', 'create_pipeline', 'create_logic', 'run_pipeline'];
+  const actionTypes = ALL_ACTION_TYPES;
   let searchFrom = 0;
   while (searchFrom < text.length) {
     const idx = text.indexOf(needle, searchFrom);
@@ -482,6 +507,76 @@ const NexusAssistant: React.FC = () => {
         const pid = action.payload.pipeline_id as string;
         url = `${PIPELINE_URL}/pipelines/${pid}/run`;
         body = {};
+      } else if (action.type === 'create_ontology_link') {
+        url = `${ONTOLOGY_URL}/object-types/links`;
+        const p = action.payload;
+        body = {
+          source_object_type_id: p.source_object_type_id,
+          target_object_type_id: p.target_object_type_id,
+          relationship_type: p.relationship_type || 'belongs_to',
+          join_keys: [{
+            source_field: p.source_field || '',
+            target_field: p.target_field || 'id',
+          }],
+          label: p.label || '',
+          is_inferred: false,
+        };
+      } else if (action.type === 'ingest_records') {
+        const otId = action.payload.object_type_id as string;
+        url = `${ONTOLOGY_URL}/object-types/${otId}/records/ingest`;
+        body = {
+          records: action.payload.records || [],
+          pk_field: action.payload.pk_field || 'id',
+          pipeline_id: 'assistant-ingest',
+        };
+      } else if (action.type === 'create_app') {
+        url = `${ONTOLOGY_URL}/apps`;
+        const p = action.payload;
+        // Fall back to action.name when the LLM puts it at the top level
+        // instead of in payload — common mistake since the outer card label
+        // and the app name are usually the same string.
+        const appName = (p.name as string) || action.name;
+        if (!appName) {
+          throw new Error('App name is required (set "name" inside the payload).');
+        }
+        body = {
+          name: appName,
+          description: p.description || '',
+          icon: p.icon || '',
+          object_type_ids: p.object_type_ids || [],
+          components: p.components || [],
+          settings: p.settings || {},
+          kind: p.kind || 'dashboard',
+        };
+      } else if (action.type === 'create_app_action') {
+        // PUT /apps/{id} merging the new action into settings.actions[].
+        const appId = action.payload.app_id as string;
+        const newAction = action.payload.action as Record<string, unknown>;
+        // Fetch the current app, append, PUT.
+        const cur = await fetch(`${ONTOLOGY_URL}/apps/${appId}`, { headers });
+        if (!cur.ok) throw new Error(`Could not fetch app ${appId}: ${cur.status}`);
+        const app = await cur.json();
+        const settings = (app.settings as Record<string, unknown>) || {};
+        const actions = ((settings.actions as Record<string, unknown>[]) || []).filter(
+          (a) => a.id !== newAction.id,
+        );
+        const nextSettings = { ...settings, actions: [...actions, newAction] };
+        const putResp = await fetch(`${ONTOLOGY_URL}/apps/${appId}`, {
+          method: 'PUT', headers, body: JSON.stringify({ settings: nextSettings }),
+        });
+        if (!putResp.ok) {
+          throw new Error(`${putResp.status}: ${(await putResp.text()).slice(0, 200)}`);
+        }
+        setActionStatuses(s => ({ ...s, [msgId]: 'done' }));
+        if (activeId) {
+          addMessage(activeId, {
+            id: uuid(),
+            role: 'assistant',
+            content: `Added action **${(newAction.name as string) || newAction.id}** to app \`${appId}\`.`,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return;
       }
 
       const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });

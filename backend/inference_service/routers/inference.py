@@ -160,6 +160,91 @@ async def generate_widget(req: GenerateWidgetRequest):
         raise HTTPException(status_code=500, detail=f"Widget generation failed: {e}")
 
 
+class GenerateCompositeRequest(BaseModel):
+    description: str
+    object_type_id: str
+    object_type_name: str
+    properties: list[str] = []
+    sample_rows: list[dict] = []
+
+
+@router.post("/generate-composite")
+async def generate_composite(req: GenerateCompositeRequest):
+    """
+    Generate a composite "card" widget from a natural language description.
+    Returns ONE AppComponent of type='composite' with 2-5 children.
+    """
+    try:
+        return client.generate_composite(
+            description=req.description,
+            object_type_id=req.object_type_id,
+            object_type_name=req.object_type_name,
+            properties=req.properties,
+            sample_rows=req.sample_rows,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Composite generation failed: {e}")
+
+
+class GenerateDashboardRequest(BaseModel):
+    prompt: str
+    available_object_type_ids: list[str] = []
+    source_context: dict | None = None
+
+
+@router.post("/generate-dashboard")
+async def generate_dashboard(
+    req: GenerateDashboardRequest,
+    x_tenant_id: str = Header(default="tenant-001"),
+):
+    """
+    Generate an ephemeral drill-down dashboard from a click context.
+    Fetches schema + sample for the candidate object types, calls Claude,
+    returns a NexusApp-shaped JSON. The frontend pushes the result onto
+    its dashboard stack (and auto-caches it via the Phase E persistence).
+    """
+    headers = {"x-tenant-id": x_tenant_id}
+    available: list[dict] = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as hc:
+            resp = await hc.get(f"{ONTOLOGY_SERVICE_URL}/object-types", headers=headers)
+            if resp.is_success:
+                payload = resp.json()
+                ots = payload.get("object_types") if isinstance(payload, dict) else payload
+                wanted = set(req.available_object_type_ids or [])
+                for ot in (ots or []):
+                    if wanted and ot.get("id") not in wanted:
+                        continue
+                    enriched = dict(ot)
+                    try:
+                        rr = await hc.get(
+                            f"{ONTOLOGY_SERVICE_URL}/object-types/{ot['id']}/records?limit=5",
+                            headers=headers,
+                        )
+                        if rr.is_success:
+                            enriched["sample_records"] = rr.json().get("records", [])
+                    except Exception:
+                        pass
+                    available.append(enriched)
+                    if len(available) >= 6:
+                        break
+    except Exception:
+        pass
+
+    try:
+        return client.generate_dashboard(
+            prompt_text=req.prompt,
+            available_object_types=available,
+            source_context=req.source_context or {},
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Dashboard generation failed: {e}")
+
+
 @router.post("/generate-code")
 async def generate_code_widget(req: GenerateWidgetRequest):
     """
@@ -306,6 +391,19 @@ Supported action types:
   IMPORTANT: Include real connector IDs and object type IDs from the live context, not just names!
 - `create_logic` — payload: `{"description": "...", "object_types": [{"id":"<real-id>","name":"<name>"}], "existing_functions": [...]}`
 - `run_pipeline` — payload: `{"pipeline_id": "..."}`
+- `create_ontology_link` — payload: `{"source_object_type_id":"<id>","target_object_type_id":"<id>","relationship_type":"belongs_to|has_many|has_one|many_to_many","source_field":"foreign_key_field","target_field":"id","label":"posts to"}`
+  Use this to wire two existing object types together so the Graph Explorer and chat-with-data can traverse the relationship. `source_field` is the field on the SOURCE record that holds the foreign key; `target_field` is usually `id`. Use real object_type IDs from the live context.
+- `ingest_records` — payload: `{"object_type_id":"<id>","records":[{...},{...}],"pk_field":"id"}`
+  Bulk-insert records into an existing object type. The `records` array must be valid records matching the object type's properties. Use this for seeding sample data, importing from a CSV the user pasted, or backfilling.
+- `create_app` — payload **MUST include `name`** at the top of the payload (NOT only on the outer block). Full shape:
+  `{"name":"<app name>","description":"...","kind":"dashboard"|"app","object_type_ids":["<id>"],"components":[<widget>],"settings":{"actions":[],"events":[],"variables":[],"filter_bar":{}}}`
+  Creates a dashboard (kind='dashboard') or input app (kind='app') in one shot. `components` is a flat array of widgets, each with `{id, type, title, objectTypeId, gridX, gridY, colSpan, gridH, ...type-specific fields}`. Widget types: `metric-card`, `data-table`, `bar-chart`, `line-chart`, `pie-chart`, `area-chart`, `kpi-banner`, `text-block`, `record-creator`, `object-editor`, `action-button`, `form`, `composite`. For action widgets bind via `actionId` referencing a `settings.actions[]` entry. For drill-down on a widget, add an `events[]` entry to settings: `{id, sourceWidgetId, trigger:'onKpiClick'|'onRowClick'|..., actions:[{type:'openDashboard', targetDashboardId, displayMode:'replace'|'modal'|'sidepanel', contextBindings:[]}]}`.
+  Example for an input app with a record-creator + a typed action (a Loan Application Form writing to the Transaction object type):
+  ```nexus-action
+  {"type":"create_app","name":"Loan Application Form","summary":["Form app for new loan transactions","Writes directly to Transaction ontology","Fields: account_id, counterparty_id, amount, currency, direction, date, description, reference, status"],"payload":{"name":"Loan Application Form","description":"Form-based app to submit new loan transactions.","kind":"app","object_type_ids":["<Transaction-id>"],"components":[{"id":"rc-1","type":"record-creator","title":"New loan transaction","actionId":"act-create-loan-tx","colSpan":8,"gridX":0,"gridY":0,"gridH":12,"fields":[{"name":"account_id","label":"Account ID","type":"text"},{"name":"counterparty_id","label":"Counterparty ID","type":"text"},{"name":"amount","label":"Amount","type":"number"},{"name":"currency","label":"Currency","type":"text"},{"name":"direction","label":"Direction","type":"text"},{"name":"date","label":"Date","type":"text"},{"name":"description","label":"Description","type":"textarea"},{"name":"reference","label":"Reference","type":"text"},{"name":"status","label":"Status","type":"text"}]}],"settings":{"actions":[{"id":"act-create-loan-tx","name":"Create loan transaction","kind":"createObject","objectTypeId":"<Transaction-id>","fieldMappings":[{"formField":"account_id","targetProperty":"account_id","transform":"asUuid"},{"formField":"counterparty_id","targetProperty":"counterparty_id","transform":"asUuid"},{"formField":"amount","targetProperty":"amount","transform":"asNumber"},{"formField":"currency","targetProperty":"currency"},{"formField":"direction","targetProperty":"direction"},{"formField":"date","targetProperty":"date","transform":"asDate"},{"formField":"description","targetProperty":"description"},{"formField":"reference","targetProperty":"reference"},{"formField":"status","targetProperty":"status"}],"validations":[{"field":"account_id","rule":"required"},{"field":"amount","rule":"required"}]}]}}}
+  ```
+- `create_app_action` — payload: `{"app_id":"<id>","action":{"id":"act-...","name":"...","kind":"createObject","objectTypeId":"<id>","fieldMappings":[{"formField":"x","targetProperty":"y","transform":"asNumber"|"asDate"|"asUuid"|"literal","literalValue":"..."}],"validations":[{"field":"x","rule":"required"|"regex"|"min"|"max","value":"...","message":"..."}],"confirmation":{"title":"...","body":"..."},"onSuccess":{"type":"refreshWidget","targetWidgetId":"..."},"onError":{...}}}`
+  Adds a typed action (mutation) to an EXISTING app. The action becomes available for record-creator / object-editor / action-button widgets in that app. Use real `app_id` and `objectTypeId` from the live context.
 
 Rules for action blocks:
 1. Show a brief plan (bullet list) BEFORE the action block.

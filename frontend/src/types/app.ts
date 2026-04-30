@@ -22,18 +22,110 @@ export interface AppVariable {
   defaultValue: any;
 }
 
+// Drill-down context binding — maps a value from the click event to a
+// variable or filter in the target dashboard. `sourceFrom` says where the
+// value comes from in the click payload; `apply` says what to do with it.
+export interface ContextBinding {
+  sourceFrom: 'clickedValue' | 'clickedField' | 'clickedRow' | 'rowField' | 'literal';
+  rowField?: string;            // when sourceFrom='rowField'
+  literal?: string;             // when sourceFrom='literal'
+  apply: 'setVariable' | 'addFilter';
+  targetVariableId?: string;    // when apply='setVariable'
+  filterField?: string;         // when apply='addFilter'
+  filterOp?: 'eq' | 'neq' | 'in';
+}
+
+export type DrillDisplayMode = 'replace' | 'modal' | 'sidepanel';
+
 export interface AppEventAction {
-  type: 'setVariable' | 'refreshWidget';
+  type:
+    | 'setVariable'
+    | 'refreshWidget'
+    // Phase D — saved drill target.
+    | 'openDashboard'
+    | 'openDashboardModal'
+    // Phase E — LLM-generated drill target.
+    | 'generateDashboard'
+    // Phase H — fire a typed action against the ontology.
+    | 'runAction';
   variableId?: string;
   valueFrom?: string;
   targetWidgetId?: string;
+  // Drill-down fields:
+  targetDashboardId?: string;
+  generatePromptTemplate?: string;
+  generateObjectTypeIds?: string[];
+  contextBindings?: ContextBinding[];
+  displayMode?: DrillDisplayMode;
+  // runAction:
+  actionId?: string;
 }
 
 export interface AppEvent {
   id: string;
   sourceWidgetId: string;
-  trigger: 'onClick' | 'onBarClick' | 'onRowSelect' | 'onChange' | 'onSubmit' | 'onDateChange';
+  trigger:
+    | 'onClick'
+    | 'onBarClick'
+    | 'onRowSelect'
+    | 'onRowClick'
+    | 'onCellClick'
+    | 'onKpiClick'
+    | 'onChange'
+    | 'onSubmit'
+    | 'onDateChange';
   actions: AppEventAction[];
+}
+
+// ── Action layer (Phase H) ──────────────────────────────────────────────
+// Typed mutations declared at the dashboard level. Form/action-button/etc.
+// widgets reference an action by id; the action knows how to translate its
+// inputs into an ontology mutation (or webhook/utility/workflow call).
+
+export type ActionKind =
+  | 'createObject'
+  | 'updateObject'
+  | 'deleteObject'
+  | 'callUtility'
+  | 'runWorkflow'
+  | 'webhook';
+
+export interface ActionFieldMapping {
+  formField: string;           // input name from the calling widget
+  targetProperty: string;      // ontology property name (or workflow input)
+  transform?: 'asNumber' | 'asDate' | 'asUuid' | 'literal';
+  literalValue?: string;
+}
+
+export interface ActionValidationRule {
+  field: string;
+  rule: 'required' | 'regex' | 'min' | 'max';
+  value?: string;
+  message?: string;
+}
+
+export interface AppAction {
+  id: string;
+  name: string;
+  kind: ActionKind;
+  // Object mutations (createObject / updateObject / deleteObject):
+  objectTypeId?: string;
+  fieldMappings?: ActionFieldMapping[];
+  recordIdSource?: 'formField' | 'variable' | 'selectedRow';
+  recordIdField?: string;
+  // callUtility:
+  utilityId?: string;
+  // runWorkflow:
+  workflowId?: string;
+  // webhook:
+  webhookUrl?: string;
+  webhookMethod?: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  // Pre-flight:
+  validations?: ActionValidationRule[];
+  confirmation?: { title: string; body: string };
+  // Post-flight:
+  onSuccess?: AppEventAction;
+  onError?: AppEventAction;
 }
 
 // Time-range presets shared by widget xAxisRange and the dashboard filter bar.
@@ -79,7 +171,19 @@ export type ComponentType =
   | 'utility-output'
   | 'dropdown-filter'
   | 'form'
-  | 'object-table';
+  | 'object-table'
+  // Composite — recursive container holding child widgets in a nested grid.
+  | 'composite'
+  // Action widgets (Phase I) — interactive widgets that mutate the ontology
+  // via the AppAction layer rather than rendering data.
+  | 'action-button'
+  | 'object-editor'
+  | 'record-creator'
+  | 'approval-queue';
+
+// Composite layout templates. Sugar over the inner 12-col grid — sets
+// sensible colSpan defaults on children when they don't specify one.
+export type CompositeLayout = 'grid' | 'banner-main' | 'hero-sidebar' | 'split';
 
 export interface AppComponent {
   id: string;
@@ -159,10 +263,44 @@ export interface AppComponent {
   // dropdown-filter config
   variableId?: string;
   options?: string[];
-  // form config
-  fields?: { name: string; label: string; type: 'text' | 'number' | 'boolean' | 'textarea' }[];
+  // form config — `options` only used when type === 'select'
+  fields?: { name: string; label: string; type: 'text' | 'number' | 'boolean' | 'textarea' | 'select' | 'date'; options?: string[] }[];
   actionName?: string;
+  // Phase H — typed action reference (replaces actionName when set).
+  // The widget resolves this against NexusApp.actions[] to find an AppAction.
+  actionId?: string;
+  // Phase H — for object-editor: which record to edit (id source).
+  recordIdSource?: 'variable' | 'literal' | 'crossFilter';
+  recordIdValue?: string;
+  // Phase I — record-creator wizard step config.
+  steps?: Array<{ title: string; fields: string[] }>;
+  // Phase I — approval-queue config.
+  approveActionId?: string;
+  rejectActionId?: string;
   // object-table config (reuses objectTypeId, columns)
+
+  // ── Composite widget ──────────────────────────────────────────────────
+  // Recursive container — children render through the same WidgetRenderer
+  // inside a nested 12-col grid. Inheritance flags propagate the composite's
+  // objectTypeId / filters down to children that don't set their own.
+  children?: AppComponent[];
+  innerGridCols?: number;          // default 12
+  cardLayout?: CompositeLayout;    // default 'grid'
+  cardStyle?: {
+    background?: string;
+    border?: string;
+    padding?: number;
+    titleStyle?: 'bold' | 'subtle' | 'hidden';
+  };
+  shareDataSource?: boolean;       // children inherit objectTypeId
+  shareFilters?: boolean;          // children inherit filters
+
+  // ── Drill-down (Phase D/F) ────────────────────────────────────────────
+  // Configured per-widget via the editor; the renderer resolves matching
+  // AppEvent rows on the dashboard and dispatches them when widgets fire
+  // their click events. Stored both on the widget (for editor convenience)
+  // and on NexusApp.events[] (for the runtime dispatcher).
+  drillEnabled?: boolean;
 }
 
 export interface NexusApp {
@@ -178,4 +316,20 @@ export interface NexusApp {
   variables?: AppVariable[];
   events?: AppEvent[];
   filterBar?: DashboardFilterBar;
+  // Phase G — distinguishes read-only viz dashboards from interactive
+  // input/action apps. List pages filter by this; editor surfaces a
+  // kind-aware widget palette. Defaults to 'dashboard' for migration.
+  kind?: 'dashboard' | 'app';
+  // Phase H — typed action declarations. Form / action-button / etc.
+  // widgets reference these by id.
+  actions?: AppAction[];
+  // Phase E — generated dashboards persist with an expiry; user can
+  // promote them via "Save permanently".
+  isEphemeral?: boolean;
+  parentAppId?: string;
+  generatedFromWidgetId?: string;
+  expiresAt?: string;
+  // Phase J — system-managed dashboards (the home pages) can't be deleted.
+  isSystem?: boolean;
+  slug?: string;
 }
