@@ -1349,18 +1349,34 @@ const ConfigPanel: React.FC<{
   // Sensor / dynamic-schema OTs frequently have an empty properties list; in
   // that case, infer fields from a sample of records so the X/Y axis pickers,
   // groupBy / labelField selectors, etc. can offer something to choose.
+  //
+  // We MERGE declared + record-inferred fields rather than picking one path —
+  // platform-internal stamps like `_pipeline_run_at` and `_pipeline_id` are
+  // added by the ingest pipeline but aren't declared in the ontology, so the
+  // pure-schema view would hide them. Schema-declared fields go first so the
+  // user's data model is visually prioritised; system/runtime extras follow.
   const sampleRecords = useRecordsForFilter(comp.objectTypeId);
-  const inferredFromRecords = React.useMemo(() => {
-    if (declaredFields.length > 0) return declaredFields;
-    if (!sampleRecords.length) return [];
-    const seen = new Set<string>();
+  const fields = React.useMemo(() => {
+    if (declaredFields.length === 0 && !sampleRecords.length) return [] as string[];
+    const declaredSet = new Set(declaredFields);
+    const extras: string[] = [];
+    const seenExtras = new Set<string>();
     for (const r of sampleRecords.slice(0, 50)) {
-      Object.keys(r || {}).forEach((k) => { if (!k.endsWith('[]')) seen.add(k); });
+      for (const k of Object.keys(r || {})) {
+        if (k.endsWith('[]')) continue;
+        if (declaredSet.has(k) || seenExtras.has(k)) continue;
+        seenExtras.add(k);
+        extras.push(k);
+      }
     }
-    return Array.from(seen);
+    // Sort extras: user-ish fields first, underscored system fields last.
+    extras.sort((a, b) => {
+      const aSys = a.startsWith('_'); const bSys = b.startsWith('_');
+      if (aSys !== bSys) return aSys ? 1 : -1;
+      return a.localeCompare(b);
+    });
+    return [...declaredFields, ...extras];
   }, [declaredFields, sampleRecords]);
-
-  const fields = declaredFields.length > 0 ? declaredFields : inferredFromRecords;
 
   // EAV / long-format detection on the loaded sample. When present, the
   // editor surfaces a friendly "Metric" picker that auto-creates the
