@@ -2794,6 +2794,7 @@ const ComponentRendererNoRecords: React.FC<{ comp: AppComponent; allComponents?:
     case 'object-editor': return <ObjectEditorWidget comp={comp} />;
     case 'record-creator': return <RecordCreatorWidget comp={comp} />;
     case 'approval-queue': return <ApprovalQueueWidget comp={comp} />;
+    case 'file-upload': return <FileUploadWidget comp={comp} />;
     default: return null;
   }
 };
@@ -2938,6 +2939,165 @@ const ApprovalQueueWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => (
   <ApprovalQueueWidgetImpl comp={comp} />
 );
 
+// FileUploadWidget — Phase 8.
+// Drop on canvas. User picks a file → POST /documents/upload → POST
+// /infer/extract-from-document with the configured schema → on response,
+// each extracted field is written to the mapped app variable so sibling
+// form widgets can autofill via their inputBindings.
+const FileUploadWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const { setVariable, getVariable } = useAppVariables();
+  const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<'idle' | 'uploading' | 'extracting' | 'done' | 'error'>('idle');
+  const [docId, setDocId] = useState<string | null>(null);
+  const [extracted, setExtracted] = useState<Record<string, unknown>>({});
+  const [error, setError] = useState<string>('');
+
+  const onPick = async (file: File) => {
+    if (!file) return;
+    setBusy(true); setError(''); setExtracted({});
+    setPhase('uploading');
+
+    try {
+      // 1. Upload the file as a Document record.
+      const fd = new FormData();
+      fd.append('file', file);
+      if (comp.linkedRecordType) fd.append('linked_record_type', comp.linkedRecordType);
+      if (comp.linkedRecordVariableId) {
+        const linkedId = getVariable(comp.linkedRecordVariableId);
+        if (linkedId) fd.append('linked_record_id', String(linkedId));
+      }
+      const headers: Record<string, string> = { 'x-tenant-id': getTenantId() };
+      const token = getAccessToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const upResp = await fetch(`${ONTOLOGY_API}/documents/upload`, {
+        method: 'POST', headers, body: fd,
+      });
+      if (!upResp.ok) {
+        throw new Error(`Upload failed (${upResp.status})`);
+      }
+      const upJson = await upResp.json();
+      const document_id: string = upJson.document?.id;
+      setDocId(document_id);
+
+      // No extraction schema configured → just store the doc and stop.
+      const schema = comp.extractionSchema || [];
+      if (schema.length === 0) {
+        setPhase('done');
+        return;
+      }
+
+      // 2. Vision extraction.
+      setPhase('extracting');
+      const extractResp = await fetch(`${INFERENCE_API}/infer/extract-from-document`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          document_id,
+          schema,
+          document_kind: comp.documentKind || '',
+        }),
+      });
+      if (!extractResp.ok) {
+        const text = await extractResp.text().catch(() => '');
+        throw new Error(`Extraction failed: ${extractResp.status} ${text.slice(0, 120)}`);
+      }
+      const ex = await extractResp.json();
+      const extractedFields: Record<string, unknown> = ex.extracted || {};
+      setExtracted(extractedFields);
+
+      // 3. Push extracted values into the configured app variables.
+      const map = comp.fieldVariableMap || {};
+      for (const [fieldName, varId] of Object.entries(map)) {
+        if (!varId) continue;
+        const value = extractedFields[fieldName];
+        if (value !== undefined) setVariable(varId, value);
+      }
+
+      setPhase('done');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase('error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{
+      backgroundColor: '#fff', border: '1px solid #E2E8F0', borderRadius: 8,
+      padding: 16, height: '100%', display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      {comp.title && (
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#0D1117' }}>{comp.title}</div>
+      )}
+      <label style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', minHeight: 80,
+        border: '2px dashed #DDD6FE', borderRadius: 6,
+        backgroundColor: busy ? '#F5F3FF' : '#FAFBFE',
+        cursor: busy ? 'default' : 'pointer', padding: 12,
+        transition: 'background-color 80ms',
+      }}>
+        <input
+          type="file"
+          disabled={busy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onPick(f);
+          }}
+          style={{ display: 'none' }}
+        />
+        {phase === 'idle' && (
+          <>
+            <div style={{ fontSize: 12, color: '#7C3AED', fontWeight: 500 }}>Click or drop a file here</div>
+            <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 4 }}>
+              {comp.documentKind ? `Expected: ${comp.documentKind}` : 'PDF, PNG, JPEG'}
+            </div>
+          </>
+        )}
+        {phase === 'uploading' && (
+          <div style={{ fontSize: 11, color: '#7C3AED' }}>Uploading…</div>
+        )}
+        {phase === 'extracting' && (
+          <>
+            <div style={{ fontSize: 11, color: '#7C3AED' }}>Extracting fields with Claude vision…</div>
+            <div style={{ fontSize: 9, color: '#94A3B8', marginTop: 4 }}>This usually takes 3–8s</div>
+          </>
+        )}
+        {phase === 'done' && (
+          <>
+            <div style={{ fontSize: 11, color: '#16A34A', fontWeight: 500 }}>
+              ✓ {Object.keys(extracted).length > 0
+                  ? `Extracted ${Object.keys(extracted).length} fields — form prefilled`
+                  : 'Uploaded'}
+            </div>
+            {docId && (
+              <div style={{ fontSize: 9, color: '#94A3B8', marginTop: 4, fontFamily: 'monospace' }}>
+                doc id: {docId.slice(0, 8)}…
+              </div>
+            )}
+          </>
+        )}
+        {phase === 'error' && (
+          <div style={{ fontSize: 11, color: '#DC2626' }}>{error || 'Failed'}</div>
+        )}
+      </label>
+      {phase === 'done' && Object.keys(extracted).length > 0 && (
+        <div style={{ fontSize: 10, color: '#475569', backgroundColor: '#F8FAFC', padding: 8, borderRadius: 4 }}>
+          {Object.entries(extracted).slice(0, 6).map(([k, v]) => (
+            <div key={k} style={{ display: 'flex', gap: 6 }}>
+              <span style={{ color: '#94A3B8', minWidth: 90 }}>{k}:</span>
+              <span style={{ color: '#0D1117', flex: 1, wordBreak: 'break-word' }}>
+                {v == null || v === '' ? <em style={{ color: '#CBD5E1' }}>not found</em> : String(v)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; allComponents?: AppComponent[] }> = ({ comp, allComponents }) => {
   const { records: rawRecords, loading, total: recordsTotal } = useRecords(comp.objectTypeId);
   const { filter: crossFilter } = useContext(CrossFilterContext);
@@ -2992,6 +3152,7 @@ const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; 
     case 'object-editor': return <ObjectEditorWidget comp={comp} />;
     case 'record-creator': return <RecordCreatorWidget comp={comp} />;
     case 'approval-queue': return <ApprovalQueueWidget comp={comp} />;
+    case 'file-upload': return <FileUploadWidget comp={comp} />;
     default: return null;
   }
 };

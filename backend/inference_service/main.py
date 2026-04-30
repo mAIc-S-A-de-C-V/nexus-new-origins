@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import inference
 from routers import scanner
+from routers import documents
 
 # Environment variables used by this service:
 #   ANTHROPIC_API_KEY      — required for all AI inference endpoints
@@ -32,6 +33,7 @@ from fastapi import Depends as _Dep
 from shared.auth_middleware import require_auth as _require_auth
 app.include_router(inference.router, prefix="/infer", tags=["inference"], dependencies=[_Dep(_require_auth)])
 app.include_router(scanner.router, prefix="/infer", tags=["scanner"], dependencies=[_Dep(_require_auth)])
+app.include_router(documents.router, prefix="/infer", tags=["documents"], dependencies=[_Dep(_require_auth)])
 
 
 @app.get("/health")

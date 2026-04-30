@@ -139,6 +139,12 @@ services:
       - ROLLUP_PROMOTE_WINDOW_SECONDS=600
       - ROLLUP_REFRESH_INTERVAL_SECONDS=120
       - CONNECTOR_SERVICE_URL=http://connector-service:8001
+      - INFERENCE_SERVICE_URL=http://inference-service:8003
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_admin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_pass}
+      - MINIO_BUCKET=nexus-documents
+      - MINIO_PUBLIC_BASE=http://localhost:9100
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
     depends_on:
       postgres:
@@ -628,6 +634,29 @@ services:
     networks:
       - nexus-net
 
+  # ─── Object storage (MinIO, S3-compatible) ──────────────────────────────────
+  # Used for file uploads on the Apps system (receipts, invoices, etc.).
+  # Console at http://localhost:9101 (login: minio_admin / minio_pass).
+  # S3 API at http://localhost:9100. Internal: minio:9000 (default port).
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_pass}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexus-net
+
   # ─── Backup ─────────────────────────────────────────────────────────────────
   backup-service:
     image: postgres:16-alpine
@@ -717,6 +746,7 @@ volumes:
   redis_data:
   nexus_backups:
   sepsis-data:
+  minio_data:
 
 networks:
   nexus-net:

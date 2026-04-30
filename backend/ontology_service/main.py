@@ -5,7 +5,7 @@ from fastapi import FastAPI, Depends
 from fastapi import Request as _Request
 from fastapi.responses import Response as _Response
 from fastapi.middleware.cors import CORSMiddleware
-from routers import ontology, records, apps, actions, graph, notebooks
+from routers import ontology, records, apps, actions, graph, notebooks, documents
 from database import init_db
 from shared.auth_middleware import require_auth
 from shared.nexus_logging import configure_logging
@@ -82,6 +82,7 @@ app.include_router(apps.router, prefix="/apps", tags=["apps"], dependencies=[Dep
 app.include_router(actions.router, prefix="/actions", tags=["actions"], dependencies=[Depends(require_auth)])
 app.include_router(graph.router, prefix="/graph", tags=["graph"], dependencies=[Depends(require_auth)])
 app.include_router(notebooks.router, prefix="/notebooks", tags=["notebooks"], dependencies=[Depends(require_auth)])
+app.include_router(documents.router, prefix="/documents", tags=["documents"], dependencies=[Depends(require_auth)])
 
 from fastapi import Request as _RequestSize
 from fastapi.responses import JSONResponse as _JSONResponse

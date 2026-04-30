@@ -134,6 +134,7 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'object-editor',   label: 'Object Editor',   icon: <Edit3 size={13} />,          defaultColSpan: 6,  description: 'Read+write form for a single record' },
   { type: 'record-creator',  label: 'Record Creator',  icon: <FilePlus size={13} />,       defaultColSpan: 6,  description: 'Multi-step wizard to create records' },
   { type: 'approval-queue',  label: 'Approval Queue',  icon: <CheckSquare size={13} />,    defaultColSpan: 12, description: 'Table with per-row approve/reject buttons' },
+  { type: 'file-upload',     label: 'File Upload',     icon: <FilePlus size={13} />,       defaultColSpan: 6,  description: 'Upload a doc, OCR/vision-extract, autofill the form' },
 ];
 
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -1275,6 +1276,95 @@ const StepsEditor: React.FC<{
   );
 };
 
+// FileUploadSchemaEditor — Phase 8. Lets the user declare which fields the
+// vision model should extract from the uploaded document, and which app
+// variable each extracted field should be written to (so sibling form
+// widgets autofill via their existing inputBindings).
+type ExtractionField = { name: string; description?: string; type?: 'string' | 'number' | 'date' | 'boolean' };
+const FileUploadSchemaEditor: React.FC<{
+  schema: ExtractionField[];
+  fieldVariableMap: Record<string, string>;
+  variables: AppVariable[];
+  onChange: (schema: ExtractionField[], map: Record<string, string>) => void;
+}> = ({ schema, fieldVariableMap, variables, onChange }) => {
+  const updateRow = (i: number, patch: Partial<ExtractionField>) => {
+    const next = [...schema];
+    next[i] = { ...next[i], ...patch };
+    onChange(next, fieldVariableMap);
+  };
+  const removeRow = (i: number) => {
+    const removed = schema[i].name;
+    const nextMap = { ...fieldVariableMap };
+    delete nextMap[removed];
+    onChange(schema.filter((_, idx) => idx !== i), nextMap);
+  };
+  const updateMap = (fieldName: string, varId: string) => {
+    const nextMap = { ...fieldVariableMap };
+    if (varId) nextMap[fieldName] = varId; else delete nextMap[fieldName];
+    onChange(schema, nextMap);
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {schema.length === 0 && (
+        <div style={{ fontSize: 10, color: '#CBD5E1' }}>
+          No fields. Add at least one — they're sent to the vision model as the extraction target.
+        </div>
+      )}
+      {schema.map((f, i) => (
+        <div key={i} style={{
+          padding: 4, border: '1px solid #F1F5F9', borderRadius: 3,
+          display: 'flex', flexDirection: 'column', gap: 3,
+        }}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <input
+              value={f.name}
+              onChange={(e) => updateRow(i, { name: e.target.value })}
+              placeholder="field name (e.g. amount)"
+              style={{ flex: 2, height: 22, padding: '0 6px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            />
+            <select
+              value={f.type || 'string'}
+              onChange={(e) => updateRow(i, { type: e.target.value as ExtractionField['type'] })}
+              style={{ width: 70, height: 22, padding: '0 4px', fontSize: 10, border: '1px solid #E2E8F0', borderRadius: 3 }}
+            >
+              <option value="string">string</option>
+              <option value="number">number</option>
+              <option value="date">date</option>
+              <option value="boolean">boolean</option>
+            </select>
+            <button
+              onClick={() => removeRow(i)}
+              style={{ width: 22, height: 22, fontSize: 10, border: '1px solid #FCA5A5', borderRadius: 3, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}
+            >×</button>
+          </div>
+          <input
+            value={f.description || ''}
+            onChange={(e) => updateRow(i, { description: e.target.value })}
+            placeholder="hint for the vision model (optional)"
+            style={{ height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+          />
+          <select
+            value={fieldVariableMap[f.name] || ''}
+            onChange={(e) => updateMap(f.name, e.target.value)}
+            style={{ height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+          >
+            <option value="">— autofill into variable (optional) —</option>
+            {variables.map((v) => <option key={v.id} value={v.id}>→ {v.name}</option>)}
+          </select>
+        </div>
+      ))}
+      <button
+        onClick={() => onChange([...schema, { name: '', type: 'string' }], fieldVariableMap)}
+        style={{
+          padding: '3px 0', fontSize: 10, color: '#7C3AED',
+          border: '1px dashed #DDD6FE', borderRadius: 3,
+          backgroundColor: 'transparent', cursor: 'pointer',
+        }}
+      >+ Field to extract</button>
+    </div>
+  );
+};
+
 // Widget types where the VALUE FORMAT control is meaningful — anything
 // that ends up rendering aggregated numbers. Filters / forms / chat etc.
 // don't show the section.
@@ -2259,6 +2349,35 @@ const ConfigPanel: React.FC<{
               onChange={(next) => set({ fields: next })}
             />
           </Row>
+        )}
+
+        {/* file-upload — Phase 8 widget */}
+        {comp.type === 'file-upload' && (
+          <>
+            <Row label="DOCUMENT KIND">
+              {inp(comp.documentKind, (v) => set({ documentKind: v }), 'e.g. Receipt, Invoice, Bill')}
+            </Row>
+            <Row label="EXTRACTION SCHEMA">
+              <FileUploadSchemaEditor
+                schema={comp.extractionSchema || []}
+                fieldVariableMap={comp.fieldVariableMap || {}}
+                variables={variables || []}
+                onChange={(schema, map) => set({ extractionSchema: schema, fieldVariableMap: map })}
+              />
+            </Row>
+            <Row label="LINK TO RECORD TYPE">
+              {inp(comp.linkedRecordType, (v) => set({ linkedRecordType: v }), 'e.g. Bill (optional)')}
+            </Row>
+            <Row label="LINK ID FROM VARIABLE">
+              {sel(
+                comp.linkedRecordVariableId || '',
+                (variables || []).map((v) => v.id),
+                (variables || []).map((v) => v.name),
+                (v) => set({ linkedRecordVariableId: v }),
+                '— optional —',
+              )}
+            </Row>
+          </>
         )}
 
         {/* object-table */}

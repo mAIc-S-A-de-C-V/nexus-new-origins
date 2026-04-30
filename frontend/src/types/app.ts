@@ -179,7 +179,10 @@ export type ComponentType =
   | 'action-button'
   | 'object-editor'
   | 'record-creator'
-  | 'approval-queue';
+  | 'approval-queue'
+  // Phase 8 — upload a file, run OCR / vision extraction, autofill sibling
+  // fields by writing extracted values into app variables.
+  | 'file-upload';
 
 // Composite layout templates. Sugar over the inner 12-col grid — sets
 // sensible colSpan defaults on children when they don't specify one.
@@ -289,6 +292,19 @@ export interface AppComponent {
   // Phase I — approval-queue config.
   approveActionId?: string;
   rejectActionId?: string;
+  // Phase 8 — file-upload widget config.
+  // `documentKind` is a free-text label sent to the vision model so the
+  // extraction prompt is well-grounded ("Receipt", "Invoice", "Passport"...).
+  // `extractionSchema` is the list of fields to extract from the document.
+  // `fieldVariableMap` maps each extracted field name → an existing
+  // dashboard variable id; when extraction completes those variables are
+  // set, which lets sibling form widgets read the extracted values via
+  // their existing inputBindings.
+  documentKind?: string;
+  extractionSchema?: { name: string; description?: string; type?: 'string' | 'number' | 'date' | 'boolean' }[];
+  fieldVariableMap?: Record<string, string>;
+  linkedRecordType?: string;
+  linkedRecordVariableId?: string;
   // object-table config (reuses objectTypeId, columns)
 
   // ── Composite widget ──────────────────────────────────────────────────
