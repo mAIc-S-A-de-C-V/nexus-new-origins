@@ -16,6 +16,7 @@ const LOGIC_URL      = import.meta.env.VITE_LOGIC_SERVICE_URL      || 'http://lo
 const ONTOLOGY_URL   = import.meta.env.VITE_ONTOLOGY_SERVICE_URL   || 'http://localhost:8004';
 const CONNECTOR_URL  = import.meta.env.VITE_CONNECTOR_SERVICE_URL  || 'http://localhost:8001';
 const PIPELINE_URL   = import.meta.env.VITE_PIPELINE_SERVICE_URL   || 'http://localhost:8002';
+const AGENT_URL      = import.meta.env.VITE_AGENT_SERVICE_URL      || 'http://localhost:8013';
 
 function fetchWithTimeout(url: string, opts: RequestInit, ms = 5000): Promise<any> {
   const controller = new AbortController();
@@ -30,17 +31,30 @@ async function fetchLiveContext(currentPage: string) {
   const h = { 'x-tenant-id': tenantId };
   const opt = { headers: h };
 
-  const [fnsRes, otsRes, connRes, pipRes] = await Promise.allSettled([
+  const [fnsRes, otsRes, connRes, pipRes, mpRes] = await Promise.allSettled([
     fetchWithTimeout(`${LOGIC_URL}/logic/functions`, opt),
     fetchWithTimeout(`${ONTOLOGY_URL}/object-types`, opt),
     fetchWithTimeout(`${CONNECTOR_URL}/connectors`,  opt),
     fetchWithTimeout(`${PIPELINE_URL}/pipelines`,    opt),
+    fetchWithTimeout(`${AGENT_URL}/model-providers`, opt),
   ]);
 
   const functions: any[]    = fnsRes.status  === 'fulfilled' ? (fnsRes.value  || []) : [];
   const object_types: any[] = otsRes.status  === 'fulfilled' ? (otsRes.value  || []) : [];
   const rawConnectors: any[] = connRes.status === 'fulfilled' ? (connRes.value || []) : [];
   const pipelines: any[]    = pipRes.status  === 'fulfilled' ? (pipRes.value  || []) : [];
+  const rawProviders: any[] = mpRes.status   === 'fulfilled' ? (mpRes.value   || []) : [];
+
+  const model_providers = rawProviders.map((p: any) => ({
+    id: p.id,
+    name: p.name,
+    provider_type: p.provider_type,
+    base_url: p.base_url,
+    has_api_key: p.has_api_key,
+    models: p.models,
+    is_default: p.is_default,
+    enabled: p.enabled,
+  }));
 
   const connectors = rawConnectors.map((c: any) => ({
     id: c.id,
@@ -86,6 +100,7 @@ async function fetchLiveContext(currentPage: string) {
     object_types: objectTypesWithRecords,
     connectors,
     pipelines,
+    model_providers,
   };
 }
 
@@ -99,7 +114,8 @@ type NexusActionType =
   | 'create_ontology_link'
   | 'ingest_records'
   | 'create_app'
-  | 'create_app_action';
+  | 'create_app_action'
+  | 'register_model_provider';
 
 interface NexusAction {
   type: NexusActionType;
@@ -111,7 +127,7 @@ interface NexusAction {
 const ALL_ACTION_TYPES: NexusActionType[] = [
   'create_connector', 'create_object_type', 'create_pipeline', 'create_logic',
   'run_pipeline', 'create_ontology_link', 'ingest_records', 'create_app',
-  'create_app_action',
+  'create_app_action', 'register_model_provider',
 ];
 
 const ACTION_LABELS: Record<string, string> = {
@@ -124,6 +140,7 @@ const ACTION_LABELS: Record<string, string> = {
   ingest_records: 'Ingest Records',
   create_app: 'Create App / Dashboard',
   create_app_action: 'Add Action to App',
+  register_model_provider: 'Register AI Model',
 };
 
 const ACTION_ICONS: Record<string, React.ReactNode> = {
@@ -136,6 +153,7 @@ const ACTION_ICONS: Record<string, React.ReactNode> = {
   ingest_records: <Database size={14} />,
   create_app: <Layers size={14} />,
   create_app_action: <Code size={14} />,
+  register_model_provider: <Zap size={14} />,
 };
 
 function ActionConfirmCard({
@@ -547,6 +565,18 @@ const NexusAssistant: React.FC = () => {
           components: p.components || [],
           settings: p.settings || {},
           kind: p.kind || 'dashboard',
+        };
+      } else if (action.type === 'register_model_provider') {
+        url = `${AGENT_URL}/model-providers`;
+        const p = action.payload;
+        body = {
+          name: p.name,
+          provider_type: p.provider_type || 'openai',
+          api_key_encrypted: p.api_key || p.api_key_encrypted || null,
+          base_url: p.base_url || null,
+          models: p.models || [],
+          is_default: p.is_default ?? false,
+          enabled: p.enabled ?? true,
         };
       } else if (action.type === 'create_app_action') {
         // PUT /apps/{id} merging the new action into settings.actions[].

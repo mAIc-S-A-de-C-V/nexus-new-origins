@@ -334,6 +334,43 @@ Records are synced from connectors via pipelines. Use the Ontology page to brows
 Connectors pull data from external systems. Supported types: HubSpot, REST_API, Fireflies, WHATSAPP.
 After connecting, run the associated pipeline to sync records into the Ontology.
 
+## AI Models / Model Providers (Settings → AI Models)
+Users register LLM providers in **Settings → AI Models**. Once registered, the model
+appears in the model dropdown on **LLM_CLASSIFY** pipeline nodes and **LLM Call** logic
+blocks — that is the supported way to use a non-default LLM. Do NOT suggest creating
+a REST_API Connector for an LLM endpoint; use a model provider instead.
+
+Provider types:
+- `anthropic` — Claude via api.anthropic.com (or a custom proxy via `base_url`)
+- `openai` — OpenAI **and any OpenAI-compatible** server: vLLM, LM Studio, Together,
+  Fireworks, Hugging Face Router, Ollama-with-OpenAI-shim, ngrok-fronted self-hosted
+  models, etc. Set `base_url` to the server's `/v1` root (or whatever path comes
+  before `/chat/completions`).
+- `google` — Gemini via generativelanguage.googleapis.com
+- `azure_openai` — Azure-hosted OpenAI deployments
+- `local` — Ollama-native API (`/api/tags`)
+
+`api_key_encrypted` is the literal credential value the server expects in the
+`Authorization: Bearer <value>` header. For Basic-auth servers (e.g. `curl -u
+user:pass`), pass `Basic <base64(user:pass)>` as the key — the server will accept it
+via the Bearer header on most OpenAI-compatible gateways. If the user pastes a curl,
+extract: `name` (a friendly label), `provider_type` (`openai` for anything OpenAI-
+compatible), `base_url` (everything before `/chat/completions` or `/text/completions`),
+the auth value, and any `model` strings they reference.
+
+Example — translating a curl into a `register_model_provider` action:
+User pastes:
+```
+curl -u nexus:nexus-dev -X POST 'https://example.ngrok-free.dev/api/v1/text/completions' \
+  -H 'Content-Type: application/json' \
+  -d '{ "model_key": "openai/gpt-oss-120b", "prompt": "..." }'
+```
+You emit:
+```nexus-action
+{"type":"register_model_provider","name":"GPT-OSS 120B","summary":["OpenAI-compatible LLM at example.ngrok-free.dev","Auth: Basic nexus:nexus-dev","Model: openai/gpt-oss-120b"],"payload":{"name":"GPT-OSS 120B (ngrok)","provider_type":"openai","base_url":"https://example.ngrok-free.dev/api/v1","api_key":"Basic bmV4dXM6bmV4dXMtZGV2","models":[{"id":"openai/gpt-oss-120b","label":"GPT-OSS 120B"}]}}
+```
+After the user confirms, the model is selectable from the LLM_CLASSIFY model dropdown.
+
 ## Pipelines (Data Pipelines)
 Pipelines are DAGs (directed acyclic graphs) of processing nodes that ingest, transform, and write data.
 Each pipeline has a chain of nodes connected by edges. When you describe a pipeline, mention all the node steps.
@@ -350,7 +387,7 @@ Each pipeline has a chain of nodes connected by edges. When you describe a pipel
 - **LLM_CLASSIFY** — Sends records through Claude for AI classification and field extraction. Config:
   - `textField` — the field containing text to classify (e.g., "body", "message")
   - `prompt` — optional custom classification prompt (if omitted, uses built-in PNC police report classifier)
-  - `model` — Claude model to use (default: claude-sonnet-4-6)
+  - `model` — model id from any registered provider (Settings → AI Models). Defaults to claude-sonnet-4-6. To use a custom OpenAI-compatible LLM (vLLM, LM Studio, etc.), the user must first register it in Settings → AI Models — propose a `register_model_provider` action if they haven't.
   - `batchSize` — records per LLM call (default: 10)
   - `createActions` — **if true, automatically creates Human Actions** for high-priority items (CRITICO/URGENTE). These appear in the Human Actions queue for analyst review and confirmation.
   - The built-in PNC classifier extracts: categoria, tipo_incidente, accion_policial, prioridad, departamento, municipio, lugar, fecha_hora, hecho, involucrados, incautaciones
@@ -402,6 +439,8 @@ Supported action types:
   ```nexus-action
   {"type":"create_app","name":"Loan Application Form","summary":["Form app for new loan transactions","Writes directly to Transaction ontology","Fields: account_id, counterparty_id, amount, currency, direction, date, description, reference, status"],"payload":{"name":"Loan Application Form","description":"Form-based app to submit new loan transactions.","kind":"app","object_type_ids":["<Transaction-id>"],"components":[{"id":"rc-1","type":"record-creator","title":"New loan transaction","actionId":"act-create-loan-tx","colSpan":8,"gridX":0,"gridY":0,"gridH":12,"fields":[{"name":"account_id","label":"Account ID","type":"text"},{"name":"counterparty_id","label":"Counterparty ID","type":"text"},{"name":"amount","label":"Amount","type":"number"},{"name":"currency","label":"Currency","type":"text"},{"name":"direction","label":"Direction","type":"text"},{"name":"date","label":"Date","type":"text"},{"name":"description","label":"Description","type":"textarea"},{"name":"reference","label":"Reference","type":"text"},{"name":"status","label":"Status","type":"text"}]}],"settings":{"actions":[{"id":"act-create-loan-tx","name":"Create loan transaction","kind":"createObject","objectTypeId":"<Transaction-id>","fieldMappings":[{"formField":"account_id","targetProperty":"account_id","transform":"asUuid"},{"formField":"counterparty_id","targetProperty":"counterparty_id","transform":"asUuid"},{"formField":"amount","targetProperty":"amount","transform":"asNumber"},{"formField":"currency","targetProperty":"currency"},{"formField":"direction","targetProperty":"direction"},{"formField":"date","targetProperty":"date","transform":"asDate"},{"formField":"description","targetProperty":"description"},{"formField":"reference","targetProperty":"reference"},{"formField":"status","targetProperty":"status"}],"validations":[{"field":"account_id","rule":"required"},{"field":"amount","rule":"required"}]}]}}}
   ```
+- `register_model_provider` — payload: `{"name":"<friendly label>","provider_type":"openai|anthropic|google|azure_openai|local","base_url":"https://...","api_key":"<bearer value or Basic base64>","models":[{"id":"<model-id-the-server-expects>","label":"<human label>","context_window":128000}],"is_default":false,"enabled":true}`
+  Registers a new LLM in Settings → AI Models so it appears in the LLM_CLASSIFY model dropdown. Use `provider_type: "openai"` for ANY OpenAI-compatible server (vLLM, LM Studio, Together, Fireworks, HF Router, ngrok-fronted self-hosted, etc.) — set `base_url` to the path before `/chat/completions`. Don't suggest a REST_API Connector for LLM endpoints; this action is the right path. Before proposing this, check `model_providers` in the live context — if a matching provider already exists, tell the user to pick its model from the LLM_CLASSIFY dropdown instead of creating a duplicate.
 - `create_app_action` — payload: `{"app_id":"<id>","action":{"id":"act-...","name":"...","kind":"createObject","objectTypeId":"<id>","fieldMappings":[{"formField":"x","targetProperty":"y","transform":"asNumber"|"asDate"|"asUuid"|"literal","literalValue":"..."}],"validations":[{"field":"x","rule":"required"|"regex"|"min"|"max","value":"...","message":"..."}],"confirmation":{"title":"...","body":"..."},"onSuccess":{"type":"refreshWidget","targetWidgetId":"..."},"onError":{...}}}`
   Adds a typed action (mutation) to an EXISTING app. The action becomes available for record-creator / object-editor / action-button widgets in that app. Use real `app_id` and `objectTypeId` from the live context.
 
@@ -455,6 +494,20 @@ def build_help_system(context: dict) -> str:
             sample = c.get("sample_row")
             if sample:
                 ctx_lines.append(f"  - Sample record: `{json.dumps(sample)[:300]}`")
+    if context.get("model_providers"):
+        mps = context["model_providers"]
+        ctx_lines.append(f"\n## Registered AI Model Providers ({len(mps)} total)")
+        for mp in mps:
+            enabled = "enabled" if mp.get("enabled", True) else "disabled"
+            default = " [default]" if mp.get("is_default") else ""
+            has_key = "key set" if mp.get("has_api_key") else "no key"
+            base = mp.get("base_url") or "(provider default URL)"
+            models = mp.get("models") or []
+            model_ids = [m.get("id") if isinstance(m, dict) else str(m) for m in models]
+            ctx_lines.append(
+                f"- **{mp.get('name')}**{default} (id: `{mp.get('id')}`, type: {mp.get('provider_type')}, "
+                f"base_url: `{base}`, {has_key}, {enabled}, models: {', '.join(model_ids) or '(none registered)'})"
+            )
     if context.get("pipelines"):
         pipes = context["pipelines"]
         ctx_lines.append(f"\n## Pipelines ({len(pipes)} total)")
