@@ -1197,29 +1197,55 @@ def _dedupe(node, records_in: list[dict]) -> list[dict]:
 
 
 def _cast(node, records_in: list[dict]) -> list[dict]:
-    """Coerce field values to specified types."""
+    """Coerce field values to specified types.
+
+    `field: "*"` applies the cast to every field in the record. Useful for
+    flattening nested objects ahead of a SINK_OBJECT write so they don't
+    end up rendered as [object Object] in the UI. When casting a dict or
+    list to string we use json.dumps so the result is valid JSON, not the
+    Python repr.
+    """
+    import json as _json
     cfg = node.config or {}
     casts: list[dict] = cfg.get("casts") or []
     if not casts:
         return records_in
+
+    def _coerce(value, to_type: str):
+        if value is None:
+            return value
+        if to_type == "string":
+            if isinstance(value, (dict, list)):
+                return _json.dumps(value, ensure_ascii=False, default=str)
+            if isinstance(value, str):
+                return value
+            return str(value)
+        if to_type == "integer":
+            return int(value)
+        if to_type == "float":
+            return float(value)
+        if to_type == "boolean":
+            return bool(value)
+        return value
+
     result = []
     for rec in records_in:
         rec = dict(rec)
         for c in casts:
             field = c.get("field", "")
-            to_type = c.get("to", "string")
-            if field in rec and rec[field] is not None:
-                try:
-                    if to_type == "string":
-                        rec[field] = str(rec[field])
-                    elif to_type == "integer":
-                        rec[field] = int(rec[field])
-                    elif to_type == "float":
-                        rec[field] = float(rec[field])
-                    elif to_type == "boolean":
-                        rec[field] = bool(rec[field])
-                except (ValueError, TypeError):
-                    pass
+            # accept either `to` or `toType` for the destination type
+            to_type = c.get("to") or c.get("toType") or "string"
+            try:
+                if field == "*":
+                    for k in list(rec.keys()):
+                        try:
+                            rec[k] = _coerce(rec[k], to_type)
+                        except (ValueError, TypeError):
+                            pass
+                elif field in rec:
+                    rec[field] = _coerce(rec[field], to_type)
+            except (ValueError, TypeError):
+                pass
         result.append(rec)
     return result
 
