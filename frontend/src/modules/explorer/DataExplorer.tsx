@@ -13,6 +13,7 @@ import { useGraphStore } from '../../store/graphStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { getTenantId } from '../../store/authStore';
 import { CheckpointGate } from '../audit/CheckpointGate';
+import { downloadCsv, downloadXlsx } from '../../lib/exportTable';
 import { uuid } from '../../lib/uuid';
 
 const ANALYTICS_API = import.meta.env.VITE_ANALYTICS_SERVICE_URL || 'http://localhost:8015';
@@ -60,23 +61,88 @@ function fmtNum(n: unknown): string {
   return num.toFixed(2);
 }
 
+// CSV export delegates to the shared util so DataTable widgets and the
+// Data Explorer use identical formatting (BOM, escape rules, filename
+// stamping). XLSX is lazy-loaded by downloadXlsx itself.
+//
+// Local wrapper used by the AIP analyst result panel. Keeps the old
+// call shape working without touching every call site.
 function exportCsv(columns: string[], rows: Record<string, unknown>[]) {
-  const header = columns.join(',');
-  const lines = rows.map((r) =>
-    columns.map((c) => {
-      const v = r[c];
-      const s = v == null ? '' : String(v);
-      return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
-    }).join(',')
-  );
-  const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'export.csv';
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadCsv(columns, rows, 'analyst-result');
 }
+
+// ExplorerExportButton — popover with Excel + CSV options for the main
+// query result. Both options are gated by the existing data_export
+// CheckpointGate, so compliance approval still applies.
+const ExplorerExportButton: React.FC<{
+  columns: string[];
+  rows: Record<string, unknown>[];
+  filenameStub: string;
+}> = ({ columns, rows, filenameStub }) => {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<'csv' | 'xlsx' | null>(null);
+  const onProceed = (kind: 'csv' | 'xlsx') => {
+    setBusy(kind);
+    Promise.resolve().then(async () => {
+      try {
+        if (kind === 'csv') downloadCsv(columns, rows, filenameStub);
+        else await downloadXlsx(columns, rows, filenameStub);
+      } finally {
+        setBusy(null);
+        setOpen(false);
+      }
+    });
+  };
+  return (
+    <span style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={!!busy}
+        style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '0 12px', height: 30, border: `1px solid ${C.border}`, borderRadius: 4, backgroundColor: C.panel, cursor: busy ? 'wait' : 'pointer', fontSize: 12, color: C.muted }}
+      >
+        <Download size={13} /> {busy ? `Preparing ${busy.toUpperCase()}…` : 'Export'}
+      </button>
+      {open && !busy && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 50 }} />
+          <div style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            backgroundColor: C.panel, border: `1px solid ${C.border}`,
+            borderRadius: 6, boxShadow: '0 8px 20px rgba(0,0,0,0.08)',
+            zIndex: 60, minWidth: 200, padding: 4,
+          }}>
+            <CheckpointGate resource_type="data_export" operation="xlsx_export" onProceed={() => onProceed('xlsx')}>
+              {(trigger, checking) => (
+                <button
+                  onClick={trigger}
+                  disabled={checking}
+                  style={{ display: 'block', width: '100%', padding: '8px 12px', fontSize: 12, color: C.text, textAlign: 'left', border: 'none', backgroundColor: 'transparent', cursor: checking ? 'wait' : 'pointer', borderRadius: 4 }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  Excel (.xlsx)
+                </button>
+              )}
+            </CheckpointGate>
+            <CheckpointGate resource_type="data_export" operation="csv_export" onProceed={() => onProceed('csv')}>
+              {(trigger, checking) => (
+                <button
+                  onClick={trigger}
+                  disabled={checking}
+                  style={{ display: 'block', width: '100%', padding: '8px 12px', fontSize: 12, color: C.text, textAlign: 'left', border: 'none', backgroundColor: 'transparent', cursor: checking ? 'wait' : 'pointer', borderRadius: 4 }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  CSV (.csv)
+                </button>
+              )}
+            </CheckpointGate>
+          </div>
+        </>
+      )}
+    </span>
+  );
+};
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -1323,17 +1389,11 @@ const DataExplorer: React.FC = () => {
             </button>
           )}
           {result && (
-            <CheckpointGate resource_type="data_export" operation="csv_export" onProceed={() => exportCsv(result.columns, result.rows)}>
-              {(triggerGate, checking) => (
-                <button
-                  onClick={triggerGate}
-                  disabled={checking}
-                  style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '0 12px', height: 30, border: `1px solid ${C.border}`, borderRadius: 4, backgroundColor: C.panel, cursor: checking ? 'wait' : 'pointer', fontSize: 12, color: C.muted }}
-                >
-                  <Download size={13} /> Export CSV
-                </button>
-              )}
-            </CheckpointGate>
+            <ExplorerExportButton
+              columns={result.columns}
+              rows={result.rows}
+              filenameStub={selectedType?.name || 'export'}
+            />
           )}
           <button
             onClick={() => handleRun(1)}

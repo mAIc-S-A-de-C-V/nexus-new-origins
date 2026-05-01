@@ -375,6 +375,130 @@ const KpiBanner: React.FC<{ comp: AppComponent; records?: Record<string, unknown
   );
 };
 
+// DownloadMenu — small "↓ Export" button with a popover for CSV / Excel.
+// For server-paged tables, "Export all" pulls the full filtered dataset
+// from /records before triggering the download (capped at MAX_EXPORT_ROWS
+// to keep file sizes sane). For client-loaded tables, it exports the rows
+// already rendered.
+const MAX_EXPORT_ROWS = 10000;
+const DownloadMenu: React.FC<{
+  columns: string[];
+  rows: Record<string, unknown>[];
+  objectTypeId?: string;
+  filters?: AppFilter[];
+  isServerPaged: boolean;
+  totalRows: number;
+  filenameStub: string;
+}> = ({ columns, rows, objectTypeId, filters, isServerPaged, totalRows, filenameStub }) => {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<'csv' | 'xlsx' | null>(null);
+  const [error, setError] = useState<string>('');
+
+  const fetchAllRows = async (): Promise<Record<string, unknown>[]> => {
+    if (!isServerPaged || !objectTypeId) return rows;
+    const params = new URLSearchParams();
+    params.set('limit', String(Math.min(MAX_EXPORT_ROWS, totalRows || MAX_EXPORT_ROWS)));
+    params.set('offset', '0');
+    if (filters && filters.length) {
+      params.set('filter', JSON.stringify(filters));
+    }
+    const headers: Record<string, string> = { 'x-tenant-id': getTenantId() };
+    const token = getAccessToken();
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const r = await fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/records?${params}`, { headers });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    return (Array.isArray(data) ? data : (data.records || [])) as Record<string, unknown>[];
+  };
+
+  const run = async (kind: 'csv' | 'xlsx') => {
+    setError(''); setBusy(kind); setOpen(false);
+    try {
+      const allRows = await fetchAllRows();
+      const exporter = await import('../../lib/exportTable');
+      if (kind === 'csv') {
+        exporter.downloadCsv(columns, allRows, filenameStub);
+      } else {
+        await exporter.downloadXlsx(columns, allRows, filenameStub);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const truncated = isServerPaged && totalRows > MAX_EXPORT_ROWS;
+
+  return (
+    <span style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={!!busy}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 4,
+          padding: '3px 9px', fontSize: 11, fontWeight: 500,
+          border: '1px solid #E2E8F0', borderRadius: 4,
+          backgroundColor: busy ? '#F1F5F9' : '#fff', color: '#475569',
+          cursor: busy ? 'default' : 'pointer',
+        }}
+        title="Export this table"
+      >
+        {busy ? `Preparing ${busy.toUpperCase()}…` : '↓ Export'}
+      </button>
+      {open && (
+        <>
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 50 }}
+          />
+          <div style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            backgroundColor: '#fff', border: '1px solid #E2E8F0',
+            borderRadius: 6, boxShadow: '0 8px 20px rgba(0,0,0,0.08)',
+            zIndex: 60, minWidth: 180, padding: 4,
+          }}>
+            <button
+              onClick={() => run('xlsx')}
+              style={{
+                display: 'block', width: '100%', padding: '8px 12px',
+                fontSize: 12, color: '#0D1117', textAlign: 'left',
+                border: 'none', backgroundColor: 'transparent',
+                cursor: 'pointer', borderRadius: 4,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              Excel (.xlsx)
+            </button>
+            <button
+              onClick={() => run('csv')}
+              style={{
+                display: 'block', width: '100%', padding: '8px 12px',
+                fontSize: 12, color: '#0D1117', textAlign: 'left',
+                border: 'none', backgroundColor: 'transparent',
+                cursor: 'pointer', borderRadius: 4,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              CSV (.csv)
+            </button>
+            {truncated && (
+              <div style={{ padding: '6px 12px', fontSize: 10, color: '#94A3B8', borderTop: '1px solid #F1F5F9' }}>
+                Capped at first {MAX_EXPORT_ROWS.toLocaleString()} rows of {totalRows.toLocaleString()}.
+              </div>
+            )}
+          </div>
+        </>
+      )}
+      {error && (
+        <span style={{ marginLeft: 6, fontSize: 10, color: '#DC2626' }}>{error}</span>
+      )}
+    </span>
+  );
+};
+
 const DataTable: React.FC<{
   comp: AppComponent;
   records?: Record<string, unknown>[];
@@ -403,11 +527,23 @@ const DataTable: React.FC<{
         padding: '12px 16px', borderBottom: '1px solid #E2E8F0',
         fontSize: 13, fontWeight: 600, color: '#0D1117',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        gap: 12,
       }}>
         <span>{comp.title}</span>
-        <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>
-          {total.toLocaleString()} records
-          {useServer && totalPages > 1 ? ` · page ${page + 1} of ${totalPages}` : ''}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 400 }}>
+            {total.toLocaleString()} records
+            {useServer && totalPages > 1 ? ` · page ${page + 1} of ${totalPages}` : ''}
+          </span>
+          <DownloadMenu
+            columns={cols}
+            rows={(useServer ? serverPage!.rows : (records || [])) as Record<string, unknown>[]}
+            objectTypeId={comp.objectTypeId}
+            filters={comp.filters}
+            isServerPaged={useServer}
+            totalRows={total}
+            filenameStub={comp.title || 'table'}
+          />
         </span>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
