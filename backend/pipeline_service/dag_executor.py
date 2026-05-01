@@ -761,10 +761,30 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     ).decode()
                     headers["Authorization"] = f"Basic {encoded}"
 
-                # Add any custom headers from connector config
-                for extra_h in conn_config.get("headers", []):
-                    if extra_h.get("key"):
-                        headers[extra_h["key"]] = str(extra_h.get("value", ""))
+                # Add any custom headers from connector config. The headers
+                # field can live at either `conn.headers` (top-level on the
+                # connector record) or `conn.config.headers` (nested in
+                # config), AND each can be stored as either a dict
+                # ({"x-admin-token": "abc"}) or a list of {key, value}
+                # objects. Handle all four shapes — older connectors used
+                # the dict form, the connector creation flow saves the list
+                # form. Without this normalization, every header was
+                # silently dropped, leading to "401 Unauthorized" being
+                # parsed as a JSON string and a downstream
+                # "'str' object has no attribute 'get'" crash.
+                _custom_headers_sources = [
+                    conn_config.get("headers"),
+                    conn.get("headers"),
+                ]
+                for src in _custom_headers_sources:
+                    if isinstance(src, dict):
+                        for k, v in src.items():
+                            if k:
+                                headers[str(k)] = str(v if v is not None else "")
+                    elif isinstance(src, list):
+                        for extra_h in src:
+                            if isinstance(extra_h, dict) and extra_h.get("key"):
+                                headers[str(extra_h["key"])] = str(extra_h.get("value", ""))
 
                 # ── Fetch (single call or paginated) ─────────────────────
                 # If pagination is disabled or the connector has no pagination
@@ -817,7 +837,26 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         if audit_extras is not None:
                             audit_extras["response_error"] = r.text[:500]
                         break
-                    data = r.json()
+                    try:
+                        data = r.json()
+                    except Exception as _je:
+                        # Server returned a non-JSON body (HTML error page,
+                        # plain text, etc.). Surface the body in the audit
+                        # so the user can see why instead of getting a
+                        # generic "'str' object has no attribute 'get'".
+                        if audit_extras is not None:
+                            audit_extras["response_error"] = (
+                                f"Response was not valid JSON: {_je}. Body head: {r.text[:300]}"
+                            )
+                        break
+                    if isinstance(data, str):
+                        # Some APIs (esp. when auth fails) return a plain
+                        # JSON-encoded string. Treat that as an error too.
+                        if audit_extras is not None:
+                            audit_extras["response_error"] = (
+                                f"Response was a JSON string, not an object/array: {data[:300]}"
+                            )
+                        break
                     page_rows: list[dict] | None = None
                     total_declared: int | None = None
                     has_more: bool | None = None
