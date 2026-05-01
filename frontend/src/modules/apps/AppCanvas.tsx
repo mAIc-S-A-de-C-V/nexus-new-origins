@@ -7,6 +7,7 @@ import { getTenantId, getAccessToken } from '../../store/authStore';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 import { colors as tokens, chartPalette } from '../../design-system/tokens';
 import { useDashboardStackStore, DashboardStackEntry } from '../../store/dashboardStackStore';
+import { useNavigationStore } from '../../store/navigationStore';
 import {
   buildServerFilters,
   pickLabelField,
@@ -1367,22 +1368,132 @@ const FilterBar: React.FC<{
   );
 };
 
-const TextBlock: React.FC<{ comp: AppComponent }> = ({ comp }) => (
-  <div style={{
-    backgroundColor: '#F8FAFC',
-    border: '1px solid #E2E8F0',
-    borderRadius: 8,
-    padding: '16px 20px',
-    height: '100%',
-  }}>
-    <div style={{ fontSize: 15, fontWeight: 600, color: '#0D1117', marginBottom: 8 }}>
-      {comp.title}
+// TextBlock renders Markdown-lite. Headings (#, ##, ###), bullets (- ),
+// **bold**, *italic*, `code`, and [label](target) links are honoured.
+// Links route through useNavigationStore when the target looks like an
+// in-app page (starts with `app-`, or matches a known page id), so users
+// can deep-link from the Apps Home to any saved dashboard / app.
+const TextBlock: React.FC<{ comp: AppComponent }> = ({ comp }) => {
+  const navigateTo = useNavigationStore((s) => s.navigateTo);
+  const handleLinkClick = (e: React.MouseEvent, target: string) => {
+    if (target.startsWith('http://') || target.startsWith('https://')) return; // let browser handle
+    e.preventDefault();
+    if (target.startsWith('app-') || target.startsWith('apps') || /^[a-z][a-z0-9-]*$/.test(target)) {
+      navigateTo(target);
+    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(target)) {
+      // Bare app id — prefix with app- so the AppsPage route picks it up.
+      navigateTo(`app-${target}`);
+    } else {
+      navigateTo(target);
+    }
+  };
+  return (
+    <div style={{
+      backgroundColor: '#F8FAFC',
+      border: '1px solid #E2E8F0',
+      borderRadius: 8,
+      padding: '16px 20px',
+      height: '100%',
+      overflowY: 'auto',
+    }}>
+      {comp.title && (
+        <div style={{ fontSize: 15, fontWeight: 600, color: '#0D1117', marginBottom: 8 }}>
+          {comp.title}
+        </div>
+      )}
+      {comp.content && (
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6 }}>
+          <MarkdownLite text={comp.content} onLinkClick={handleLinkClick} />
+        </div>
+      )}
     </div>
-    {comp.content && (
-      <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6 }}>{comp.content}</div>
-    )}
-  </div>
-);
+  );
+};
+
+// MarkdownLite — small block + inline formatter. Handles headings, list
+// items, bold/italic/code, and [label](target) links. Links delegate to
+// the parent's onLinkClick for in-app routing.
+const MarkdownLite: React.FC<{ text: string; onLinkClick: (e: React.MouseEvent, target: string) => void }> = ({ text, onLinkClick }) => {
+  const lines = text.split('\n');
+  const out: React.ReactNode[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('### ')) {
+      out.push(<div key={i} style={{ fontSize: 13, fontWeight: 600, color: '#0D1117', marginTop: 8, marginBottom: 4 }}>{renderInline(line.slice(4), i, onLinkClick)}</div>);
+    } else if (line.startsWith('## ')) {
+      out.push(<div key={i} style={{ fontSize: 15, fontWeight: 600, color: '#0D1117', marginTop: 10, marginBottom: 4 }}>{renderInline(line.slice(3), i, onLinkClick)}</div>);
+    } else if (line.startsWith('# ')) {
+      out.push(<div key={i} style={{ fontSize: 17, fontWeight: 700, color: '#0D1117', marginTop: 10, marginBottom: 6 }}>{renderInline(line.slice(2), i, onLinkClick)}</div>);
+    } else if (line.startsWith('- ') || line.startsWith('* ')) {
+      out.push(
+        <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
+          <span style={{ color: '#94A3B8' }}>•</span>
+          <span style={{ flex: 1 }}>{renderInline(line.slice(2), i, onLinkClick)}</span>
+        </div>,
+      );
+    } else if (line.trim() === '') {
+      out.push(<div key={i} style={{ height: 6 }} />);
+    } else {
+      out.push(<div key={i} style={{ marginBottom: 2 }}>{renderInline(line, i, onLinkClick)}</div>);
+    }
+  }
+  return <>{out}</>;
+};
+
+function renderInline(text: string, baseKey: number, onLinkClick: (e: React.MouseEvent, target: string) => void): React.ReactNode {
+  // Order matters: links → bold → italic → code.
+  // We tokenize by walking and emitting React nodes.
+  const out: React.ReactNode[] = [];
+  let rest = text;
+  let k = 0;
+  const linkRe = /\[([^\]]+)\]\(([^)]+)\)/;
+  const boldRe = /\*\*([^*]+)\*\*/;
+  const italicRe = /(?<!\*)\*([^*]+)\*(?!\*)/;
+  const codeRe = /`([^`]+)`/;
+  while (rest.length > 0) {
+    const matches = [
+      { name: 'link',   m: rest.match(linkRe) },
+      { name: 'bold',   m: rest.match(boldRe) },
+      { name: 'italic', m: rest.match(italicRe) },
+      { name: 'code',   m: rest.match(codeRe) },
+    ].filter((x) => x.m && x.m.index !== undefined) as Array<{ name: string; m: RegExpMatchArray }>;
+    if (matches.length === 0) {
+      out.push(rest);
+      break;
+    }
+    matches.sort((a, b) => (a.m.index! - b.m.index!));
+    const first = matches[0];
+    const idx = first.m.index!;
+    if (idx > 0) out.push(rest.slice(0, idx));
+    if (first.name === 'link') {
+      const [, label, target] = first.m;
+      const isExternal = target.startsWith('http://') || target.startsWith('https://');
+      out.push(
+        <a
+          key={`${baseKey}-${k}`}
+          href={isExternal ? target : '#'}
+          target={isExternal ? '_blank' : undefined}
+          rel={isExternal ? 'noopener noreferrer' : undefined}
+          onClick={(e) => onLinkClick(e, target)}
+          style={{ color: '#7C3AED', textDecoration: 'underline', cursor: 'pointer' }}
+        >{label}</a>,
+      );
+    } else if (first.name === 'bold') {
+      out.push(<strong key={`${baseKey}-${k}`}>{first.m[1]}</strong>);
+    } else if (first.name === 'italic') {
+      out.push(<em key={`${baseKey}-${k}`}>{first.m[1]}</em>);
+    } else if (first.name === 'code') {
+      out.push(
+        <code key={`${baseKey}-${k}`} style={{ backgroundColor: '#F1F5F9', padding: '1px 5px', borderRadius: 3, fontFamily: 'var(--font-mono)', fontSize: '0.9em' }}>
+          {first.m[1]}
+        </code>,
+      );
+    }
+    k++;
+    rest = rest.slice(idx + first.m[0].length);
+  }
+  return <>{out}</>;
+}
 
 // ── Custom Code Widget ────────────────────────────────────────────────────
 // Claude-generated code executed safely with new Function.
