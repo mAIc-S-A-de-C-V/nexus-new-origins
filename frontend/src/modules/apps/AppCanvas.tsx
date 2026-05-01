@@ -3891,6 +3891,7 @@ const ObjectEditorWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => {
 
 const RecordCreatorWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   const { actions } = useAppContext();
+  const { getVariable } = useAppVariables();
   const action = actions.find((a) => a.id === comp.actionId);
   const allFields = comp.fields || [];
   const steps = comp.steps && comp.steps.length > 0
@@ -3900,6 +3901,41 @@ const RecordCreatorWidgetImpl: React.FC<{ comp: AppComponent }> = ({ comp }) => 
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Form autofill — when the user has wired form fields to dashboard
+  // variables (comp.inputBindings: { fieldName: variableId }), watch
+  // those variables and seed `values` whenever they change. This is what
+  // makes file-upload → Record Creator autofill work end-to-end: file-
+  // upload writes extracted values into variables, this useEffect picks
+  // them up. User typing wins via setValues until the next variable
+  // update arrives.
+  const bindings = comp.inputBindings || {};
+  // Snapshot the current variable values into a JSON string so
+  // useEffect's dep array stays stable across renders.
+  const boundVarSnapshot = JSON.stringify(
+    Object.entries(bindings).reduce((acc, [field, varId]) => {
+      acc[field] = getVariable(varId);
+      return acc;
+    }, {} as Record<string, unknown>),
+  );
+  useEffect(() => {
+    if (Object.keys(bindings).length === 0) return;
+    setValues((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [field, varId] of Object.entries(bindings)) {
+        const v = getVariable(varId);
+        if (v == null || v === '') continue;
+        const s = typeof v === 'string' ? v : (typeof v === 'number' || typeof v === 'boolean') ? String(v) : JSON.stringify(v);
+        if (next[field] !== s) {
+          next[field] = s;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boundVarSnapshot]);
 
   const currentStep = steps[stepIdx];
   const stepFields = allFields.filter((f) => currentStep?.fields.includes(f.name));

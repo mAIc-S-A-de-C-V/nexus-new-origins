@@ -1081,12 +1081,21 @@ const FieldPickerCmp: React.FC<{ fields: string[]; value: string | undefined; on
 // Two field types take extra config rows in the UI:
 //   · select        → comma-separated `options` string
 //   · record-select → object type picker + display field
+//
+// When `variables` is passed, each field also gets a "← read from variable"
+// dropdown that writes to `comp.inputBindings[fieldName] = variableId`.
+// This is what enables file-upload → form autofill: the file-upload
+// widget writes extracted values to a variable, and the record-creator
+// reads them back via this binding.
 type FormField = NonNullable<AppComponent['fields']>[number];
 const FieldsEditor: React.FC<{
   fields: FormField[];
   onChange: (next: FormField[]) => void;
   objectTypes?: OntologyType[];
-}> = ({ fields, onChange, objectTypes = [] }) => {
+  variables?: AppVariable[];
+  inputBindings?: Record<string, string>;
+  onInputBindingsChange?: (next: Record<string, string>) => void;
+}> = ({ fields, onChange, objectTypes = [], variables, inputBindings, onInputBindingsChange }) => {
   const update = (i: number, patch: Partial<FormField>) => {
     const next = [...fields];
     next[i] = { ...next[i], ...patch };
@@ -1184,6 +1193,21 @@ const FieldsEditor: React.FC<{
               </>
             );
           })()}
+          {variables && variables.length > 0 && onInputBindingsChange && (
+            <select
+              value={(inputBindings || {})[f.name] || ''}
+              onChange={(e) => {
+                const nextMap = { ...(inputBindings || {}) };
+                if (e.target.value) nextMap[f.name] = e.target.value;
+                else delete nextMap[f.name];
+                onInputBindingsChange(nextMap);
+              }}
+              style={{ height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+            >
+              <option value="">← read from variable (optional)</option>
+              {variables.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          )}
         </div>
       ))}
       <button
@@ -2305,6 +2329,9 @@ const ConfigPanel: React.FC<{
               <FieldsEditor
                 fields={comp.fields || []}
                 objectTypes={objectTypes}
+                variables={variables}
+                inputBindings={comp.inputBindings}
+                onInputBindingsChange={(next) => set({ inputBindings: next })}
                 onChange={(next) => set({ fields: next })}
               />
             </Row>
@@ -2318,6 +2345,9 @@ const ConfigPanel: React.FC<{
               <FieldsEditor
                 fields={comp.fields || []}
                 objectTypes={objectTypes}
+                variables={variables}
+                inputBindings={comp.inputBindings}
+                onInputBindingsChange={(next) => set({ inputBindings: next })}
                 onChange={(next) => {
                   // When a field is renamed/removed, prune dangling refs from steps.
                   const validNames = new Set(next.map((f) => f.name));
