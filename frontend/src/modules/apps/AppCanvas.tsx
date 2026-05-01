@@ -2712,6 +2712,92 @@ const ServerPaginatedDataTable: React.FC<{ comp: AppComponent; serverFilters?: R
   );
 };
 
+// PivotDownloadButton — flattens the rendered 2D pivot back into a row-
+// major shape (one row per rowKey, columns = the human-formatted bucket
+// labels) and hands it to the shared exportTable helpers. Wide format
+// because that's what people expect when they re-open a pivot in Excel.
+const PivotDownloadButton: React.FC<{
+  rowField: string;
+  rowKeys: string[];
+  cols: string[];
+  fmtCol: (c: string) => string;
+  pivot: Record<string, Record<string, number | null>>;
+  filenameStub: string;
+}> = ({ rowField, rowKeys, cols, fmtCol, pivot, filenameStub }) => {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<'csv' | 'xlsx' | null>(null);
+
+  const buildRows = (): { columns: string[]; rows: Record<string, unknown>[] } => {
+    const colLabels = cols.map(fmtCol);
+    const columns = [rowField, ...colLabels];
+    const rows = rowKeys.map((rk) => {
+      const out: Record<string, unknown> = { [rowField]: rk };
+      cols.forEach((c, i) => {
+        const v = pivot[rk]?.[c];
+        out[colLabels[i]] = v == null ? '' : v;
+      });
+      return out;
+    });
+    return { columns, rows };
+  };
+
+  const run = async (kind: 'csv' | 'xlsx') => {
+    setBusy(kind); setOpen(false);
+    try {
+      const { columns, rows } = buildRows();
+      const exporter = await import('../../lib/exportTable');
+      if (kind === 'csv') exporter.downloadCsv(columns, rows, filenameStub);
+      else                await exporter.downloadXlsx(columns, rows, filenameStub);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (rowKeys.length === 0) return null;
+  return (
+    <span style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={!!busy}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 4,
+          padding: '3px 9px', fontSize: 11, fontWeight: 500,
+          border: '1px solid #E2E8F0', borderRadius: 4,
+          backgroundColor: busy ? '#F1F5F9' : '#fff', color: '#475569',
+          cursor: busy ? 'default' : 'pointer',
+        }}
+        title="Export this pivot"
+      >
+        {busy ? `Preparing ${busy.toUpperCase()}…` : '↓ Export'}
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 50 }} />
+          <div style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            backgroundColor: '#fff', border: '1px solid #E2E8F0',
+            borderRadius: 6, boxShadow: '0 8px 20px rgba(0,0,0,0.08)',
+            zIndex: 60, minWidth: 180, padding: 4,
+          }}>
+            <button
+              onClick={() => run('xlsx')}
+              style={{ display: 'block', width: '100%', padding: '8px 12px', fontSize: 12, color: '#0D1117', textAlign: 'left', border: 'none', backgroundColor: 'transparent', cursor: 'pointer', borderRadius: 4 }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >Excel (.xlsx)</button>
+            <button
+              onClick={() => run('csv')}
+              style={{ display: 'block', width: '100%', padding: '8px 12px', fontSize: 12, color: '#0D1117', textAlign: 'left', border: 'none', backgroundColor: 'transparent', cursor: 'pointer', borderRadius: 4 }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >CSV (.csv)</button>
+          </div>
+        </>
+      )}
+    </span>
+  );
+};
+
 // PivotTable widget — true 2D pivot. Rows = labelField (e.g. sensor_name),
 // Columns = time-bucketed xField (e.g. day), Cells = aggregated value.
 // Single /aggregate POST → ≤ rows×cols numbers → rendered as an HTML table.
@@ -2784,7 +2870,18 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
       <div style={{
         padding: '12px 16px', borderBottom: '1px solid #E2E8F0',
         fontSize: 13, fontWeight: 600, color: '#0D1117',
-      }}>{comp.title}</div>
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+      }}>
+        <span>{comp.title}</span>
+        <PivotDownloadButton
+          rowField={labelField}
+          rowKeys={rowKeys}
+          cols={cols}
+          fmtCol={fmtCol}
+          pivot={pivot}
+          filenameStub={comp.title || 'pivot'}
+        />
+      </div>
       <div style={{ flex: 1, overflow: 'auto' }}>
         {rowKeys.length === 0 ? (
           <div style={{ textAlign: 'center', padding: 32, color: '#94A3B8', fontSize: 12 }}>
