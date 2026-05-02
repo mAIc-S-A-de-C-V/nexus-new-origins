@@ -9,10 +9,25 @@ from tools import get_tool_definitions, execute_tool
 from shared.token_tracker import track_token_usage
 from shared.llm_router import (
     resolve_provider,
+    resolve_provider_for_model,
     make_anthropic_client,
     agent_turn_async,
     OPENAI_COMPAT_TYPES,
 )
+
+
+async def _resolve_for_agent(tenant_id: str, provider_id: Optional[str], model: str):
+    """Pick the provider that actually serves `model` for this tenant.
+
+    If `provider_id` is set explicitly, honor it (legacy/explicit path).
+    Otherwise route by model id so that picking "GPT-OSS 120B" in Agent Studio
+    hits the GPT-OSS provider, not the tenant's default.
+    """
+    if provider_id:
+        return await resolve_provider(tenant_id, provider_id=provider_id, model=model)
+    if model:
+        return await resolve_provider_for_model(tenant_id, model)
+    return await resolve_provider(tenant_id, provider_id=None, model=model)
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
@@ -34,7 +49,7 @@ async def run_agent(
     Run a full agentic loop (non-streaming).
     Returns: { messages: [...new messages including tool calls], final_text: str, iterations: int }
     """
-    cfg = await resolve_provider(tenant_id, provider_id=provider_id, model=model)
+    cfg = await _resolve_for_agent(tenant_id, provider_id, model)
     if cfg.provider_type not in ("anthropic",) and cfg.provider_type not in OPENAI_COMPAT_TYPES:
         cfg.provider_type = "anthropic"
         cfg.api_key = ANTHROPIC_API_KEY
@@ -122,7 +137,7 @@ async def stream_agent(
     Yields: data: <json>\n\n for each event.
     Event types: text_delta | tool_start | tool_result | done | error
     """
-    cfg = await resolve_provider(tenant_id, provider_id=provider_id, model=model)
+    cfg = await _resolve_for_agent(tenant_id, provider_id, model)
     if cfg.provider_type not in ("anthropic",) and cfg.provider_type not in OPENAI_COMPAT_TYPES:
         cfg.provider_type = "anthropic"
         cfg.api_key = ANTHROPIC_API_KEY
