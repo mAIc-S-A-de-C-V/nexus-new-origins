@@ -214,9 +214,26 @@ class DagExecutor:
         Execute the full pipeline DAG. Records flow through each node as real data.
         SINK_OBJECT pushes the final records directly to the ontology service.
         """
+        # Structured log line buffer. Each entry: {ts, level, node_id, msg, extra}.
+        # Surfaced in the run drilldown view alongside the existing node_audits.
+        logs: list[dict] = []
+
+        def _log(level: str, msg: str, node_id: str = "", extra: dict | None = None):
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "level": level,
+                "node_id": node_id,
+                "msg": msg,
+            }
+            if extra:
+                entry["extra"] = extra
+            logs.append(entry)
+
         try:
             order = self._topological_sort(pipeline)
             node_map = {n.id: n for n in pipeline.nodes}
+
+            _log("INFO", f"pipeline started · {len(order)} nodes", extra={"trigger": run.get("triggered_by", "api")})
 
             # When the pipeline has no explicit edges (step-list builder), synthesise
             # sequential edges so records flow from one step to the next in order.
@@ -255,10 +272,35 @@ class DagExecutor:
 
                 t_start = datetime.now(timezone.utc)
                 audit_extras: dict = {}
-                records_out = await _execute_node(node, records_in, pipeline, audit_extras=audit_extras)
+                _log("INFO", f"{node.type.value} starting · {len(records_in)} rows in", node_id=node_id)
+                node_error: str | None = None
+                try:
+                    records_out = await _execute_node(node, records_in, pipeline, audit_extras=audit_extras)
+                except Exception as node_exc:
+                    node_error = str(node_exc)
+                    records_out = []
+                    audit_extras["error"] = node_error
+                    _log("ERROR", f"{node.type.value} raised: {node_error}", node_id=node_id)
                 duration_ms = int((datetime.now(timezone.utc) - t_start).total_seconds() * 1000)
 
                 node_records[node_id] = records_out
+
+                dropped_rows = max(0, len(records_in) - len(records_out)) if records_in else 0
+                if node_error:
+                    pass  # already logged above
+                elif dropped_rows > 0:
+                    _log("WARN",
+                         f"{node.type.value} ok · {len(records_out)} out · {dropped_rows} dropped · {duration_ms}ms",
+                         node_id=node_id)
+                else:
+                    _log("INFO",
+                         f"{node.type.value} ok · {len(records_out)} out · {duration_ms}ms",
+                         node_id=node_id)
+                # Connector / source HTTP errors come through audit_extras
+                src_err = audit_extras.get("error") or audit_extras.get("response_error")
+                if src_err and not node_error:
+                    _log("ERROR", f"{node.type.value} reported error: {src_err}", node_id=node_id,
+                         extra={"http_status": audit_extras.get("http_status"), "url": audit_extras.get("url")})
 
                 is_source_node = (linear_mode and idx == 0) or (not linear_mode and not incoming_edges)
                 if is_source_node and records_out:
@@ -389,12 +431,18 @@ class DagExecutor:
             )
             final_status = "FAILED" if has_node_error else "COMPLETED"
 
+            _log(
+                "ERROR" if final_status == "FAILED" else "OK",
+                f"pipeline {final_status.lower()} · {source_row_count} in / {total_out} out",
+            )
+
             run.update({
                 "status": final_status,
                 "finished_at": finished_at,
                 "rows_in": source_row_count,
                 "rows_out": total_out,
                 "node_audits": node_audits,
+                "logs": logs,
             })
 
             pipeline.status = PipelineStatus.FAILED if has_node_error else PipelineStatus.IDLE
@@ -416,10 +464,12 @@ class DagExecutor:
         except Exception as e:
             logger.error("Pipeline %s FAILED: %s", pipeline.id, e, exc_info=True)
             finished_at = datetime.now(timezone.utc).isoformat()
+            _log("ERROR", f"pipeline crashed: {e}")
             run.update({
                 "status": "FAILED",
                 "finished_at": finished_at,
                 "error": str(e),
+                "logs": logs,
             })
             pipeline.status = PipelineStatus.FAILED
 

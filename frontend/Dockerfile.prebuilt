@@ -1,0 +1,11 @@
+# Bake an already-built dist/ into nginx. Use this when the Docker daemon
+# doesn't have enough memory for an in-container Vite build (Plotly + ~150 deps
+# need >3GB of V8 heap). Run `npm run build` on the host first.
+#
+#   docker build -f frontend/Dockerfile.prebuilt -t nexus-new-origins-frontend frontend
+#
+FROM nginx:alpine
+COPY dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 3000
+CMD ["nginx", "-g", "daemon off;"]

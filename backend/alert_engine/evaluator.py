@@ -51,11 +51,22 @@ async def _cooldown_ok(rule: dict) -> bool:
 async def _record_fired(pg, rule_id: str, rule_name: str, rule_type: str,
                          severity: str, message: str, details: dict, tenant_id: str):
     import json
+    # Derive a run_link from details when the rule's payload references one — lets
+    # the frontend's history view jump directly to the run drilldown.
+    run_link: dict | None = None
+    if isinstance(details, dict):
+        if details.get("pipeline_run_id"):
+            run_link = {"kind": "pipeline", "run_id": details["pipeline_run_id"],
+                        "pipeline_id": details.get("pipeline_id")}
+        elif details.get("agent_run_id"):
+            run_link = {"kind": "agent", "run_id": details["agent_run_id"],
+                        "agent_id": details.get("agent_id")}
+
     await pg.execute(
         text(
             "INSERT INTO alert_notifications "
-            "(tenant_id, rule_id, rule_name, rule_type, severity, message, details) "
-            "VALUES (:tid, :rid, :rname, :rtype, :sev, :msg, CAST(:det AS jsonb))"
+            "(tenant_id, rule_id, rule_name, rule_type, severity, message, details, run_link) "
+            "VALUES (:tid, :rid, :rname, :rtype, :sev, :msg, CAST(:det AS jsonb), CAST(:rl AS jsonb))"
         ),
         {
             "tid": tenant_id,
@@ -65,6 +76,7 @@ async def _record_fired(pg, rule_id: str, rule_name: str, rule_type: str,
             "sev": severity,
             "msg": message,
             "det": json.dumps(details),
+            "rl": json.dumps(run_link) if run_link else None,
         },
     )
     await pg.execute(

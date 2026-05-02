@@ -27,6 +27,15 @@ export interface AlertNotification {
   details: Record<string, unknown>;
   read: boolean;
   fired_at: string;
+  // Optional deep-link to the underlying pipeline / agent run that produced
+  // this alert. Populated by the alert engine when the notification's details
+  // payload references a run id.
+  run_link?: {
+    kind: 'pipeline' | 'agent';
+    run_id: string;
+    pipeline_id?: string;
+    agent_id?: string;
+  } | null;
 }
 
 export interface ChannelConfig {

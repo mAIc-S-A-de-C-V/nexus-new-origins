@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Nexus · Observability mockups</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+         background: #F8FAFC; color: #0D1117; margin: 0; padding: 40px;
+         max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { color: #64748B; margin: 4px 0 28px; max-width: 680px; line-height: 1.5; }
+  .card { background: #FFF; border: 1px solid #E2E8F0; border-radius: 8px;
+          padding: 18px 22px; margin-bottom: 14px; text-decoration: none; color: inherit;
+          display: block; transition: border-color 120ms; }
+  .card:hover { border-color: #7C3AED; }
+  .card h2 { margin: 0 0 6px; font-size: 16px; }
+  .card p  { margin: 0; color: #64748B; font-size: 13px; line-height: 1.5; }
+  .num { display: inline-block; width: 22px; height: 22px; border-radius: 50%;
+         background: #EDE9FE; color: #7C3AED; font-weight: 700; font-size: 12px;
+         text-align: center; line-height: 22px; margin-right: 8px; vertical-align: -3px; }
+  ul { margin: 6px 0 0 0; padding-left: 22px; color: #64748B; font-size: 12.5px; line-height: 1.55; }
+  hr { border: 0; border-top: 1px dashed #E2E8F0; margin: 32px 0 18px; }
+  .next { font-size: 13px; color: #64748B; line-height: 1.6; }
+  .next strong { color: #0D1117; }
+</style>
+</head>
+<body>
+
+<h1>Nexus · Observability mockups</h1>
+<p class="lead">
+  Three connected views that turn alerts → logs → agent decisions into a single
+  audit trail, plus a live wall that visualizes every running automation.
+  Click each to open the mockup. Cards in the Hivemind link through to the
+  drilldowns.
+</p>
+
+<a class="card" href="01-hivemind.html">
+  <h2><span class="num">1</span>Hivemind — live operations grid</h2>
+  <p>
+    A wall of every pipeline, agent, connector, schedule, and alert with live status.
+    Active cards pulse, current verb ticks ("Reading 43 messages…", "Calling tool query_records…"),
+    a footer ticker streams events. Click any card → run drilldown.
+  </p>
+  <ul>
+    <li>Lanes: Pipelines · Agents · Connectors · Schedules · Alerts</li>
+    <li>Per-card: status pulse, current activity, model badge, token counter</li>
+    <li>Top stats: running, failed, tokens/hr, records/min</li>
+  </ul>
+</a>
+
+<a class="card" href="02-run-drilldown.html">
+  <h2><span class="num">2</span>Run drilldown — pipeline failure</h2>
+  <p>
+    The view you land on when you click a failed alert or a failing pipeline card.
+    Step timeline (left), filterable structured logs + dropped-record table (mid),
+    metadata + suggested fixes + related entities (right).
+  </p>
+  <ul>
+    <li>Banner explains what failed, links back to the alert that opened the page</li>
+    <li>Tabs: Logs · Records · Stats · Lineage · Raw payload</li>
+    <li>Per-step funnel (in → out → dropped) + collapsible Python stack trace</li>
+    <li>"Suggested fixes" pane with one-click open in builder</li>
+  </ul>
+</a>
+
+<a class="card" href="03-agent-decisions.html">
+  <h2><span class="num">3</span>Agent decision trace</h2>
+  <p>
+    Replay an agent run as a transcript: user prompt → reasoning → tool call →
+    tool result → next reasoning → final answer. Each iteration is its own block,
+    streaming runs show a live caret, human-gate checkpoints render inline.
+  </p>
+  <ul>
+    <li>Left rail: every iteration in the reasoning loop</li>
+    <li>Mid: alternating thinking / tool / tool-result / assistant blocks</li>
+    <li>Token cost bar (in / out / cache) and "compare to previous run" panel</li>
+    <li>Toggles: hide reasoning · show only failed iterations</li>
+  </ul>
+</a>
+
+<hr />
+
+<p class="next">
+  <strong>Backend deltas to ship this:</strong>
+  add a <code>pipeline_run_logs</code> JSONL alongside the existing
+  <code>pipeline_runs.node_audits</code> column;
+  persist agent reasoning text deltas next to <code>agent_runs.tool_calls</code>;
+  add an SSE multiplex at <code>/ops/stream</code> for the Hivemind grid;
+  add <code>alert_notifications.run_link</code> so the alert→run jump is one click.
+</p>
+
+</body>
+</html>

@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import {
   Bell, Plus, Trash2, ToggleLeft, ToggleRight, Zap, Clock, RefreshCw,
   ChevronDown, ChevronRight, Check, X, Link, AlertTriangle, AlertCircle,
-  Mail, Webhook,
+  Mail, Webhook, Radio,
 } from 'lucide-react';
 import { useAlertStore, AlertRule, RuleType, ChannelConfig } from '../../store/alertStore';
+import { useOperationsStore } from '../../store/operationsStore';
+import { useNavigationStore } from '../../store/navigationStore';
 
 const C = {
   bg: '#F8FAFC', panel: '#FFFFFF', border: '#E2E8F0',
@@ -249,6 +251,8 @@ const SeveritySelect: React.FC<{ value: string; onChange: (v: string) => void }>
 
 const HistoryTab: React.FC = () => {
   const { notifications, loadingNotifications, markRead, markAllRead, deleteNotification, snoozeNotification } = useAlertStore();
+  const selectRun = useOperationsStore(s => s.selectRun);
+  const navigateTo = useNavigationStore(s => s.navigateTo);
   const [filter, setFilter] = useState<'all' | 'unread' | 'critical' | 'warning'>('all');
   const [range, setRange] = useState<'24h' | '7d' | '30d'>('7d');
   const [search, setSearch] = useState('');
@@ -309,6 +313,30 @@ const HistoryTab: React.FC = () => {
                   <div style={{ fontSize: 12, color: C.muted }}>{n.message}</div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  {n.run_link && (
+                    <button
+                      onClick={e => {
+                        e.stopPropagation();
+                        const link = n.run_link!;
+                        if (link.kind === 'pipeline' && link.pipeline_id) {
+                          selectRun({ kind: 'pipeline', runId: link.run_id, pipelineId: link.pipeline_id });
+                        } else if (link.kind === 'agent') {
+                          selectRun({ kind: 'agent', runId: link.run_id });
+                        }
+                        navigateTo('operations');
+                      }}
+                      title="View run"
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 4,
+                        padding: '2px 8px', borderRadius: 10,
+                        background: C.accentLight, color: C.accent,
+                        border: `1px solid ${C.accentLight}`,
+                        fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                      }}
+                    >
+                      <Radio size={11} /> View run
+                    </button>
+                  )}
                   <span style={{ fontSize: 11, color: C.subtle }}>{timeAgo(n.fired_at)}</span>
                   {!n.read && <button onClick={e => { e.stopPropagation(); markRead(n.id); }} title="Mark read" style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.success, lineHeight: 0 }}><Check size={13} /></button>}
                   <div style={{ position: 'relative' }}>

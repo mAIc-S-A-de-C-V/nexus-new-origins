@@ -580,3 +580,74 @@ async def get_audit_runs(
         }
         for r in rows
     ]
+
+
+# ── Recent runs across all agents (for Operations grid) ──────────────────────
+
+@router.get("/runs/recent")
+async def list_recent_agent_runs(
+    limit: int = 50,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    tenant_id = x_tenant_id or "tenant-001"
+    q = (
+        select(AgentRunRow, AgentConfigRow.name.label("agent_name"))
+        .join(AgentConfigRow, AgentRunRow.agent_id == AgentConfigRow.id, isouter=True)
+        .where(AgentRunRow.tenant_id == tenant_id)
+        .order_by(AgentRunRow.created_at.desc())
+        .limit(min(limit, 200))
+    )
+    rows = (await db.execute(q)).all()
+    return [
+        {
+            "id": r.AgentRunRow.id,
+            "agent_id": r.AgentRunRow.agent_id,
+            "agent_name": r.agent_name or r.AgentRunRow.agent_id[:8],
+            "iterations": r.AgentRunRow.iterations,
+            "tool_count": len(r.AgentRunRow.tool_calls or []),
+            "error": r.AgentRunRow.error,
+            "created_at": r.AgentRunRow.created_at.isoformat() if r.AgentRunRow.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+# ── Single agent run with full step trace ─────────────────────────────────────
+
+@router.get("/runs/{run_id}")
+async def get_agent_run(
+    run_id: str,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Return a single agent run with its full reasoning trace, used by the
+    Operations / Run Drilldown view."""
+    tenant_id = x_tenant_id or "tenant-001"
+    q = (
+        select(AgentRunRow, AgentConfigRow.name.label("agent_name"),
+               AgentConfigRow.model.label("agent_model"))
+        .join(AgentConfigRow, AgentRunRow.agent_id == AgentConfigRow.id, isouter=True)
+        .where(AgentRunRow.tenant_id == tenant_id, AgentRunRow.id == run_id)
+    )
+    res = (await db.execute(q)).first()
+    if not res:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    run = res.AgentRunRow
+    return {
+        "id": run.id,
+        "agent_id": run.agent_id,
+        "agent_name": res.agent_name or run.agent_id[:8],
+        "model": res.agent_model,
+        "thread_id": run.thread_id,
+        "pipeline_id": getattr(run, "pipeline_id", None),
+        "pipeline_run_id": getattr(run, "pipeline_run_id", None),
+        "iterations": run.iterations,
+        "tool_calls": run.tool_calls or [],
+        "steps": getattr(run, "steps", None) or [],
+        "final_text": getattr(run, "final_text", None),
+        "final_text_len": run.final_text_len,
+        "is_test": run.is_test,
+        "error": run.error,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+    }

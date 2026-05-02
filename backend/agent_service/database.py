@@ -88,6 +88,9 @@ class AgentRunRow(Base):
     tenant_id = Column(String, nullable=False, index=True)
     iterations = Column(Integer, nullable=False, default=0)
     tool_calls = Column(JSON, nullable=False, default=list)   # [{"tool": name, "input": {}, "result": "..."}]
+    # Full reasoning trace: ordered list of step objects describing each iteration.
+    # Step shapes: {kind: 'thinking'|'tool_call'|'tool_result'|'assistant'|'error', ...}
+    steps = Column(JSON, nullable=True)
     final_text_len = Column(Integer, nullable=False, default=0)
     final_text = Column(Text, nullable=True)
     pipeline_id = Column(String, nullable=True)
@@ -130,6 +133,14 @@ class AgentScheduleRow(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        from sqlalchemy import text as sa_text
+        for col_sql in [
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS steps JSON",
+        ]:
+            try:
+                await conn.execute(sa_text(col_sql))
+            except Exception:
+                pass
 
 
 async def get_session() -> AsyncSession:

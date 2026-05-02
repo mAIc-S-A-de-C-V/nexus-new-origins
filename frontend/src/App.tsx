@@ -26,6 +26,7 @@ const AdminHubPage    = lazy(() => import('./modules/admin/AdminHubPage'));
 const ValuePage       = lazy(() => import('./modules/value/ValuePage'));
 const SuperAdminPage  = lazy(() => import('./modules/superadmin/SuperAdminPage'));
 const ProcessMiningV2 = lazy(() => import('./modules/process_v2/ProcessMiningV2'));
+const OperationsModule = lazy(() => import('./modules/operations/OperationsModule'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -108,6 +109,8 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading Value Monitor..." />}><ValuePage /></Suspense>;
     case 'activity':
       return <Suspense fallback={<LoadingSpinner message="Loading Activity..." />}><ActivityPage /></Suspense>;
+    case 'operations':
+      return <Suspense fallback={<LoadingSpinner message="Loading Operations..." />}><OperationsModule /></Suspense>;
     case 'data':
       return <Suspense fallback={<LoadingSpinner message="Loading Data..." />}><DataHubPage /></Suspense>;
     case 'admin':

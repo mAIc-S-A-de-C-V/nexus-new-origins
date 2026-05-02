@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Nexus · Agent decision trace</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root {
+    --bg: #F8FAFC; --panel: #FFFFFF; --border: #E2E8F0; --hover: #F1F5F9;
+    --text: #0D1117; --muted: #64748B; --subtle: #94A3B8;
+    --accent: #7C3AED; --accent-light: #EDE9FE;
+    --success: #16A34A; --success-light: #F0FDF4;
+    --warn: #D97706; --warn-light: #FEF3C7;
+    --error: #DC2626; --error-light: #FEF2F2;
+    --info: #2563EB; --info-light: #DBEAFE;
+    --mono: ui-monospace, SF Mono, Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.45; }
+
+  .topbar { height: 52px; background: var(--panel); border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 20px; gap: 12px; }
+  .crumb { color: var(--muted); font-size: 12px; }
+  .crumb b { color: var(--text); }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+           font-family: var(--mono); }
+  .badge.running { background: var(--info-light); color: var(--info); }
+  .badge.success { background: var(--success-light); color: var(--success); }
+  .badge.failed  { background: var(--error-light); color: var(--error); }
+  .actions { margin-left: auto; display: flex; gap: 6px; }
+  .btn { font-size: 12px; padding: 5px 10px; border: 1px solid var(--border);
+         background: var(--panel); color: var(--text); border-radius: 4px; cursor: pointer; }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--accent); color: #FFF; border-color: var(--accent); }
+
+  .layout { display: grid; grid-template-columns: 240px 1fr 360px;
+            height: calc(100vh - 52px); min-height: 0; overflow: hidden; }
+  .col { overflow: auto; min-width: 0; background: var(--panel); }
+  .col.mid { background: var(--bg); }
+  .col-left   { border-right: 1px solid var(--border); }
+  .col-right  { border-left:  1px solid var(--border); }
+
+  .col-header { padding: 10px 14px; border-bottom: 1px solid var(--border);
+                font-size: 11px; font-weight: 700; color: var(--muted);
+                text-transform: uppercase; letter-spacing: .04em;
+                position: sticky; top: 0; background: var(--panel); z-index: 1; }
+
+  /* Left: iteration list (the agent's "thinking loop") */
+  .iter { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .iter:hover { background: var(--hover); }
+  .iter.active { background: var(--accent-light); }
+  .iter .head { display: flex; align-items: center; gap: 8px; }
+  .iter .num  { width: 22px; height: 22px; border-radius: 50%; background: var(--hover);
+                font-family: var(--mono); display: grid; place-items: center; font-size: 11px;
+                font-weight: 700; color: var(--muted); flex-shrink: 0; }
+  .iter.ok  .num { background: var(--success-light); color: var(--success); }
+  .iter.run .num { background: var(--info-light); color: var(--info);
+                   animation: blink 1s infinite; }
+  .iter.err .num { background: var(--error-light); color: var(--error); }
+  @keyframes blink { 50% { opacity: .5; } }
+  .iter .title { font-size: 12px; font-weight: 600; flex: 1; min-width: 0;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .iter .meta  { font-size: 11px; color: var(--muted); margin-top: 4px; padding-left: 30px;
+                 font-family: var(--mono); display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Mid: the trace */
+  .trace { padding: 14px 18px 28px; max-width: 880px; margin: 0 auto; }
+
+  .blk { border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
+         padding: 12px 14px; margin-bottom: 10px; position: relative; }
+  .blk + .blk { margin-top: 0; }
+  .blk .role { font-size: 10px; font-weight: 700; text-transform: uppercase;
+               letter-spacing: .05em; margin-bottom: 6px; display: inline-flex;
+               align-items: center; gap: 5px; padding: 2px 7px; border-radius: 10px; }
+  .blk.user      { background: #FFF; }
+  .blk.user .role     { background: var(--info-light); color: var(--info); }
+  .blk.thinking { background: #FAF7FF; border-color: #E9D5FF; }
+  .blk.thinking .role { background: var(--accent-light); color: var(--accent); }
+  .blk.tool     { background: #FFFDF5; border-color: #FDE68A; }
+  .blk.tool .role     { background: var(--warn-light); color: var(--warn); }
+  .blk.toolresult { background: #F0FDF4; border-color: #BBF7D0; }
+  .blk.toolresult .role { background: var(--success-light); color: var(--success); }
+  .blk.assistant { background: #FFF; }
+  .blk.assistant .role { background: #F1F5F9; color: var(--muted); }
+  .blk.error    { background: var(--error-light); border-color: #FECACA; }
+  .blk.error .role { background: #FEE2E2; color: var(--error); }
+  .blk.gate     { background: #FFFBEB; border: 1px dashed #FCD34D; }
+  .blk.gate .role { background: #FEF3C7; color: var(--warn); }
+
+  .blk .body { font-size: 13px; }
+  .blk .body pre { margin: 6px 0 0; background: #0D1117; color: #F1F5F9;
+                   padding: 8px 10px; border-radius: 4px; overflow-x: auto;
+                   font-size: 11.5px; font-family: var(--mono); }
+  .blk .body .reason { color: var(--muted); font-style: italic; }
+  .blk .body .tool-card { display: flex; gap: 10px; align-items: center; }
+  .blk .body .tool-card .tn { font-family: var(--mono); font-weight: 700; color: var(--text); }
+  .blk .body .kv { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+  .blk .body .kv span { color: var(--text); }
+  .blk .body .out { margin-top: 6px; font-family: var(--mono); font-size: 11.5px;
+                    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+                    padding: 6px 8px; }
+  .blk .meta-line { font-size: 11px; color: var(--muted); display: flex; gap: 10px;
+                    margin-top: 6px; font-family: var(--mono); flex-wrap: wrap; }
+
+  /* connector line between blocks */
+  .conn { width: 2px; height: 12px; background: var(--border); margin: 0 auto -3px 24px; }
+
+  /* Streaming caret */
+  .caret { display: inline-block; width: 8px; height: 14px; background: var(--accent);
+           vertical-align: -2px; margin-left: 2px; animation: caret 0.9s step-end infinite; }
+  @keyframes caret { 50% { opacity: 0; } }
+
+  /* Right: metadata + tools usage */
+  .meta-row { display: flex; justify-content: space-between; padding: 6px 14px;
+              font-size: 12px; border-bottom: 1px dashed #F1F5F9; }
+  .meta-row .k { color: var(--muted); }
+  .meta-row .v { color: var(--text); font-family: var(--mono); }
+
+  .tools-summary { padding: 14px; }
+  .tools-summary h3 { font-size: 11px; color: var(--muted); margin: 0 0 8px;
+                     text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+  .tool-row { display: flex; align-items: center; justify-content: space-between;
+              padding: 5px 0; font-size: 12px; border-bottom: 1px dashed #F1F5F9; }
+  .tool-row .name { font-family: var(--mono); }
+  .tool-row .calls { color: var(--muted); font-family: var(--mono); }
+
+  .reasoning-toggle { padding: 8px 14px; border-top: 1px solid var(--border);
+                       border-bottom: 1px solid var(--border); background: var(--bg);
+                       display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .switch { position: relative; width: 28px; height: 16px; background: var(--border);
+            border-radius: 10px; cursor: pointer; transition: background 100ms; }
+  .switch::after { content: ""; position: absolute; left: 2px; top: 2px;
+                   width: 12px; height: 12px; border-radius: 50%; background: #FFF;
+                   transition: left 120ms; }
+  .switch.on { background: var(--accent); }
+  .switch.on::after { left: 14px; }
+
+  /* Cost / token bar */
+  .cost-row { display: flex; gap: 6px; align-items: center; padding: 8px 14px;
+              border-bottom: 1px solid var(--border); font-family: var(--mono);
+              font-size: 11.5px; }
+  .cost-row .pill { padding: 2px 7px; border-radius: 10px; }
+  .cost-row .in   { background: var(--info-light); color: var(--info); }
+  .cost-row .out  { background: var(--success-light); color: var(--success); }
+  .cost-row .cache { background: var(--accent-light); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <span class="crumb"><a href="01-hivemind.html" style="color:var(--info); text-decoration:none;">Operations</a> / Agents / <b>Inbox Triage</b> / <span style="font-family:var(--mono);">a_3f2c</span></span>
+  <span class="badge running">RUNNING · iter 3</span>
+  <div class="actions">
+    <button class="btn">Pause</button>
+    <button class="btn">Step ↓</button>
+    <button class="btn">Re-run with same input</button>
+    <button class="btn primary">Open agent config</button>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- ── Left: iteration list ─────────────────────────────────── -->
+  <aside class="col col-left">
+    <div class="col-header">Reasoning loop</div>
+
+    <div class="iter ok">
+      <div class="head">
+        <span class="num">0</span>
+        <span class="title">Initial prompt</span>
+      </div>
+      <div class="meta"><span>180 in</span><span>—</span></div>
+    </div>
+
+    <div class="iter ok">
+      <div class="head">
+        <span class="num">1</span>
+        <span class="title">list_object_types</span>
+      </div>
+      <div class="meta"><span>240 ms</span><span>1 tool</span><span>+412 in / 88 out</span></div>
+    </div>
+
+    <div class="iter ok">
+      <div class="head">
+        <span class="num">2</span>
+        <span class="title">get_object_schema(message)</span>
+      </div>
+      <div class="meta"><span>180 ms</span><span>1 tool</span><span>+820 in / 142 out</span></div>
+    </div>
+
+    <div class="iter active run">
+      <div class="head">
+        <span class="num">3</span>
+        <span class="title">query_records · 7d unread</span>
+      </div>
+      <div class="meta"><span>running…</span><span>tool</span><span>+2,140 in</span></div>
+    </div>
+
+    <div class="iter">
+      <div class="head">
+        <span class="num">4</span>
+        <span class="title" style="color: var(--subtle);">…then summarize + propose</span>
+      </div>
+      <div class="meta"><span style="color: var(--subtle);">pending</span></div>
+    </div>
+  </aside>
+
+  <!-- ── Mid: full decision trace ─────────────────────────────── -->
+  <main class="col mid">
+    <div class="cost-row">
+      <span style="color: var(--muted);">tokens</span>
+      <span class="pill in">in 3,572</span>
+      <span class="pill out">out 218</span>
+      <span class="pill cache">cache 8,144</span>
+      <span style="margin-left: auto; color: var(--muted);">cost ≈ $0.041 · model claude-opus-4-7 · temp 0.2</span>
+    </div>
+
+    <div class="reasoning-toggle">
+      <span>Show reasoning blocks</span>
+      <span class="switch on" onclick="this.classList.toggle('on'); document.querySelectorAll('.blk.thinking').forEach(b => b.style.display = this.classList.contains('on') ? '' : 'none');"></span>
+      <span style="margin-left: auto;">Show only failed iterations
+        <span class="switch" style="margin-left: 6px;" onclick="this.classList.toggle('on');"></span>
+      </span>
+    </div>
+
+    <div class="trace">
+
+      <!-- Iter 0 -->
+      <div class="blk user">
+        <span class="role">User · scheduled trigger</span>
+        <div class="body">Triage my inbox: surface anything that needs a response from me today, and flag anything that looks like a refund request.</div>
+        <div class="meta-line">14:02:18 · trigger=schedule S-mon · prompt_id=p_inbox_v3</div>
+      </div>
+
+      <div class="conn"></div>
+
+      <!-- Iter 1 -->
+      <div class="blk thinking">
+        <span class="role">◐ Thinking · iter 1</span>
+        <div class="body">
+          <span class="reason">I need to find the recent messages. First I'll check what object types exist so I know whether they're stored as `email`, `message`, or something else.</span>
+        </div>
+      </div>
+
+      <div class="conn"></div>
+
+      <div class="blk tool">
+        <span class="role">⚙ Tool call · list_object_types</span>
+        <div class="body">
+          <div class="tool-card">
+            <span class="tn">list_object_types</span>
+            <span style="color: var(--muted);">no arguments</span>
+          </div>
+        </div>
+        <div class="meta-line">→ executed 240 ms · ok</div>
+      </div>
+
+      <div class="blk toolresult">
+        <span class="role">↩ Tool result</span>
+        <div class="body">
+          <div class="out">[
+  { "id": "message",  "count": 12_488 },
+  { "id": "deal",     "count":    142 },
+  { "id": "contact",  "count":  3_211 }
+]</div>
+        </div>
+      </div>
+
+      <div class="conn"></div>
+
+      <!-- Iter 2 -->
+      <div class="blk thinking">
+        <span class="role">◐ Thinking · iter 2</span>
+        <div class="body">
+          <span class="reason">Got it — the type is `message`. Before querying I need the schema so I know which field carries the body, sender, and whether it has a "read" flag.</span>
+        </div>
+      </div>
+
+      <div class="conn"></div>
+
+      <div class="blk tool">
+        <span class="role">⚙ Tool call · get_object_schema</span>
+        <div class="body">
+          <div class="tool-card">
+            <span class="tn">get_object_schema</span>
+          </div>
+          <div class="kv">arguments: { "object_type_id": <span>"message"</span> }</div>
+        </div>
+        <div class="meta-line">→ 180 ms · ok</div>
+      </div>
+
+      <div class="blk toolresult">
+        <span class="role">↩ Tool result · 142 tokens</span>
+        <div class="body">
+          <div class="out">fields: id, subject, body, from, to, sent_at, read, channel
+3 sample rows shown · channel ∈ { gmail, whatsapp, slack }</div>
+        </div>
+      </div>
+
+      <div class="conn"></div>
+
+      <!-- Iter 3 (currently running) -->
+      <div class="blk thinking">
+        <span class="role">◐ Thinking · iter 3</span>
+        <div class="body">
+          <span class="reason">I'll query unread messages from the last 7 days, ordered by sent_at desc, capping at 200 so I don't blow context. I'll group by sender so I can flag refund-related senders later.<span class="caret"></span></span>
+        </div>
+      </div>
+
+      <div class="conn"></div>
+
+      <div class="blk tool" style="border-color: var(--info); box-shadow: 0 0 0 3px rgba(37,99,235,.10);">
+        <span class="role" style="background: var(--info-light); color: var(--info);">⚙ Tool call · query_records · running</span>
+        <div class="body">
+          <div class="tool-card"><span class="tn">query_records</span></div>
+          <div class="kv">arguments: {
+  <span>"object_type_id"</span>: <span>"message"</span>,
+  <span>"filter"</span>: <span>"read = false AND sent_at &gt; now() - 7d"</span>,
+  <span>"order_by"</span>: <span>"sent_at desc"</span>,
+  <span>"limit"</span>: <span>200</span>,
+  <span>"group_by"</span>: <span>"from"</span>
+}</div>
+        </div>
+        <div class="meta-line">→ streaming… 1.2s elapsed</div>
+      </div>
+
+      <div class="conn"></div>
+
+      <!-- Pre-rendered next blocks faded out -->
+      <div class="blk assistant" style="opacity: .35; filter: grayscale(.3); pointer-events: none;">
+        <span class="role">⊙ Final answer · pending</span>
+        <div class="body">
+          <span style="color: var(--subtle);">Will arrive once tool returns. Expected: bullet list of senders + refund flags + an `action_propose(send_reply)` with a draft for any urgent thread.</span>
+        </div>
+      </div>
+
+      <!-- Example of a checkpoint that would block on a write -->
+      <div class="conn" style="opacity:.4;"></div>
+      <div class="blk gate" style="opacity: .35;">
+        <span class="role">⏸ Human gate · would block here</span>
+        <div class="body">
+          Before tool <code style="font-family: var(--mono);">action_propose(send_reply)</code> executes, the run will pause for human approval (action queue → Human Actions).
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ── Right: metadata + summary ────────────────────────────── -->
+  <aside class="col col-right">
+    <div class="col-header">Run metadata</div>
+
+    <div class="meta-row"><span class="k">run_id</span><span class="v">a_3f2c</span></div>
+    <div class="meta-row"><span class="k">agent</span><span class="v">A-Inbox-Triage</span></div>
+    <div class="meta-row"><span class="k">model</span><span class="v">claude-opus-4-7</span></div>
+    <div class="meta-row"><span class="k">temperature</span><span class="v">0.2</span></div>
+    <div class="meta-row"><span class="k">trigger</span><span class="v">schedule S-mon</span></div>
+    <div class="meta-row"><span class="k">started</span><span class="v">14:02:18.012</span></div>
+    <div class="meta-row"><span class="k">elapsed</span><span class="v">8.4s</span></div>
+    <div class="meta-row"><span class="k">iterations</span><span class="v">3 / 12 max</span></div>
+    <div class="meta-row"><span class="k">tools</span><span class="v">3 calls · 0 errors</span></div>
+    <div class="meta-row"><span class="k">tenant</span><span class="v">maic</span></div>
+
+    <div class="tools-summary">
+      <h3>Tool usage</h3>
+      <div class="tool-row"><span class="name">list_object_types</span><span class="calls">1 · 240ms · ok</span></div>
+      <div class="tool-row"><span class="name">get_object_schema</span><span class="calls">1 · 180ms · ok</span></div>
+      <div class="tool-row"><span class="name">query_records</span><span class="calls">1 · running…</span></div>
+      <div class="tool-row" style="opacity: .55;"><span class="name">action_propose</span><span class="calls">0 · pending gate</span></div>
+    </div>
+
+    <div class="tools-summary" style="border-top: 1px solid var(--border);">
+      <h3>Knowledge sources</h3>
+      <div class="tool-row"><span class="name">policy/inbox-triage.md</span><span class="calls">cite · ¶ 2</span></div>
+      <div class="tool-row"><span class="name">refund-classifier.json</span><span class="calls">cite · ¶ 1</span></div>
+    </div>
+
+    <div class="tools-summary" style="border-top: 1px solid var(--border);">
+      <h3>Compare to</h3>
+      <div class="tool-row"><span class="name">a_2db1 · 1h ago</span><span class="calls">5 iter · 11s</span></div>
+      <div class="tool-row"><span class="name">a_290e · 1d ago</span><span class="calls">4 iter · 9s</span></div>
+      <div class="tool-row"><span class="name">a_19c0 · 2d ago</span><span class="calls">5 iter · 14s</span></div>
+    </div>
+
+    <div class="tools-summary" style="border-top: 1px solid var(--border);">
+      <h3>Linked entities</h3>
+      <div class="tool-row"><span class="name">connector c_gmail</span><span class="calls">source</span></div>
+      <div class="tool-row"><span class="name">pipeline P-098 (WhatsApp)</span><span class="calls">source</span></div>
+      <div class="tool-row"><span class="name">app · Inbox Hub</span><span class="calls">consumer</span></div>
+    </div>
+
+  </aside>
+
+</div>
+
+<script>
+  // animate the caret on streaming reasoning, pulse the tool-running block
+  document.querySelectorAll('.iter').forEach(i =>
+    i.addEventListener('click', () => {
+      document.querySelectorAll('.iter').forEach(x => x.classList.remove('active'));
+      i.classList.add('active');
+    }));
+</script>
+</body>
+</html>

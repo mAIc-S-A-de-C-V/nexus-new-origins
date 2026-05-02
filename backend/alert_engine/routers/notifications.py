@@ -34,6 +34,16 @@ async def list_notifications(
     for r in rows.fetchall():
         d = dict(r._mapping)
         d["fired_at"] = d["fired_at"].isoformat()
+        # Derive a run_link from the column or, for older rows, from details payload.
+        if not d.get("run_link"):
+            details = d.get("details") or {}
+            if isinstance(details, dict):
+                if details.get("pipeline_run_id"):
+                    d["run_link"] = {"kind": "pipeline", "run_id": details["pipeline_run_id"],
+                                     "pipeline_id": details.get("pipeline_id")}
+                elif details.get("agent_run_id"):
+                    d["run_link"] = {"kind": "agent", "run_id": details["agent_run_id"],
+                                     "agent_id": details.get("agent_id")}
         notifications.append(d)
 
     unread_count_row = await pg.execute(

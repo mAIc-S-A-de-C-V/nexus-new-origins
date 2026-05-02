@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Nexus · Hivemind — Live Operations</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  /* ── Nexus design tokens ───────────────────────────────────────── */
+  :root {
+    --bg:        #F8FAFC;
+    --panel:     #FFFFFF;
+    --sidebar:   #F1F5F9;
+    --border:    #E2E8F0;
+    --text:      #0D1117;
+    --muted:     #64748B;
+    --subtle:    #94A3B8;
+    --hover:     #F1F5F9;
+
+    --accent:        #7C3AED;
+    --accent-light:  #EDE9FE;
+    --success:       #16A34A;
+    --success-light: #F0FDF4;
+    --warn:          #D97706;
+    --warn-light:    #FEF3C7;
+    --error:         #DC2626;
+    --error-light:   #FEF2F2;
+    --info:          #2563EB;
+    --info-light:    #DBEAFE;
+
+    --mono: ui-monospace, SF Mono, Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  /* ── Shell ─────────────────────────────────────────────────────── */
+  .app   { display: flex; height: 100vh; overflow: hidden; }
+  .rail  { width: 56px; background: #0D1117; border-right: 1px solid #1F2937; flex-shrink: 0;
+           display: flex; flex-direction: column; align-items: center; padding-top: 8px; gap: 2px; }
+  .rail .logo { width: 32px; height: 32px; border-radius: 6px; background: var(--accent);
+               display: grid; place-items: center; color: #FFF; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+  .rail button { width: 40px; height: 40px; border: 0; background: transparent; color: #94A3B8;
+                 border-radius: 6px; cursor: pointer; display: grid; place-items: center; font-size: 12px; }
+  .rail button.active { background: #1F2937; color: #FFF; }
+  .rail button:hover  { background: #1F2937; color: #FFF; }
+
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  /* ── Topbar ────────────────────────────────────────────────────── */
+  .topbar { height: 52px; background: var(--panel); border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 20px; gap: 14px; flex-shrink: 0; }
+  .topbar h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  .topbar .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success);
+                      box-shadow: 0 0 0 0 rgba(22,163,74,.6); animation: pulse-dot 1.4s infinite; }
+  @keyframes pulse-dot {
+    0%   { box-shadow: 0 0 0 0 rgba(22,163,74,.55); }
+    70%  { box-shadow: 0 0 0 8px rgba(22,163,74,0);  }
+    100% { box-shadow: 0 0 0 0 rgba(22,163,74,0);    }
+  }
+  .topbar .live-label { font-size: 12px; color: var(--success); font-weight: 600; }
+  .topbar .stats { display: flex; gap: 18px; margin-left: auto; align-items: center; }
+  .topbar .stat  { font-size: 12px; color: var(--muted); }
+  .topbar .stat strong { color: var(--text); font-family: var(--mono); font-size: 13px; }
+
+  /* ── Sub-toolbar (filters) ─────────────────────────────────────── */
+  .subbar { height: 40px; background: var(--panel); border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 20px; gap: 8px; flex-shrink: 0; }
+  .chip { padding: 4px 10px; border: 1px solid var(--border); border-radius: 14px; font-size: 12px;
+          color: var(--muted); background: transparent; cursor: pointer; }
+  .chip.on { background: var(--accent-light); color: var(--accent); border-color: var(--accent); font-weight: 500; }
+  .chip .count { font-family: var(--mono); margin-left: 4px; opacity: .8; }
+  .search { flex: 1; max-width: 300px; height: 28px; border: 1px solid var(--border); border-radius: 4px;
+            padding: 0 10px; font-size: 12px; background: var(--bg); color: var(--text); margin-left: auto; }
+
+  /* ── Grid of swimlanes ─────────────────────────────────────────── */
+  .grid { flex: 1; overflow: auto; padding: 14px 20px; display: grid;
+          grid-template-columns: repeat(5, minmax(220px, 1fr));
+          gap: 14px; align-content: start; }
+  .lane { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .lane h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+             color: var(--muted); margin: 0 0 4px; padding: 4px 6px; display: flex;
+             align-items: center; gap: 6px; }
+  .lane h2 .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .lane[data-kind="pipeline"]  h2 .dot { background: #2563EB; }
+  .lane[data-kind="agent"]     h2 .dot { background: #7C3AED; }
+  .lane[data-kind="connector"] h2 .dot { background: #0891B2; }
+  .lane[data-kind="schedule"]  h2 .dot { background: #D97706; }
+  .lane[data-kind="alert"]     h2 .dot { background: #DC2626; }
+
+  /* ── Card ──────────────────────────────────────────────────────── */
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+          padding: 10px 12px; cursor: pointer; transition: border-color 120ms, box-shadow 120ms;
+          position: relative; overflow: hidden; }
+  .card:hover { border-color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .card .row { display: flex; align-items: center; gap: 6px; }
+  .card .name { font-size: 12.5px; font-weight: 600; color: var(--text); flex: 1; min-width: 0;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .id   { font-family: var(--mono); font-size: 10px; color: var(--subtle); }
+  .card .verb { font-size: 11.5px; color: var(--muted); margin-top: 6px; min-height: 16px;
+                font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .meta { font-size: 10.5px; color: var(--subtle); margin-top: 6px; display: flex;
+                gap: 8px; flex-wrap: wrap; }
+  .card .badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+  .card .badge.model { background: var(--accent-light); color: var(--accent); font-family: var(--mono); }
+  .card .badge.tokens { background: #F1F5F9; color: var(--muted); font-family: var(--mono); }
+  .card .badge.dur    { background: #F1F5F9; color: var(--muted); font-family: var(--mono); }
+
+  /* status states */
+  .card .status { font-size: 10px; padding: 1px 7px; border-radius: 10px; font-weight: 600;
+                  display: inline-flex; align-items: center; gap: 4px; }
+  .card.running .status  { background: #DBEAFE; color: var(--info); }
+  .card.success .status  { background: var(--success-light); color: var(--success); }
+  .card.idle    .status  { background: #F1F5F9; color: var(--muted); }
+  .card.failed  .status  { background: var(--error-light); color: var(--error); }
+  .card.warning .status  { background: var(--warn-light); color: var(--warn); }
+  .card .status .pulse { width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+                         animation: pulse-dot-sm 1s infinite; }
+  @keyframes pulse-dot-sm {
+    0%, 100% { transform: scale(.85); opacity: .55; }
+    50%      { transform: scale(1.1); opacity: 1;   }
+  }
+
+  /* glow on running cards */
+  .card.running { border-color: rgba(37,99,235,.45);
+                  animation: glow 2s ease-in-out infinite; }
+  @keyframes glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(37,99,235,0);   }
+    50%      { box-shadow: 0 0 0 3px rgba(37,99,235,.10); }
+  }
+  .card.failed { border-color: rgba(220,38,38,.45);
+                 box-shadow: inset 3px 0 0 var(--error); }
+  .card.warning { box-shadow: inset 3px 0 0 var(--warn); }
+
+  /* progress shimmer for running */
+  .card.running::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--info), transparent);
+    background-size: 200% 100%; animation: shimmer 1.6s linear infinite;
+  }
+  @keyframes shimmer { 0% { background-position: -100% 0; } 100% { background-position: 200% 0; } }
+
+  /* particle flow (tool calls / records ticking through) */
+  .verb .tick { display: inline-block; width: 4px; height: 4px; border-radius: 50%;
+                background: var(--info); margin-right: 6px; vertical-align: middle;
+                animation: tick 0.9s infinite; }
+  @keyframes tick { 0%, 100% { opacity: .25; } 50% { opacity: 1; transform: translateX(2px); } }
+
+  /* counter that ticks up */
+  .ticker { display: inline-block; transition: color 200ms; }
+
+  /* edge pulse (between linked entities — drawn with svg overlay) */
+  .edges { position: absolute; inset: 0; pointer-events: none; }
+  .edge  { stroke: var(--accent); stroke-width: 1.5; fill: none; opacity: .14;
+           stroke-dasharray: 4 4; animation: dash 18s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -100; } }
+
+  /* footer mini event-stream */
+  .ticker-bar { height: 32px; background: var(--panel); border-top: 1px solid var(--border);
+                padding: 0 16px; display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+                font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; }
+  .ticker-bar .label { color: var(--accent); font-weight: 600; }
+  .ticker-bar ul { display: flex; gap: 18px; padding: 0; margin: 0; list-style: none;
+                   animation: scroll-left 38s linear infinite; white-space: nowrap; }
+  @keyframes scroll-left { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  .ticker-bar li .ts { color: var(--subtle); margin-right: 6px; }
+  .ticker-bar li .ev-ok   { color: var(--success); }
+  .ticker-bar li .ev-warn { color: var(--warn); }
+  .ticker-bar li .ev-err  { color: var(--error); }
+  .ticker-bar li .ev-info { color: var(--info); }
+</style>
+</head>
+<body>
+<div class="app" style="position: relative;">
+
+  <!-- Left rail (decorative) -->
+  <nav class="rail">
+    <div class="logo">N</div>
+    <button title="Connectors">○</button>
+    <button title="Ontology">⌑</button>
+    <button title="Pipelines">⇄</button>
+    <button title="Agents">★</button>
+    <button class="active" title="Operations / Hivemind">◉</button>
+    <button title="Alerts">!</button>
+    <button title="Settings" style="margin-top: auto; margin-bottom: 8px;">⚙</button>
+  </nav>
+
+  <main class="main">
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <span class="live-dot"></span>
+      <span class="live-label">LIVE</span>
+      <h1>Operations · Hivemind</h1>
+      <div class="stats">
+        <span class="stat"><strong id="s-running">12</strong> running</span>
+        <span class="stat"><strong id="s-failed">2</strong> failed</span>
+        <span class="stat"><strong id="s-tokens">486k</strong> tokens / hr</span>
+        <span class="stat"><strong id="s-rps">3.4k</strong> rec / min</span>
+      </div>
+    </header>
+
+    <!-- Filter bar -->
+    <div class="subbar">
+      <button class="chip on">All <span class="count">38</span></button>
+      <button class="chip">Pipelines <span class="count">14</span></button>
+      <button class="chip">Agents <span class="count">11</span></button>
+      <button class="chip">Connectors <span class="count">6</span></button>
+      <button class="chip">Schedules <span class="count">5</span></button>
+      <button class="chip">Alerts <span class="count">2</span></button>
+      <input class="search" placeholder="Search by name, id, tag…" />
+    </div>
+
+    <!-- Grid of swimlanes -->
+    <section class="grid">
+
+      <!-- ── Pipelines lane ───────────────────────────────────────── -->
+      <div class="lane" data-kind="pipeline">
+        <h2><span class="dot"></span>Pipelines</h2>
+
+        <div class="card running" data-id="P-104">
+          <div class="row">
+            <span class="name">Salesforce → Deals</span>
+            <span class="status"><span class="pulse"></span>Running</span>
+          </div>
+          <div class="verb"><span class="tick"></span>ENRICH · matched <span class="ticker" data-counter="2117" data-step="3">2,117</span> / 2,400</div>
+          <div class="meta">
+            <span class="badge dur">12s</span>
+            <span class="id">run_4f2a</span>
+          </div>
+        </div>
+
+        <div class="card running" data-id="P-098">
+          <div class="row">
+            <span class="name">WhatsApp inbox</span>
+            <span class="status"><span class="pulse"></span>Running</span>
+          </div>
+          <div class="verb"><span class="tick"></span>SOURCE · reading <span class="ticker" data-counter="43" data-step="1">43</span> messages</div>
+          <div class="meta">
+            <span class="badge dur">3s</span>
+            <span class="id">run_91be</span>
+          </div>
+        </div>
+
+        <div class="card failed" data-id="P-077">
+          <div class="row">
+            <span class="name">Stripe payouts → ledger</span>
+            <span class="status">Failed</span>
+          </div>
+          <div class="verb">VALIDATE · 17 invalid rows</div>
+          <div class="meta">
+            <span class="badge dur">5m ago</span>
+            <span class="id">run_22cf</span>
+            <span class="badge" style="background:var(--error-light); color:var(--error);">!</span>
+          </div>
+        </div>
+
+        <div class="card success" data-id="P-051">
+          <div class="row">
+            <span class="name">Daily cohort rollup</span>
+            <span class="status">Success</span>
+          </div>
+          <div class="verb">12,488 rows out</div>
+          <div class="meta">
+            <span class="badge dur">14s</span>
+            <span class="id">run_70a1</span>
+          </div>
+        </div>
+
+        <div class="card idle" data-id="P-022">
+          <div class="row">
+            <span class="name">CSV drop · vendor X</span>
+            <span class="status">Idle</span>
+          </div>
+          <div class="verb">last run 2h ago</div>
+          <div class="meta">
+            <span class="id">P-022</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Agents lane ──────────────────────────────────────────── -->
+      <div class="lane" data-kind="agent">
+        <h2><span class="dot"></span>Agents</h2>
+
+        <div class="card running" data-id="A-Inbox-Triage">
+          <div class="row">
+            <span class="name">Inbox Triage</span>
+            <span class="status"><span class="pulse"></span>Thinking</span>
+          </div>
+          <div class="verb"><span class="tick"></span>tool: <span style="color:var(--text)">query_records</span> · iter 3</div>
+          <div class="meta">
+            <span class="badge model">claude-opus-4-7</span>
+            <span class="badge tokens"><span class="ticker" data-counter="3812" data-step="14">3,812</span>↑</span>
+          </div>
+        </div>
+
+        <div class="card running" data-id="A-Sepsis">
+          <div class="row">
+            <span class="name">Sepsis monitor</span>
+            <span class="status"><span class="pulse"></span>Tool</span>
+          </div>
+          <div class="verb"><span class="tick"></span>logic_function_run · risk_score</div>
+          <div class="meta">
+            <span class="badge model">sonnet-4-6</span>
+            <span class="badge tokens">12,440↑</span>
+          </div>
+        </div>
+
+        <div class="card warning" data-id="A-PR-Reviewer">
+          <div class="row">
+            <span class="name">PR reviewer</span>
+            <span class="status">Awaiting human</span>
+          </div>
+          <div class="verb">action_propose · 2 pending</div>
+          <div class="meta">
+            <span class="badge model">opus-4-7</span>
+            <span class="id">a_92ef</span>
+          </div>
+        </div>
+
+        <div class="card success" data-id="A-OnCall">
+          <div class="row">
+            <span class="name">OnCall summarizer</span>
+            <span class="status">Done</span>
+          </div>
+          <div class="verb">posted summary to #ops</div>
+          <div class="meta">
+            <span class="badge dur">4s</span>
+            <span class="badge tokens">1,204↑</span>
+          </div>
+        </div>
+
+        <div class="card failed" data-id="A-Forecast">
+          <div class="row">
+            <span class="name">Revenue forecaster</span>
+            <span class="status">Failed</span>
+          </div>
+          <div class="verb">tool error: query_records 500</div>
+          <div class="meta">
+            <span class="badge dur">8m ago</span>
+            <span class="id">a_71b3</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Connectors lane ──────────────────────────────────────── -->
+      <div class="lane" data-kind="connector">
+        <h2><span class="dot"></span>Connectors</h2>
+
+        <div class="card running" data-id="C-Gmail">
+          <div class="row">
+            <span class="name">Gmail · jose@maic.ai</span>
+            <span class="status"><span class="pulse"></span>Polling</span>
+          </div>
+          <div class="verb"><span class="tick"></span>+<span class="ticker" data-counter="4" data-step="1">4</span> new messages</div>
+          <div class="meta">
+            <span class="badge dur">poll 60s</span>
+          </div>
+        </div>
+
+        <div class="card success" data-id="C-Stripe">
+          <div class="row">
+            <span class="name">Stripe</span>
+            <span class="status">Healthy</span>
+          </div>
+          <div class="verb">webhook receiver up</div>
+          <div class="meta">
+            <span class="badge dur">99.97%</span>
+          </div>
+        </div>
+
+        <div class="card warning" data-id="C-HubSpot">
+          <div class="row">
+            <span class="name">HubSpot</span>
+            <span class="status">Rate limited</span>
+          </div>
+          <div class="verb">backoff 60s · retry 3/5</div>
+          <div class="meta">
+            <span class="id">c_44a</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Schedules lane ───────────────────────────────────────── -->
+      <div class="lane" data-kind="schedule">
+        <h2><span class="dot"></span>Schedules</h2>
+
+        <div class="card idle" data-id="S-daily">
+          <div class="row">
+            <span class="name">Daily rollup</span>
+            <span class="status">Next 03:00</span>
+          </div>
+          <div class="verb">cron 0 3 * * *</div>
+          <div class="meta">
+            <span class="id">P-051</span>
+          </div>
+        </div>
+
+        <div class="card running" data-id="S-mon">
+          <div class="row">
+            <span class="name">Weekly review prompt</span>
+            <span class="status"><span class="pulse"></span>Now</span>
+          </div>
+          <div class="verb">→ A-OnCall</div>
+          <div class="meta">
+            <span class="badge dur">cron 0 9 * * 1</span>
+          </div>
+        </div>
+
+        <div class="card success" data-id="S-hour">
+          <div class="row">
+            <span class="name">Hourly sweep</span>
+            <span class="status">OK</span>
+          </div>
+          <div class="verb">last 13s ago</div>
+          <div class="meta">
+            <span class="badge dur">59 runs / day</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Alerts lane ──────────────────────────────────────────── -->
+      <div class="lane" data-kind="alert">
+        <h2><span class="dot"></span>Alerts</h2>
+
+        <div class="card failed" data-id="AL-stripe">
+          <div class="row">
+            <span class="name">Stripe payout pipeline failing</span>
+            <span class="status">Critical</span>
+          </div>
+          <div class="verb">VALIDATE · 17 dropped</div>
+          <div class="meta">
+            <span class="badge dur">5m ago</span>
+            <span class="id">→ run_22cf</span>
+          </div>
+        </div>
+
+        <div class="card warning" data-id="AL-stuck">
+          <div class="row">
+            <span class="name">3 cases stuck > 24h</span>
+            <span class="status">Warning</span>
+          </div>
+          <div class="verb">stuck_case rule</div>
+          <div class="meta">
+            <span class="badge dur">22m ago</span>
+          </div>
+        </div>
+
+        <div class="card success" data-id="AL-clear">
+          <div class="row">
+            <span class="name">Token-budget rule</span>
+            <span class="status">Clear</span>
+          </div>
+          <div class="verb">no fires last 7d</div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Live event ticker -->
+    <footer class="ticker-bar">
+      <span class="label">EVENTS</span>
+      <ul id="ticker">
+        <li><span class="ts">14:02:31</span> <span class="ev-info">P-104</span> ENRICH matched 2117/2400</li>
+        <li><span class="ts">14:02:30</span> <span class="ev-info">A-Inbox-Triage</span> tool=query_records ok 240ms</li>
+        <li><span class="ts">14:02:29</span> <span class="ev-warn">C-HubSpot</span> rate-limited, backoff 60s</li>
+        <li><span class="ts">14:02:28</span> <span class="ev-ok">P-051</span> finished 12,488 rows in 14s</li>
+        <li><span class="ts">14:02:25</span> <span class="ev-err">P-077</span> VALIDATE dropped 17 rows · alert AL-stripe</li>
+        <li><span class="ts">14:02:24</span> <span class="ev-info">A-Sepsis</span> logic risk_score=0.71</li>
+        <li><span class="ts">14:02:22</span> <span class="ev-info">C-Gmail</span> +4 new messages</li>
+        <li><span class="ts">14:02:21</span> <span class="ev-ok">A-OnCall</span> posted summary to #ops</li>
+        <li><span class="ts">14:02:18</span> <span class="ev-info">S-mon</span> fired weekly review</li>
+        <li><span class="ts">14:02:17</span> <span class="ev-info">A-PR-Reviewer</span> action_propose pending human</li>
+        <!-- duplicate so the marquee loops seamlessly -->
+        <li><span class="ts">14:02:31</span> <span class="ev-info">P-104</span> ENRICH matched 2117/2400</li>
+        <li><span class="ts">14:02:30</span> <span class="ev-info">A-Inbox-Triage</span> tool=query_records ok 240ms</li>
+        <li><span class="ts">14:02:29</span> <span class="ev-warn">C-HubSpot</span> rate-limited, backoff 60s</li>
+        <li><span class="ts">14:02:28</span> <span class="ev-ok">P-051</span> finished 12,488 rows in 14s</li>
+        <li><span class="ts">14:02:25</span> <span class="ev-err">P-077</span> VALIDATE dropped 17 rows · alert AL-stripe</li>
+      </ul>
+    </footer>
+
+  </main>
+</div>
+
+<script>
+  // tick the running counters so the page feels alive
+  const tickers = document.querySelectorAll('.ticker[data-counter]');
+  setInterval(() => {
+    tickers.forEach(el => {
+      const cur = parseInt(el.dataset.counter, 10);
+      const step = parseInt(el.dataset.step || '1', 10);
+      const next = cur + Math.floor(Math.random() * step) + 1;
+      el.dataset.counter = next;
+      el.textContent = next.toLocaleString();
+      el.style.color = '#16A34A';
+      setTimeout(() => { el.style.color = ''; }, 250);
+    });
+  }, 1100);
+
+  // rotate the running stat
+  const sRunning = document.getElementById('s-running');
+  setInterval(() => {
+    const v = 11 + Math.floor(Math.random() * 4);
+    sRunning.textContent = v;
+  }, 2500);
+
+  // click → "open run" demo
+  document.querySelectorAll('.card').forEach(c => {
+    c.addEventListener('click', () => {
+      const id = c.dataset.id;
+      window.location.href = '02-run-drilldown.html?id=' + encodeURIComponent(id);
+    });
+  });
+</script>
+</body>
+</html>

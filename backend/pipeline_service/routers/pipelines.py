@@ -216,6 +216,7 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
             run_row.rows_out = run.get("rows_out", 0)
             run_row.error_message = run.get("error")
             run_row.node_audits = run.get("node_audits")
+            run_row.logs = run.get("logs")
             run_row.finished_at = datetime.now(timezone.utc)
             # Persist watermark value from node_audits for incremental pipelines
             node_audits = run.get("node_audits") or {}
@@ -269,6 +270,40 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
             "error": run.get("error"),
         },
     })
+
+
+@router.get("/runs/recent")
+async def list_recent_runs(
+    limit: int = 50,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Recent pipeline runs across all pipelines for this tenant — feeds the
+    Operations / Hivemind grid."""
+    tenant_id = x_tenant_id or "tenant-001"
+    runs_result = await db.execute(
+        select(PipelineRunRow, PipelineRow.name.label("pipeline_name"))
+        .join(PipelineRow, PipelineRunRow.pipeline_id == PipelineRow.id, isouter=True)
+        .where(PipelineRunRow.tenant_id == tenant_id)
+        .order_by(PipelineRunRow.started_at.desc())
+        .limit(min(limit, 200))
+    )
+    rows = runs_result.all()
+    return [
+        {
+            "id": r.PipelineRunRow.id,
+            "pipeline_id": r.PipelineRunRow.pipeline_id,
+            "pipeline_name": r.pipeline_name or r.PipelineRunRow.pipeline_id[:8],
+            "status": r.PipelineRunRow.status,
+            "triggered_by": r.PipelineRunRow.triggered_by,
+            "rows_in": r.PipelineRunRow.rows_in,
+            "rows_out": r.PipelineRunRow.rows_out,
+            "error_message": r.PipelineRunRow.error_message,
+            "started_at": r.PipelineRunRow.started_at.isoformat() if r.PipelineRunRow.started_at else None,
+            "finished_at": r.PipelineRunRow.finished_at.isoformat() if r.PipelineRunRow.finished_at else None,
+        }
+        for r in rows
+    ]
 
 
 @router.get("/{pipeline_id}/runs")
@@ -333,9 +368,12 @@ async def get_run_audit(
         "status": run_row.status,
         "rows_in": run_row.rows_in,
         "rows_out": run_row.rows_out,
+        "error_message": run_row.error_message,
         "started_at": run_row.started_at.isoformat() if run_row.started_at else None,
         "finished_at": run_row.finished_at.isoformat() if run_row.finished_at else None,
         "node_audits": run_row.node_audits or {},
+        "triggered_by": run_row.triggered_by,
+        "logs": run_row.logs or [],
     }
 
 

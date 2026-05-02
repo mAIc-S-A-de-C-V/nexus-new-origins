@@ -5,6 +5,7 @@ Supports both sync (full response) and streaming (SSE) modes.
 from typing import Optional
 from uuid import uuid4
 import json
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Header, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -256,6 +257,23 @@ async def send_message(
             accumulated_text = ""
             tool_calls: list[dict] = []
             current_tool: dict | None = None
+            # Reasoning trace: ordered list of step objects across all iterations.
+            # Drives the agent decision viewer in Operations.
+            steps: list[dict] = []
+            text_buffer = ""           # text accumulated before the next tool call
+            iteration_idx = 1
+            stream_error: str | None = None
+
+            def _push_text():
+                nonlocal text_buffer
+                if text_buffer:
+                    steps.append({
+                        "kind": "thinking",
+                        "iter": iteration_idx,
+                        "text": text_buffer,
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    })
+                    text_buffer = ""
 
             try:
                 async for chunk in stream_agent(
@@ -277,7 +295,9 @@ async def send_message(
                             etype = ev.get("type")
                             if etype == "text_delta":
                                 accumulated_text += ev.get("text", "")
+                                text_buffer += ev.get("text", "")
                             elif etype == "tool_start":
+                                _push_text()
                                 current_tool = {
                                     "id": ev.get("tool_use_id", ""),
                                     "name": ev.get("tool", ""),
@@ -285,9 +305,34 @@ async def send_message(
                                 }
                             elif etype == "tool_calling" and current_tool:
                                 current_tool["input"] = ev.get("input", {})
+                                steps.append({
+                                    "kind": "tool_call",
+                                    "iter": iteration_idx,
+                                    "tool": current_tool["name"],
+                                    "input": current_tool["input"],
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                })
                             elif etype == "tool_result" and current_tool:
                                 tool_calls.append({**current_tool, "result": ev.get("result")})
+                                steps.append({
+                                    "kind": "tool_result",
+                                    "iter": iteration_idx,
+                                    "tool": current_tool["name"],
+                                    "result": ev.get("result"),
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                })
                                 current_tool = None
+                                iteration_idx += 1
+                            elif etype == "error":
+                                stream_error = ev.get("error", "stream error")
+                                steps.append({
+                                    "kind": "error",
+                                    "iter": iteration_idx,
+                                    "msg": stream_error,
+                                    "ts": datetime.now(timezone.utc).isoformat(),
+                                })
+                            elif etype == "done":
+                                _push_text()
                     except Exception:
                         pass
             except Exception as exc:
@@ -310,6 +355,14 @@ async def send_message(
                         if assistant_blocks:
                             new_msgs.append({"role": "assistant", "content": assistant_blocks})
                         await _save_new_messages(new_msgs, thread_id, tenant_id, save_db)
+                        # Final assistant block — captures the model's last text reply
+                        if accumulated_text:
+                            steps.append({
+                                "kind": "assistant",
+                                "iter": iteration_idx,
+                                "text": accumulated_text,
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                            })
                         # Log the run
                         save_db.add(AgentRunRow(
                             id=str(uuid4()),
@@ -318,8 +371,11 @@ async def send_message(
                             tenant_id=tenant_id,
                             iterations=len(tool_calls) + 1,
                             tool_calls=[{"tool": tc["name"]} for tc in tool_calls],
+                            steps=steps,
                             final_text_len=len(accumulated_text),
+                            final_text=accumulated_text or None,
                             is_test=False,
+                            error=stream_error,
                         ))
                         await save_db.commit()
                 except Exception:
@@ -350,18 +406,44 @@ async def send_message(
         new_msgs = outcome.get("new_messages", [])
         await _save_new_messages(new_msgs, thread_id, tenant_id, db)
 
-        # Record analytics run
+        # Record analytics run + flatten new_msgs into a step trace
         tool_calls = []
+        steps: list[dict] = []
+        iter_idx = 0
         for msg in new_msgs:
             content = msg.get("content", [])
             if isinstance(content, list):
                 for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "tool_use":
+                        iter_idx += 1
                         tool_calls.append({"tool": block.get("name")})
+                        steps.append({
+                            "kind": "tool_call", "iter": iter_idx,
+                            "tool": block.get("name"), "input": block.get("input", {}),
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        })
+                    elif btype == "tool_result":
+                        steps.append({
+                            "kind": "tool_result", "iter": iter_idx,
+                            "tool": "",  # tool_result blocks reference tool_use_id, not name
+                            "result": block.get("content"),
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        })
+                    elif btype == "text" and msg.get("role") == "assistant":
+                        steps.append({
+                            "kind": "thinking" if iter_idx == 0 else "assistant",
+                            "iter": iter_idx,
+                            "text": block.get("text", ""),
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        })
+        final_text = outcome.get("final_text", "")
         db.add(AgentRunRow(
             id=str(uuid4()), agent_id=agent.id, thread_id=thread_id, tenant_id=tenant_id,
-            iterations=outcome.get("iterations", 0), tool_calls=tool_calls,
-            final_text_len=len(outcome.get("final_text", "")),
+            iterations=outcome.get("iterations", 0), tool_calls=tool_calls, steps=steps,
+            final_text_len=len(final_text), final_text=final_text or None,
             is_test=False, error=outcome.get("error"),
         ))
         await db.commit()
