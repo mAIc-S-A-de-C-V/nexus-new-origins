@@ -93,10 +93,17 @@ const PipelineView: React.FC<{ run: PipelineRunDetail }> = ({ run }) => {
                        borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0,
                        background: C.panel, zIndex: 1 }}>
           Run timeline
+          {run.status === 'RUNNING' && run.total_steps && (
+            <span style={{ marginLeft: 6, fontFamily: MONO, color: C.info, fontWeight: 600,
+                            textTransform: 'none', letterSpacing: 0 }}>
+              · step {run.current_step_index ?? '?'}/{run.total_steps}
+            </span>
+          )}
         </div>
         {auditList.map((a, i) => {
           const active = selectedNode?.node_id === a.node_id;
           const failed = !!a.error;
+          const isCurrent = run.status === 'RUNNING' && run.current_node_id === a.node_id;
           return (
             <div key={a.node_id} style={{ position: 'relative' }}>
               <div
@@ -104,21 +111,23 @@ const PipelineView: React.FC<{ run: PipelineRunDetail }> = ({ run }) => {
                 style={{
                   display: 'flex', gap: 8, padding: '10px 14px',
                   borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
-                  background: active ? C.accentLight : 'transparent',
+                  background: active ? C.accentLight : isCurrent ? C.infoLight : 'transparent',
                 }}
               >
                 <span style={{
                   width: 10, height: 10, borderRadius: '50%', flexShrink: 0, marginTop: 4,
-                  background: failed ? C.error : a.dropped > 0 ? C.warn : C.success,
+                  background: isCurrent ? C.info : failed ? C.error : a.dropped > 0 ? C.warn : C.success,
                   boxShadow: failed ? `0 0 0 3px ${C.errorLight}` : 'none',
+                  animation: isCurrent ? 'opsPulse 1.4s ease-in-out infinite' : undefined,
                 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{
                     fontSize: 12.5, fontWeight: 600,
-                    color: active ? C.accent : C.text,
+                    color: active ? C.accent : isCurrent ? C.info : C.text,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>
                     {a.node_type} · {a.node_label}
+                    {isCurrent && <span style={{ marginLeft: 6, fontWeight: 500, color: C.info, fontSize: 11 }}>running…</span>}
                   </div>
                   <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO,
                                 marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -141,7 +150,27 @@ const PipelineView: React.FC<{ run: PipelineRunDetail }> = ({ run }) => {
             </div>
           );
         })}
-        {auditList.length === 0 && (
+        {/* Pending step indicator — shown while a run is in flight and the
+            current_node_id hasn't yet emitted a node_audit entry. */}
+        {run.status === 'RUNNING' && run.current_node_label &&
+          !auditList.some((a) => a.node_id === run.current_node_id) && (
+          <div style={{ display: 'flex', gap: 8, padding: '10px 14px',
+                         borderBottom: `1px solid ${C.border}`, background: C.infoLight }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, marginTop: 4,
+                            background: C.info, animation: 'opsPulse 1.4s ease-in-out infinite' }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: C.info,
+                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {run.current_node_label}
+                <span style={{ marginLeft: 6, fontWeight: 500, fontSize: 11 }}>running…</span>
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginTop: 2 }}>
+                step {run.current_step_index}/{run.total_steps}
+              </div>
+            </div>
+          </div>
+        )}
+        {auditList.length === 0 && run.status !== 'RUNNING' && (
           <div style={{ padding: 20, fontSize: 12, color: C.subtle, textAlign: 'center' }}>
             No node audit data for this run
           </div>
@@ -465,6 +494,29 @@ const AgentView: React.FC<{ run: AgentRunDetail }> = ({ run }) => {
       </aside>
 
       <main style={{ overflowY: 'auto', minHeight: 0 }}>
+        {/* Token + cost summary ribbon */}
+        <div style={{
+          padding: '10px 14px', background: C.panel, borderBottom: `1px solid ${C.border}`,
+          display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap',
+          fontSize: 12, fontFamily: MONO,
+        }}>
+          <Stat label="In tokens"      value={(run.input_tokens || 0).toLocaleString()}      color={C.info} />
+          <Stat label="Out tokens"     value={(run.output_tokens || 0).toLocaleString()}     color={C.success} />
+          {(run.cache_creation_tokens || 0) > 0 && (
+            <Stat label="Cache writes" value={run.cache_creation_tokens.toLocaleString()}    color={C.accent} />
+          )}
+          {(run.cache_read_tokens || 0) > 0 && (
+            <Stat label="Cache hits"   value={run.cache_read_tokens.toLocaleString()}        color={C.accent} />
+          )}
+          <Stat label="Cost"           value={`$${(run.cost_usd || 0).toFixed((run.cost_usd || 0) < 0.01 ? 4 : 3)}`} color={C.text} />
+          {run.duration_ms != null && (
+            <Stat label="Duration" value={fmtMs(run.duration_ms)} color={C.muted} />
+          )}
+          <span style={{ marginLeft: 'auto', color: C.muted }}>
+            model {run.model || 'unknown'} · temp 0.2
+          </span>
+        </div>
+
         <div style={{
           position: 'sticky', top: 0, zIndex: 1, background: C.panel,
           borderBottom: `1px solid ${C.border}`, padding: '8px 14px',
@@ -507,6 +559,14 @@ const AgentView: React.FC<{ run: AgentRunDetail }> = ({ run }) => {
     </div>
   );
 };
+
+const Stat: React.FC<{ label: string; value: string; color: string }> = ({ label, value, color }) => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+    <span style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase',
+                    letterSpacing: '.04em', fontWeight: 600 }}>{label}</span>
+    <span style={{ fontSize: 14, fontWeight: 700, color, fontFamily: MONO }}>{value}</span>
+  </div>
+);
 
 const StepBlock: React.FC<{ step: AgentStep }> = ({ step }) => {
   const styles = {
@@ -629,6 +689,12 @@ export const RunDrilldown: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: C.bg }}>
+      <style>{`
+        @keyframes opsPulse {
+          0%, 100% { opacity: .55; transform: scale(.9); }
+          50%      { opacity: 1;   transform: scale(1.2); }
+        }
+      `}</style>
       {/* Header */}
       <div style={{
         height: 52, background: C.panel, borderBottom: `1px solid ${C.border}`,
@@ -754,6 +820,9 @@ export const RunDrilldown: React.FC = () => {
               {agent.model}
             </span>}
             <span>{agent.iterations} iter · {agent.tool_calls.length} tools</span>
+            <span>
+              {((agent.input_tokens || 0) + (agent.output_tokens || 0)).toLocaleString()} tok · ${(agent.cost_usd || 0).toFixed((agent.cost_usd || 0) < 0.01 ? 4 : 3)}
+            </span>
             {agent.created_at && <span>{fmtClock(agent.created_at)}</span>}
           </>}
         </div>

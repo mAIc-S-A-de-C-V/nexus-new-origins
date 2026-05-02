@@ -202,7 +202,33 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
     from database import AsyncSessionLocal
     # executor mutates run dict in-place
     runs_list: list[dict] = [run]
-    await executor.execute(pipeline, run, runs_list)
+
+    # ── Live progress writer ──
+    # Best-effort: persist the run's current step + accumulated audits / logs
+    # before each node executes. The Hivemind grid surfaces this so users see
+    # which step a long-running pipeline is in instead of just "RUNNING".
+    async def _write_progress(r: dict):
+        try:
+            async with AsyncSessionLocal() as pg:
+                row = (await pg.execute(
+                    select(PipelineRunRow).where(PipelineRunRow.id == run_id)
+                )).scalar_one_or_none()
+                if row:
+                    row.current_node_id = r.get("current_node_id")
+                    row.current_node_label = r.get("current_node_label")
+                    row.current_step_index = r.get("current_step_index")
+                    row.total_steps = r.get("total_steps")
+                    if r.get("node_audits") is not None:
+                        row.node_audits = r["node_audits"]
+                    if r.get("logs") is not None:
+                        row.logs = r["logs"]
+                    if r.get("rows_in") is not None:
+                        row.rows_in = r["rows_in"]
+                    await pg.commit()
+        except Exception:
+            pass  # progress writes never break the run
+
+    await executor.execute(pipeline, run, runs_list, progress_callback=_write_progress)
 
     # Persist result
     async with AsyncSessionLocal() as db:
@@ -218,6 +244,9 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
             run_row.node_audits = run.get("node_audits")
             run_row.logs = run.get("logs")
             run_row.finished_at = datetime.now(timezone.utc)
+            # Clear live-progress fields once the run is done.
+            run_row.current_node_id = None
+            run_row.current_node_label = None
             # Persist watermark value from node_audits for incremental pipelines
             node_audits = run.get("node_audits") or {}
             watermark = node_audits.get("_watermark_value")
@@ -301,6 +330,11 @@ async def list_recent_runs(
             "error_message": r.PipelineRunRow.error_message,
             "started_at": r.PipelineRunRow.started_at.isoformat() if r.PipelineRunRow.started_at else None,
             "finished_at": r.PipelineRunRow.finished_at.isoformat() if r.PipelineRunRow.finished_at else None,
+            # Live-progress fields (only meaningful while status == 'RUNNING')
+            "current_node_id": r.PipelineRunRow.current_node_id,
+            "current_node_label": r.PipelineRunRow.current_node_label,
+            "current_step_index": r.PipelineRunRow.current_step_index,
+            "total_steps": r.PipelineRunRow.total_steps,
         }
         for r in rows
     ]

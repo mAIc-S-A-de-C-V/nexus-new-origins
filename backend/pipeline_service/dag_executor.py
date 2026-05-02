@@ -209,6 +209,7 @@ class DagExecutor:
         pipeline: Pipeline,
         run: dict[str, Any],
         run_list: list[dict],
+        progress_callback: Any = None,
     ) -> None:
         """
         Execute the full pipeline DAG. Records flow through each node as real data.
@@ -246,6 +247,7 @@ class DagExecutor:
             source_row_count = 0
             synced_rows = 0
 
+            total_nodes = len(order)
             for idx, node_id in enumerate(order):
                 node = node_map.get(node_id)
                 if not node:
@@ -269,6 +271,19 @@ class DagExecutor:
                         records_in = []
                         for e in incoming_edges:
                             records_in.extend(node_records.get(e.source, []))
+
+                # ── Live progress: surface the current step before we run it.
+                run["current_node_id"] = node_id
+                run["current_node_label"] = f"{node.type.value} · {node.label}"
+                run["current_step_index"] = idx + 1
+                run["total_steps"] = total_nodes
+                run["node_audits"] = node_audits  # partial — drilldown can already render
+                run["logs"] = logs
+                if progress_callback:
+                    try:
+                        await progress_callback(run)
+                    except Exception:
+                        pass  # progress is best-effort
 
                 t_start = datetime.now(timezone.utc)
                 audit_extras: dict = {}
@@ -409,7 +424,19 @@ class DagExecutor:
                     "sample_in": _flatten_sample(records_in),
                     "sample_out": _flatten_sample(records_out),
                     "stats": stats,
+                    "error": node_error,
                 }
+
+                # ── Persist incremental progress so the drilldown view shows
+                # samples and stats while the pipeline is still running.
+                run["node_audits"] = node_audits
+                run["logs"] = logs
+                run["rows_in"] = source_row_count
+                if progress_callback:
+                    try:
+                        await progress_callback(run)
+                    except Exception:
+                        pass
 
             total_out = synced_rows or max((len(r) for r in node_records.values()), default=0)
             finished_at = datetime.now(timezone.utc).isoformat()

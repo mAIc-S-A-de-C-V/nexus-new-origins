@@ -1,10 +1,13 @@
 /**
  * Operations store — feeds the Hivemind grid and the Run Drilldown.
  *
- * Aggregates state from the existing pipeline / agent / alert / connector
- * services so the UI has a single place to subscribe. We poll on an interval
- * rather than open a websocket for each entity; the SSE multiplex is a
- * follow-up.
+ * v2 shape: instead of "one card per entity", we surface
+ *   - `runningRuns`  — pipelines + agents currently executing (with live progress)
+ *   - `recentRuns`   — chronological feed of finished runs (mixed kinds)
+ *   - `catalog`      — counts + entries per kind for the bottom-of-page browse
+ *
+ * The polling loop hits each service in parallel; an SSE multiplex is the
+ * planned follow-up once we know it's worth the plumbing.
  */
 import { create } from 'zustand';
 import { getTenantId } from './authStore';
@@ -16,27 +19,63 @@ const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://loca
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type OpsKind = 'pipeline' | 'agent' | 'connector' | 'schedule' | 'alert';
-export type OpsStatus = 'running' | 'success' | 'failed' | 'warning' | 'idle';
+export type RunKind = 'pipeline' | 'agent';
+export type RunStatus = 'running' | 'success' | 'failed';
 
-export interface OpsCard {
+export interface RunRow {
+  kind: RunKind;
+  /** stable id used to fetch the drilldown */
   id: string;
-  kind: OpsKind;
+  /** entity that produced this run (pipeline_id / agent_id) */
+  entityId: string;
+  entityName: string;
+  status: RunStatus;
+  triggeredBy?: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  errorMessage?: string | null;
+
+  // Pipeline-specific
+  rowsIn?: number;
+  rowsOut?: number;
+  currentNodeLabel?: string | null;
+  currentStepIndex?: number | null;
+  totalSteps?: number | null;
+
+  // Agent-specific
+  model?: string | null;
+  iterations?: number;
+  toolCount?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  costUsd?: number;
+}
+
+export interface CatalogEntry {
+  id: string;
+  kind: 'pipeline' | 'agent' | 'connector' | 'alert';
   name: string;
-  status: OpsStatus;
-  /** Short verb shown under the name — "ENRICH · 2,117 / 2,400" */
-  verb: string;
-  /** ISO timestamp of last activity */
-  lastAt: string | null;
-  meta: {
-    runId?: string;
-    pipelineId?: string;
-    agentId?: string;
-    notificationId?: string;
-    model?: string;
-    durationMs?: number;
-    severity?: 'critical' | 'warning';
-  };
+  status: 'idle' | 'running' | 'success' | 'failed' | 'warning';
+  /** terse per-entity verb — "12 runs / 24h", "last sync 4m ago", etc. */
+  blurb: string;
+  /** for entities with a recent run, the run id we can deep-link to */
+  latestRunId?: string;
+  /** pipelines: needed to fetch the run audit */
+  pipelineId?: string;
+  agentId?: string;
+  notificationId?: string;
+  meta?: Record<string, string | number | undefined>;
+}
+
+export interface OpsAggregate {
+  runningCount: number;
+  failedLast24h: number;
+  totalRunsLast24h: number;
+  tokensLast24h: number;
+  costUsdLast24h: number;
+  rowsProcessedLast24h: number;
 }
 
 export interface OpsLogLine {
@@ -76,6 +115,10 @@ export interface PipelineRunDetail {
   finished_at?: string | null;
   node_audits: Record<string, NodeAuditDetail>;
   logs: OpsLogLine[];
+  current_node_id?: string | null;
+  current_node_label?: string | null;
+  current_step_index?: number | null;
+  total_steps?: number | null;
 }
 
 export type AgentStepKind = 'thinking' | 'tool_call' | 'tool_result' | 'assistant' | 'error';
@@ -104,14 +147,18 @@ export interface AgentRunDetail {
   tool_calls: { tool: string; result?: unknown }[];
   steps: AgentStep[];
   final_text?: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  cost_usd: number;
+  duration_ms?: number | null;
   is_test: boolean;
   error?: string | null;
   created_at?: string | null;
 }
 
 export type AnyRunDetail = PipelineRunDetail | AgentRunDetail;
-
-// ── Store ────────────────────────────────────────────────────────────────────
 
 export interface SelectedRun {
   kind: 'pipeline' | 'agent';
@@ -120,10 +167,18 @@ export interface SelectedRun {
 }
 
 interface OpsState {
-  cards: OpsCard[];
+  runningRuns: RunRow[];
+  recentRuns: RunRow[];
+  catalog: {
+    pipelines: CatalogEntry[];
+    agents: CatalogEntry[];
+    connectors: CatalogEntry[];
+    alerts: CatalogEntry[];
+  };
+  aggregate: OpsAggregate;
+
   loading: boolean;
   lastFetchedAt: string | null;
-  /** Currently-open run drilldown. null = grid view. */
   selected: SelectedRun | null;
 
   fetchSnapshot: () => Promise<void>;
@@ -153,16 +208,37 @@ function timeAgoIso(iso?: string | null): string {
   return `${d}d ago`;
 }
 
-function pipelineStatusToOps(status: string): OpsStatus {
+function fmtTokens(n?: number): string {
+  if (!n || n <= 0) return '0';
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function fmtCost(usd?: number): string {
+  if (!usd || usd < 0.0005) return '$0';
+  if (usd < 1)   return `$${usd.toFixed(usd < 0.1 ? 4 : 3)}`;
+  if (usd < 100) return `$${usd.toFixed(2)}`;
+  return `$${Math.round(usd)}`;
+}
+
+function pipelineStatusToOps(status: string): RunStatus {
   const s = (status || '').toUpperCase();
   if (s === 'RUNNING') return 'running';
   if (s === 'FAILED')  return 'failed';
-  if (s === 'COMPLETED') return 'success';
-  return 'idle';
+  return 'success';
 }
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
 export const useOperationsStore = create<OpsState>((set, get) => ({
-  cards: [],
+  runningRuns: [],
+  recentRuns: [],
+  catalog: { pipelines: [], agents: [], connectors: [], alerts: [] },
+  aggregate: {
+    runningCount: 0, failedLast24h: 0, totalRunsLast24h: 0,
+    tokensLast24h: 0, costUsdLast24h: 0, rowsProcessedLast24h: 0,
+  },
   loading: false,
   lastFetchedAt: null,
   selected: null,
@@ -171,166 +247,252 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
 
   fetchSnapshot: async () => {
     if (!get().lastFetchedAt) set({ loading: true });
-
     const headers = tenantHeaders();
 
-    // Fetch in parallel; tolerate any one failing — we still want to render.
     const [pRunsRes, aRunsRes, alertsRes, connsRes, pipesRes, agentsRes] = await Promise.allSettled([
-      fetch(`${PIPELINE_API}/pipelines/runs/recent?limit=30`, { headers }),
-      fetch(`${AGENT_API}/agents/runs/recent?limit=30`,       { headers }),
+      fetch(`${PIPELINE_API}/pipelines/runs/recent?limit=60`, { headers }),
+      fetch(`${AGENT_API}/agents/runs/recent?limit=60`,       { headers }),
       fetch(`${ALERT_API}/alerts/notifications?tenant_id=${getTenantId()}&unread_only=false&limit=20`),
       fetch(`${CONNECTOR_API}/connectors`,                    { headers }),
       fetch(`${PIPELINE_API}/pipelines`,                      { headers }),
       fetch(`${AGENT_API}/agents`,                            { headers }),
     ]);
 
-    const cards: OpsCard[] = [];
-
-    // ── Pipelines ──────────────────────────────────────────────────────────
-    type PipeRun = { id: string; pipeline_id: string; pipeline_name?: string;
-                     status: string; triggered_by?: string; rows_in: number; rows_out: number;
-                     error_message?: string; started_at?: string; finished_at?: string };
-    let pipeRuns: PipeRun[] = [];
+    // ── Pipelines ────────────────────────────────────────────────────────
+    type PipeRunApi = {
+      id: string; pipeline_id: string; pipeline_name?: string;
+      status: string; triggered_by?: string;
+      rows_in: number; rows_out: number; error_message?: string | null;
+      started_at?: string; finished_at?: string;
+      current_node_label?: string | null;
+      current_step_index?: number | null;
+      total_steps?: number | null;
+    };
+    let pipeRuns: PipeRunApi[] = [];
     if (pRunsRes.status === 'fulfilled' && pRunsRes.value.ok) {
       pipeRuns = await pRunsRes.value.json();
     }
+
     type PipeMeta = { id: string; name?: string; status?: string; last_run_at?: string };
     let pipes: PipeMeta[] = [];
     if (pipesRes.status === 'fulfilled' && pipesRes.value.ok) {
       pipes = await pipesRes.value.json();
     }
-    const latestRunByPipeline = new Map<string, PipeRun>();
-    for (const r of pipeRuns) {
-      if (!latestRunByPipeline.has(r.pipeline_id)) latestRunByPipeline.set(r.pipeline_id, r);
-    }
-    for (const p of pipes) {
-      const latest = latestRunByPipeline.get(p.id);
-      const status: OpsStatus = latest
-        ? pipelineStatusToOps(latest.status)
-        : 'idle';
-      const verb = latest
-        ? (status === 'running'
-            ? 'running'
-            : status === 'failed'
-              ? (latest.error_message?.slice(0, 80) || 'failed')
-              : `${(latest.rows_out ?? 0).toLocaleString()} rows out`)
-        : 'never run';
-      cards.push({
-        id: `pipeline-${p.id}`,
-        kind: 'pipeline',
-        name: p.name || p.id.slice(0, 8),
-        status,
-        verb,
-        lastAt: latest?.finished_at || latest?.started_at || p.last_run_at || null,
-        meta: {
-          runId: latest?.id,
-          pipelineId: p.id,
-        },
-      });
+
+    // ── Agents ───────────────────────────────────────────────────────────
+    type AgentRunApi = {
+      id: string; agent_id: string; agent_name?: string;
+      model?: string | null;
+      iterations: number; tool_count: number;
+      input_tokens?: number; output_tokens?: number;
+      cache_read_tokens?: number; cost_usd?: number;
+      duration_ms?: number | null;
+      error?: string | null; created_at?: string | null;
+    };
+    let agentRuns: AgentRunApi[] = [];
+    if (aRunsRes.status === 'fulfilled' && aRunsRes.value.ok) {
+      agentRuns = await aRunsRes.value.json();
     }
 
-    // ── Agents ─────────────────────────────────────────────────────────────
-    type AgentMeta = { id: string; name?: string; model?: string; enabled?: boolean };
-    type AgentRun = { id: string; agent_id: string; agent_name?: string;
-                      iterations: number; tool_count: number; error?: string;
-                      created_at?: string };
+    type AgentMeta = { id: string; name?: string; model?: string };
     let agents: AgentMeta[] = [];
     if (agentsRes.status === 'fulfilled' && agentsRes.value.ok) {
       agents = await agentsRes.value.json();
     }
-    let agentRuns: AgentRun[] = [];
-    if (aRunsRes.status === 'fulfilled' && aRunsRes.value.ok) {
-      agentRuns = await aRunsRes.value.json();
-    }
-    const latestRunByAgent = new Map<string, AgentRun>();
-    for (const r of agentRuns) {
-      if (!latestRunByAgent.has(r.agent_id)) latestRunByAgent.set(r.agent_id, r);
-    }
-    for (const a of agents) {
-      const latest = latestRunByAgent.get(a.id);
-      const status: OpsStatus = !latest
-        ? 'idle'
-        : latest.error
-          ? 'failed'
-          : 'success';
-      const verb = latest
-        ? (latest.error
-            ? latest.error.slice(0, 80)
-            : `${latest.iterations} iter · ${latest.tool_count} tools`)
-        : 'never run';
-      cards.push({
-        id: `agent-${a.id}`,
-        kind: 'agent',
-        name: a.name || a.id.slice(0, 8),
+
+    // ── Build run rows ──────────────────────────────────────────────────
+    const runRows: RunRow[] = [];
+
+    for (const r of pipeRuns) {
+      const status = pipelineStatusToOps(r.status);
+      const startedAt = r.started_at || new Date(0).toISOString();
+      const finishedAt = r.finished_at || null;
+      const durationMs = finishedAt
+        ? new Date(finishedAt).getTime() - new Date(startedAt).getTime()
+        : (status === 'running' ? Date.now() - new Date(startedAt).getTime() : null);
+      runRows.push({
+        kind: 'pipeline',
+        id: r.id,
+        entityId: r.pipeline_id,
+        entityName: r.pipeline_name || r.pipeline_id.slice(0, 8),
         status,
-        verb,
-        lastAt: latest?.created_at || null,
-        meta: {
-          runId: latest?.id,
-          agentId: a.id,
-          model: a.model,
-        },
+        triggeredBy: r.triggered_by,
+        startedAt,
+        finishedAt,
+        durationMs,
+        errorMessage: r.error_message,
+        rowsIn: r.rows_in,
+        rowsOut: r.rows_out,
+        currentNodeLabel: r.current_node_label,
+        currentStepIndex: r.current_step_index,
+        totalSteps: r.total_steps,
       });
     }
 
-    // ── Connectors ─────────────────────────────────────────────────────────
-    type Conn = { id: string; name?: string; status?: string; lastSyncAt?: string;
-                  last_sync_at?: string; activePipelineCount?: number };
-    if (connsRes.status === 'fulfilled' && connsRes.value.ok) {
-      const conns: Conn[] = await connsRes.value.json();
-      for (const c of conns) {
-        const cstatus = (c.status || '').toLowerCase();
-        const lastAt = c.lastSyncAt || c.last_sync_at || null;
-        const status: OpsStatus = cstatus.includes('error') || cstatus.includes('fail')
-          ? 'failed'
-          : cstatus.includes('warn') || cstatus.includes('rate')
-            ? 'warning'
-            : cstatus === 'active' || cstatus === 'connected' || cstatus === 'healthy'
-              ? 'success'
-              : 'idle';
-        cards.push({
-          id: `connector-${c.id}`,
-          kind: 'connector',
-          name: c.name || c.id.slice(0, 8),
-          status,
-          verb: c.activePipelineCount
-            ? `feeding ${c.activePipelineCount} pipeline${c.activePipelineCount === 1 ? '' : 's'}`
-            : (cstatus || 'idle'),
-          lastAt,
-          meta: {},
-        });
+    for (const r of agentRuns) {
+      const status: RunStatus = r.error ? 'failed' : 'success';
+      runRows.push({
+        kind: 'agent',
+        id: r.id,
+        entityId: r.agent_id,
+        entityName: r.agent_name || r.agent_id.slice(0, 8),
+        status,
+        startedAt: r.created_at || new Date(0).toISOString(),
+        finishedAt: r.created_at,
+        durationMs: r.duration_ms ?? null,
+        errorMessage: r.error,
+        model: r.model,
+        iterations: r.iterations,
+        toolCount: r.tool_count,
+        inputTokens: r.input_tokens || 0,
+        outputTokens: r.output_tokens || 0,
+        cacheReadTokens: r.cache_read_tokens || 0,
+        costUsd: r.cost_usd || 0,
+      });
+    }
+
+    runRows.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+
+    const runningRuns = runRows.filter((r) => r.status === 'running');
+    const recentRuns  = runRows.filter((r) => r.status !== 'running').slice(0, 40);
+
+    // ── Aggregate stats over last 24h ────────────────────────────────────
+    const cutoff = Date.now() - ONE_DAY_MS;
+    let totalRuns = 0, failed24 = 0, tokens24 = 0, cost24 = 0, rows24 = 0;
+    for (const r of runRows) {
+      const t = new Date(r.startedAt).getTime();
+      if (t < cutoff) continue;
+      totalRuns++;
+      if (r.status === 'failed') failed24++;
+      if (r.kind === 'agent') {
+        tokens24 += (r.inputTokens || 0) + (r.outputTokens || 0);
+        cost24   += r.costUsd || 0;
+      } else {
+        rows24 += r.rowsOut || 0;
       }
     }
 
-    // ── Alerts (recent fired notifications, unresolved) ────────────────────
-    type Notif = { id: string; rule_name: string; rule_type: string;
-                   severity: 'critical' | 'warning'; message: string;
-                   read: boolean; fired_at: string;
-                   run_link?: { kind: string; run_id: string; pipeline_id?: string; agent_id?: string } };
+    // ── Catalog entries ──────────────────────────────────────────────────
+    const latestRunByPipeline = new Map<string, RunRow>();
+    for (const r of runRows) if (r.kind === 'pipeline' && !latestRunByPipeline.has(r.entityId)) latestRunByPipeline.set(r.entityId, r);
+    const runsCountByPipeline = new Map<string, number>();
+    for (const r of runRows) if (r.kind === 'pipeline') {
+      runsCountByPipeline.set(r.entityId, (runsCountByPipeline.get(r.entityId) || 0) + 1);
+    }
+
+    const pipelineCatalog: CatalogEntry[] = pipes.map((p) => {
+      const latest = latestRunByPipeline.get(p.id);
+      const status: CatalogEntry['status'] =
+        latest?.status === 'running' ? 'running'
+          : latest?.status === 'failed'  ? 'failed'
+          : latest?.status === 'success' ? 'success'
+          : 'idle';
+      const runs = runsCountByPipeline.get(p.id) || 0;
+      const blurb = latest
+        ? (status === 'running'
+            ? `${latest.currentNodeLabel || 'starting…'}${latest.totalSteps ? `  ·  step ${latest.currentStepIndex}/${latest.totalSteps}` : ''}`
+            : status === 'failed'
+              ? (latest.errorMessage?.slice(0, 80) || 'failed')
+              : `${(latest.rowsOut ?? 0).toLocaleString()} rows · ${runs} run${runs === 1 ? '' : 's'} / 24h`)
+        : 'never run';
+      return {
+        id: p.id, kind: 'pipeline', name: p.name || p.id.slice(0, 8),
+        status, blurb, latestRunId: latest?.id, pipelineId: p.id,
+      };
+    });
+
+    const latestRunByAgent = new Map<string, RunRow>();
+    for (const r of runRows) if (r.kind === 'agent' && !latestRunByAgent.has(r.entityId)) latestRunByAgent.set(r.entityId, r);
+    const tokenSumByAgent = new Map<string, number>();
+    const costSumByAgent  = new Map<string, number>();
+    for (const r of runRows) if (r.kind === 'agent' && new Date(r.startedAt).getTime() >= cutoff) {
+      tokenSumByAgent.set(r.entityId, (tokenSumByAgent.get(r.entityId) || 0) + (r.inputTokens || 0) + (r.outputTokens || 0));
+      costSumByAgent.set(r.entityId,  (costSumByAgent.get(r.entityId)  || 0) + (r.costUsd || 0));
+    }
+
+    const agentCatalog: CatalogEntry[] = agents.map((a) => {
+      const latest = latestRunByAgent.get(a.id);
+      const status: CatalogEntry['status'] = !latest
+        ? 'idle' : latest.status === 'failed' ? 'failed' : 'success';
+      const tok = tokenSumByAgent.get(a.id) || 0;
+      const cost = costSumByAgent.get(a.id) || 0;
+      const blurb = latest
+        ? `${fmtTokens(tok)} tok · ${fmtCost(cost)} / 24h`
+        : 'never run';
+      return {
+        id: a.id, kind: 'agent', name: a.name || a.id.slice(0, 8),
+        status, blurb, latestRunId: latest?.id, agentId: a.id,
+        meta: { model: a.model || '' },
+      };
+    });
+
+    // Connectors
+    type Conn = { id: string; name?: string; status?: string;
+                  lastSyncAt?: string; last_sync_at?: string;
+                  activePipelineCount?: number };
+    let connectorCatalog: CatalogEntry[] = [];
+    if (connsRes.status === 'fulfilled' && connsRes.value.ok) {
+      const conns: Conn[] = await connsRes.value.json();
+      connectorCatalog = conns.map((c) => {
+        const cs = (c.status || '').toLowerCase();
+        const status: CatalogEntry['status'] =
+          cs.includes('error') || cs.includes('fail') ? 'failed'
+            : cs.includes('warn') || cs.includes('rate') ? 'warning'
+            : cs === 'active' || cs === 'connected' || cs === 'healthy' ? 'success'
+            : 'idle';
+        const lastAt = c.lastSyncAt || c.last_sync_at;
+        const blurb = c.activePipelineCount
+          ? `feeding ${c.activePipelineCount} pipeline${c.activePipelineCount === 1 ? '' : 's'}${lastAt ? ` · ${timeAgoIso(lastAt)}` : ''}`
+          : (lastAt ? `last sync ${timeAgoIso(lastAt)}` : (cs || 'idle'));
+        return {
+          id: c.id, kind: 'connector', name: c.name || c.id.slice(0, 8),
+          status, blurb,
+        };
+      });
+    }
+
+    // Alerts
+    type Notif = {
+      id: string; rule_name: string; rule_type: string;
+      severity: 'critical' | 'warning'; message: string;
+      read: boolean; fired_at: string;
+      run_link?: { kind: string; run_id: string; pipeline_id?: string; agent_id?: string };
+    };
+    let alertCatalog: CatalogEntry[] = [];
     if (alertsRes.status === 'fulfilled' && alertsRes.value.ok) {
       const data = await alertsRes.value.json();
       const notifs: Notif[] = data.notifications || [];
-      // Top 6 most recent — keep the lane focused
-      for (const n of notifs.slice(0, 6)) {
-        cards.push({
-          id: `alert-${n.id}`,
-          kind: 'alert',
-          name: n.rule_name,
-          status: n.severity === 'critical' ? 'failed' : 'warning',
-          verb: n.message?.slice(0, 100) || n.rule_type,
-          lastAt: n.fired_at,
-          meta: {
-            notificationId: n.id,
-            severity: n.severity,
-            runId: n.run_link?.run_id,
-            pipelineId: n.run_link?.kind === 'pipeline' ? n.run_link?.pipeline_id : undefined,
-            agentId: n.run_link?.kind === 'agent' ? n.run_link?.agent_id : undefined,
-          },
-        });
-      }
+      alertCatalog = notifs.slice(0, 10).map((n) => ({
+        id: n.id, kind: 'alert', name: n.rule_name,
+        status: n.severity === 'critical' ? 'failed' : 'warning',
+        blurb: `${n.message?.slice(0, 80) || n.rule_type} · ${timeAgoIso(n.fired_at)}`,
+        latestRunId: n.run_link?.run_id,
+        pipelineId: n.run_link?.kind === 'pipeline' ? n.run_link?.pipeline_id : undefined,
+        agentId:    n.run_link?.kind === 'agent'    ? n.run_link?.agent_id    : undefined,
+        notificationId: n.id,
+      }));
     }
 
-    set({ cards, loading: false, lastFetchedAt: new Date().toISOString() });
+    set({
+      runningRuns,
+      recentRuns,
+      catalog: {
+        pipelines: pipelineCatalog,
+        agents: agentCatalog,
+        connectors: connectorCatalog,
+        alerts: alertCatalog,
+      },
+      aggregate: {
+        runningCount: runningRuns.length,
+        failedLast24h: failed24,
+        totalRunsLast24h: totalRuns,
+        tokensLast24h: tokens24,
+        costUsdLast24h: cost24,
+        rowsProcessedLast24h: rows24,
+      },
+      loading: false,
+      lastFetchedAt: new Date().toISOString(),
+    });
   },
 
   startPolling: (intervalMs = 5000) => {
@@ -355,7 +517,6 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
     );
     if (!r.ok) throw new Error(`Pipeline run ${runId}: HTTP ${r.status}`);
     const data = await r.json();
-    // node_audits is a dict keyed by node_id — surface as-is for the viewer
     const node_audits: Record<string, NodeAuditDetail> = {};
     for (const [k, v] of Object.entries(data.node_audits || {})) {
       if (k === '_watermark_value') continue;
@@ -374,6 +535,10 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
       finished_at: data.finished_at,
       node_audits,
       logs: (data.logs || []) as OpsLogLine[],
+      current_node_id: data.current_node_id,
+      current_node_label: data.current_node_label,
+      current_step_index: data.current_step_index,
+      total_steps: data.total_steps,
     };
   },
 
@@ -394,6 +559,12 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
       tool_calls: data.tool_calls || [],
       steps: data.steps || [],
       final_text: data.final_text,
+      input_tokens: data.input_tokens ?? 0,
+      output_tokens: data.output_tokens ?? 0,
+      cache_creation_tokens: data.cache_creation_tokens ?? 0,
+      cache_read_tokens: data.cache_read_tokens ?? 0,
+      cost_usd: data.cost_usd ?? 0,
+      duration_ms: data.duration_ms ?? null,
       is_test: !!data.is_test,
       error: data.error,
       created_at: data.created_at,
@@ -401,5 +572,4 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
   },
 }));
 
-// Re-export helper so views can format times consistently.
-export { timeAgoIso };
+export { timeAgoIso, fmtTokens, fmtCost };

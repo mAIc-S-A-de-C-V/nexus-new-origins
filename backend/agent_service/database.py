@@ -1,7 +1,7 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Boolean, func
+from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Boolean, Float, func
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -97,6 +97,16 @@ class AgentRunRow(Base):
     pipeline_run_id = Column(String, nullable=True)
     is_test = Column(Boolean, nullable=False, default=False)
     error = Column(Text, nullable=True)
+    # ── Per-run token + cost tracking ──
+    # Summed across every turn in the agentic loop. Surfaced on Hivemind cards
+    # and the run drilldown so users can see real cost per run instead of
+    # guessing from the tenant-wide token tracker.
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    cache_creation_tokens = Column(Integer, nullable=False, default=0)
+    cache_read_tokens = Column(Integer, nullable=False, default=0)
+    cost_usd = Column(Float, nullable=False, default=0.0)
+    duration_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -136,6 +146,12 @@ async def init_db():
         from sqlalchemy import text as sa_text
         for col_sql in [
             "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS steps JSON",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS input_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS output_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS duration_ms INTEGER",
         ]:
             try:
                 await conn.execute(sa_text(col_sql))

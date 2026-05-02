@@ -169,6 +169,14 @@ async def stream_agent(
 
             track_token_usage(tenant_id, "agent_service", cfg.model,
                               turn["input_tokens"], turn["output_tokens"])
+            yield _sse({
+                "type": "tokens",
+                "input": turn["input_tokens"],
+                "output": turn["output_tokens"],
+                "cache_creation": 0,
+                "cache_read": 0,
+                "model": cfg.model,
+            })
 
             if turn["text"]:
                 yield _sse({"type": "text_delta", "text": turn["text"]})
@@ -270,6 +278,14 @@ async def stream_agent(
                 stop_reason = final_msg.stop_reason
                 track_token_usage(tenant_id, "agent_service", model,
                                   final_msg.usage.input_tokens, final_msg.usage.output_tokens)
+                yield _sse({
+                    "type": "tokens",
+                    "input": final_msg.usage.input_tokens,
+                    "output": final_msg.usage.output_tokens,
+                    "cache_creation": getattr(final_msg.usage, "cache_creation_input_tokens", 0) or 0,
+                    "cache_read": getattr(final_msg.usage, "cache_read_input_tokens", 0) or 0,
+                    "model": model,
+                })
 
         except Exception as exc:
             yield _sse({"type": "error", "error": str(exc), "iterations": iterations})

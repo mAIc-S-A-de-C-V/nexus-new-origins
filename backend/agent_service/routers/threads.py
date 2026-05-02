@@ -263,6 +263,14 @@ async def send_message(
             text_buffer = ""           # text accumulated before the next tool call
             iteration_idx = 1
             stream_error: str | None = None
+            # Token + cost accumulators — summed per turn from the runtime SSE
+            # `tokens` events. Persisted at the end so each row in agent_runs
+            # carries its real cost.
+            tokens_in_total = 0
+            tokens_out_total = 0
+            cache_creation_total = 0
+            cache_read_total = 0
+            run_started_at = datetime.now(timezone.utc)
 
             def _push_text():
                 nonlocal text_buffer
@@ -331,6 +339,11 @@ async def send_message(
                                     "msg": stream_error,
                                     "ts": datetime.now(timezone.utc).isoformat(),
                                 })
+                            elif etype == "tokens":
+                                tokens_in_total      += int(ev.get("input", 0) or 0)
+                                tokens_out_total     += int(ev.get("output", 0) or 0)
+                                cache_creation_total += int(ev.get("cache_creation", 0) or 0)
+                                cache_read_total     += int(ev.get("cache_read", 0) or 0)
                             elif etype == "done":
                                 _push_text()
                     except Exception:
@@ -364,6 +377,14 @@ async def send_message(
                                 "ts": datetime.now(timezone.utc).isoformat(),
                             })
                         # Log the run
+                        from shared.pricing import compute_cost_usd
+                        cost = compute_cost_usd(
+                            agent.model, tokens_in_total, tokens_out_total,
+                            cache_creation_total, cache_read_total,
+                        )
+                        duration_ms = int(
+                            (datetime.now(timezone.utc) - run_started_at).total_seconds() * 1000
+                        )
                         save_db.add(AgentRunRow(
                             id=str(uuid4()),
                             agent_id=agent.id,
@@ -374,6 +395,12 @@ async def send_message(
                             steps=steps,
                             final_text_len=len(accumulated_text),
                             final_text=accumulated_text or None,
+                            input_tokens=tokens_in_total,
+                            output_tokens=tokens_out_total,
+                            cache_creation_tokens=cache_creation_total,
+                            cache_read_tokens=cache_read_total,
+                            cost_usd=cost,
+                            duration_ms=duration_ms,
                             is_test=False,
                             error=stream_error,
                         ))

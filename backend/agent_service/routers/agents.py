@@ -592,7 +592,9 @@ async def list_recent_agent_runs(
 ):
     tenant_id = x_tenant_id or "tenant-001"
     q = (
-        select(AgentRunRow, AgentConfigRow.name.label("agent_name"))
+        select(AgentRunRow,
+               AgentConfigRow.name.label("agent_name"),
+               AgentConfigRow.model.label("agent_model"))
         .join(AgentConfigRow, AgentRunRow.agent_id == AgentConfigRow.id, isouter=True)
         .where(AgentRunRow.tenant_id == tenant_id)
         .order_by(AgentRunRow.created_at.desc())
@@ -604,8 +606,14 @@ async def list_recent_agent_runs(
             "id": r.AgentRunRow.id,
             "agent_id": r.AgentRunRow.agent_id,
             "agent_name": r.agent_name or r.AgentRunRow.agent_id[:8],
+            "model": r.agent_model,
             "iterations": r.AgentRunRow.iterations,
             "tool_count": len(r.AgentRunRow.tool_calls or []),
+            "input_tokens": getattr(r.AgentRunRow, "input_tokens", 0) or 0,
+            "output_tokens": getattr(r.AgentRunRow, "output_tokens", 0) or 0,
+            "cache_read_tokens": getattr(r.AgentRunRow, "cache_read_tokens", 0) or 0,
+            "cost_usd": float(getattr(r.AgentRunRow, "cost_usd", 0) or 0),
+            "duration_ms": getattr(r.AgentRunRow, "duration_ms", None),
             "error": r.AgentRunRow.error,
             "created_at": r.AgentRunRow.created_at.isoformat() if r.AgentRunRow.created_at else None,
         }
@@ -647,6 +655,12 @@ async def get_agent_run(
         "steps": getattr(run, "steps", None) or [],
         "final_text": getattr(run, "final_text", None),
         "final_text_len": run.final_text_len,
+        "input_tokens": getattr(run, "input_tokens", 0) or 0,
+        "output_tokens": getattr(run, "output_tokens", 0) or 0,
+        "cache_creation_tokens": getattr(run, "cache_creation_tokens", 0) or 0,
+        "cache_read_tokens": getattr(run, "cache_read_tokens", 0) or 0,
+        "cost_usd": float(getattr(run, "cost_usd", 0) or 0),
+        "duration_ms": getattr(run, "duration_ms", None),
         "is_test": run.is_test,
         "error": run.error,
         "created_at": run.created_at.isoformat() if run.created_at else None,

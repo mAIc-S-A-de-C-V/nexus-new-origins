@@ -42,6 +42,13 @@ class PipelineRunRow(Base):
     node_audits = Column(JSON, nullable=True)
     # Structured log lines: [{ts, level, node_id, msg, extra}]
     logs = Column(JSON, nullable=True)
+    # ─── Live progress ───────────────────────────────────────────────────
+    # Surfaced in the Hivemind grid so a running pipeline shows which step
+    # it's currently in instead of just "RUNNING".
+    current_node_id = Column(String, nullable=True)
+    current_node_label = Column(String, nullable=True)
+    current_step_index = Column(Integer, nullable=True)   # 1-based
+    total_steps = Column(Integer, nullable=True)
     watermark_value = Column(String, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
@@ -67,6 +74,10 @@ async def init_db():
         for col_sql in [
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS watermark_value VARCHAR",
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS logs JSON",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_id VARCHAR",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_label VARCHAR",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_step_index INTEGER",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS total_steps INTEGER",
         ]:
             try:
                 await conn.execute(sa_text(col_sql))
