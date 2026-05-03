@@ -1042,8 +1042,40 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         offset += len(page_rows)
 
                 await rest_client.aclose()
-                if all_rows:
+
+                # Client-side incremental filter. REST APIs that don't accept
+                # a since/after query param (i.e. they return the full set on
+                # every call) need their watermark applied here, after fetch.
+                # We drop rows whose incremental key is <= the last completed
+                # run's watermark, then track the new max so the next run
+                # picks up only what's actually new. ISO-8601 timestamps and
+                # zero-padded numeric ids compare correctly as strings; if
+                # your key is something else, set it to one that does.
+                incremental_key = (
+                    cfg.get("incremental_key") or cfg.get("incrementalKey")
+                    or cfg.get("watermark_column") or cfg.get("watermarkColumn") or ""
+                )
+                if incremental_key and all_rows:
+                    raw_count = len(all_rows)
+                    last_watermark = await _get_last_watermark(pipeline.id)
+                    if last_watermark:
+                        all_rows = [
+                            r for r in all_rows
+                            if r.get(incremental_key) is not None
+                            and str(r.get(incremental_key)) > str(last_watermark)
+                        ]
+                    wm_vals = [r.get(incremental_key) for r in all_rows if r.get(incremental_key) is not None]
                     if audit_extras is not None:
+                        audit_extras["incremental_key"] = incremental_key
+                        audit_extras["last_watermark"] = last_watermark
+                        audit_extras["raw_row_count"] = raw_count
+                        audit_extras["filtered_row_count"] = len(all_rows)
+                        audit_extras["dropped_by_watermark"] = raw_count - len(all_rows)
+                        if wm_vals:
+                            audit_extras["_watermark_value"] = str(max(wm_vals))
+
+                if all_rows:
+                    if audit_extras is not None and "raw_row_count" not in audit_extras:
                         audit_extras["raw_row_count"] = len(all_rows)
                     if conn_type == "GITHUB":
                         all_rows = [_flatten_github_record(r) for r in all_rows]
