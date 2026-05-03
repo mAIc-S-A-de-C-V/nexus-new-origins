@@ -5,14 +5,15 @@ export async function messageRoutes(app: FastifyInstance): Promise<void> {
   // List messages — primary endpoint for pipeline SOURCE
   app.get<{
     Params: { connectorId: string };
-    Querystring: { chat_jid?: string; since?: string; limit?: string; offset?: string };
+    Querystring: { chat_jid?: string; since?: string; limit?: string; offset?: string; order?: string };
   }>(
     '/sessions/:connectorId/messages',
     async (req) => {
       const { connectorId } = req.params;
-      const { chat_jid, since, limit: limitStr, offset: offsetStr } = req.query;
+      const { chat_jid, since, limit: limitStr, offset: offsetStr, order } = req.query;
       const limit = Math.min(parseInt(limitStr || '500'), 5000);
       const offset = parseInt(offsetStr || '0');
+      const orderDir = (order || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
       let sql = `
         SELECT
@@ -46,7 +47,7 @@ export async function messageRoutes(app: FastifyInstance): Promise<void> {
         paramIdx++;
       }
 
-      sql += ` ORDER BY m.timestamp DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`;
+      sql += ` ORDER BY m.timestamp ${orderDir} LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`;
       params.push(limit, offset);
 
       const { rows } = await pool.query(sql, params);

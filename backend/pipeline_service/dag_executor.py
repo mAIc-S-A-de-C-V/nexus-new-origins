@@ -678,6 +678,15 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                             else:
                                 query = query + f" WHERE {watermark_column} > '{last_watermark}'"
 
+                    # Bound each incremental run: oldest-first + capped to batch_size,
+                    # so the watermark advances run-over-run instead of every run
+                    # re-fetching the full backlog (which trips the watchdog).
+                    import re as _re
+                    if not _re.search(r'\bORDER\s+BY\b', query, _re.IGNORECASE):
+                        query = query + f" ORDER BY {watermark_column} ASC"
+                    if not _re.search(r'\bLIMIT\b', query, _re.IGNORECASE):
+                        query = query + f" LIMIT {batch_size}"
+
                 if audit_extras is not None:
                     audit_extras["url"] = f"{CONNECTOR_API}/connectors/{connector_id}/query"
                     audit_extras["query"] = query
@@ -723,6 +732,15 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     last_watermark = await _get_last_watermark(pipeline.id)
                     if last_watermark:
                         wa_params["since"] = last_watermark
+                    # Oldest-first so capping the page count still advances the
+                    # watermark monotonically. Without this, a backlog of N pages
+                    # only ever sees the newest page and old messages are skipped.
+                    wa_params["order"] = "asc"
+
+                # Cap incremental runs so a backlog drains over multiple runs
+                # instead of one run trying to chew through everything and
+                # tripping the 1800s watchdog.
+                max_records = int(cfg.get("maxRecords") or cfg.get("max_records") or batch_size)
 
                 wa_url = f"{wa_api}/api/v1/sessions/{connector_id}/messages"
                 if audit_extras is not None:
@@ -741,6 +759,9 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     if not page_rows:
                         break
                     all_rows.extend(page_rows)
+                    if incremental and len(all_rows) >= max_records:
+                        all_rows = all_rows[:max_records]
+                        break
                     if len(page_rows) < batch_size:
                         break
                     wa_params["offset"] = int(wa_params.get("offset", 0)) + len(page_rows)
@@ -2351,11 +2372,14 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
                 out.append(r)
             return out
 
-    # Run batches sequentially — local models can only handle one at a time
+    # The semaphore inside _run_batch is the actual concurrency gate. Running
+    # batches via gather lets LLM_CLASSIFY_CONCURRENCY > 1 actually parallelize;
+    # with the default of 1, semaphore acquire serializes so behavior matches
+    # the prior sequential loop (and gather preserves input order).
+    batch_results = await asyncio.gather(*(_run_batch(i, b) for i, b in enumerate(batches)))
     enriched: list[dict] = []
-    for i, b in enumerate(batches):
-        result = await _run_batch(i, b)
-        enriched.extend(result)
+    for r in batch_results:
+        enriched.extend(r)
 
     # Create Human Actions for CRITICO/URGENTE items
     if create_actions:
