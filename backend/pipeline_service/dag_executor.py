@@ -395,6 +395,13 @@ class DagExecutor:
                         "error": audit_extras.get("error"),
                         "query": audit_extras.get("query"),
                         "_watermark_value": audit_extras.get("_watermark_value"),
+                        # Incremental fetch surface (set by client-side watermark
+                        # filter on REST sources; helps confirm the filter is
+                        # actually engaging).
+                        "incremental_key": audit_extras.get("incremental_key"),
+                        "last_watermark": audit_extras.get("last_watermark"),
+                        "filtered_row_count": audit_extras.get("filtered_row_count"),
+                        "dropped_by_watermark": audit_extras.get("dropped_by_watermark"),
                     }
 
                 # Flatten sample rows: strip large nested arrays to keep payload small
