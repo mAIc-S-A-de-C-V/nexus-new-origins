@@ -553,7 +553,11 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_
 
 
 async def _get_last_watermark(pipeline_id: str) -> str | None:
-    """Look up the watermark_value from the most recent successful run of this pipeline."""
+    """Look up the most recent saved watermark for this pipeline, regardless
+    of run status. Watermarks are now persisted from the SOURCE node's stats
+    on every progress write, so a partial / watchdog-killed run still leaves
+    a watermark behind for the next run to pick up from. The presence of a
+    non-null watermark_value is the signal that progress was made."""
     try:
         from database import AsyncSessionLocal, PipelineRunRow
         from sqlalchemy import select as sa_select
@@ -562,19 +566,14 @@ async def _get_last_watermark(pipeline_id: str) -> str | None:
                 sa_select(PipelineRunRow)
                 .where(
                     PipelineRunRow.pipeline_id == pipeline_id,
-                    PipelineRunRow.status == "COMPLETED",
+                    PipelineRunRow.watermark_value.isnot(None),
                 )
                 .order_by(PipelineRunRow.started_at.desc())
                 .limit(1)
             )
             run_row = result.scalar_one_or_none()
-            if not run_row:
-                return None
-            # Prefer the dedicated column, fall back to node_audits JSON
-            if run_row.watermark_value:
+            if run_row and run_row.watermark_value:
                 return run_row.watermark_value
-            if run_row.node_audits:
-                return run_row.node_audits.get("_watermark_value")
     except Exception:
         pass
     return None

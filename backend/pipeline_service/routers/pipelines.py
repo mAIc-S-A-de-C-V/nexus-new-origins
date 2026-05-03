@@ -220,6 +220,20 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
                     row.total_steps = r.get("total_steps")
                     if r.get("node_audits") is not None:
                         row.node_audits = r["node_audits"]
+                        # Persist watermark eagerly: the SOURCE node sets
+                        # _watermark_value as soon as it finishes (before any
+                        # slow downstream node). Saving it here means a
+                        # watchdog kill later still preserves forward
+                        # progress, breaking the chicken-and-egg where the
+                        # pipeline can never advance because it can never
+                        # complete.
+                        for na in r["node_audits"].values():
+                            if isinstance(na, dict):
+                                stats = na.get("stats") or {}
+                                wm = stats.get("_watermark_value")
+                                if wm:
+                                    row.watermark_value = str(wm)
+                                    break
                     if r.get("logs") is not None:
                         row.logs = r["logs"]
                     if r.get("rows_in") is not None:
