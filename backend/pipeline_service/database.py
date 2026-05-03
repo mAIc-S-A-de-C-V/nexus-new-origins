@@ -49,6 +49,10 @@ class PipelineRunRow(Base):
     current_node_label = Column(String, nullable=True)
     current_step_index = Column(Integer, nullable=True)   # 1-based
     total_steps = Column(Integer, nullable=True)
+    # Intra-node progress (updated mid-node, e.g. by LLM_CLASSIFY after each batch).
+    current_node_processed = Column(Integer, nullable=True)
+    current_node_total = Column(Integer, nullable=True)
+    current_model = Column(String, nullable=True)
     watermark_value = Column(String, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
@@ -78,6 +82,9 @@ async def init_db():
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_label VARCHAR",
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_step_index INTEGER",
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS total_steps INTEGER",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_processed INTEGER",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_total INTEGER",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_model VARCHAR",
         ]:
             try:
                 await conn.execute(sa_text(col_sql))

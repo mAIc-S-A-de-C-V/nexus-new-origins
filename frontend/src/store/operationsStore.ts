@@ -42,6 +42,11 @@ export interface RunRow {
   currentNodeLabel?: string | null;
   currentStepIndex?: number | null;
   totalSteps?: number | null;
+  /** Records processed within the current node (e.g. LLM_CLASSIFY counts after each batch). */
+  currentNodeProcessed?: number | null;
+  currentNodeTotal?: number | null;
+  /** Model in use for the current node (e.g. claude-haiku-4-5 during LLM_CLASSIFY). */
+  currentModel?: string | null;
 
   // Agent-specific
   model?: string | null;
@@ -281,6 +286,9 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
           started_at?: string; finished_at?: string;
           current_node_label?: string | null;
           current_step_index?: number | null; total_steps?: number | null;
+          current_node_processed?: number | null;
+          current_node_total?: number | null;
+          current_model?: string | null;
         };
         const rows: PipeRunApi[] = await r.json();
         const runs: RunRow[] = rows.map((row) => {
@@ -306,6 +314,9 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
             currentNodeLabel: row.current_node_label,
             currentStepIndex: row.current_step_index,
             totalSteps: row.total_steps,
+            currentNodeProcessed: row.current_node_processed,
+            currentNodeTotal: row.current_node_total,
+            currentModel: row.current_model,
           };
         });
         if (get().entityHistory?.entityId !== e.entityId) return;  // user navigated away
@@ -346,6 +357,9 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
       current_node_label?: string | null;
       current_step_index?: number | null;
       total_steps?: number | null;
+      current_node_processed?: number | null;
+      current_node_total?: number | null;
+      current_model?: string | null;
     };
     let pipeRuns: PipeRunApi[] = [];
     if (pRunsRes.status === 'fulfilled' && pRunsRes.value.ok) {
@@ -405,6 +419,9 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
         currentNodeLabel: r.current_node_label,
         currentStepIndex: r.current_step_index,
         totalSteps: r.total_steps,
+        currentNodeProcessed: r.current_node_processed,
+        currentNodeTotal: r.current_node_total,
+        currentModel: r.current_model,
       });
     }
 

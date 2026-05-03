@@ -289,8 +289,16 @@ class DagExecutor:
                 audit_extras: dict = {}
                 _log("INFO", f"{node.type.value} starting · {len(records_in)} rows in", node_id=node_id)
                 node_error: str | None = None
+                # Reset intra-node progress on each node boundary.
+                run["current_node_processed"] = None
+                run["current_node_total"] = None
+                run["current_model"] = None
+                progress_ctx = {"run": run, "callback": progress_callback} if progress_callback else None
                 try:
-                    records_out = await _execute_node(node, records_in, pipeline, audit_extras=audit_extras)
+                    records_out = await _execute_node(
+                        node, records_in, pipeline,
+                        audit_extras=audit_extras, progress_ctx=progress_ctx,
+                    )
                 except Exception as node_exc:
                     node_error = str(node_exc)
                     records_out = []
@@ -522,7 +530,11 @@ class DagExecutor:
 
 # ── Node Handlers ─────────────────────────────────────────────────────────────
 
-async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_extras: dict | None = None) -> list[dict]:
+async def _execute_node(
+    node, records_in: list[dict], pipeline: Pipeline,
+    audit_extras: dict | None = None,
+    progress_ctx: dict | None = None,
+) -> list[dict]:
     if node.type == NodeType.SOURCE:
         return await _source(node, pipeline, audit_extras=audit_extras)
     if node.type == NodeType.ENRICH:
@@ -548,7 +560,7 @@ async def _execute_node(node, records_in: list[dict], pipeline: Pipeline, audit_
     if node.type == NodeType.AGENT_RUN:
         return await _agent_run(node, records_in, pipeline)
     if node.type == NodeType.LLM_CLASSIFY:
-        return await _llm_classify(node, records_in, pipeline)
+        return await _llm_classify(node, records_in, pipeline, progress_ctx=progress_ctx)
     return records_in
 
 
@@ -2177,7 +2189,7 @@ async def _agent_run(node, records_in: list[dict], pipeline: Pipeline) -> list[d
     return records_in
 
 
-async def _llm_classify(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+async def _llm_classify(node, records_in: list[dict], pipeline: Pipeline, progress_ctx: dict | None = None) -> list[dict]:
     """
     LLM_CLASSIFY — sends each record's text through Claude to extract structured
     fields and merges them back onto the record.
@@ -2295,6 +2307,23 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
     batches: list[list[dict]] = [records_in[i:i + batch_size] for i in range(0, len(records_in), batch_size)]
     semaphore = asyncio.Semaphore(concurrency)
 
+    # Live progress: surface total + model up front, then tick `processed`
+    # after each batch completes. The Hivemind running card reads this so
+    # users can watch records crawl through LLM_CLASSIFY in real time.
+    total_to_classify = len(records_in)
+    processed_count = 0
+    if progress_ctx:
+        run = progress_ctx.get("run") or {}
+        cb = progress_ctx.get("callback")
+        run["current_node_total"] = total_to_classify
+        run["current_node_processed"] = 0
+        run["current_model"] = provider_cfg.model
+        if cb:
+            try:
+                await cb(run)
+            except Exception:
+                pass
+
     async def _run_batch(batch_idx: int, batch: list[dict]) -> list[dict]:
         parts = []
         for idx, record in enumerate(batch):
@@ -2410,11 +2439,26 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
                 out.append(r)
             return out
 
+    async def _run_batch_tracked(i: int, b: list[dict]) -> list[dict]:
+        nonlocal processed_count
+        out = await _run_batch(i, b)
+        processed_count += len(b)
+        if progress_ctx:
+            run = progress_ctx.get("run") or {}
+            cb = progress_ctx.get("callback")
+            run["current_node_processed"] = processed_count
+            if cb:
+                try:
+                    await cb(run)
+                except Exception:
+                    pass
+        return out
+
     # The semaphore inside _run_batch is the actual concurrency gate. Running
     # batches via gather lets LLM_CLASSIFY_CONCURRENCY > 1 actually parallelize;
     # with the default of 1, semaphore acquire serializes so behavior matches
     # the prior sequential loop (and gather preserves input order).
-    batch_results = await asyncio.gather(*(_run_batch(i, b) for i, b in enumerate(batches)))
+    batch_results = await asyncio.gather(*(_run_batch_tracked(i, b) for i, b in enumerate(batches)))
     enriched: list[dict] = []
     for r in batch_results:
         enriched.extend(r)

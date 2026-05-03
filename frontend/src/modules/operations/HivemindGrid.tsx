@@ -86,10 +86,25 @@ const RunningCard: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onS
 
       {/* current step */}
       {isPipeline && row.currentNodeLabel && (
-        <div style={{ fontSize: 12, color: C.text, marginBottom: 6,
+        <div style={{ fontSize: 12, color: C.text, marginBottom: 4,
                        fontFamily: MONO,
                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {row.currentNodeLabel}
+        </div>
+      )}
+      {/* intra-node progress: e.g. "320 / 2,023 · claude-haiku-4-5" */}
+      {isPipeline && row.currentNodeTotal != null && row.currentNodeTotal > 0 && (
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 6,
+                       fontFamily: MONO, display: 'flex', gap: 8, alignItems: 'center',
+                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span>
+            {(row.currentNodeProcessed ?? 0).toLocaleString()} / {row.currentNodeTotal.toLocaleString()}
+          </span>
+          {row.currentModel && (
+            <span style={{ color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {row.currentModel}
+            </span>
+          )}
         </div>
       )}
       {!isPipeline && row.iterations !== undefined && (
