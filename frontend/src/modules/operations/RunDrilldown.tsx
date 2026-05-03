@@ -708,7 +708,7 @@ export const RunDrilldown: React.FC = () => {
             color: C.muted, fontSize: 12.5,
           }}
         >
-          <ArrowLeft size={13} /> Back to grid
+          <ArrowLeft size={13} /> Back
         </button>
         <span style={{ fontSize: 12.5, color: C.muted }}>
           Operations / {selected.kind === 'pipeline' ? 'Pipelines' : 'Agents'} /

@@ -166,6 +166,12 @@ export interface SelectedRun {
   pipelineId?: string;
 }
 
+export interface EntityHistoryView {
+  kind: 'pipeline' | 'agent';
+  entityId: string;
+  entityName: string;
+}
+
 interface OpsState {
   runningRuns: RunRow[];
   recentRuns: RunRow[];
@@ -180,12 +186,18 @@ interface OpsState {
   loading: boolean;
   lastFetchedAt: string | null;
   selected: SelectedRun | null;
+  entityHistory: EntityHistoryView | null;
+  entityHistoryRuns: RunRow[];
+  entityHistoryLoading: boolean;
 
   fetchSnapshot: () => Promise<void>;
   startPolling: (intervalMs?: number) => void;
   stopPolling: () => void;
 
   selectRun: (run: SelectedRun | null) => void;
+  viewEntityHistory: (entity: EntityHistoryView) => void;
+  clearEntityHistory: () => void;
+  fetchEntityHistory: () => Promise<void>;
 
   fetchPipelineRun: (pipelineId: string, runId: string) => Promise<PipelineRunDetail>;
   fetchAgentRun: (runId: string) => Promise<AgentRunDetail>;
@@ -242,8 +254,75 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
   loading: false,
   lastFetchedAt: null,
   selected: null,
+  entityHistory: null,
+  entityHistoryRuns: [],
+  entityHistoryLoading: false,
 
   selectRun: (run) => set({ selected: run }),
+
+  viewEntityHistory: (entity) => {
+    set({ entityHistory: entity, entityHistoryRuns: [], entityHistoryLoading: true });
+    void get().fetchEntityHistory();
+  },
+
+  clearEntityHistory: () => set({ entityHistory: null, entityHistoryRuns: [] }),
+
+  fetchEntityHistory: async () => {
+    const e = get().entityHistory;
+    if (!e) return;
+    const headers = tenantHeaders();
+    try {
+      if (e.kind === 'pipeline') {
+        const r = await fetch(`${PIPELINE_API}/pipelines/${e.entityId}/runs`, { headers });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        type PipeRunApi = {
+          id: string; pipeline_id: string; status: string; triggered_by?: string;
+          rows_in: number; rows_out: number; error_message?: string | null;
+          started_at?: string; finished_at?: string;
+          current_node_label?: string | null;
+          current_step_index?: number | null; total_steps?: number | null;
+        };
+        const rows: PipeRunApi[] = await r.json();
+        const runs: RunRow[] = rows.map((row) => {
+          const status = pipelineStatusToOps(row.status);
+          const startedAt = row.started_at || new Date(0).toISOString();
+          const finishedAt = row.finished_at || null;
+          const durationMs = finishedAt
+            ? new Date(finishedAt).getTime() - new Date(startedAt).getTime()
+            : (status === 'running' ? Date.now() - new Date(startedAt).getTime() : null);
+          return {
+            kind: 'pipeline',
+            id: row.id,
+            entityId: row.pipeline_id,
+            entityName: e.entityName,
+            status,
+            triggeredBy: row.triggered_by,
+            startedAt,
+            finishedAt,
+            durationMs,
+            errorMessage: row.error_message,
+            rowsIn: row.rows_in,
+            rowsOut: row.rows_out,
+            currentNodeLabel: row.current_node_label,
+            currentStepIndex: row.current_step_index,
+            totalSteps: row.total_steps,
+          };
+        });
+        if (get().entityHistory?.entityId !== e.entityId) return;  // user navigated away
+        set({ entityHistoryRuns: runs, entityHistoryLoading: false });
+      } else {
+        // Agents: filter from the polled snapshot. /runs/recent doesn't yet
+        // accept agent_id; this is enough for a one-screen history view.
+        const all = [...get().runningRuns, ...get().recentRuns];
+        const runs = all.filter((r) => r.kind === 'agent' && r.entityId === e.entityId);
+        set({ entityHistoryRuns: runs, entityHistoryLoading: false });
+      }
+    } catch {
+      if (get().entityHistory?.entityId === e.entityId) {
+        set({ entityHistoryRuns: [], entityHistoryLoading: false });
+      }
+    }
+  },
 
   fetchSnapshot: async () => {
     if (!get().lastFetchedAt) set({ loading: true });
@@ -493,6 +572,11 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
       loading: false,
       lastFetchedAt: new Date().toISOString(),
     });
+
+    // Keep the per-entity history in sync with the same polling cadence.
+    if (get().entityHistory) {
+      void get().fetchEntityHistory();
+    }
   },
 
   startPolling: (intervalMs = 5000) => {

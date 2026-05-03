@@ -1,18 +1,18 @@
 /**
- * HivemindGrid v2 — three sections in one scrolling page:
+ * HivemindGrid v2 — operations console.
  *
  *   1. Aggregate header (running, failed, tokens/24h, cost/24h, rows/24h)
  *   2. NOW RUNNING — fat cards with progress bars + current step
- *   3. RECENT RUNS — chronological feed (mixed pipeline + agent)
- *   4. CATALOG — collapsible per-kind browse with terse blurbs
+ *   3. CATALOG — per-kind browse; clicking a pipeline/agent opens its history
  *
- * Tone: monitoring console. Real numbers, no glow effects, one tiny pulse on
- * running entities (industry standard). Same visual register as AlertsPage.
+ * Per-entity run history lives in EntityHistory.tsx — clicking a Catalog pill
+ * opens it. There is no global recent-runs feed here by design (it was noisy
+ * when one pipeline was failing in a loop).
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  Workflow, Bot, Plug, Bell, Calendar, RefreshCw, Search, Cpu,
-  AlertCircle, ChevronRight, Coins, Zap, Hash, ChevronDown, ChevronUp,
+  Workflow, Bot, Plug, Bell, RefreshCw, Cpu,
+  AlertCircle, Coins, Zap, Hash, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import {
   useOperationsStore, RunRow, RunStatus, CatalogEntry,
@@ -34,9 +34,6 @@ const MONO = 'ui-monospace, SF Mono, Menlo, Monaco, Consolas, monospace';
 
 const statusColor: Record<RunStatus, string> = {
   running: C.info, success: C.success, failed: C.error,
-};
-const statusBg: Record<RunStatus, string> = {
-  running: C.infoLight, success: C.successLight, failed: C.errorLight,
 };
 const catStatusColor: Record<CatalogEntry['status'], string> = {
   running: C.info, success: C.success, failed: C.error,
@@ -136,79 +133,6 @@ const RunningCard: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onS
   );
 };
 
-// ── Recent run row ──────────────────────────────────────────────────────────
-
-const RecentRow: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onSelect }) => {
-  const isPipeline = row.kind === 'pipeline';
-  return (
-    <div
-      onClick={onSelect}
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '70px 12px 22px 1.2fr 1fr 80px 120px 70px',
-        gap: 10, padding: '7px 14px',
-        borderBottom: `1px solid ${C.border}`, cursor: 'pointer',
-        alignItems: 'center', fontSize: 12,
-        background: C.panel,
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = C.hover; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = C.panel; }}
-    >
-      <span style={{ color: C.subtle, fontFamily: MONO, fontSize: 11 }}>
-        {timeAgoIso(row.startedAt)}
-      </span>
-      <span style={{
-        width: 8, height: 8, borderRadius: '50%',
-        background: statusColor[row.status],
-      }} />
-      <span style={{ color: C.muted, lineHeight: 0 }}>
-        {isPipeline ? <Workflow size={13} /> : <Bot size={13} />}
-      </span>
-      <span style={{
-        fontWeight: 500, color: C.text,
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>{row.entityName}</span>
-
-      {/* outcome */}
-      <span style={{
-        color: row.status === 'failed' ? C.error : C.muted,
-        fontFamily: MONO, fontSize: 11.5,
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>
-        {row.status === 'failed' && (row.errorMessage || 'failed')}
-        {row.status === 'success' && isPipeline &&
-          `${(row.rowsIn ?? 0).toLocaleString()} → ${(row.rowsOut ?? 0).toLocaleString()}`}
-        {row.status === 'success' && !isPipeline &&
-          `${row.iterations} iter · ${row.toolCount} tools`}
-      </span>
-
-      {/* duration */}
-      <span style={{ color: C.muted, fontFamily: MONO, fontSize: 11.5, textAlign: 'right' }}>
-        {fmtMs(row.durationMs)}
-      </span>
-
-      {/* tokens / model */}
-      {isPipeline ? (
-        <span style={{ color: C.muted, fontFamily: MONO, fontSize: 11.5,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {row.triggeredBy || ''}
-        </span>
-      ) : (
-        <span style={{ color: C.muted, fontFamily: MONO, fontSize: 11.5,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {fmtTokens((row.inputTokens || 0) + (row.outputTokens || 0))} tok
-          {row.model ? <span style={{ color: C.accent, marginLeft: 6 }}>{row.model.split('-').slice(-2).join('-')}</span> : null}
-        </span>
-      )}
-
-      {/* cost */}
-      <span style={{ textAlign: 'right', color: C.muted, fontFamily: MONO, fontSize: 11.5 }}>
-        {row.kind === 'agent' ? fmtCost(row.costUsd) : ''}
-      </span>
-    </div>
-  );
-};
-
 // ── Catalog entry pill ──────────────────────────────────────────────────────
 
 const CatalogPill: React.FC<{ entry: CatalogEntry; onSelect: (e: CatalogEntry) => void }> =
@@ -268,29 +192,16 @@ const SectionHeader: React.FC<{
 
 export const HivemindGrid: React.FC = () => {
   const {
-    runningRuns, recentRuns, catalog, aggregate,
-    lastFetchedAt, fetchSnapshot, startPolling, stopPolling, selectRun,
+    runningRuns, catalog, aggregate,
+    lastFetchedAt, fetchSnapshot, startPolling, stopPolling,
+    selectRun, viewEntityHistory,
   } = useOperationsStore();
-  const [search, setSearch] = useState('');
   const [catalogOpen, setCatalogOpen] = useState(true);
-  const [recentKindFilter, setRecentKindFilter] = useState<'all' | 'pipeline' | 'agent'>('all');
 
   useEffect(() => {
     startPolling(5000);
     return () => stopPolling();
   }, [startPolling, stopPolling]);
-
-  // ── Filter recent runs ─────────────────────────────────────────────────
-  const filteredRecent = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return recentRuns.filter((r) => {
-      if (recentKindFilter !== 'all' && r.kind !== recentKindFilter) return false;
-      if (q && !r.entityName.toLowerCase().includes(q) &&
-               !(r.errorMessage || '').toLowerCase().includes(q) &&
-               !(r.currentNodeLabel || '').toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [recentRuns, search, recentKindFilter]);
 
   // ── Click handlers ─────────────────────────────────────────────────────
   const openRun = (r: RunRow) => {
@@ -302,10 +213,18 @@ export const HivemindGrid: React.FC = () => {
   };
 
   const openCatalog = (e: CatalogEntry) => {
-    if (e.kind === 'pipeline' && e.latestRunId) {
-      selectRun({ kind: 'pipeline', runId: e.latestRunId, pipelineId: e.pipelineId || e.id });
-    } else if (e.kind === 'agent' && e.latestRunId) {
-      selectRun({ kind: 'agent', runId: e.latestRunId });
+    if (e.kind === 'pipeline') {
+      viewEntityHistory({
+        kind: 'pipeline',
+        entityId: e.pipelineId || e.id,
+        entityName: e.name,
+      });
+    } else if (e.kind === 'agent') {
+      viewEntityHistory({
+        kind: 'agent',
+        entityId: e.agentId || e.id,
+        entityName: e.name,
+      });
     } else if (e.kind === 'alert' && e.pipelineId && e.latestRunId) {
       selectRun({ kind: 'pipeline', runId: e.latestRunId, pipelineId: e.pipelineId });
     } else if (e.kind === 'alert' && e.agentId && e.latestRunId) {
@@ -387,73 +306,6 @@ export const HivemindGrid: React.FC = () => {
           }}>
             {runningRuns.map((r) => (
               <RunningCard key={r.id} row={r} onSelect={() => openRun(r)} />
-            ))}
-          </div>
-        )}
-
-        {/* ── RECENT RUNS ────────────────────────────────────────────── */}
-        <SectionHeader
-          title="Recent runs"
-          count={`${filteredRecent.length} / ${recentRuns.length}`}
-          right={
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              {(['all', 'pipeline', 'agent'] as const).map((k) => (
-                <button
-                  key={k}
-                  onClick={() => setRecentKindFilter(k)}
-                  style={{
-                    padding: '3px 9px', borderRadius: 12, fontSize: 11,
-                    border: `1px solid ${recentKindFilter === k ? C.accent : C.border}`,
-                    background: recentKindFilter === k ? C.accentLight : 'transparent',
-                    color: recentKindFilter === k ? C.accent : C.muted,
-                    cursor: 'pointer', fontWeight: 500, textTransform: 'capitalize',
-                  }}
-                >{k === 'all' ? 'All' : k}s</button>
-              ))}
-              <div style={{ position: 'relative', width: 220 }}>
-                <Search size={11} style={{
-                  position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: C.subtle,
-                }} />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search recent runs…"
-                  style={{
-                    height: 24, paddingLeft: 24, paddingRight: 8,
-                    border: `1px solid ${C.border}`, borderRadius: 4,
-                    fontSize: 11, width: '100%', background: C.bg, color: C.text, outline: 'none',
-                  }}
-                />
-              </div>
-            </div>
-          }
-        />
-        {recentRuns.length === 0 ? (
-          <div style={{
-            margin: '0 24px 16px', padding: 24, fontSize: 13, color: C.subtle,
-            border: `1px dashed ${C.border}`, borderRadius: 4, textAlign: 'center', background: C.panel,
-          }}>
-            No runs in the last 24 hours.
-          </div>
-        ) : (
-          <div style={{ margin: '0 24px 8px', border: `1px solid ${C.border}`, borderRadius: 4, overflow: 'hidden' }}>
-            {/* table header */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: '70px 12px 22px 1.2fr 1fr 80px 120px 70px',
-              gap: 10, padding: '6px 14px',
-              fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-              color: C.subtle, letterSpacing: '.04em', background: C.bg,
-              borderBottom: `1px solid ${C.border}`,
-            }}>
-              <span>When</span><span /><span /><span>Entity</span>
-              <span>Outcome</span>
-              <span style={{ textAlign: 'right' }}>Duration</span>
-              <span>Trigger / model</span>
-              <span style={{ textAlign: 'right' }}>Cost</span>
-            </div>
-            {filteredRecent.map((r) => (
-              <RecentRow key={r.id} row={r} onSelect={() => openRun(r)} />
             ))}
           </div>
         )}
