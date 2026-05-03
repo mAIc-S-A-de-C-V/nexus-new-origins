@@ -678,9 +678,15 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         audit_extras["error"] = "Database SOURCE requires 'table' or 'query' in node config"
                     return []
 
-                # Incremental watermark support
-                incremental = cfg.get("incremental", False)
-                watermark_column = cfg.get("watermark_column") or cfg.get("watermarkColumn", "")
+                # Incremental watermark support — any of the common config
+                # keys being non-empty enables it (the UI only exposes the
+                # key, not a separate boolean).
+                incremental_key = (
+                    cfg.get("incrementalKey") or cfg.get("incremental_key")
+                    or cfg.get("watermark_column") or cfg.get("watermarkColumn") or ""
+                )
+                watermark_column = incremental_key
+                incremental = bool(incremental_key) or cfg.get("incremental", False)
                 if incremental and watermark_column:
                     last_watermark = await _get_last_watermark(pipeline.id)
                     if last_watermark:
@@ -744,10 +750,26 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
             if conn_type == "WHATSAPP":
                 wa_api = os.environ.get("WHATSAPP_SERVICE_URL", "http://whatsapp-service:8025")
                 wa_params: dict[str, str | int] = {"limit": batch_size, "offset": 0}
-                # Support incremental fetch via timestamp watermark
-                incremental = cfg.get("incremental", False)
-                watermark_column = cfg.get("watermark_column") or cfg.get("watermarkColumn", "timestamp")
-                if incremental and watermark_column:
+
+                # Treat any of these config keys being non-empty as the
+                # signal to run incrementally — the UI exposes only
+                # "Incremental Key", not a separate boolean flag, so
+                # requiring a separate `incremental: true` was the reason
+                # this was silently doing full pulls forever.
+                incremental_key = (
+                    cfg.get("incrementalKey") or cfg.get("incremental_key")
+                    or cfg.get("watermark_column") or cfg.get("watermarkColumn") or ""
+                )
+                # Default to "timestamp" (the WhatsApp API's natural watermark
+                # column) so old configs that only set incremental: true keep
+                # working. Pass an empty string in cfg to disable.
+                if not incremental_key and cfg.get("incremental"):
+                    incremental_key = "timestamp"
+                is_incremental = bool(incremental_key)
+                watermark_column = incremental_key
+
+                last_watermark: str | None = None
+                if is_incremental:
                     last_watermark = await _get_last_watermark(pipeline.id)
                     if last_watermark:
                         wa_params["since"] = last_watermark
@@ -764,6 +786,8 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 wa_url = f"{wa_api}/api/v1/sessions/{connector_id}/messages"
                 if audit_extras is not None:
                     audit_extras["url"] = wa_url
+                    audit_extras["incremental_key"] = incremental_key or None
+                    audit_extras["last_watermark"] = last_watermark
 
                 all_rows: list[dict] = []
                 while True:
@@ -778,15 +802,28 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     if not page_rows:
                         break
                     all_rows.extend(page_rows)
-                    if incremental and len(all_rows) >= max_records:
+                    if is_incremental and len(all_rows) >= max_records:
                         all_rows = all_rows[:max_records]
                         break
                     if len(page_rows) < batch_size:
                         break
                     wa_params["offset"] = int(wa_params.get("offset", 0)) + len(page_rows)
 
+                api_returned = len(all_rows)
+
+                # Belt-and-suspenders: even if the WhatsApp service returned
+                # records older than `since` (older builds didn't honor it),
+                # filter client-side. With `since` working this is a no-op.
+                if is_incremental and last_watermark and all_rows:
+                    all_rows = [
+                        r for r in all_rows
+                        if r.get(watermark_column) is not None
+                        and str(r.get(watermark_column)) > str(last_watermark)
+                    ]
+                dropped_by_watermark = api_returned - len(all_rows)
+
                 # Drop undecryptable / empty messages at source level
-                before_filter = len(all_rows)
+                before_text_filter = len(all_rows)
                 all_rows = [
                     r for r in all_rows
                     if str(r.get("message_type", "")).lower() != "other"
@@ -806,12 +843,14 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
 
                 if audit_extras is not None:
                     audit_extras["http_status"] = 200
-                    audit_extras["raw_row_count"] = before_filter
+                    audit_extras["raw_row_count"] = api_returned
                     audit_extras["filtered_row_count"] = len(all_rows)
-                    audit_extras["dropped_no_text"] = before_filter - len(all_rows)
+                    audit_extras["dropped_no_text"] = before_text_filter - len(all_rows)
+                    audit_extras["dropped_by_watermark"] = dropped_by_watermark
 
-                # Track watermark for incremental
-                if incremental and watermark_column and all_rows:
+                # Track watermark for incremental — uses the kept rows so the
+                # next run picks up exactly where this one left off.
+                if is_incremental and watermark_column and all_rows:
                     wm_vals = [r.get(watermark_column) for r in all_rows if r.get(watermark_column)]
                     if wm_vals:
                         if audit_extras is not None:
