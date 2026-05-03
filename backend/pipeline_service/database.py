@@ -53,6 +53,10 @@ class PipelineRunRow(Base):
     current_node_processed = Column(Integer, nullable=True)
     current_node_total = Column(Integer, nullable=True)
     current_model = Column(String, nullable=True)
+    # Free-form bag of intra-node telemetry: batches_done/total, batch_size,
+    # concurrency, input_tokens, output_tokens, cost_usd, dropped_prefilter,
+    # etc. Kept loose so we can add fields without schema churn.
+    current_node_meta = Column(JSON, nullable=True)
     watermark_value = Column(String, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
@@ -85,6 +89,7 @@ async def init_db():
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_processed INTEGER",
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_total INTEGER",
             "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_model VARCHAR",
+            "ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS current_node_meta JSON",
         ]:
             try:
                 await conn.execute(sa_text(col_sql))

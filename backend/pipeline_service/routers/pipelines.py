@@ -221,6 +221,7 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
                     row.current_node_processed = r.get("current_node_processed")
                     row.current_node_total = r.get("current_node_total")
                     row.current_model = r.get("current_model")
+                    row.current_node_meta = r.get("current_node_meta")
                     if r.get("node_audits") is not None:
                         row.node_audits = r["node_audits"]
                         # Persist watermark eagerly: the SOURCE node sets
@@ -267,6 +268,7 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
             run_row.current_node_processed = None
             run_row.current_node_total = None
             run_row.current_model = None
+            run_row.current_node_meta = None
             # Persist watermark value from node_audits for incremental pipelines
             node_audits = run.get("node_audits") or {}
             watermark = node_audits.get("_watermark_value")
@@ -358,6 +360,7 @@ async def list_recent_runs(
             "current_node_processed": r.PipelineRunRow.current_node_processed,
             "current_node_total": r.PipelineRunRow.current_node_total,
             "current_model": r.PipelineRunRow.current_model,
+            "current_node_meta": r.PipelineRunRow.current_node_meta,
         }
         for r in rows
     ]

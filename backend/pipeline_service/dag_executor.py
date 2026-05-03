@@ -293,6 +293,7 @@ class DagExecutor:
                 run["current_node_processed"] = None
                 run["current_node_total"] = None
                 run["current_model"] = None
+                run["current_node_meta"] = None
                 progress_ctx = {"run": run, "callback": progress_callback} if progress_callback else None
                 try:
                     records_out = await _execute_node(
@@ -2312,12 +2313,30 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
     # users can watch records crawl through LLM_CLASSIFY in real time.
     total_to_classify = len(records_in)
     processed_count = 0
+    batches_done = 0
+    total_batches = len(batches)
+    cum_input_tokens = 0
+    cum_output_tokens = 0
+
+    def _meta_snapshot() -> dict:
+        return {
+            "batches_done": batches_done,
+            "batches_total": total_batches,
+            "batch_size": batch_size,
+            "concurrency": concurrency,
+            "input_tokens": cum_input_tokens,
+            "output_tokens": cum_output_tokens,
+            "dropped_prefilter": dropped,
+            "provider": provider_cfg.provider_type,
+        }
+
     if progress_ctx:
         run = progress_ctx.get("run") or {}
         cb = progress_ctx.get("callback")
         run["current_node_total"] = total_to_classify
         run["current_node_processed"] = 0
         run["current_model"] = provider_cfg.model
+        run["current_node_meta"] = _meta_snapshot()
         if cb:
             try:
                 await cb(run)
@@ -2325,6 +2344,7 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
                 pass
 
     async def _run_batch(batch_idx: int, batch: list[dict]) -> list[dict]:
+        nonlocal cum_input_tokens, cum_output_tokens
         parts = []
         for idx, record in enumerate(batch):
             text = str(record.get(text_field, ""))
@@ -2369,6 +2389,8 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
                     raw_text = resp.content[0].text.strip()
                     in_tok = resp.usage.input_tokens
                     out_tok = resp.usage.output_tokens
+            cum_input_tokens += int(in_tok or 0)
+            cum_output_tokens += int(out_tok or 0)
             track_token_usage(
                 pipeline.tenant_id or "unknown", "pipeline_service", provider_cfg.model,
                 in_tok, out_tok,
@@ -2440,13 +2462,15 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
             return out
 
     async def _run_batch_tracked(i: int, b: list[dict]) -> list[dict]:
-        nonlocal processed_count
+        nonlocal processed_count, batches_done
         out = await _run_batch(i, b)
         processed_count += len(b)
+        batches_done += 1
         if progress_ctx:
             run = progress_ctx.get("run") or {}
             cb = progress_ctx.get("callback")
             run["current_node_processed"] = processed_count
+            run["current_node_meta"] = _meta_snapshot()
             if cb:
                 try:
                     await cb(run)

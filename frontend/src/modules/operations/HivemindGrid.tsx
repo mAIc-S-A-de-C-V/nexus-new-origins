@@ -92,21 +92,40 @@ const RunningCard: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onS
           {row.currentNodeLabel}
         </div>
       )}
-      {/* intra-node progress: e.g. "320 / 2,023 · claude-haiku-4-5" */}
-      {isPipeline && row.currentNodeTotal != null && row.currentNodeTotal > 0 && (
-        <div style={{ fontSize: 11, color: C.muted, marginBottom: 6,
-                       fontFamily: MONO, display: 'flex', gap: 8, alignItems: 'center',
-                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <span>
-            {(row.currentNodeProcessed ?? 0).toLocaleString()} / {row.currentNodeTotal.toLocaleString()}
-          </span>
-          {row.currentModel && (
-            <span style={{ color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {row.currentModel}
-            </span>
-          )}
-        </div>
-      )}
+      {/* intra-node progress: records, batches, tokens, model */}
+      {isPipeline && row.currentNodeTotal != null && row.currentNodeTotal > 0 && (() => {
+        const m = row.currentNodeMeta || {};
+        const tokens = (m.input_tokens || 0) + (m.output_tokens || 0);
+        return (
+          <div style={{ marginBottom: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO,
+                           display: 'flex', gap: 8, alignItems: 'center',
+                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span>
+                {(row.currentNodeProcessed ?? 0).toLocaleString()} / {row.currentNodeTotal.toLocaleString()}
+              </span>
+              {m.batches_total != null && m.batches_total > 0 && (
+                <span style={{ color: C.subtle }}>
+                  · {m.batches_done ?? 0}/{m.batches_total} batches
+                  {m.batch_size ? ` × ${m.batch_size}` : ''}
+                  {m.concurrency && m.concurrency > 1 ? ` · ${m.concurrency}× conc` : ''}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: C.subtle, fontFamily: MONO,
+                           display: 'flex', gap: 8, alignItems: 'center',
+                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {row.currentModel && (
+                <span style={{ color: C.accent }}>{row.currentModel}</span>
+              )}
+              {tokens > 0 && <span>· {fmtTokens(tokens)} tok</span>}
+              {m.dropped_prefilter != null && m.dropped_prefilter > 0 && (
+                <span>· {m.dropped_prefilter.toLocaleString()} skipped</span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
       {!isPipeline && row.iterations !== undefined && (
         <div style={{ fontSize: 12, color: C.text, marginBottom: 6, fontFamily: MONO }}>
           iter {row.iterations} · {row.toolCount} tool{row.toolCount === 1 ? '' : 's'}

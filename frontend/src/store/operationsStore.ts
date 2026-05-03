@@ -47,6 +47,17 @@ export interface RunRow {
   currentNodeTotal?: number | null;
   /** Model in use for the current node (e.g. claude-haiku-4-5 during LLM_CLASSIFY). */
   currentModel?: string | null;
+  /** Free-form telemetry from the current node (batches_done/total, tokens, …). */
+  currentNodeMeta?: {
+    batches_done?: number;
+    batches_total?: number;
+    batch_size?: number;
+    concurrency?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    dropped_prefilter?: number;
+    provider?: string;
+  } | null;
 
   // Agent-specific
   model?: string | null;
@@ -289,6 +300,7 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
           current_node_processed?: number | null;
           current_node_total?: number | null;
           current_model?: string | null;
+          current_node_meta?: RunRow['currentNodeMeta'];
         };
         const rows: PipeRunApi[] = await r.json();
         const runs: RunRow[] = rows.map((row) => {
@@ -317,6 +329,7 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
             currentNodeProcessed: row.current_node_processed,
             currentNodeTotal: row.current_node_total,
             currentModel: row.current_model,
+            currentNodeMeta: row.current_node_meta,
           };
         });
         if (get().entityHistory?.entityId !== e.entityId) return;  // user navigated away
@@ -360,6 +373,7 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
       current_node_processed?: number | null;
       current_node_total?: number | null;
       current_model?: string | null;
+      current_node_meta?: RunRow['currentNodeMeta'];
     };
     let pipeRuns: PipeRunApi[] = [];
     if (pRunsRes.status === 'fulfilled' && pRunsRes.value.ok) {
@@ -422,6 +436,7 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
         currentNodeProcessed: r.current_node_processed,
         currentNodeTotal: r.current_node_total,
         currentModel: r.current_model,
+        currentNodeMeta: r.current_node_meta,
       });
     }
 
