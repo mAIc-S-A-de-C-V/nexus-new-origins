@@ -2841,18 +2841,32 @@ const PivotDownloadButton: React.FC<{
   fmtCol: (c: string) => string;
   pivot: Record<string, Record<string, number | null>>;
   filenameStub: string;
-}> = ({ rowField, rowKeys, cols, fmtCol, pivot, filenameStub }) => {
+  valueXform?: { multiplier?: number; decimals?: number; unit?: string };
+}> = ({ rowField, rowKeys, cols, fmtCol, pivot, filenameStub, valueXform }) => {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<'csv' | 'xlsx' | null>(null);
 
+  // Apply the widget's value transform (multiplier/decimals/unit) so the
+  // export matches the rendered cells. Cells stay numeric so Excel SUM/AVG
+  // keep working; the unit (if any) goes on the column header instead of
+  // being concatenated per-cell, which would force string conversion.
   const buildRows = (): { columns: string[]; rows: Record<string, unknown>[] } => {
-    const colLabels = cols.map(fmtCol);
+    const m = valueXform?.multiplier ?? 1;
+    const d = valueXform?.decimals;
+    const unit = valueXform?.unit;
+    const colSuffix = unit ? ` (${unit})` : '';
+    const colLabels = cols.map((c) => fmtCol(c) + colSuffix);
     const columns = [rowField, ...colLabels];
     const rows = rowKeys.map((rk) => {
       const out: Record<string, unknown> = { [rowField]: rk };
       cols.forEach((c, i) => {
         const v = pivot[rk]?.[c];
-        out[colLabels[i]] = v == null ? '' : v;
+        if (v == null) {
+          out[colLabels[i]] = '';
+        } else {
+          const transformed = v * m;
+          out[colLabels[i]] = d != null ? Number(transformed.toFixed(d)) : transformed;
+        }
       });
       return out;
     });
@@ -2998,6 +3012,11 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
           fmtCol={fmtCol}
           pivot={pivot}
           filenameStub={comp.title || 'pivot'}
+          valueXform={{
+            multiplier: comp.valueMultiplier,
+            decimals: comp.valueDecimals,
+            unit: comp.valueUnit,
+          }}
         />
       </div>
       <div style={{ flex: 1, overflow: 'auto' }}>
