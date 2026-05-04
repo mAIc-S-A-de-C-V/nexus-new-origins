@@ -2,6 +2,7 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, Boolean, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
@@ -53,7 +54,9 @@ class ObjectRecordRow(Base):
     object_type_id = Column(String, nullable=False, index=True)
     tenant_id = Column(String, nullable=False, index=True)
     source_id = Column(String, nullable=False, index=True)  # primary key from source (e.g. hs_object_id)
-    data = Column(JSON, nullable=False)  # full merged record including nested arrays
+    # JSONB (not JSON): stored binary, no per-row reparse on data->>'field',
+    # and supports GIN indexes. /aggregate scans this column heavily.
+    data = Column(JSONB, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -214,6 +217,34 @@ class ActionExecutionRow(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # ── object_records perf migrations ──────────────────────────────────
+        # 1) JSON → JSONB on `data`. JSONB stores parsed binary, so
+        #    `data->>'field'` doesn't reparse text per row, and the column
+        #    becomes eligible for GIN indexes. The ALTER takes an
+        #    AccessExclusive lock and rewrites the table — slow on large
+        #    tables, but only runs once (we skip if already jsonb).
+        # 2) Composite (tenant_id, object_type_id) index. The single-column
+        #    indexes already exist (declared on the model), but a composite
+        #    lets /aggregate skip the bitmap-AND step and seek directly to
+        #    the (tenant, ot) slice it actually wants.
+        await conn.execute(text("""
+            DO $$
+            DECLARE
+                col_type text;
+            BEGIN
+                SELECT data_type INTO col_type
+                FROM information_schema.columns
+                WHERE table_name = 'object_records' AND column_name = 'data';
+                IF col_type = 'json' THEN
+                    ALTER TABLE object_records
+                        ALTER COLUMN data TYPE jsonb USING data::jsonb;
+                END IF;
+            END $$;
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_object_records_tenant_ot "
+            "ON object_records (tenant_id, object_type_id)"
+        ))
         # Migrate: add object_type_ids column to apps if missing
         await conn.execute(text("""
             DO $$

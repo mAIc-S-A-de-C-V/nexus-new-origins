@@ -721,12 +721,22 @@ async def aggregate_records(
                 d[f"agg_{i}"] = float(v) if v is not None else None
             serialized.append(d)
 
-        # Auto-index hot fields after a slow query.
+        # Auto-index hot fields after a slow query. Includes filter fields —
+        # date-range filters (xAxisRange / after / before) frequently dominate
+        # cost on a fresh OT, and they wouldn't be covered if we only looked
+        # at group_by/time_bucket.
         candidate_fields = []
         if body.group_by:
             candidate_fields.append(body.group_by)
         if body.time_bucket:
             candidate_fields.append(body.time_bucket.field)
+        if body.filters:
+            try:
+                parsed_filters = json.loads(body.filters)
+                if isinstance(parsed_filters, dict):
+                    candidate_fields.extend(parsed_filters.keys())
+            except (json.JSONDecodeError, TypeError):
+                pass
         try:
             await index_advisor.maybe_create_indexes_for(
                 engine=db.get_bind(),
