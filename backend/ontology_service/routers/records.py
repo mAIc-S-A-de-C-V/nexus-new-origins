@@ -225,6 +225,14 @@ async def list_records(
 _FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _AGG_METHODS = {"count", "sum", "avg", "min", "max", "count_distinct", "runtime"}
 
+# Semaphore that caps concurrent /aggregate queries per service instance.
+# A dashboard fans out one /aggregate per widget; without this guard, 5–10
+# heavy aggregations hit Postgres simultaneously, each allocating work_mem,
+# and the cluster OOM-crashes into recovery mode. Excess callers queue here
+# rather than in the DB. Tune via env if the host has more headroom.
+_AGGREGATE_CONCURRENCY = int(os.environ.get("AGGREGATE_MAX_CONCURRENCY", "4"))
+_aggregate_semaphore = asyncio.Semaphore(_AGGREGATE_CONCURRENCY)
+
 # Coarse buckets handled by Postgres date_trunc.
 _TRUNC_BUCKETS = {"hour", "day", "week", "month", "quarter", "year"}
 
@@ -493,6 +501,18 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                                 # timestamptz" and rejects str inputs at the
                                 # client layer. Parse to datetime here so it
                                 # round-trips correctly.
+                                # `regex AND cast` is NOT short-circuit-safe in
+                                # PG — the planner can choose to evaluate the
+                                # cast first and throw on a single non-ISO row.
+                                # CASE WHEN forces per-row eval order, so junk
+                                # values become NULL (which fails any compare
+                                # cleanly) instead of crashing the query.
+                                ts_safe = (
+                                    f"(CASE WHEN {accessor} ~ "
+                                    f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+                                    f"THEN NULLIF({accessor}, '')::timestamptz "
+                                    f"ELSE NULL END)"
+                                )
                                 try:
                                     iso_normal = val_str.replace("Z", "+00:00")
                                     dt_val = datetime.fromisoformat(iso_normal)
@@ -502,16 +522,11 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                                     # parsing (less efficient but still
                                     # correct). Avoids the asyncpg type hint.
                                     where_parts.append(
-                                        f"{accessor} ~ '^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
-                                        f"AND NULLIF({accessor}, '')::timestamptz {cmp} "
-                                        f"(:{pname}::text)::timestamptz"
+                                        f"{ts_safe} {cmp} (:{pname}::text)::timestamptz"
                                     )
                                     bind_params[pname] = val_str
                                 else:
-                                    where_parts.append(
-                                        f"{accessor} ~ '^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
-                                        f"AND NULLIF({accessor}, '')::timestamptz {cmp} :{pname}"
-                                    )
+                                    where_parts.append(f"{ts_safe} {cmp} :{pname}")
                                     bind_params[pname] = dt_val
                             else:
                                 try:
@@ -701,14 +716,51 @@ async def aggregate_records(
     cache_key = query_cache.aggregate_cache_key(tenant_id, ot_id, query_hash)
     index_key = query_cache.aggregate_index_key(tenant_id, ot_id)
 
+    # Hard ceiling on a single /aggregate query. Without this the request
+    # hangs the dashboard indefinitely on first-touch of an unindexed field
+    # (the auto-indexer would heal it, but only AFTER the slow query returns).
+    timeout_s = float(os.environ.get("AGGREGATE_QUERY_TIMEOUT_S", "30"))
+
     async def _execute() -> dict:
         t0 = time.perf_counter()
-        try:
-            result = await db.execute(text(sql), bind_params)
-            rows = result.mappings().all()
-        except Exception as exc:
-            logger.warning("aggregate failed for ot=%s tenant=%s: %s", ot_id, tenant_id, exc)
-            raise HTTPException(status_code=400, detail=f"Aggregation failed: {exc}")
+        # Serialize heavy DB work so a dashboard's parallel widget loads
+        # don't pile concurrent HashAggregates on Postgres and OOM the
+        # container into recovery mode.
+        async with _aggregate_semaphore:
+            try:
+                result = await asyncio.wait_for(
+                    db.execute(text(sql), bind_params),
+                    timeout=timeout_s,
+                )
+                rows = result.mappings().all()
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "aggregate timed out (%.0fs) for ot=%s tenant=%s — likely missing index",
+                    timeout_s, ot_id, tenant_id,
+                )
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        f"Aggregation timed out after {timeout_s:.0f}s. The filter "
+                        "field probably needs an index — the auto-indexer schedules "
+                        "one on slow queries; retry shortly."
+                    ),
+                )
+            except Exception as exc:
+                msg = str(exc)
+                # PG returns this whenever a backend was OOM-killed and the
+                # cluster is replaying WAL. It's transient — surface as 503
+                # so the client can back off and retry instead of treating
+                # it as a permanent validation failure.
+                if "in recovery mode" in msg or "the database system is starting up" in msg:
+                    logger.warning("postgres in recovery for ot=%s tenant=%s", ot_id, tenant_id)
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Database is recovering from a restart; please retry in a few seconds.",
+                        headers={"Retry-After": "5"},
+                    )
+                logger.warning("aggregate failed for ot=%s tenant=%s: %s", ot_id, tenant_id, exc)
+                raise HTTPException(status_code=400, detail=f"Aggregation failed: {exc}")
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
         serialized = []

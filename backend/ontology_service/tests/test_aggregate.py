@@ -301,10 +301,12 @@ def test_filters_iso_date_uses_timestamptz_cast():
         aggregations=[AggregationSpec(method="count")],
     )
     sql, params = build_aggregate_sql(body, "t", "o")
-    # Column-side cast still present; regex-guarded so a malformed row
-    # doesn't blow up the query.
-    assert "NULLIF(data->>'time', '')::timestamptz >= :flt0" in sql
-    assert "data->>'time' ~ '^[[:digit:]]{4}-[[:digit:]]{2}-[[:digit:]]{2}'" in sql
+    # Column-side cast wrapped in CASE WHEN so a malformed row yields NULL
+    # instead of throwing; AND-form is not short-circuit-safe under JSONB.
+    assert (
+        "CASE WHEN data->>'time' ~ '^[[:digit:]]{4}-[[:digit:]]{2}-[[:digit:]]{2}' "
+        "THEN NULLIF(data->>'time', '')::timestamptz ELSE NULL END) >= :flt0"
+    ) in sql
     # Bind value is a real datetime, not a string.
     assert isinstance(params["flt0"], datetime)
     # Must NOT take the numeric path
@@ -318,7 +320,10 @@ def test_filters_iso_date_lt_and_lte_also_use_timestamptz():
         aggregations=[AggregationSpec(method="count")],
     )
     sql, params = build_aggregate_sql(body, "t", "o")
-    assert "NULLIF(data->>'created_at', '')::timestamptz < :flt0" in sql
+    assert (
+        "CASE WHEN data->>'created_at' ~ '^[[:digit:]]{4}-[[:digit:]]{2}-[[:digit:]]{2}' "
+        "THEN NULLIF(data->>'created_at', '')::timestamptz ELSE NULL END) < :flt0"
+    ) in sql
     assert isinstance(params["flt0"], datetime)
 
 

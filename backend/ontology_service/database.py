@@ -250,6 +250,9 @@ async def init_db():
                 IF col_type = 'json' THEN
                     ALTER TABLE object_records
                         ALTER COLUMN data TYPE jsonb USING data::jsonb;
+                    -- Stats are stale after a TYPE rewrite; refresh so the
+                    -- planner doesn't pick a seq-scan plan on the first hit.
+                    ANALYZE object_records;
                 END IF;
             END $$;
         """))
