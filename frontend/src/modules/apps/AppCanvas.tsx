@@ -3544,10 +3544,6 @@ const RANGE_OPTIONS: Array<{ value: RangePreset; label: string }> = [
   { value: 'yesterday', label: 'Yesterday' },
   { value: 'this_week', label: 'This week' },
   { value: 'this_month',label: 'This month' },
-  { value: 'last_7d',   label: 'Last 7 days' },
-  { value: 'last_30d',  label: 'Last 30 days' },
-  { value: 'last_90d',  label: 'Last 90 days' },
-  { value: 'last_year', label: 'Last year' },
   { value: 'custom',    label: 'Custom range…' },
 ];
 
