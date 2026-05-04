@@ -5,7 +5,7 @@ from fastapi import FastAPI, Depends
 from fastapi import Request as _Request
 from fastapi.responses import Response as _Response
 from fastapi.middleware.cors import CORSMiddleware
-from routers import ontology, records, apps, actions, graph, notebooks, documents
+from routers import ontology, records, apps, actions, graph, notebooks, documents, shares
 from database import init_db
 from shared.auth_middleware import require_auth
 from shared.nexus_logging import configure_logging
@@ -83,6 +83,10 @@ app.include_router(actions.router, prefix="/actions", tags=["actions"], dependen
 app.include_router(graph.router, prefix="/graph", tags=["graph"], dependencies=[Depends(require_auth)])
 app.include_router(notebooks.router, prefix="/notebooks", tags=["notebooks"], dependencies=[Depends(require_auth)])
 app.include_router(documents.router, prefix="/documents", tags=["documents"], dependencies=[Depends(require_auth)])
+# External share links — creator endpoints sit behind auth, public viewer
+# endpoints sit at /s/* with NO auth dep (the token is the credential).
+app.include_router(shares.creator_router, prefix="/shares", tags=["shares"], dependencies=[Depends(require_auth)])
+app.include_router(shares.public_router, prefix="/s", tags=["share-public"])
 
 from fastapi import Request as _RequestSize
 from fastapi.responses import JSONResponse as _JSONResponse

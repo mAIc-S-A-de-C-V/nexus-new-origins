@@ -17,17 +17,18 @@ import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import {
   Eye, Pencil, Code2, Save, Plus, Trash2,
-  ChevronRight, RefreshCw,
+  ChevronRight, RefreshCw, Share2,
   BarChart2, LineChart, Table, Hash, AlignLeft, Gauge, SlidersHorizontal,
   Database, Tag, MessageSquare, Sparkles, Loader, Braces, MapPin, Wrench,
   PieChart, AreaChart, TrendingUp, ListFilter, FileText, TableProperties, Variable,
-  Layers, Play, FilePlus, CheckSquare, Edit3,
+  Layers, Play, FilePlus, CheckSquare, Edit3, Workflow,
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable, DashboardFilterBar, RangePreset, AppEvent, AppEventAction, ContextBinding, AppAction, ActionKind } from '../../types/app';
 import { suggestedBucketForRange, detectEavPattern, type EavPattern } from './queryBuilder';
 import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
 import AppCanvas from './AppCanvas';
+import ShareManagerModal from './ShareManagerModal';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
@@ -135,6 +136,7 @@ const WIDGET_DEFS: { type: ComponentType; label: string; icon: React.ReactNode; 
   { type: 'record-creator',  label: 'Record Creator',  icon: <FilePlus size={13} />,       defaultColSpan: 6,  description: 'Multi-step wizard to create records' },
   { type: 'approval-queue',  label: 'Approval Queue',  icon: <CheckSquare size={13} />,    defaultColSpan: 12, description: 'Table with per-row approve/reject buttons' },
   { type: 'file-upload',     label: 'File Upload',     icon: <FilePlus size={13} />,       defaultColSpan: 6,  description: 'Upload a doc, OCR/vision-extract, autofill the form' },
+  { type: 'process-flow',    label: 'Process Flow',    icon: <Workflow size={13} />,       defaultColSpan: 12, description: 'Visual editor: capture how a process works today (steps, role, medium, time)' },
 ];
 
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
@@ -2381,6 +2383,35 @@ const ConfigPanel: React.FC<{
           </Row>
         )}
 
+        {/* process-flow — visual editor for current process */}
+        {comp.type === 'process-flow' && (
+          <>
+            <Row label="OUTPUT VARIABLE">
+              {sel(
+                comp.flowOutputVariableId || '',
+                (variables || []).map((v) => v.id),
+                (variables || []).map((v) => v.name),
+                (v) => set({ flowOutputVariableId: v }),
+                '— pick a string variable to receive the flow JSON —',
+              )}
+            </Row>
+            <Row label="ROLE OPTIONS (csv)">
+              {inp(
+                (comp.flowRoleOptions || []).join(','),
+                (v) => set({ flowRoleOptions: v.split(',').map((s) => s.trim()).filter(Boolean) }),
+                'student,faculty,staff,admin,system',
+              )}
+            </Row>
+            <Row label="MEDIUM OPTIONS (csv)">
+              {inp(
+                (comp.flowMediumOptions || []).join(','),
+                (v) => set({ flowMediumOptions: v.split(',').map((s) => s.trim()).filter(Boolean) }),
+                'excel,paper,email,sharepoint,erp,saas,phone,in_person,whatsapp,web,other',
+              )}
+            </Row>
+          </>
+        )}
+
         {/* file-upload — Phase 8 widget */}
         {comp.type === 'file-upload' && (
           <>
@@ -3633,7 +3664,8 @@ const ActionsList: React.FC<{
   actions: AppAction[];
   onChange: (a: AppAction[]) => void;
   objectTypes: OntologyType[];
-}> = ({ actions, onChange, objectTypes }) => {
+  variables?: AppVariable[];
+}> = ({ actions, onChange, objectTypes, variables }) => {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const add = () => {
@@ -3825,6 +3857,7 @@ const ActionsList: React.FC<{
                           <option value="asDate">as date</option>
                           <option value="asUuid">as uuid</option>
                           <option value="literal">literal value</option>
+                          <option value="fromVariable">from variable</option>
                         </select>
                         {m.transform === 'literal' && (
                           <input
@@ -3833,6 +3866,18 @@ const ActionsList: React.FC<{
                             placeholder="literal value"
                             style={{ flex: 1, height: 20, padding: '0 6px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3 }}
                           />
+                        )}
+                        {m.transform === 'fromVariable' && (
+                          <select
+                            value={m.sourceVariableId || ''}
+                            onChange={(e) => updateMapping({ sourceVariableId: e.target.value || undefined })}
+                            style={{ flex: 1, height: 20, padding: '0 4px', fontSize: 9, border: '1px solid #E2E8F0', borderRadius: 3, color: '#64748B' }}
+                          >
+                            <option value="">— pick a variable —</option>
+                            {(variables || []).map((v) => (
+                              <option key={v.id} value={v.id}>{v.name}</option>
+                            ))}
+                          </select>
                         )}
                       </div>
                     </div>
@@ -3977,7 +4022,8 @@ const AppSettingsPanel: React.FC<{
   onActionsChange?: (a: AppAction[]) => void;
   events?: AppEvent[];
   onEventsChange?: (e: AppEvent[]) => void;
-}> = ({ filterBar, onChange, components, objectTypes, kind = 'dashboard', onKindChange, actions, onActionsChange }) => {
+  variables?: AppVariable[];
+}> = ({ filterBar, onChange, components, objectTypes, kind = 'dashboard', onKindChange, actions, onActionsChange, variables }) => {
   // Use the first widget with an objectTypeId as the source of fields for
   // the time/group field pickers. The user can still type any field name
   // manually if their dashboard mixes object types.
@@ -4047,7 +4093,7 @@ const AppSettingsPanel: React.FC<{
 
         {/* ── Phase H — Actions ── */}
         {actions && onActionsChange && (
-          <ActionsList actions={actions} onChange={onActionsChange} objectTypes={objectTypes} />
+          <ActionsList actions={actions} onChange={onActionsChange} objectTypes={objectTypes} variables={variables} />
         )}
 
         <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 10 }}>
@@ -4173,6 +4219,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [fieldCopied, setFieldCopied] = useState('');
   const [canvasWidth, setCanvasWidth] = useState(900);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -4334,10 +4381,23 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
         </span>
 
         <button
+          onClick={() => setShareOpen(true)}
+          title={dirty ? 'Save first to share the latest version' : 'Manage external share links'}
+          style={{
+            marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5,
+            padding: '5px 11px', border: '1px solid #E2E8F0', borderRadius: 5,
+            fontSize: 12, fontWeight: 500, cursor: 'pointer',
+            backgroundColor: '#FFFFFF', color: '#0D1117',
+          }}
+        >
+          <Share2 size={13} /> Share
+        </button>
+
+        <button
           onClick={handleSave}
           disabled={!dirty || saving}
           style={{
-            marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5,
+            display: 'flex', alignItems: 'center', gap: 5,
             padding: '5px 14px', border: 'none', borderRadius: 5,
             fontSize: 12, fontWeight: 500,
             cursor: dirty && !saving ? 'pointer' : 'default',
@@ -4348,6 +4408,14 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
           <Save size={13} />{saving ? 'Saving…' : 'Save'}
         </button>
       </div>
+
+      {shareOpen && (
+        <ShareManagerModal
+          appId={app.id}
+          appKind={appKind}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
 
       {/* Body */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -4404,6 +4472,7 @@ const AppEditor: React.FC<{ app: NexusApp }> = ({ app }) => {
                 onActionsChange={markActions}
                 events={events}
                 onEventsChange={markEvents}
+                variables={variables}
               />
             )}
           </>

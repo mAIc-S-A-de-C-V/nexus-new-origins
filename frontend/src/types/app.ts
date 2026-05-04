@@ -93,8 +93,13 @@ export type ActionKind =
 export interface ActionFieldMapping {
   formField: string;           // input name from the calling widget
   targetProperty: string;      // ontology property name (or workflow input)
-  transform?: 'asNumber' | 'asDate' | 'asUuid' | 'literal';
+  transform?: 'asNumber' | 'asDate' | 'asUuid' | 'literal' | 'fromVariable';
   literalValue?: string;
+  // When transform === 'fromVariable', the action runtime reads from the
+  // app variable with this id instead of from formValues. Lets a sibling
+  // widget (e.g. process-flow) drop a value into the submission without
+  // adding a hidden form field.
+  sourceVariableId?: string;
 }
 
 export interface ActionValidationRule {
@@ -182,7 +187,11 @@ export type ComponentType =
   | 'approval-queue'
   // Phase 8 — upload a file, run OCR / vision extraction, autofill sibling
   // fields by writing extracted values into app variables.
-  | 'file-upload';
+  | 'file-upload'
+  // Phase K — visual process-flow editor. Captures the requester's current
+  // workflow as a node-link graph; serializes to JSON into a bound app
+  // variable. Used in intake forms to elicit "how does this happen today".
+  | 'process-flow';
 
 // Composite layout templates. Sugar over the inner 12-col grid — sets
 // sensible colSpan defaults on children when they don't specify one.
@@ -305,6 +314,15 @@ export interface AppComponent {
   fieldVariableMap?: Record<string, string>;
   linkedRecordType?: string;
   linkedRecordVariableId?: string;
+  // ── process-flow widget ────────────────────────────────────────────────
+  // App variable that receives the serialized flow JSON whenever the user
+  // edits the canvas. Bind a string-typed variable to it; the form action's
+  // field mapping reads via transform='fromVariable'.
+  flowOutputVariableId?: string;
+  // Optional vocabulary overrides for the role + medium dropdowns. Empty
+  // arrays fall back to the built-in defaults in ProcessFlowWidget.
+  flowRoleOptions?: string[];
+  flowMediumOptions?: string[];
   // object-table config (reuses objectTypeId, columns)
 
   // ── Composite widget ──────────────────────────────────────────────────

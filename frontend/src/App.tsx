@@ -27,6 +27,7 @@ const ValuePage       = lazy(() => import('./modules/value/ValuePage'));
 const SuperAdminPage  = lazy(() => import('./modules/superadmin/SuperAdminPage'));
 const ProcessMiningV2 = lazy(() => import('./modules/process_v2/ProcessMiningV2'));
 const OperationsModule = lazy(() => import('./modules/operations/OperationsModule'));
+const SharePage       = lazy(() => import('./modules/share/SharePage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -171,6 +172,15 @@ const AuthGate: React.FC = () => {
 // ── App ────────────────────────────────────────────────────────────────────
 
 function App() {
+  // Public share viewer — no tenant context, no auth gate. Token in the URL
+  // is the credential. Path takes the form /s/<token>.
+  if (window.location.pathname.startsWith('/s/')) {
+    return (
+      <Suspense fallback={<LoadingSpinner message="Loading…" />}>
+        <SharePage />
+      </Suspense>
+    );
+  }
   return (
     <TenantProvider>
       <ThemeSync />

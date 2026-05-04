@@ -90,6 +90,76 @@ class AppRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class AppVersionRow(Base):
+    """Frozen snapshot of an app's content at a point in time. External shares
+    pin to a version_id so editing the parent app doesn't mutate live links.
+    Snapshots are taken lazily on share creation, not on every save."""
+    __tablename__ = "app_versions"
+    id = Column(String, primary_key=True)
+    app_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    icon = Column(String, nullable=True)
+    object_type_id = Column(String, nullable=False, default="")
+    object_type_ids = Column(JSON, nullable=True, default=list)
+    components = Column(JSON, nullable=False, default=list)
+    settings = Column(JSON, nullable=True, default=dict)
+    kind = Column(String, nullable=False, default="dashboard")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppShareRow(Base):
+    """An external share link for an app — points at a pinned app_version."""
+    __tablename__ = "app_shares"
+    id = Column(String, primary_key=True)
+    token = Column(String, nullable=False, unique=True, index=True)
+    app_id = Column(String, nullable=False, index=True)
+    app_version_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    # 'submit' (form-only) or 'view' (read-only dashboard).
+    mode = Column(String, nullable=False, default="submit")
+    # 'public' | 'password' | 'email_whitelist' | 'nexus_user'.
+    access_mode = Column(String, nullable=False, default="public")
+    password_hash = Column(String, nullable=True)
+    whitelist_emails = Column(JSON, nullable=True, default=list)
+    max_uses = Column(Integer, nullable=True)
+    use_count = Column(Integer, nullable=False, default=0)
+    # 'submissions' for forms (one per /submit), 'sessions' for dashboards
+    # (one per /auth or first /app fetch).
+    count_what = Column(String, nullable=False, default="submissions")
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    # {filters: {...}, variable_overrides: {...}} merged server-side before
+    # any kernel call — never trust the client to filter.
+    data_scope = Column(JSON, nullable=True, default=dict)
+    # {logo_url, primary_color, hide_chrome, support_email, name}.
+    branding = Column(JSON, nullable=True, default=dict)
+    # In-app QPS cap and auth-attempt lockout windows.
+    rate_limit_qps = Column(Integer, nullable=False, default=10)
+    auth_failures = Column(Integer, nullable=False, default=0)
+    auth_locked_until = Column(DateTime(timezone=True), nullable=True)
+    created_by_user_id = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AppShareRedemptionRow(Base):
+    """One row per share use — atomic source of truth for use_count.
+    Insert + share row update happen in the same transaction."""
+    __tablename__ = "app_share_redemptions"
+    id = Column(String, primary_key=True)
+    share_id = Column(String, nullable=False, index=True)
+    redeemed_at = Column(DateTime(timezone=True), server_default=func.now())
+    ip = Column(String, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    email = Column(String, nullable=True)
+    submission_id = Column(String, nullable=True)
+    extra = Column(JSON, nullable=True, default=dict)
+
+
 class NotebookRow(Base):
     """Persisted Workbench notebooks — Jupyter-style cells + outputs."""
     __tablename__ = "notebooks"
@@ -221,6 +291,77 @@ async def init_db():
                 END IF;
             END $$;
         """))
+        # External-share tables — versions, shares, redemptions. asyncpg can't
+        # take multi-statement SQL in one execute(), so each DDL statement
+        # gets its own call. CREATE TABLE/INDEX IF NOT EXISTS keeps it
+        # idempotent across boots.
+        for stmt in [
+            """
+            CREATE TABLE IF NOT EXISTS app_versions (
+                id VARCHAR PRIMARY KEY,
+                app_id VARCHAR NOT NULL,
+                tenant_id VARCHAR NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                name VARCHAR NOT NULL,
+                description TEXT,
+                icon VARCHAR,
+                object_type_id VARCHAR NOT NULL DEFAULT '',
+                object_type_ids JSON DEFAULT '[]',
+                components JSON NOT NULL DEFAULT '[]',
+                settings JSON DEFAULT '{}',
+                kind VARCHAR NOT NULL DEFAULT 'dashboard',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_app_versions_app_id ON app_versions(app_id)",
+            "CREATE INDEX IF NOT EXISTS ix_app_versions_tenant_id ON app_versions(tenant_id)",
+            """
+            CREATE TABLE IF NOT EXISTS app_shares (
+                id VARCHAR PRIMARY KEY,
+                token VARCHAR NOT NULL UNIQUE,
+                app_id VARCHAR NOT NULL,
+                app_version_id VARCHAR NOT NULL,
+                tenant_id VARCHAR NOT NULL,
+                name VARCHAR NOT NULL,
+                mode VARCHAR NOT NULL DEFAULT 'submit',
+                access_mode VARCHAR NOT NULL DEFAULT 'public',
+                password_hash VARCHAR,
+                whitelist_emails JSON DEFAULT '[]',
+                max_uses INTEGER,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                count_what VARCHAR NOT NULL DEFAULT 'submissions',
+                expires_at TIMESTAMP WITH TIME ZONE,
+                revoked_at TIMESTAMP WITH TIME ZONE,
+                data_scope JSON DEFAULT '{}',
+                branding JSON DEFAULT '{}',
+                rate_limit_qps INTEGER NOT NULL DEFAULT 10,
+                auth_failures INTEGER NOT NULL DEFAULT 0,
+                auth_locked_until TIMESTAMP WITH TIME ZONE,
+                created_by_user_id VARCHAR,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_app_shares_token ON app_shares(token)",
+            "CREATE INDEX IF NOT EXISTS ix_app_shares_app_id ON app_shares(app_id)",
+            "CREATE INDEX IF NOT EXISTS ix_app_shares_tenant_id ON app_shares(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS ix_app_shares_expires_at ON app_shares(expires_at)",
+            """
+            CREATE TABLE IF NOT EXISTS app_share_redemptions (
+                id VARCHAR PRIMARY KEY,
+                share_id VARCHAR NOT NULL,
+                redeemed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                ip VARCHAR,
+                user_agent TEXT,
+                email VARCHAR,
+                submission_id VARCHAR,
+                extra JSON DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_app_share_redemptions_share_id ON app_share_redemptions(share_id)",
+            "CREATE INDEX IF NOT EXISTS ix_app_share_redemptions_redeemed_at ON app_share_redemptions(redeemed_at)",
+        ]:
+            await conn.execute(text(stmt))
         # Sweep expired ephemeral apps each boot — one cheap DELETE keeps
         # the cache from growing without a separate cron service.
         await conn.execute(text("""

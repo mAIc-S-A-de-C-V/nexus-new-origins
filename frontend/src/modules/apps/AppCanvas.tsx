@@ -4,6 +4,8 @@ import remarkGfm from 'remark-gfm';
 import { NexusApp, AppComponent, AppFilter, AppEvent, AppAction, DashboardFilterBar as DashboardFilterBarConfig, RangePreset, CompositeLayout } from '../../types/app';
 import { useTimezone, formatInTz } from '../../lib/timezone';
 import { getTenantId, getAccessToken } from '../../store/authStore';
+import { getShareMode } from '../../lib/shareMode';
+import ProcessFlowWidget from './widgets/ProcessFlowWidget';
 import { AppVariableProvider, useAppVariables } from './AppVariableContext';
 import { colors as tokens, chartPalette } from '../../design-system/tokens';
 import { useDashboardStackStore, DashboardStackEntry } from '../../store/dashboardStackStore';
@@ -2149,6 +2151,7 @@ const RecordSelectField: React.FC<{
 const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
   const formFields = comp.fields || [];
   const { actions } = useContext(AppContext);
+  const { variables: appVarsMap } = useAppVariables();
   const [values, setValues] = useState<Record<string, any>>({});
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -2171,7 +2174,11 @@ const FormWidget: React.FC<{ comp: AppComponent }> = ({ comp }) => {
         setStatus('error'); setErrorMsg(err); setSubmitting(false);
         return;
       }
-      const result = await runAppAction(boundAction, { formValues: values });
+      // Surface app variables alongside form values so action mappings with
+      // transform='fromVariable' (e.g. process-flow output) can resolve.
+      const variablesObj: Record<string, unknown> = {};
+      appVarsMap.forEach((v, k) => { variablesObj[k] = v; });
+      const result = await runAppAction(boundAction, { formValues: values, variables: variablesObj });
       if (result.ok) {
         setStatus('success');
         setTimeout(() => setStatus('idle'), 3000);
@@ -3139,6 +3146,7 @@ const ComponentRendererNoRecords: React.FC<{ comp: AppComponent; allComponents?:
     case 'record-creator': return <RecordCreatorWidget comp={comp} />;
     case 'approval-queue': return <ApprovalQueueWidget comp={comp} />;
     case 'file-upload': return <FileUploadWidget comp={comp} />;
+    case 'process-flow': return <ProcessFlowWidget comp={comp} />;
     default: return null;
   }
 };
@@ -3497,6 +3505,7 @@ const ComponentRendererRaw: React.FC<{ comp: AppComponent; events?: AppEvent[]; 
     case 'record-creator': return <RecordCreatorWidget comp={comp} />;
     case 'approval-queue': return <ApprovalQueueWidget comp={comp} />;
     case 'file-upload': return <FileUploadWidget comp={comp} />;
+    case 'process-flow': return <ProcessFlowWidget comp={comp} />;
     default: return null;
   }
 };
@@ -3705,9 +3714,49 @@ interface ActionRunResult {
 }
 
 async function runAppAction(action: AppAction, input: ActionRunInput): Promise<ActionRunResult> {
+  // Share-mode short-circuit. Public submissions go through /s/{token}/submit
+  // which validates the action against the pinned snapshot, applies field
+  // mappings server-side, and atomically increments use_count. Submit-mode
+  // is the only kind allowed externally — view-mode shares never reach here.
+  const shareMode = getShareMode();
+  if (shareMode?.active) {
+    try {
+      // Variables are merged in keyed by their id so the server-side
+      // 'fromVariable' field-mapping resolver can find them.
+      const r = await fetch(`${ONTOLOGY_API}/s/${shareMode.token}/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Share-Session': shareMode.sessionJwt,
+        },
+        body: JSON.stringify({
+          action_id: action.id,
+          inputs: { ...(input.formValues || {}), ...(input.variables || {}) },
+        }),
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        return { ok: false, error: `HTTP ${r.status}: ${text.slice(0, 200)}` };
+      }
+      const data = await r.json().catch(() => ({}));
+      return { ok: true, data: { id: data.submission_id, ...data } };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
   // Apply field mappings → payload.
-  const mapValue = (m: { formField: string; transform?: string; literalValue?: string }): unknown => {
+  const mapValue = (m: { formField: string; transform?: string; literalValue?: string; sourceVariableId?: string }): unknown => {
     if (m.transform === 'literal') return m.literalValue ?? '';
+    if (m.transform === 'fromVariable' || m.sourceVariableId) {
+      // Pull from the app variables map. Useful when a sibling widget
+      // (e.g. process-flow, file-upload OCR result) writes a value the
+      // form should submit without surfacing it as a visible field.
+      const id = m.sourceVariableId || m.formField;
+      const raw = input.variables?.[id];
+      if (raw == null) return null;
+      return raw;
+    }
     const raw = input.formValues?.[m.formField] ?? input.selectedRow?.[m.formField];
     if (raw == null) return null;
     if (m.transform === 'asNumber') return Number(raw);
