@@ -5,6 +5,7 @@ import { ConnectorDetailPanel } from './ConnectorDetailPanel';
 import { AddConnectorModal } from './AddConnectorModal';
 import { PostmanConnectorModal } from './PostmanConnectorModal';
 import { WhatsAppSetupModal } from './WhatsAppSetupModal';
+import { EmailSetupModal } from './EmailSetupModal';
 import { ConnectorConfig } from '../../types/connector';
 import { CONNECTOR_TYPES, ConnectorTypeDefinition } from './connectorTypes';
 import { useConnectorStore } from '../../store/connectorStore';
@@ -231,7 +232,10 @@ export const ConnectorGrid: React.FC = () => {
       {addingType && addingType.type === 'WHATSAPP' && (
         <WhatsAppSetupModal onClose={() => setAddingType(null)} />
       )}
-      {addingType && addingType.type !== 'POSTMAN' && addingType.type !== 'WHATSAPP' && (
+      {addingType && addingType.type === 'EMAIL_INBOX' && (
+        <EmailSetupModal onClose={() => setAddingType(null)} />
+      )}
+      {addingType && addingType.type !== 'POSTMAN' && addingType.type !== 'WHATSAPP' && addingType.type !== 'EMAIL_INBOX' && (
         <AddConnectorModal
           connectorType={addingType}
           onClose={() => setAddingType(null)}

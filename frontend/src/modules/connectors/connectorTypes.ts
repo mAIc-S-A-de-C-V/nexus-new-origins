@@ -154,6 +154,14 @@ export const CONNECTOR_TYPES: ConnectorTypeDefinition[] = [
     iconName: 'GitBranch',
     color: '#24292F',
   },
+  {
+    type: 'EMAIL_INBOX',
+    displayName: 'Email Inbox',
+    description: 'Link any IMAP mailbox — Gmail, Outlook, Yahoo, iCloud, Zoho, FastMail, custom — via app password',
+    category: 'Messaging',
+    iconName: 'Mail',
+    color: '#0EA5E9',
+  },
 ];
 
 export const getConnectorTypeDef = (type: string): ConnectorTypeDefinition | undefined =>

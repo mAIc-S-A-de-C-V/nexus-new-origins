@@ -114,6 +114,8 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
             return await _rest_api(base_url, creds, cfg, db=db, last_sync=last_sync)
         if connector_type == "WHATSAPP":
             return await _whatsapp_schema(cfg)
+        if connector_type == "EMAIL_INBOX":
+            return await _email_schema(creds, cfg)
         if connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return {}, [], "Schema preview not supported for database connectors — connect directly via your DB client."
         return {}, [], f"Schema fetch not yet supported for {connector_type}."
@@ -359,6 +361,9 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
             return True, "Credential format accepted — live connection test not available in preview", int((time.time() - start) * 1000)
         elif connector_type == "WHATSAPP":
             ok, msg = await _whatsapp_test(cfg)
+        elif connector_type == "EMAIL_INBOX":
+            from email_connector import imap_test
+            return await imap_test(creds, cfg)
         elif connector_type == "REST_API":
             ok, msg = await _rest_api_test(base_url, creds, cfg, db=db)
         else:
@@ -935,3 +940,17 @@ async def _github(creds: dict, cfg: dict) -> tuple[dict, list, Optional[str]]:
     schema, rows = _infer_schema_from_response(data)
     schema["_github_rate_remaining"] = r.headers.get("x-ratelimit-remaining", "?")
     return schema, rows, None
+
+
+# ── Email (IMAP) ────────────────────────────────────────────────────────
+
+async def _email_schema(creds: dict, cfg: dict) -> tuple[dict, list, Optional[str]]:
+    """Schema + sample for an EMAIL_INBOX connector. Pulls 5 most recent
+    messages from the configured default_folder (defaults to INBOX)."""
+    from email_connector import imap_fetch, schema_definition
+    folder = cfg.get("default_folder") or "INBOX"
+    try:
+        sample = await imap_fetch(creds, folder=folder, limit=5)
+    except Exception as e:
+        return {}, [], f"IMAP fetch failed: {e}"
+    return schema_definition(), sample, None
