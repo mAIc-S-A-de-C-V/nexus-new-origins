@@ -9,7 +9,19 @@ DATABASE_URL = os.environ.get(
     "postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus",
 )
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+# Pool sizing — defaults (5+10) starve under concurrent dashboard loads, where
+# /aggregate calls hold connections for 100s of ms each and short reads
+# (/apps, /apps/by-slug, /actions/...) queue behind them. Bump well above the
+# number of widgets a typical dashboard fans out to.
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=int(os.environ.get("DB_POOL_SIZE", "20")),
+    max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", "40")),
+    pool_timeout=int(os.environ.get("DB_POOL_TIMEOUT", "30")),
+    pool_recycle=int(os.environ.get("DB_POOL_RECYCLE", "1800")),
+    pool_pre_ping=True,
+)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
