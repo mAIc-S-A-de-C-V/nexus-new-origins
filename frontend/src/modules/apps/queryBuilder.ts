@@ -132,8 +132,13 @@ export function rangeToFilter(
   tz?: string,
 ): Record<string, unknown> | undefined {
   if (!range || range === 'all_time' || !xField) return undefined;
-  const now = Date.now();
+  // Snap `now` to the minute. Without this, every React re-render produces
+  // a fresh ms-precision timestamp, which changes useAggregate's cache key
+  // and re-fires the fetch effect — turning a single widget into a refetch
+  // loop that hammers /aggregate forever. Minute granularity is fine for
+  // any range >= 15m (the shortest preset).
   const oneMin = 60 * 1000;
+  const now = Math.floor(Date.now() / oneMin) * oneMin;
   const oneHour = 60 * oneMin;
   const oneDay = 24 * oneHour;
   // TZ is optional — without it, "today"/"this_week"/etc fall back to the
