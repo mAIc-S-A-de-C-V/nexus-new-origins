@@ -747,13 +747,28 @@ async def aggregate_records(
                     ),
                 )
             except Exception as exc:
+                # PG returns these whenever a backend was OOM-killed and the
+                # cluster is starting up / replaying WAL. SQLSTATE 57P03 is
+                # the canonical signal; the human messages vary by phase
+                # ("starting up", "shutting down", "in recovery mode",
+                # "not yet accepting connections", "Consistent recovery
+                # state has not been yet reached"). All transient — surface
+                # as 503 with Retry-After so clients back off.
                 msg = str(exc)
-                # PG returns this whenever a backend was OOM-killed and the
-                # cluster is replaying WAL. It's transient — surface as 503
-                # so the client can back off and retry instead of treating
-                # it as a permanent validation failure.
-                if "in recovery mode" in msg or "the database system is starting up" in msg:
-                    logger.warning("postgres in recovery for ot=%s tenant=%s", ot_id, tenant_id)
+                pgcode = getattr(getattr(exc, "orig", exc), "sqlstate", None) \
+                      or getattr(getattr(exc, "orig", exc), "pgcode", None)
+                transient_markers = (
+                    "in recovery mode",
+                    "the database system is starting up",
+                    "the database system is shutting down",
+                    "is not yet accepting connections",
+                    "Consistent recovery state has not been yet reached",
+                )
+                if pgcode == "57P03" or any(m in msg for m in transient_markers):
+                    logger.warning(
+                        "postgres unavailable (recovery/startup) for ot=%s tenant=%s: %s",
+                        ot_id, tenant_id, msg.splitlines()[0] if msg else exc,
+                    )
                     raise HTTPException(
                         status_code=503,
                         detail="Database is recovering from a restart; please retry in a few seconds.",
