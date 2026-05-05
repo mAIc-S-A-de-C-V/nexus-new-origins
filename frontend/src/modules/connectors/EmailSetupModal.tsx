@@ -15,6 +15,7 @@ import {
   ExternalLink, Eye, EyeOff,
 } from 'lucide-react';
 import { useConnectorStore } from '../../store/connectorStore';
+import { getTenantId } from '../../store/authStore';
 
 const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
 
@@ -169,13 +170,13 @@ export const EmailSetupModal: React.FC<Props> = ({ onClose }) => {
     setStep('config');
   };
 
-  const tenantId = (() => {
-    try {
-      const raw = localStorage.getItem('nexus_auth');
-      if (raw) return JSON.parse(raw)?.tenantId || 'tenant-001';
-    } catch { /* ignore */ }
-    return 'tenant-001';
-  })();
+  // Use the authStore helper, NOT localStorage — the persisted nexus_auth
+  // entry holds the logged-in admin's tenant, but `getTenantId()` returns
+  // the active access-token's tenant which honors impersonation. Reading
+  // localStorage directly meant we created the connector under the
+  // impersonated tenant (via addConnector → getTenantId in the store) but
+  // tested it under the admin tenant, producing a 404 on /test.
+  const tenantId = getTenantId();
 
   const canTestOrSave = useMemo(() => {
     return name.trim() && imapHost.trim() && imapPort > 0 && username.trim() && password.trim();
@@ -217,7 +218,13 @@ export const EmailSetupModal: React.FC<Props> = ({ onClose }) => {
       });
       const json = await r.json().catch(() => ({}));
       const ok = !!json?.success;
-      setTestResult({ ok, message: json?.message || json?.error || (ok ? 'Connected' : 'Test failed') });
+      // Order: server's structured error (.error) → server message → FastAPI
+      // detail (used for 404/422 etc.) → HTTP status fallback → generic.
+      // Without `.detail` a 404 here showed "Test failed" with no explanation —
+      // exactly the symptom that made the impersonation/tenant bug invisible.
+      const fallbackHttp = !r.ok ? `HTTP ${r.status} — ${r.statusText || 'request failed'}` : '';
+      const failureMsg = json?.error || json?.message || json?.detail || fallbackHttp || 'Test failed';
+      setTestResult({ ok, message: ok ? (json?.message || 'Connected') : failureMsg });
       if (ok) {
         setLinkedSummary(json?.message || `Linked ${username.trim()}`);
         setStep('linked');
