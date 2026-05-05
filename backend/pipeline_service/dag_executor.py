@@ -2268,7 +2268,7 @@ async def _llm_classify(node, records_in: list[dict], pipeline: Pipeline, progre
     # for the MJSP tenant — other tenants would get garbage PNC columns and
     # spurious police actions if they happened to leave the prompt blank.
     # PNC_ALLOWED_TENANTS lets ops widen the allowlist without a code change.
-    _pnc_default = "tenant-mjsp-sv"
+    _pnc_default = "tenant-2e382f99"
     pnc_allowed = {
         t.strip() for t in os.environ.get("PNC_ALLOWED_TENANTS", _pnc_default).split(",") if t.strip()
     }
