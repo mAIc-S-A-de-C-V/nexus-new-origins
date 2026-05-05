@@ -719,7 +719,11 @@ async def aggregate_records(
     # Hard ceiling on a single /aggregate query. Without this the request
     # hangs the dashboard indefinitely on first-touch of an unindexed field
     # (the auto-indexer would heal it, but only AFTER the slow query returns).
-    timeout_s = float(os.environ.get("AGGREGATE_QUERY_TIMEOUT_S", "30"))
+    # 60s gives time-series queries on >7d windows enough headroom to finish
+    # the cold seqscan that produces the elapsed_ms reading the auto-indexer
+    # needs to schedule the timestamptz expression index. Subsequent queries
+    # use the index and finish in <1s.
+    timeout_s = float(os.environ.get("AGGREGATE_QUERY_TIMEOUT_S", "60"))
 
     async def _execute() -> dict:
         t0 = time.perf_counter()
@@ -738,6 +742,37 @@ async def aggregate_records(
                     "aggregate timed out (%.0fs) for ot=%s tenant=%s — likely missing index",
                     timeout_s, ot_id, tenant_id,
                 )
+                # Schedule indexes on the slowest queries — the success path
+                # below is unreachable from here, so without this the auto-
+                # indexer never sees timed-out queries (which are the ones
+                # most needing an index).
+                try:
+                    timeout_fields: list[str] = []
+                    if body.group_by:
+                        timeout_fields.append(body.group_by)
+                    if body.time_bucket:
+                        timeout_fields.append(body.time_bucket.field)
+                    if body.filters:
+                        try:
+                            parsed = json.loads(body.filters)
+                            if isinstance(parsed, dict):
+                                timeout_fields.extend(parsed.keys())
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    fake_elapsed = timeout_s * 1000.0
+                    await index_advisor.maybe_create_indexes_for(
+                        engine=db.get_bind(),
+                        fields=timeout_fields,
+                        elapsed_ms=fake_elapsed,
+                    )
+                    if body.time_bucket and body.time_bucket.field:
+                        await index_advisor.maybe_create_timestamp_index(
+                            engine=db.get_bind(),
+                            field=body.time_bucket.field,
+                            elapsed_ms=fake_elapsed,
+                        )
+                except Exception as adv_exc:
+                    logger.debug("index advisor swallowed (timeout path): %s", adv_exc)
                 raise HTTPException(
                     status_code=504,
                     detail=(
@@ -830,6 +865,15 @@ async def aggregate_records(
                 fields=candidate_fields,
                 elapsed_ms=elapsed_ms,
             )
+            # Time-bucket fields also need a timestamptz expression index —
+            # the text-column index above doesn't help for ::timestamptz
+            # range scans (different type, planner won't substitute).
+            if body.time_bucket and body.time_bucket.field:
+                await index_advisor.maybe_create_timestamp_index(
+                    engine=db.get_bind(),
+                    field=body.time_bucket.field,
+                    elapsed_ms=elapsed_ms,
+                )
         except Exception as exc:
             logger.debug("index advisor swallowed: %s", exc)
 
