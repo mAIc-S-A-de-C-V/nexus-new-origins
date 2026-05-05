@@ -102,6 +102,7 @@ export const nodeColors: Record<string, string> = {
   SINK_EVENT: '#059669',
   AGENT_RUN: '#7C3AED',
   LLM_CLASSIFY: '#DC2626',
+  ATTACHMENT_PARSE: '#0891B2',
 };
 
 export const categoryColors: Record<string, { bg: string; text: string }> = {

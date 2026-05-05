@@ -392,6 +392,19 @@ class DagExecutor:
                         "critico": critico, "urgente": urgente,
                         "basura": basura, "operatividad": operatividad, "novedad_relevante": novedad,
                     }
+                elif node.type == NodeType.ATTACHMENT_PARSE:
+                    parsed_total = sum(
+                        len(r.get(cfg.get("outputField") or cfg.get("output_field") or "parsed_rows") or [])
+                        for r in records_out
+                    )
+                    stats = {
+                        "attachments_field": cfg.get("attachmentsField") or cfg.get("attachments_field", "attachments"),
+                        "filename_match": cfg.get("filenameMatch") or cfg.get("filename_match", ""),
+                        "output_field": cfg.get("outputField") or cfg.get("output_field", "parsed_rows"),
+                        "header_row": int(cfg.get("headerRow") or cfg.get("header_row") or 0),
+                        "data_start_col": int(cfg.get("dataStartCol") or cfg.get("data_start_col") or 0),
+                        "rows_extracted": parsed_total,
+                    }
                 elif node.type == NodeType.SOURCE:
                     stats = {
                         "connector_id": cfg.get("connectorId", ""),
@@ -562,6 +575,8 @@ async def _execute_node(
         return await _agent_run(node, records_in, pipeline)
     if node.type == NodeType.LLM_CLASSIFY:
         return await _llm_classify(node, records_in, pipeline, progress_ctx=progress_ctx)
+    if node.type == NodeType.ATTACHMENT_PARSE:
+        return _attachment_parse(node, records_in)
     return records_in
 
 
@@ -859,6 +874,98 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 if all_rows:
                     asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
                 return all_rows
+
+            # ── Email (IMAP) connector path ────────────────────────────────
+            # Pulls messages via the connector-service /emails/fetch endpoint.
+            # Supports incremental on `received_at` and an opt-in attachment
+            # payload mode for downstream ATTACHMENT_PARSE.
+            if conn_type == "EMAIL_INBOX":
+                email_folder = (
+                    cfg.get("folder")
+                    or conn_config.get("default_folder")
+                    or "INBOX"
+                )
+                include_attach = bool(
+                    cfg.get("includeAttachments")
+                    or cfg.get("include_attachments")
+                    or False
+                )
+                max_attach = int(
+                    cfg.get("maxAttachmentBytes")
+                    or cfg.get("max_attachment_bytes")
+                    or 10 * 1024 * 1024
+                )
+
+                incremental_key = (
+                    cfg.get("incrementalKey") or cfg.get("incremental_key")
+                    or cfg.get("watermark_column") or cfg.get("watermarkColumn") or ""
+                )
+                if not incremental_key and cfg.get("incremental"):
+                    incremental_key = "received_at"
+                is_incremental = bool(incremental_key)
+                watermark_column = incremental_key
+
+                last_watermark: str | None = None
+                if is_incremental:
+                    last_watermark = await _get_last_watermark(pipeline.id)
+
+                params: dict[str, str | int | bool] = {
+                    "folder": email_folder,
+                    "limit": batch_size,
+                    "include_attachments": str(include_attach).lower(),
+                    "max_attachment_bytes": max_attach,
+                }
+                if last_watermark:
+                    params["since"] = last_watermark
+
+                fetch_url = f"{CONNECTOR_API}/connectors/{connector_id}/emails/fetch"
+                if audit_extras is not None:
+                    audit_extras["url"] = fetch_url
+                    audit_extras["folder"] = email_folder
+                    audit_extras["include_attachments"] = include_attach
+                    audit_extras["incremental_key"] = incremental_key or None
+                    audit_extras["last_watermark"] = last_watermark
+
+                em_resp = await client.get(
+                    fetch_url,
+                    params=params,
+                    headers={
+                        "x-tenant-id": pipeline.tenant_id,
+                        "x-internal": os.environ.get("INTERNAL_SECRET", "nexus-internal"),
+                    },
+                    timeout=180,
+                )
+                if audit_extras is not None:
+                    audit_extras["http_status"] = em_resp.status_code
+                if not em_resp.is_success:
+                    if audit_extras is not None:
+                        audit_extras["response_error"] = em_resp.text[:500]
+                    return []
+
+                rows = em_resp.json().get("rows", [])
+                api_returned = len(rows)
+
+                # Watermark filtering belt-and-suspenders. IMAP `SINCE` is
+                # day-granular, so a same-day row from the previous run can
+                # appear again. Filter on the actual ISO timestamp.
+                if is_incremental and last_watermark and rows:
+                    rows = [
+                        r for r in rows
+                        if r.get(watermark_column) and str(r.get(watermark_column)) > str(last_watermark)
+                    ]
+
+                if is_incremental and watermark_column and rows:
+                    wm_vals = [r.get(watermark_column) for r in rows if r.get(watermark_column)]
+                    if wm_vals and audit_extras is not None:
+                        audit_extras["_watermark_value"] = str(max(wm_vals))
+
+                if audit_extras is not None:
+                    audit_extras["raw_row_count"] = api_returned
+                    audit_extras["filtered_row_count"] = len(rows)
+
+                if rows:
+                    asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
+                return rows
 
             # Parse last_sync from connector details for template resolution
             raw_last_sync = conn.get("last_sync")
@@ -1458,6 +1565,174 @@ def _flatten(node, records_in: list[dict]) -> list[dict]:
         else:
             result.append(rec)
     return result
+
+
+def _attachment_parse(node, records_in: list[dict]) -> list[dict]:
+    """ATTACHMENT_PARSE — extract tabular data from email/file attachments.
+
+    Each input record may carry an attachments list (default field name:
+    `attachments`) of `{filename, content_type, size, bytes_b64}`. For every
+    attachment whose filename matches `filenameMatch` (regex, default `.*`),
+    the bytes are decoded and parsed:
+      - .xlsx / .xlsm → openpyxl
+      - .csv          → csv.reader (tab/comma autodetected)
+      - .tsv          → csv.reader, tab delimiter
+    Other extensions are skipped silently.
+
+    The parsed rows are attached to the input record under `outputField`
+    (default `parsed_rows`) as a list of dicts. Pipe through FLATTEN with
+    `arrayField=parsed_rows` to explode into one record per row.
+
+    Config:
+      attachmentsField  source field on the input record. default 'attachments'
+      filenameMatch     regex; only matching filenames are parsed. default '.*\\.xlsx?$'
+      headerRow         0-indexed sheet/csv row containing column headers. default 0
+      dataStartCol      0-indexed first column with data — skips empty leading
+                        cols (e.g. cols A-C blank in some report templates). default 0
+      outputField       where parsed rows go on the input record. default 'parsed_rows'
+      sheet             optional sheet name for .xlsx (default: first non-empty)
+      skipBlankRows     drop rows whose primary-key column is empty. default True
+      primaryKeyHeader  header name for "primary key" used by skipBlankRows.
+                        default = first non-empty header
+    """
+    import base64
+    import csv
+    import io
+    import re
+
+    cfg = node.config or {}
+    attachments_field = cfg.get("attachmentsField") or cfg.get("attachments_field") or "attachments"
+    filename_match = cfg.get("filenameMatch") or cfg.get("filename_match") or r".*\.xlsx?$"
+    header_row = int(cfg.get("headerRow") or cfg.get("header_row") or 0)
+    data_start_col = int(cfg.get("dataStartCol") or cfg.get("data_start_col") or 0)
+    output_field = cfg.get("outputField") or cfg.get("output_field") or "parsed_rows"
+    target_sheet = cfg.get("sheet") or None
+    skip_blank = cfg.get("skipBlankRows", cfg.get("skip_blank_rows", True))
+    if isinstance(skip_blank, str):
+        skip_blank = skip_blank.lower() in ("true", "1", "yes")
+    primary_key_header = cfg.get("primaryKeyHeader") or cfg.get("primary_key_header") or ""
+
+    try:
+        fname_re = re.compile(filename_match, re.IGNORECASE)
+    except re.error as exc:
+        logger.warning("[ATTACHMENT_PARSE] invalid filenameMatch %r: %s", filename_match, exc)
+        fname_re = re.compile(r".*\.xlsx?$", re.IGNORECASE)
+
+    # openpyxl is heavy; import lazily so non-Excel pipelines don't pay the cost.
+    _openpyxl = None
+
+    def _xlsx_rows(payload: bytes, ext: str) -> list[dict]:
+        nonlocal _openpyxl
+        if _openpyxl is None:
+            import openpyxl  # type: ignore
+            _openpyxl = openpyxl
+        wb = _openpyxl.load_workbook(io.BytesIO(payload), data_only=True, read_only=True)
+        if target_sheet and target_sheet in wb.sheetnames:
+            ws = wb[target_sheet]
+        else:
+            ws = wb.worksheets[0]
+        all_rows = list(ws.iter_rows(values_only=True))
+        return _rows_to_dicts(all_rows)
+
+    def _csv_rows(payload: bytes, ext: str) -> list[dict]:
+        text = payload.decode("utf-8", errors="replace")
+        delimiter = "\t" if ext == ".tsv" else None
+        if delimiter is None:
+            try:
+                dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;|\t")
+                delimiter = dialect.delimiter
+            except csv.Error:
+                delimiter = ","
+        reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+        all_rows = [tuple(r) for r in reader]
+        return _rows_to_dicts(all_rows)
+
+    def _rows_to_dicts(all_rows: list) -> list[dict]:
+        if header_row >= len(all_rows):
+            return []
+        headers_row = all_rows[header_row]
+        # Slice off the leading empty columns (cols A-C in some report layouts).
+        headers = [
+            (str(h).strip() if h is not None else "")
+            for h in list(headers_row)[data_start_col:]
+        ]
+        # Trim trailing empties so an extra blank column doesn't pollute keys.
+        while headers and not headers[-1]:
+            headers.pop()
+        if not headers:
+            return []
+        # Resolve which header acts as the "non-empty" sentinel for skipBlankRows.
+        sentinel_idx = 0
+        if primary_key_header:
+            try:
+                sentinel_idx = headers.index(primary_key_header)
+            except ValueError:
+                sentinel_idx = 0
+
+        out: list[dict] = []
+        for raw in all_rows[header_row + 1:]:
+            cells = list(raw)[data_start_col:data_start_col + len(headers)]
+            row_dict = {}
+            for h, v in zip(headers, cells):
+                if not h:
+                    continue
+                if isinstance(v, datetime):
+                    row_dict[h] = v.isoformat()
+                else:
+                    row_dict[h] = v
+            if skip_blank:
+                sentinel_val = (
+                    row_dict.get(headers[sentinel_idx]) if sentinel_idx < len(headers) else None
+                )
+                if sentinel_val is None or (isinstance(sentinel_val, str) and not sentinel_val.strip()):
+                    continue
+            out.append(row_dict)
+        return out
+
+    enriched: list[dict] = []
+    for rec in records_in:
+        atts = rec.get(attachments_field) or []
+        if not isinstance(atts, list):
+            enriched.append({**rec, output_field: []})
+            continue
+        parsed: list[dict] = []
+        for att in atts:
+            if not isinstance(att, dict):
+                continue
+            if att.get("skipped"):
+                continue
+            fname = str(att.get("filename") or "")
+            if not fname or not fname_re.search(fname):
+                continue
+            b64 = att.get("bytes_b64") or ""
+            if not b64:
+                continue
+            try:
+                payload = base64.b64decode(b64)
+            except Exception as exc:
+                logger.warning("[ATTACHMENT_PARSE] base64 decode failed for %s: %s", fname, exc)
+                continue
+            ext = "." + fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+            try:
+                if ext in (".xlsx", ".xlsm"):
+                    rows = _xlsx_rows(payload, ext)
+                elif ext in (".csv", ".tsv"):
+                    rows = _csv_rows(payload, ext)
+                else:
+                    continue
+            except Exception as exc:
+                logger.warning("[ATTACHMENT_PARSE] parse failed for %s (%s): %s", fname, ext, exc)
+                continue
+            # Stamp provenance on each parsed row so the SINK can keep the
+            # link back to the source email + attachment.
+            for r in rows:
+                r.setdefault("_attachment_filename", fname)
+                r.setdefault("_attachment_content_type", att.get("content_type", ""))
+            parsed.extend(rows)
+
+        enriched.append({**rec, output_field: parsed})
+
+    return enriched
 
 
 def _pivot(node, records_in: list[dict]) -> list[dict]:

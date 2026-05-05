@@ -40,6 +40,7 @@ Schema returned to the platform — one ObjectType row per email message:
 from __future__ import annotations
 
 import asyncio
+import base64
 import email
 import email.policy
 import imaplib
@@ -153,10 +154,16 @@ async def imap_fetch(
     folder: str = "INBOX",
     limit: int = 100,
     since: Optional[datetime] = None,
+    include_attachments: bool = False,
+    max_attachment_bytes: int = 10 * 1024 * 1024,  # 10 MB / attachment
 ) -> list[dict]:
     """Return the most recent `limit` messages from `folder`. If `since` is
     given, only messages on/after that date are returned (IMAP day-precision).
     Newest first.
+
+    When `include_attachments=True`, each row gets an additional
+    `attachments` list of `{filename, content_type, size, bytes_b64}` dicts
+    (oversized attachments are skipped with a logged warning).
     """
     client = await _connect(creds)
     loop = asyncio.get_event_loop()
@@ -203,7 +210,13 @@ async def imap_fetch(
                     continue
 
                 uid = _parse_uid(envelope_str) or msg_id.decode()
-                row = _email_to_row(msg, uid=uid, folder=folder)
+                row = _email_to_row(
+                    msg,
+                    uid=uid,
+                    folder=folder,
+                    include_attachments=include_attachments,
+                    max_attachment_bytes=max_attachment_bytes,
+                )
                 results.append(row)
             return results
 
@@ -245,22 +258,61 @@ def _bare_emails(msg: email.message.Message, header: str) -> str:
     return ", ".join(addr for _, addr in pairs if addr)
 
 
-def _walk_for_body(msg: email.message.Message) -> tuple[str, str, list[str]]:
-    """Return (text_body, html_body, attachment_names)."""
+def _walk_for_body(
+    msg: email.message.Message,
+    *,
+    include_attachment_bytes: bool = False,
+    max_attachment_bytes: int = 10 * 1024 * 1024,
+) -> tuple[str, str, list[str], list[dict]]:
+    """Return (text_body, html_body, attachment_names, attachments_full).
+
+    `attachments_full` is empty unless `include_attachment_bytes=True`. Each
+    entry is `{filename, content_type, size, bytes_b64}`. Attachments larger
+    than `max_attachment_bytes` are reported by name only (size set, bytes_b64
+    empty) and a warning is logged — the pipeline can decide to skip them.
+    """
     text_body = ""
     html_body = ""
-    attachments: list[str] = []
+    attachment_names: list[str] = []
+    attachments_full: list[dict] = []
     if msg.is_multipart():
         for part in msg.walk():
             disp = (part.get("Content-Disposition") or "").lower()
             ctype = (part.get_content_type() or "").lower()
             filename = part.get_filename()
-            if filename:
-                attachments.append(_decode_header_str(filename))
-                continue
-            if "attachment" in disp:
-                if filename:
-                    attachments.append(_decode_header_str(filename))
+            is_attachment = bool(filename) or "attachment" in disp
+            if is_attachment:
+                fname = _decode_header_str(filename) if filename else "(unnamed)"
+                attachment_names.append(fname)
+                if include_attachment_bytes:
+                    payload: bytes = b""
+                    try:
+                        raw = part.get_payload(decode=True)
+                        if isinstance(raw, (bytes, bytearray)):
+                            payload = bytes(raw)
+                    except Exception as exc:
+                        log.warning("attachment %s: payload decode failed: %s", fname, exc)
+                    size = len(payload)
+                    if size > max_attachment_bytes:
+                        log.warning(
+                            "attachment %s skipped: %d bytes exceeds max %d",
+                            fname, size, max_attachment_bytes,
+                        )
+                        attachments_full.append({
+                            "filename": fname,
+                            "content_type": ctype,
+                            "size": size,
+                            "bytes_b64": "",
+                            "skipped": True,
+                            "skip_reason": f"size {size} exceeds max {max_attachment_bytes}",
+                        })
+                    else:
+                        attachments_full.append({
+                            "filename": fname,
+                            "content_type": ctype,
+                            "size": size,
+                            "bytes_b64": base64.b64encode(payload).decode("ascii") if payload else "",
+                        })
                 continue
             if ctype == "text/plain" and not text_body:
                 text_body = _safe_get_content(part)
@@ -272,7 +324,7 @@ def _walk_for_body(msg: email.message.Message) -> tuple[str, str, list[str]]:
             html_body = _safe_get_content(msg)
         else:
             text_body = _safe_get_content(msg)
-    return text_body, html_body, attachments
+    return text_body, html_body, attachment_names, attachments_full
 
 
 def _safe_get_content(part: email.message.Message) -> str:
@@ -292,13 +344,24 @@ def _safe_get_content(part: email.message.Message) -> str:
         return ""
 
 
-def _email_to_row(msg: email.message.Message, *, uid: str, folder: str) -> dict:
+def _email_to_row(
+    msg: email.message.Message,
+    *,
+    uid: str,
+    folder: str,
+    include_attachments: bool = False,
+    max_attachment_bytes: int = 10 * 1024 * 1024,
+) -> dict:
     subject = _decode_header_str(msg.get("Subject"))
     from_full = _addresses(msg, "From")
     from_bare = _bare_emails(msg, "From")
     to_full = _addresses(msg, "To")
     cc_full = _addresses(msg, "Cc")
-    text_body, html_body, attachments = _walk_for_body(msg)
+    text_body, html_body, attachment_names, attachments_full = _walk_for_body(
+        msg,
+        include_attachment_bytes=include_attachments,
+        max_attachment_bytes=max_attachment_bytes,
+    )
 
     received_at = msg.get("Date")
     received_iso = ""
@@ -318,7 +381,7 @@ def _email_to_row(msg: email.message.Message, *, uid: str, folder: str) -> dict:
         if msg.get(k)
     }
 
-    return {
+    row = {
         "id": f"{folder}:{uid}",
         "message_id": _decode_header_str(msg.get("Message-ID")) or uid,
         "uid": uid,
@@ -331,10 +394,16 @@ def _email_to_row(msg: email.message.Message, *, uid: str, folder: str) -> dict:
         "body_text": text_body[:50_000],   # cap at 50k chars
         "body_html": html_body[:50_000],
         "received_at": received_iso,
-        "has_attachments": bool(attachments),
-        "attachment_names": ", ".join(attachments),
+        "has_attachments": bool(attachment_names),
+        "attachment_names": ", ".join(attachment_names),
         "headers": json.dumps(headers_subset, ensure_ascii=False),
     }
+    if include_attachments:
+        # Only attach the full payload list when explicitly requested — the
+        # base64 payload bloats the row and shouldn't show up in casual schema
+        # samples or the regular pull path.
+        row["attachments"] = attachments_full
+    return row
 
 
 # ── Schema description (for the platform's schema fetcher) ───────────────

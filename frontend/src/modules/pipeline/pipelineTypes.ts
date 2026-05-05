@@ -184,4 +184,21 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'createActions', label: 'Create Actions for CRITICO/URGENTE', type: 'boolean', default: true },
     ],
   },
+  {
+    type: 'ATTACHMENT_PARSE',
+    label: 'Attachment Parse',
+    description: 'Parse Excel/CSV attachments off email records (or any record carrying a base64-encoded attachments[] array). Each matched attachment is decoded, parsed, and the rows are added back as `parsed_rows`. Pipe to FLATTEN with arrayField=parsed_rows to explode one record per spreadsheet row.',
+    color: '#0891B2',
+    iconName: 'FileSpreadsheet',
+    configFields: [
+      { key: 'attachmentsField', label: 'Attachments Field', type: 'text', default: 'attachments', placeholder: 'attachments' },
+      { key: 'filenameMatch', label: 'Filename Pattern (regex)', type: 'text', default: '.*\\.xlsx?$', placeholder: '.*\\.xlsx?$' },
+      { key: 'sheet', label: 'Sheet name (.xlsx, optional)', type: 'text', placeholder: 'PO Report' },
+      { key: 'headerRow', label: 'Header Row (0-indexed)', type: 'number', default: 0 },
+      { key: 'dataStartCol', label: 'First Data Column (0-indexed)', type: 'number', default: 0 },
+      { key: 'outputField', label: 'Output Field', type: 'text', default: 'parsed_rows' },
+      { key: 'primaryKeyHeader', label: 'Primary-key Header (for blank-row skip)', type: 'text', placeholder: 'PR Number' },
+      { key: 'skipBlankRows', label: 'Skip rows with empty primary key', type: 'boolean', default: true },
+    ],
+  },
 ];

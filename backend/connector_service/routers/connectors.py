@@ -164,6 +164,58 @@ async def get_connector_internal(
     return model.model_dump()
 
 
+@router.get("/{connector_id}/emails/fetch")
+async def fetch_emails_internal(
+    connector_id: str,
+    folder: str = "INBOX",
+    limit: int = 100,
+    since: Optional[str] = None,
+    include_attachments: bool = False,
+    max_attachment_bytes: int = 10 * 1024 * 1024,
+    x_tenant_id: Optional[str] = Header(None),
+    x_internal: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Service-to-service IMAP fetch with optional attachment payloads.
+    Guarded by x-internal — pipeline-service is the intended caller.
+    `since` is an ISO 8601 datetime; IMAP server matches at day granularity.
+    """
+    if x_internal != INTERNAL_SECRET:
+        raise HTTPException(status_code=403, detail="Internal endpoint — missing x-internal header")
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(ConnectorRow).where(
+            ConnectorRow.id == connector_id,
+            ConnectorRow.tenant_id == tenant_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if row.type != "EMAIL_INBOX":
+        raise HTTPException(status_code=400, detail=f"Connector is type {row.type}, not EMAIL_INBOX")
+
+    creds = decrypt_credentials(row.credentials) or {}
+    since_dt: Optional[datetime] = None
+    if since:
+        try:
+            # Accept both 2026-04-28 and 2026-04-28T17:14:00Z
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid `since` format: {since!r}")
+
+    from email_connector import imap_fetch
+    rows = await imap_fetch(
+        creds,
+        folder=folder,
+        limit=max(1, min(int(limit), 1000)),
+        since=since_dt,
+        include_attachments=include_attachments,
+        max_attachment_bytes=max(1024, int(max_attachment_bytes)),
+    )
+    return {"rows": rows}
+
+
 @router.get("/{connector_id}", response_model=ConnectorPublicView)
 async def get_connector(
     connector_id: str,
