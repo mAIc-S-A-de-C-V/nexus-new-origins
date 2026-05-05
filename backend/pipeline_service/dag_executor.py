@@ -2260,7 +2260,36 @@ async def _llm_classify(node, records_in: list[dict], pipeline: Pipeline, progre
     if isinstance(create_actions, str):
         create_actions = create_actions.lower() in ("true", "1", "yes")
 
-    custom_prompt = cfg.get("prompt") or ""
+    custom_prompt = (cfg.get("prompt") or "").strip()
+    tenant_id = pipeline.tenant_id or "tenant-001"
+
+    # PNC mode = the El Salvador police-report defaults (system prompt, user
+    # message framing, output keys, pnc_alert action template). Only kicks in
+    # for the MJSP tenant — other tenants would get garbage PNC columns and
+    # spurious police actions if they happened to leave the prompt blank.
+    # PNC_ALLOWED_TENANTS lets ops widen the allowlist without a code change.
+    _pnc_default = "tenant-mjsp-sv"
+    pnc_allowed = {
+        t.strip() for t in os.environ.get("PNC_ALLOWED_TENANTS", _pnc_default).split(",") if t.strip()
+    }
+    tenant_is_pnc = tenant_id in pnc_allowed
+    # When the user supplies a custom prompt, drop the PNC-specific user-message
+    # framing AND the PNC-specific output-key mapping even on the MJSP tenant —
+    # otherwise a PO-extraction prompt still gets a "Clasifica mensajes
+    # policiales" user message (steering Claude back to police output) and
+    # has its returned keys (supplier, items, …) discarded because the
+    # extractor only reads categoria/prioridad/etc. Generic mode merges
+    # whatever JSON keys the LLM returns, prefixed with `llm_`.
+    is_pnc_mode = tenant_is_pnc and not custom_prompt
+
+    if not custom_prompt and not tenant_is_pnc:
+        logger.warning(
+            "[LLM_CLASSIFY] tenant=%s has no custom prompt and is not in "
+            "PNC_ALLOWED_TENANTS — passing %d records through unchanged. "
+            "Set a system prompt on the LLM_CLASSIFY step to enable enrichment.",
+            tenant_id, len(records_in),
+        )
+        return records_in
 
     # Default PNC system prompt (El Salvador police report classification)
     system_prompt = custom_prompt or """Eres un analista de inteligencia policial de El Salvador. Tu tarea es clasificar mensajes de WhatsApp de grupos policiales y extraer información estructurada.
@@ -2307,7 +2336,6 @@ Si es OPERATIVIDAD (patrullaje, charla, seguridad escolar sin incidentes): devue
 
 IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después. Sin bloques ```json```. Sin explicaciones. Solo el JSON puro."""
 
-    tenant_id = pipeline.tenant_id or "tenant-001"
     provider_cfg = await resolve_provider_for_model(tenant_id, model)
     if not provider_cfg.api_key and provider_cfg.provider_type != "local":
         logger.error("[LLM_CLASSIFY] No API key for provider %s — skipping classification", provider_cfg.provider_type)
@@ -2391,11 +2419,22 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
             chat = record.get("chat_name") or record.get("chat_jid") or "unknown"
             parts.append(f"--- MENSAJE {idx + 1} ---\nGrupo: {chat}\nDe: {sender}\n\n{text}\n")
 
-        user_msg = (
-            f"Clasifica los siguientes {len(batch)} mensajes de WhatsApp policial. "
-            f"Devuelve un array JSON con exactamente {len(batch)} objetos, uno por mensaje, en el mismo orden.\n\n"
-            + "\n".join(parts)
-        )
+        if is_pnc_mode:
+            user_msg = (
+                f"Clasifica los siguientes {len(batch)} mensajes de WhatsApp policial. "
+                f"Devuelve un array JSON con exactamente {len(batch)} objetos, uno por mensaje, en el mismo orden.\n\n"
+                + "\n".join(parts)
+            )
+        else:
+            # Neutral framing — the system prompt drives the schema, this just
+            # tells Claude to return one JSON object per input message in order.
+            user_msg = (
+                f"Process the following {len(batch)} message(s). "
+                f"Return a JSON array of exactly {len(batch)} object(s), one per message, in the same order. "
+                f"Each object must follow the schema described in the system prompt. "
+                f"Respond with ONLY the JSON array — no markdown, no commentary.\n\n"
+                + "\n".join(parts)
+            )
 
         try:
             async with semaphore:
@@ -2465,26 +2504,42 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
                 enriched_record = dict(record)
                 if idx < len(parsed):
                     classification = parsed[idx]
-                    enriched_record["llm_categoria"] = _scalar(classification.get("categoria"))
-                    enriched_record["llm_tipo_incidente"] = _scalar(classification.get("tipo_incidente"))
-                    enriched_record["llm_accion_policial"] = _scalar(classification.get("accion_policial"))
-                    enriched_record["llm_prioridad"] = _scalar(classification.get("prioridad"))
-                    enriched_record["llm_departamento"] = _scalar(classification.get("departamento"))
-                    enriched_record["llm_municipio"] = _scalar(classification.get("municipio"))
-                    enriched_record["llm_lugar"] = _scalar(classification.get("lugar"))
-                    enriched_record["llm_fecha_hora"] = _scalar(classification.get("fecha_hora"))
-                    enriched_record["llm_hecho"] = _scalar(classification.get("hecho"))
+                    if not isinstance(classification, dict):
+                        # Defensive: LLM returned something other than an object
+                        # for this slot (string, list, etc.). Skip enrichment.
+                        out.append(enriched_record)
+                        continue
+                    if is_pnc_mode:
+                        enriched_record["llm_categoria"] = _scalar(classification.get("categoria"))
+                        enriched_record["llm_tipo_incidente"] = _scalar(classification.get("tipo_incidente"))
+                        enriched_record["llm_accion_policial"] = _scalar(classification.get("accion_policial"))
+                        enriched_record["llm_prioridad"] = _scalar(classification.get("prioridad"))
+                        enriched_record["llm_departamento"] = _scalar(classification.get("departamento"))
+                        enriched_record["llm_municipio"] = _scalar(classification.get("municipio"))
+                        enriched_record["llm_lugar"] = _scalar(classification.get("lugar"))
+                        enriched_record["llm_fecha_hora"] = _scalar(classification.get("fecha_hora"))
+                        enriched_record["llm_hecho"] = _scalar(classification.get("hecho"))
 
-                    inv = classification.get("involucrados") or {}
-                    responsables = inv.get("responsables") or []
-                    victimas = inv.get("victimas") or []
-                    enriched_record["llm_responsables"] = _json.dumps(responsables, ensure_ascii=False) if responsables else None
-                    enriched_record["llm_victimas"] = _json.dumps(victimas, ensure_ascii=False) if victimas else None
+                        inv = classification.get("involucrados") or {}
+                        responsables = inv.get("responsables") or []
+                        victimas = inv.get("victimas") or []
+                        enriched_record["llm_responsables"] = _json.dumps(responsables, ensure_ascii=False) if responsables else None
+                        enriched_record["llm_victimas"] = _json.dumps(victimas, ensure_ascii=False) if victimas else None
 
-                    inc = classification.get("incautaciones") or {}
-                    for k, v in inc.items():
-                        if v is not None:
-                            enriched_record[f"llm_incautacion_{k}"] = v
+                        inc = classification.get("incautaciones") or {}
+                        for k, v in inc.items():
+                            if v is not None:
+                                enriched_record[f"llm_incautacion_{k}"] = v
+                    else:
+                        # Generic mode — merge every key the LLM returned.
+                        # Prefix with `llm_` so the LLM output stays distinguishable
+                        # from source fields and can't accidentally clobber them
+                        # (e.g. `text`, `id`, `sent_at`).
+                        for key, value in classification.items():
+                            if not isinstance(key, str) or not key:
+                                continue
+                            col = key if key.startswith("llm_") else f"llm_{key}"
+                            enriched_record[col] = _scalar(value)
                 out.append(enriched_record)
 
             logger.info(f"[LLM_CLASSIFY] Batch {batch_idx + 1}/{len(batches)}: classified {len(batch)} records")
@@ -2526,8 +2581,10 @@ IMPORTANTE: Responde SOLO con el array JSON válido. Sin texto antes ni después
     for r in batch_results:
         enriched.extend(r)
 
-    # Create Human Actions for CRITICO/URGENTE items
-    if create_actions:
+    # Create Human Actions for CRITICO/URGENTE items. Only in PNC mode —
+    # the action template + dedup keys are police-specific and would write
+    # garbage into the actions table for a generic prompt.
+    if create_actions and is_pnc_mode:
         def _as_str(v) -> str:
             if v is None:
                 return ""
