@@ -749,24 +749,44 @@ async def aggregate_records(
             except Exception as exc:
                 # PG returns these whenever a backend was OOM-killed and the
                 # cluster is starting up / replaying WAL. SQLSTATE 57P03 is
-                # the canonical signal; the human messages vary by phase
-                # ("starting up", "shutting down", "in recovery mode",
-                # "not yet accepting connections", "Consistent recovery
-                # state has not been yet reached"). All transient — surface
-                # as 503 with Retry-After so clients back off.
+                # the canonical "in recovery" signal; 57P01/57P02 are admin/
+                # crash shutdown; the 08xxx class covers connection-exception
+                # cases (connection_does_not_exist, connection_failure, …)
+                # which surface from the asyncpg side when a backend dies
+                # mid-query and the socket is torn down before PG can send
+                # back a recovery message. All transient — surface as 503
+                # with Retry-After so clients back off.
                 msg = str(exc)
-                pgcode = getattr(getattr(exc, "orig", exc), "sqlstate", None) \
-                      or getattr(getattr(exc, "orig", exc), "pgcode", None)
+                orig = getattr(exc, "orig", exc)
+                pgcode = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+                orig_cls = type(orig).__name__
                 transient_markers = (
                     "in recovery mode",
                     "the database system is starting up",
                     "the database system is shutting down",
                     "is not yet accepting connections",
                     "Consistent recovery state has not been yet reached",
+                    # asyncpg driver-side connection-loss messages (no pgcode)
+                    "connection was closed in the middle of operation",
+                    "server closed the connection unexpectedly",
+                    "connection is closed",
+                    "Connection lost",
                 )
-                if pgcode == "57P03" or any(m in msg for m in transient_markers):
+                transient_classes = (
+                    "ConnectionDoesNotExistError",
+                    "ConnectionFailureError",
+                    "InterfaceError",
+                )
+                pg_transient_code = bool(
+                    pgcode and (pgcode.startswith("08") or pgcode in {"57P01", "57P02", "57P03"})
+                )
+                if (
+                    pg_transient_code
+                    or orig_cls in transient_classes
+                    or any(m in msg for m in transient_markers)
+                ):
                     logger.warning(
-                        "postgres unavailable (recovery/startup) for ot=%s tenant=%s: %s",
+                        "postgres unavailable (recovery/connection-drop) for ot=%s tenant=%s: %s",
                         ot_id, tenant_id, msg.splitlines()[0] if msg else exc,
                     )
                     raise HTTPException(

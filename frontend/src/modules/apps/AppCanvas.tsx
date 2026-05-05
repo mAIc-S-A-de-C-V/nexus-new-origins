@@ -144,6 +144,32 @@ interface AggregateRow {
   [agg: string]: number | string | null;
 }
 
+// 503 + Retry-After comes from records.py when Postgres is recovering from
+// an OOM-kill mid-query (or any 08xxx connection-class error). Retry up to
+// twice so a single dropped connection doesn't blank the widget. Returns the
+// final Response — caller handles 4xx/5xx and parses the body.
+async function fetchAggregateWithRetry(
+  url: string,
+  init: RequestInit,
+  isCancelled: () => boolean,
+): Promise<Response> {
+  const MAX_ATTEMPTS = 3;
+  let attempt = 1;
+  while (true) {
+    const r = await fetch(url, init);
+    if (r.status !== 503 || attempt >= MAX_ATTEMPTS || isCancelled()) return r;
+    // Honor Retry-After when set (whole seconds); cap at 10s. Fall back to
+    // exponential backoff (2s, 4s) if the header is missing or unparseable.
+    const ra = parseInt(r.headers.get('Retry-After') || '', 10);
+    const delayMs = Math.min(
+      (Number.isFinite(ra) && ra > 0 ? ra : 2 ** attempt) * 1000,
+      10000,
+    );
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    attempt += 1;
+  }
+}
+
 function useAggregate(objectTypeId: string | undefined, opts: AggregateOptions | null) {
   const [rows, setRows] = useState<AggregateRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -166,11 +192,15 @@ function useAggregate(objectTypeId: string | undefined, opts: AggregateOptions |
       limit: opts.limit ?? 200,
       timezone: opts.timezone || tz || null,
     };
-    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
-      body: JSON.stringify(body),
-    })
+    fetchAggregateWithRetry(
+      `${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+        body: JSON.stringify(body),
+      },
+      () => cancelled,
+    )
       .then((r) => r.ok ? r.json() : { rows: [] })
       .then((d) => { if (!cancelled) setRows(d.rows || []); })
       .catch(() => { if (!cancelled) setRows([]); })
@@ -1570,11 +1600,15 @@ const CustomCodeWidget: React.FC<{ comp: AppComponent; records: Record<string, u
       if (safeOpts.sortDir) body.sort_dir = safeOpts.sortDir;
       if (safeOpts.limit) body.limit = safeOpts.limit;
 
-      fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenantId },
-        body: JSON.stringify(body),
-      })
+      fetchAggregateWithRetry(
+        `${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenantId },
+          body: JSON.stringify(body),
+        },
+        () => cancelled,
+      )
         .then(async (r) => {
           if (r.ok) return r.json();
           // Try to surface FastAPI's structured error so the user knows what failed
@@ -3568,15 +3602,19 @@ const DashboardFilterBarUI: React.FC<{
   useEffect(() => {
     if (!objectTypeId || !config.groupField) { setGroupOptions([]); return; }
     let cancelled = false;
-    fetch(`${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
-      body: JSON.stringify({
-        group_by: config.groupField,
-        aggregations: [{ method: 'count' }],
-        sort_by: 'agg_0', sort_dir: 'desc', limit: 200,
-      }),
-    })
+    fetchAggregateWithRetry(
+      `${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+        body: JSON.stringify({
+          group_by: config.groupField,
+          aggregations: [{ method: 'count' }],
+          sort_by: 'agg_0', sort_dir: 'desc', limit: 200,
+        }),
+      },
+      () => cancelled,
+    )
       .then((r) => r.ok ? r.json() : { rows: [] })
       .then((d: { rows: Array<{ group: string | null }> }) => {
         if (cancelled) return;
