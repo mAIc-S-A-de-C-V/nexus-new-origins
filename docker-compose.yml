@@ -585,11 +585,26 @@ services:
     image: postgres:16-alpine
     ports:
       - "5432:5432"
-    mem_limit: 1g
+    # Sized to absorb 4 concurrent /aggregate HashAggregates on object_records
+    # without OOM-killing the cluster mid-query. shm_size matters because PG
+    # parallel workers and HashAggregate spilling both use shared memory.
+    mem_limit: 2g
+    shm_size: 256m
     environment:
       POSTGRES_USER: nexus
       POSTGRES_PASSWORD: nexus_pass
       POSTGRES_DB: nexus
+    # work_mem is per-sort/per-hash, not per-session, so 16MB × ~4 concurrent
+    # aggregates × 1-2 hashes each stays comfortably under mem_limit. Anything
+    # heavier than that spills to disk instead of OOM-killing the backend.
+    command: >
+      postgres
+      -c shared_buffers=384MB
+      -c effective_cache_size=1GB
+      -c work_mem=16MB
+      -c maintenance_work_mem=128MB
+      -c wal_buffers=16MB
+      -c max_connections=100
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

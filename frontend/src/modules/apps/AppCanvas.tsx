@@ -153,17 +153,20 @@ async function fetchAggregateWithRetry(
   init: RequestInit,
   isCancelled: () => boolean,
 ): Promise<Response> {
-  const MAX_ATTEMPTS = 3;
+  // 5 attempts × ~3-8s backoff covers most Postgres OOM-recovery windows
+  // (typical replay finishes within 5-15s on the prod-sized container).
+  // The server sends Retry-After: 3, so the common path is 3+3+3+3 = 12s.
+  const MAX_ATTEMPTS = 5;
   let attempt = 1;
   while (true) {
     const r = await fetch(url, init);
     if (r.status !== 503 || attempt >= MAX_ATTEMPTS || isCancelled()) return r;
-    // Honor Retry-After when set (whole seconds); cap at 10s. Fall back to
-    // exponential backoff (2s, 4s) if the header is missing or unparseable.
+    // Honor Retry-After when set (whole seconds); cap at 8s. Fall back to
+    // exponential backoff (2s, 4s, 8s, 8s) if the header is missing.
     const ra = parseInt(r.headers.get('Retry-After') || '', 10);
     const delayMs = Math.min(
       (Number.isFinite(ra) && ra > 0 ? ra : 2 ** attempt) * 1000,
-      10000,
+      8000,
     );
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     attempt += 1;

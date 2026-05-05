@@ -792,7 +792,7 @@ async def aggregate_records(
                     raise HTTPException(
                         status_code=503,
                         detail="Database is recovering from a restart; please retry in a few seconds.",
-                        headers={"Retry-After": "5"},
+                        headers={"Retry-After": "3"},
                     )
                 logger.warning("aggregate failed for ot=%s tenant=%s: %s", ot_id, tenant_id, exc)
                 raise HTTPException(status_code=400, detail=f"Aggregation failed: {exc}")
