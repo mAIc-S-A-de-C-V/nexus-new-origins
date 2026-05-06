@@ -977,18 +977,27 @@ def _grafana_auth_header(creds: dict) -> Optional[str]:
     return None
 
 
+_TAG_NAME_RE = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+
 def _grafana_build_flux(*, bucket: str, measurement: str, fields: list[str],
-                        devices: list[str] | None, start_iso: str, stop_iso: str,
+                        entity_tag: str = "device",
+                        entities: list[str] | None = None,
+                        start_iso: str, stop_iso: str,
                         every: Optional[str] = None, aggregate_fn: str = "mean") -> str:
-    """Build a Flux query that returns one row per (device, time) with all
-    requested fields as columns. Pivot folds multi-field results into a
-    flat shape so we can land them as a single record per timestamp.
+    """Build a Flux query that returns one row per (entity, time) with all
+    requested fields as columns. `entity_tag` is the InfluxDB tag that
+    identifies the entity (e.g. "device", "host", "asset_id"). Pivot folds
+    multi-field results into a flat shape so we land one record per
+    timestamp regardless of how many fields are queried.
 
     `every=None` (or empty) skips aggregateWindow → raw events at native
     cadence. Use a non-empty value (e.g. "5m") for downsampled buckets.
     """
     if not fields:
         raise ValueError("at least one field is required")
+    if not _TAG_NAME_RE.match(entity_tag):
+        raise ValueError(f"invalid entity_tag {entity_tag!r}")
     parts = [
         f'from(bucket: "{bucket}")',
         f'  |> range(start: time(v: "{start_iso}"), stop: time(v: "{stop_iso}"))',
@@ -996,17 +1005,17 @@ def _grafana_build_flux(*, bucket: str, measurement: str, fields: list[str],
     ]
     field_arr = "[" + ", ".join(f'"{f}"' for f in fields) + "]"
     parts.append(f'  |> filter(fn: (r) => contains(value: r["_field"], set: {field_arr}))')
-    if devices:
-        device_arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
+    if entities:
+        ent_arr = "[" + ", ".join(f'"{d}"' for d in entities) + "]"
         parts.append(
-            f'  |> filter(fn: (r) => contains(value: r["device"], set: {device_arr}))'
+            f'  |> filter(fn: (r) => contains(value: r["{entity_tag}"], set: {ent_arr}))'
         )
     if every:
         parts.append(
             f'  |> aggregateWindow(every: {every}, fn: {aggregate_fn}, createEmpty: false)'
         )
-    # Pivot: one row per _time, one column per _field. After this each frame
-    # has columns [_time, field1, field2, …] with `device` in field labels.
+    # Pivot: one row per _time, one column per _field. The entity_tag value
+    # ends up in field-label metadata on the value-typed columns.
     parts.append('  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")')
     parts.append('  |> yield(name: "pivoted")')
     return "\n".join(parts)
@@ -1037,14 +1046,20 @@ async def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_heade
         return r.json()
 
 
-def _grafana_frames_to_records(payload: dict, *, field_name: str = "") -> list[dict]:
-    """Reshape Grafana's pivoted frame JSON into one record per (device, time)
+def _grafana_frames_to_records(payload: dict, *, entity_tag: str = "device",
+                                field_name: str = "") -> list[dict]:
+    """Reshape Grafana's pivoted frame JSON into one record per (entity, time)
     with each pivoted field as a top-level column.
+
+    `entity_tag` is the InfluxDB tag name (e.g. "device", "host",
+    "asset_id"). Records carry the entity value under that same column name.
+    When entity_tag="device" we also emit a `sensor_name` alias for backward
+    compatibility with dashboards built before the tag was configurable.
 
     Frame shape (after Flux pivot):
         column 0: _time (ms epoch)
         columns 1..N: one per pivoted field; field name in schema.fields[i].name,
-                      device tag in schema.fields[i].labels.device
+                      entity tag in schema.fields[i].labels[entity_tag]
     """
     from datetime import datetime, timezone
     out: list[dict] = []
@@ -1056,7 +1071,6 @@ def _grafana_frames_to_records(payload: dict, *, field_name: str = "") -> list[d
             if len(fields_meta) < 2 or len(cols) < 2 or not cols[0]:
                 continue
 
-            # Find the time column (first time-typed field, conventionally col 0)
             time_idx = next(
                 (i for i, f in enumerate(fields_meta) if f.get("type") == "time"),
                 0,
@@ -1067,13 +1081,13 @@ def _grafana_frames_to_records(payload: dict, *, field_name: str = "") -> list[d
             if not value_field_indices:
                 continue
 
-            # Device label is on the value-typed columns (Flux puts the tag
-            # there, not on _time). Take the first value column's device.
-            device = ""
+            # Entity label is on the value-typed columns (Flux puts tags
+            # there, not on _time). Take the first column's entity tag.
+            entity_value = ""
             for vi in value_field_indices:
                 lbl = fields_meta[vi].get("labels") or {}
-                if lbl.get("device"):
-                    device = lbl["device"]
+                if lbl.get(entity_tag):
+                    entity_value = lbl[entity_tag]
                     break
 
             n_rows = len(cols[time_idx])
@@ -1083,18 +1097,21 @@ def _grafana_frames_to_records(payload: dict, *, field_name: str = "") -> list[d
                     continue
                 ts_iso = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
                 rec: dict = {
-                    "id": f"{device}:{ts_iso}",
+                    "id": f"{entity_value}:{ts_iso}",
                     "time": ts_iso,
-                    "sensor_name": device,
-                    "device": device,
+                    entity_tag: entity_value,
                 }
+                # Back-compat alias: keep `sensor_name` populated when the
+                # entity tag is "device" so existing dashboards/widgets that
+                # filter on sensor_name don't break. New tag names don't
+                # carry the alias — pick column names that match your data.
+                if entity_tag == "device":
+                    rec["sensor_name"] = entity_value
                 for vi in value_field_indices:
                     fname = fields_meta[vi].get("name") or f"col_{vi}"
                     val = cols[vi][row_idx] if row_idx < len(cols[vi]) else None
                     if val is None:
                         continue
-                    # Preserve booleans + ints + numeric strings; coerce
-                    # number-typed columns to float for consistency.
                     ftype = (fields_meta[vi].get("type") or "").lower()
                     if ftype == "number":
                         try:
@@ -1103,9 +1120,6 @@ def _grafana_frames_to_records(payload: dict, *, field_name: str = "") -> list[d
                             rec[fname] = val
                     else:
                         rec[fname] = val
-                # Single-field legacy callers want the value under the
-                # configured field name even if the frame's column name
-                # differs (rare but possible after Flux operations).
                 if field_name and field_name not in rec and len(value_field_indices) == 1:
                     vi = value_field_indices[0]
                     val = cols[vi][0] if cols[vi] else None
@@ -1170,39 +1184,48 @@ async def _grafana_influx_schema(base_url: str, creds: dict, cfg: dict) -> tuple
     if not ds_uid:
         return {}, [], "datasource_uid is required"
     bucket = cfg.get("bucket") or creds.get("bucket") or ""
-    measurement = cfg.get("measurement") or "alldevices"
+    measurement = cfg.get("measurement") or ""
     fields = _grafana_resolve_fields(cfg)
-    devices_raw = cfg.get("devices") or ""
-    devices = [d.strip() for d in str(devices_raw).split(",") if d.strip()] or None
+    entity_tag = (cfg.get("entity_tag") or creds.get("entity_tag") or "device").strip() or "device"
+    # Accept both `entities` (preferred) and legacy `devices`.
+    entities_raw = cfg.get("entities") or cfg.get("devices") or ""
+    entities = [d.strip() for d in str(entities_raw).split(",") if d.strip()] or None
     aggregate_every = cfg.get("aggregate_every") or ""  # "" = raw
     aggregate_fn = (cfg.get("aggregate_fn") or "mean").lower()
     insecure = bool(cfg.get("tls_skip_verify") or creds.get("tls_skip_verify"))
     if not bucket:
         return {}, [], "bucket is required (e.g. bucket01)"
+    if not measurement:
+        return {}, [], "measurement is required (the InfluxDB measurement name)"
 
     from datetime import datetime, timedelta, timezone as _tz
     end = datetime.now(_tz.utc).replace(microsecond=0)
-    # Sample window: 5m raw or 30m aggregated, whichever covers more useful data
     sample_minutes = 5 if not aggregate_every else 30
     start = end - timedelta(minutes=sample_minutes)
-    flux = _grafana_build_flux(
-        bucket=bucket, measurement=measurement, fields=fields, devices=devices,
-        start_iso=start.isoformat().replace("+00:00", "Z"),
-        stop_iso=end.isoformat().replace("+00:00", "Z"),
-        every=aggregate_every or None, aggregate_fn=aggregate_fn,
-    )
+    try:
+        flux = _grafana_build_flux(
+            bucket=bucket, measurement=measurement, fields=fields,
+            entity_tag=entity_tag, entities=entities,
+            start_iso=start.isoformat().replace("+00:00", "Z"),
+            stop_iso=end.isoformat().replace("+00:00", "Z"),
+            every=aggregate_every or None, aggregate_fn=aggregate_fn,
+        )
+    except ValueError as ve:
+        return {}, [], str(ve)
     try:
         payload = await _grafana_query(
             base_url.rstrip("/"), ds_uid, flux, auth_header=auth, insecure=insecure,
         )
     except Exception as e:
         return {}, [], f"grafana query failed: {e}"
-    sample = _grafana_frames_to_records(payload)
+    sample = _grafana_frames_to_records(payload, entity_tag=entity_tag)
     properties = [
         {"name": "id", "data_type": "string"},
         {"name": "time", "data_type": "datetime"},
-        {"name": "sensor_name", "data_type": "string"},
-        {"name": "device", "data_type": "string"},
-    ] + [{"name": f, "data_type": "number"} for f in fields]
+        {"name": entity_tag, "data_type": "string"},
+    ]
+    if entity_tag == "device":
+        properties.append({"name": "sensor_name", "data_type": "string"})
+    properties += [{"name": f, "data_type": "number"} for f in fields]
     schema = {"primary_key": "id", "properties": properties}
     return schema, sample[:50], None

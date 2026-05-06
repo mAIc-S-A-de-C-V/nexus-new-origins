@@ -57,15 +57,23 @@ def _http_post(url: str, *, data: bytes, headers: dict[str, str], insecure: bool
         return e.code, e.read()
 
 
-def _build_flux(bucket: str, measurement: str, fields: list[str], devices: list[str] | None,
+import re as _re
+
+_TAG_NAME_RE = _re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+
+def _build_flux(bucket: str, measurement: str, fields: list[str],
+                entity_tag: str, entities: list[str] | None,
                 start_iso: str, stop_iso: str, every: str) -> str:
-    """Build a Flux query for a measurement and one-or-more fields, optionally
-    narrowed to a device list. `every` empty = raw events; non-empty (e.g.
-    "5m") = aggregateWindow downsample. Pivot folds multi-field results into
-    one row per (device, _time) so each record carries every field as a column.
+    """Build a Flux query for a measurement and one-or-more fields, narrowed
+    to optional entities (matched on `entity_tag`). `every` empty = raw
+    events; non-empty (e.g. "5m") = aggregateWindow downsample. Pivot folds
+    multi-field results into one row per (entity, _time).
     """
     if not fields:
         raise ValueError("at least one field is required")
+    if not _TAG_NAME_RE.match(entity_tag):
+        raise ValueError(f"invalid entity_tag {entity_tag!r}")
     parts = [
         f'from(bucket: "{bucket}")',
         f'  |> range(start: time(v: "{start_iso}"), stop: time(v: "{stop_iso}"))',
@@ -73,10 +81,10 @@ def _build_flux(bucket: str, measurement: str, fields: list[str], devices: list[
     ]
     field_arr = "[" + ", ".join(f'"{f}"' for f in fields) + "]"
     parts.append(f'  |> filter(fn: (r) => contains(value: r["_field"], set: {field_arr}))')
-    if devices:
-        device_arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
+    if entities:
+        ent_arr = "[" + ", ".join(f'"{d}"' for d in entities) + "]"
         parts.append(
-            f'  |> filter(fn: (r) => contains(value: r["device"], set: {device_arr}))'
+            f'  |> filter(fn: (r) => contains(value: r["{entity_tag}"], set: {ent_arr}))'
         )
     if every:
         parts.append(f'  |> aggregateWindow(every: {every}, fn: mean, createEmpty: false)')
@@ -106,9 +114,12 @@ def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_header: str
     return json.loads(raw)
 
 
-def _frames_to_records(payload: dict) -> list[dict]:
-    """Reshape pivoted Grafana frames into one record per (device, _time).
-    Each pivoted field becomes its own top-level column on the record.
+def _frames_to_records(payload: dict, *, entity_tag: str = "device") -> list[dict]:
+    """Reshape pivoted Grafana frames into one record per (entity, _time).
+    Each pivoted field becomes its own top-level column. Records carry the
+    entity value under the configured tag column name (e.g. `device`,
+    `host`, `asset_id`). When entity_tag="device" we also write a
+    `sensor_name` alias for back-compat with sensor dashboards.
     """
     records: list[dict] = []
     for ref_block in payload.get("results", {}).values():
@@ -124,11 +135,11 @@ def _frames_to_records(payload: dict) -> list[dict]:
             value_indices = [i for i in range(len(fields_meta)) if i != time_idx]
             if not value_indices:
                 continue
-            device = ""
+            entity_value = ""
             for vi in value_indices:
                 lbl = fields_meta[vi].get("labels") or {}
-                if lbl.get("device"):
-                    device = lbl["device"]
+                if lbl.get(entity_tag):
+                    entity_value = lbl[entity_tag]
                     break
             n_rows = len(cols[time_idx])
             for row_idx in range(n_rows):
@@ -137,11 +148,12 @@ def _frames_to_records(payload: dict) -> list[dict]:
                     continue
                 ts_iso = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
                 rec: dict = {
-                    "id": f"{device}:{ts_iso}",
+                    "id": f"{entity_value}:{ts_iso}",
                     "time": ts_iso,
-                    "sensor_name": device,
-                    "device": device,
+                    entity_tag: entity_value,
                 }
+                if entity_tag == "device":
+                    rec["sensor_name"] = entity_value
                 for vi in value_indices:
                     fname = fields_meta[vi].get("name") or f"col_{vi}"
                     val = cols[vi][row_idx] if row_idx < len(cols[vi]) else None
@@ -192,7 +204,13 @@ def main() -> int:
         help="Comma-separated InfluxDB field names; pivoted into one record per (device, time)",
     )
     ap.add_argument("--field", default="", help="(legacy single-field — overridden by --fields if set)")
-    ap.add_argument("--devices", default="", help="Comma-separated device names; empty = all")
+    ap.add_argument(
+        "--entity-tag",
+        default="device",
+        help="InfluxDB tag name that identifies each entity (e.g. device, host, asset_id)",
+    )
+    ap.add_argument("--entities", default="", help="Comma-separated entity values to filter; empty = all")
+    ap.add_argument("--devices", default="", help="(legacy alias for --entities)")
     ap.add_argument("--lookback-days", type=int, default=30)
     ap.add_argument(
         "--aggregate-every",
@@ -238,7 +256,9 @@ def main() -> int:
         b64 = base64.b64encode(f"{grafana_user}:{grafana_pass}".encode()).decode()
         auth_header = f"Basic {b64}"
 
-    devices = [d.strip() for d in args.devices.split(",") if d.strip()] or None
+    # Accept --entities (preferred) or legacy --devices; merge both if given.
+    entity_csv = ",".join(x for x in (args.entities, args.devices) if x)
+    entities = [d.strip() for d in entity_csv.split(",") if d.strip()] or None
     # Multi-field by default; legacy --field still works as a single-field override.
     fields = [f.strip() for f in args.fields.split(",") if f.strip()]
     if not fields and args.field:
@@ -260,7 +280,8 @@ def main() -> int:
             bucket=bucket,
             measurement=args.measurement,
             fields=fields,
-            devices=devices,
+            entity_tag=args.entity_tag,
+            entities=entities,
             start_iso=cur.isoformat().replace("+00:00", "Z"),
             stop_iso=chunk_end.isoformat().replace("+00:00", "Z"),
             every=args.aggregate_every,
@@ -272,14 +293,15 @@ def main() -> int:
             cur = chunk_end
             continue
 
-        records = _frames_to_records(payload)
+        records = _frames_to_records(payload, entity_tag=args.entity_tag)
         total_records += len(records)
-        per_device: dict[str, int] = {}
+        per_entity: dict[str, int] = {}
         for r in records:
-            per_device[r["sensor_name"]] = per_device.get(r["sensor_name"], 0) + 1
+            ev = str(r.get(args.entity_tag) or "(unknown)")
+            per_entity[ev] = per_entity.get(ev, 0) + 1
         print(
             f"[{cur.date()}..{chunk_end.date()}] {len(records)} points: "
-            + ", ".join(f"{k}={v}" for k, v in sorted(per_device.items()))
+            + ", ".join(f"{k}={v}" for k, v in sorted(per_entity.items()))
         )
 
         if not args.dry_run and records:

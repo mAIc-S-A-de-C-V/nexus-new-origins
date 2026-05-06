@@ -188,11 +188,14 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
   // Grafana / InfluxDB scope — required for the SOURCE node to build a Flux query.
   const [grafanaDatasourceUid, setGrafanaDatasourceUid] = useState('');
   const [grafanaBucket, setGrafanaBucket] = useState('');
-  const [grafanaMeasurement, setGrafanaMeasurement] = useState('alldevices');
-  // Comma-separated list — Flux pivot folds them into one row per (device, time).
-  const [grafanaFields, setGrafanaFields] = useState('running,temp,heap,wifi_rssi,reconn,uptime,wifi_ok');
-  const [grafanaDevices, setGrafanaDevices] = useState('');
-  // Empty = raw events at native sensor cadence; e.g. "5m" downsamples.
+  const [grafanaMeasurement, setGrafanaMeasurement] = useState('');
+  // Comma-separated list — Flux pivot folds them into one row per (entity, time).
+  const [grafanaFields, setGrafanaFields] = useState('');
+  // InfluxDB tag name that identifies the entity each row belongs to
+  // (e.g. "device" for sensors, "host" for servers, "asset_id" for equipment).
+  const [grafanaEntityTag, setGrafanaEntityTag] = useState('device');
+  const [grafanaEntities, setGrafanaEntities] = useState('');
+  // Empty = raw events at native cadence; e.g. "5m" downsamples.
   const [grafanaAggregateEvery, setGrafanaAggregateEvery] = useState('');
   const [grafanaTlsSkipVerify, setGrafanaTlsSkipVerify] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -248,7 +251,8 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
         if (grafanaBucket.trim()) extraConfig.bucket = grafanaBucket.trim();
         if (grafanaMeasurement.trim()) extraConfig.measurement = grafanaMeasurement.trim();
         if (grafanaFields.trim()) extraConfig.fields = grafanaFields.trim();
-        if (grafanaDevices.trim()) extraConfig.devices = grafanaDevices.trim();
+        if (grafanaEntityTag.trim()) extraConfig.entity_tag = grafanaEntityTag.trim();
+        if (grafanaEntities.trim()) extraConfig.entities = grafanaEntities.trim();
         if (grafanaAggregateEvery.trim()) extraConfig.aggregate_every = grafanaAggregateEvery.trim();
         if (grafanaTlsSkipVerify) extraConfig.tls_skip_verify = 'true';
       }
@@ -538,20 +542,28 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
                 style={{ ...inputStyle, marginTop: 8 }}
                 value={grafanaMeasurement}
                 onChange={(e) => setGrafanaMeasurement(e.target.value)}
-                placeholder="measurement (default: alldevices)"
+                placeholder="measurement (e.g. alldevices, http_requests, energy_meter)"
               />
               <input
                 style={{ ...inputStyle, marginTop: 8 }}
                 value={grafanaFields}
                 onChange={(e) => setGrafanaFields(e.target.value)}
-                placeholder="fields (CSV — e.g. running,temp,heap,wifi_rssi,reconn,uptime,wifi_ok)"
+                placeholder="fields (CSV — e.g. running,temp,heap or rps,latency_ms,error_rate)"
               />
-              <input
-                style={{ ...inputStyle, marginTop: 8 }}
-                value={grafanaDevices}
-                onChange={(e) => setGrafanaDevices(e.target.value)}
-                placeholder="devices (CSV, optional — empty = all)"
-              />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 8, marginTop: 8 }}>
+                <input
+                  style={inputStyle}
+                  value={grafanaEntityTag}
+                  onChange={(e) => setGrafanaEntityTag(e.target.value)}
+                  placeholder="entity tag (e.g. device, host)"
+                />
+                <input
+                  style={inputStyle}
+                  value={grafanaEntities}
+                  onChange={(e) => setGrafanaEntities(e.target.value)}
+                  placeholder="entity values (CSV, optional — empty = all)"
+                />
+              </div>
               <input
                 style={{ ...inputStyle, marginTop: 8 }}
                 value={grafanaAggregateEvery}
@@ -568,7 +580,7 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
                 Skip TLS verification (self-signed cert)
               </label>
               <div style={{ fontSize: '11px', color: '#64748B', marginTop: '6px' }}>
-                <strong>Fields</strong> are pivoted into one record per (device, time), so each timestamp carries every requested field as its own column. Leave <strong>aggregate window</strong> empty to ingest raw events (matches device-level cadence) or set e.g. <code>5m</code> to downsample. Find the <strong>datasource UID</strong> in Grafana → Connections → Data sources → your InfluxDB. Use a Grafana <strong>service-account</strong> token with Viewer role.
+                <strong>Entity tag</strong> is the InfluxDB tag column that identifies which thing each row belongs to (defaults to <code>device</code>; use <code>host</code> for servers, <code>asset_id</code> for equipment, etc.). Records carry the entity value under that same column name. <strong>Fields</strong> are pivoted into one record per (entity, time). Leave <strong>aggregate window</strong> empty for raw events; set e.g. <code>5m</code> to downsample. Find the <strong>datasource UID</strong> in Grafana → Connections → Data sources → your InfluxDB. Use a Grafana <strong>service-account</strong> token with Viewer role.
               </div>
             </div>
           )}

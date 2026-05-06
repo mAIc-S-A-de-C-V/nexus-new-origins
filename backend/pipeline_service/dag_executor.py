@@ -987,25 +987,34 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     conn_config.get("bucket") or credentials.get("bucket")
                     or cfg.get("bucket") or ""
                 )
-                measurement = cfg.get("measurement") or conn_config.get("measurement") or "alldevices"
+                measurement = cfg.get("measurement") or conn_config.get("measurement") or ""
                 # Multi-field support: prefer `fields` (CSV) on either the
                 # node or the connector; fall back to the legacy single
                 # `field` setting. We pivot all of them into one row per
-                # (device, time) so records carry the same multi-column
+                # (entity, time) so records carry the same multi-column
                 # shape the device-level ingestion produced.
                 fields_raw = (
                     cfg.get("fields") or conn_config.get("fields")
                     or cfg.get("field") or conn_config.get("field")
-                    or "running"
+                    or ""
                 )
                 if isinstance(fields_raw, list):
                     fields_list = [str(f).strip() for f in fields_raw if str(f).strip()]
                 else:
                     fields_list = [s.strip() for s in str(fields_raw).split(",") if s.strip()]
-                if not fields_list:
-                    fields_list = ["running"]
-                devices_raw = cfg.get("devices") or conn_config.get("devices") or ""
-                devices = [d.strip() for d in str(devices_raw).split(",") if d.strip()] or None
+                # Entity tag — the InfluxDB tag column that identifies the
+                # entity each row belongs to. Defaults to "device" so existing
+                # sensor-style connectors keep working unchanged.
+                entity_tag = (
+                    cfg.get("entity_tag") or conn_config.get("entity_tag")
+                    or credentials.get("entity_tag") or "device"
+                ).strip() or "device"
+                # Accept `entities` (preferred) or legacy `devices` for the value list.
+                entities_raw = (
+                    cfg.get("entities") or conn_config.get("entities")
+                    or cfg.get("devices") or conn_config.get("devices") or ""
+                )
+                entities = [d.strip() for d in str(entities_raw).split(",") if d.strip()] or None
                 # Empty `aggregate_every` = raw events at native cadence
                 # (matches the original device-level ingestion). Set a value
                 # like "5m" only when downsampling is desirable.
@@ -1014,12 +1023,24 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 lookback_minutes = int(cfg.get("lookback_minutes") or 60)
                 insecure = bool(conn_config.get("tls_skip_verify") or credentials.get("tls_skip_verify"))
 
-                if not (base_url and ds_uid and bucket):
+                if not (base_url and ds_uid and bucket and measurement):
                     if audit_extras is not None:
                         audit_extras["error"] = (
-                            "GRAFANA_INFLUX needs base_url, datasource_uid, and bucket configured "
-                            "on the connector"
+                            "GRAFANA_INFLUX needs base_url, datasource_uid, bucket, and "
+                            "measurement configured on the connector"
                         )
+                    return []
+                if not fields_list:
+                    if audit_extras is not None:
+                        audit_extras["error"] = (
+                            "GRAFANA_INFLUX needs at least one field (CSV `fields` config or `field`)"
+                        )
+                    return []
+                # Validate entity_tag — embedded into Flux unquoted.
+                import re as _re
+                if not _re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$", entity_tag):
+                    if audit_extras is not None:
+                        audit_extras["error"] = f"GRAFANA_INFLUX entity_tag {entity_tag!r} is not a valid identifier"
                     return []
 
                 # Auth: prefer Grafana API key; fall back to basic auth.
@@ -1069,10 +1090,10 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 flux_parts.append(
                     f'  |> filter(fn: (r) => contains(value: r["_field"], set: {fields_arr}))'
                 )
-                if devices:
-                    arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
+                if entities:
+                    arr = "[" + ", ".join(f'"{d}"' for d in entities) + "]"
                     flux_parts.append(
-                        f'  |> filter(fn: (r) => contains(value: r["device"], set: {arr}))'
+                        f'  |> filter(fn: (r) => contains(value: r["{entity_tag}"], set: {arr}))'
                     )
                 if aggregate_every:
                     flux_parts.append(
@@ -1091,8 +1112,9 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     audit_extras["url"] = gf_url
                     audit_extras["datasource_uid"] = ds_uid
                     audit_extras["measurement"] = measurement
-                    audit_extras["field"] = field_name
-                    audit_extras["devices"] = devices or []
+                    audit_extras["fields"] = fields_list
+                    audit_extras["entity_tag"] = entity_tag
+                    audit_extras["entities"] = entities or []
                     audit_extras["aggregate_every"] = aggregate_every
                     audit_extras["aggregate_fn"] = aggregate_fn
                     audit_extras["range_start"] = start_dt.isoformat()
@@ -1141,12 +1163,12 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         value_indices = [i for i in range(len(fields_meta)) if i != time_idx]
                         if not value_indices:
                             continue
-                        # Device tag lives on the value-typed columns post-pivot.
-                        device_label = ""
+                        # Entity tag lives on the value-typed columns post-pivot.
+                        entity_value = ""
                         for vi in value_indices:
                             lbl = fields_meta[vi].get("labels") or {}
-                            if lbl.get("device"):
-                                device_label = lbl["device"]
+                            if lbl.get(entity_tag):
+                                entity_value = lbl[entity_tag]
                                 break
                         n_rows = len(cols[time_idx])
                         for row_idx in range(n_rows):
@@ -1155,11 +1177,14 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                                 continue
                             ts_iso = _dt.fromtimestamp(ts_ms / 1000.0, tz=_tz.utc).isoformat()
                             rec: dict = {
-                                "id": f"{device_label}:{ts_iso}",
+                                "id": f"{entity_value}:{ts_iso}",
                                 "time": ts_iso,
-                                "sensor_name": device_label,
-                                "device": device_label,
+                                entity_tag: entity_value,
                             }
+                            # Back-compat: dashboards built around sensor_name
+                            # keep working when the entity tag is "device".
+                            if entity_tag == "device":
+                                rec["sensor_name"] = entity_value
                             for vi in value_indices:
                                 fname = fields_meta[vi].get("name") or f"col_{vi}"
                                 val = cols[vi][row_idx] if row_idx < len(cols[vi]) else None
