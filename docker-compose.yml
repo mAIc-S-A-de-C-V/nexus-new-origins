@@ -317,6 +317,7 @@ services:
       - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
       - LOGIC_SERVICE_URL=http://logic-service:8012
       - UTILITY_SERVICE_URL=http://utility-service:8014
+      - SCRAPING_SERVICE_URL=http://scraping-service:8027
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ADMIN_SERVICE_URL=http://admin-service:8022
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
@@ -751,6 +752,21 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - nexus-net
+    logging: *default-logging
+
+  # ─── Scraping (Scrapling-backed search + scrape) ─────────────────────────
+  # Wraps Scrapling so agents can search the web (DDG) and pull structured
+  # content from URLs without each consumer pulling lxml + browser deps.
+  # No auth; bound to the docker network only.
+  scraping-service:
+    build:
+      context: ./backend
+      dockerfile: scraping_service/Dockerfile
+    ports:
+      - "8027:8027"
+    mem_limit: 512m
     networks:
       - nexus-net
     logging: *default-logging

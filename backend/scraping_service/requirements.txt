@@ -1,0 +1,10 @@
+fastapi>=0.115.0
+uvicorn[standard]==0.30.3
+pydantic==2.8.2
+httpx==0.27.0
+# Scrapling — adaptive HTML scraping with auto-restoring selectors,
+# async fetcher, and built-in stealth (Camoufox is opt-in to keep the
+# image lean). See https://github.com/D4Vinci/Scrapling
+scrapling>=0.2,<1.0
+lxml>=5.2
+beautifulsoup4>=4.12

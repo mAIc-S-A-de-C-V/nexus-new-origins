@@ -15,6 +15,7 @@ UTILITY_URL    = os.environ.get("UTILITY_SERVICE_URL",    "http://utility-servic
 PIPELINE_URL   = os.environ.get("PIPELINE_SERVICE_URL",   "http://pipeline-service:8002")
 CONNECTOR_URL  = os.environ.get("CONNECTOR_SERVICE_URL",  "http://connector-service:8001")
 PROCESS_URL    = os.environ.get("PROCESS_ENGINE_URL",     "http://process-engine-service:8009")
+SCRAPING_URL   = os.environ.get("SCRAPING_SERVICE_URL",   "http://scraping-service:8027")
 
 
 # ── Tool definitions (sent to Claude as tools=[...]) ─────────────────────────
@@ -190,6 +191,74 @@ TOOL_DEFINITIONS = {
             "type": "object",
             "properties": {},
             "required": [],
+        },
+    },
+    "web_search": {
+        "name": "web_search",
+        "description": (
+            "Search the public web (DuckDuckGo) and return the top organic results "
+            "as a list of {url, title, snippet}. Use this to discover candidate "
+            "supplier pages, product listings, manufacturer datasheets, etc. "
+            "Then call scrape_url on the most promising 2-3 URLs to pull pricing / "
+            "spec details. Always cite a real URL in any memo you propose; never "
+            "invent suppliers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query — be specific (include manufacturer part number, "
+                                   "model, or unambiguous identifier). Avoid vague terms.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Number of results to return (1-30). Default 10.",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "scrape_url": {
+        "name": "scrape_url",
+        "description": (
+            "Fetch a URL and return its main text content (capped) plus optional "
+            "selector matches. Use AFTER web_search to extract structured info "
+            "like price, availability, lead time, MOQ, supplier name from a "
+            "specific page. The text is cleaned and truncated to fit in context. "
+            "If the page is JS-rendered or protected by Cloudflare, set "
+            "use_stealth=true (slower, only enable on demand). Quote actual page "
+            "content in your reasoning — do not paraphrase numbers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Absolute URL starting with http:// or https://",
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "Optional CSS selector to pull specific elements (e.g. '.product-price'). Returns up to 50 matches.",
+                },
+                "extract_text": {
+                    "type": "boolean",
+                    "description": "Return cleaned page text (capped at 8000 chars). Default true.",
+                    "default": True,
+                },
+                "extract_links": {
+                    "type": "boolean",
+                    "description": "Return outbound http(s) links from the page (cap 100). Default false.",
+                    "default": False,
+                },
+                "use_stealth": {
+                    "type": "boolean",
+                    "description": "Use Camoufox stealth fetcher for sites with bot protection. Slower; only set true if a normal fetch fails.",
+                    "default": False,
+                },
+            },
+            "required": ["url"],
         },
     },
     "agent_call": {
@@ -701,6 +770,52 @@ async def execute_tool(
                         if a.get("enabled")
                     ]
                 }
+
+            elif tool_name == "web_search":
+                # Proxy to scraping-service. Keep timeout generous because DDG
+                # occasionally takes a few seconds; the agent is already
+                # bounded by its overall step budget.
+                query = (tool_input.get("query") or "").strip()
+                if not query:
+                    return {"error": "query is required"}
+                max_results = int(tool_input.get("max_results") or 10)
+                try:
+                    r = await client.post(
+                        f"{SCRAPING_URL}/search",
+                        json={"query": query, "max_results": max_results},
+                        timeout=30,
+                    )
+                    if not r.is_success:
+                        return {"error": f"scraping-service /search HTTP {r.status_code}: {r.text[:200]}"}
+                    return r.json()
+                except httpx.HTTPError as exc:
+                    return {"error": f"scraping-service unreachable: {exc}"}
+
+            elif tool_name == "scrape_url":
+                url = (tool_input.get("url") or "").strip()
+                if not url.startswith(("http://", "https://")):
+                    return {"error": "url must start with http:// or https://"}
+                payload = {
+                    "url": url,
+                    "extract_text": bool(tool_input.get("extract_text", True)),
+                    "extract_links": bool(tool_input.get("extract_links", False)),
+                    "use_stealth": bool(tool_input.get("use_stealth", False)),
+                }
+                if tool_input.get("selector"):
+                    payload["selector"] = str(tool_input["selector"])
+                # Allow more time for stealth fetches (Camoufox is slow)
+                request_timeout = 60 if payload["use_stealth"] else 30
+                try:
+                    r = await client.post(
+                        f"{SCRAPING_URL}/scrape",
+                        json=payload,
+                        timeout=request_timeout,
+                    )
+                    if not r.is_success:
+                        return {"error": f"scraping-service /scrape HTTP {r.status_code}: {r.text[:200]}"}
+                    return r.json()
+                except httpx.HTTPError as exc:
+                    return {"error": f"scraping-service unreachable: {exc}"}
 
             elif tool_name == "agent_call":
                 if dry_run:
