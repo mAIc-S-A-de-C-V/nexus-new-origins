@@ -505,7 +505,7 @@ def test_tenant_isolation_in_where_clause():
 
 
 def test_agg_methods_constant():
-    assert {"count", "sum", "avg", "min", "max", "count_distinct"} == _AGG_METHODS
+    assert {"count", "sum", "avg", "min", "max", "count_distinct", "runtime"} == _AGG_METHODS
 
 
 def test_buckets_constant():

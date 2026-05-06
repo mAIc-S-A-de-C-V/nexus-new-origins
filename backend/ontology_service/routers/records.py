@@ -263,6 +263,12 @@ class AggregationSpec(BaseModel):
     field: Optional[str] = None
     method: str = "count"
     ts_field: Optional[str] = None  # timestamp field (required for runtime)
+    # Runtime-only knob: cap the per-event delta at this many seconds.
+    # When a sensor stops emitting, the LEAD()-based delta to the next
+    # heartbeat can span hours — without a cap, an offline period gets
+    # booked as runtime on whichever bucket holds the last event before
+    # the silence. 600s ≈ 10 min, ~100× the typical 1–5s telemetry cadence.
+    max_gap_seconds: Optional[int] = 600
 
 
 class TimeBucketSpec(BaseModel):
@@ -400,7 +406,8 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         select_parts.append("'_total' AS grp")
 
     # runtime_cte_parts collects CTE column definitions when runtime agg is used.
-    runtime_cte_parts: list[tuple[int, str, str]] = []  # (index, status_expr, ts_safe)
+    # Tuple shape: (index, status_expr, ts_safe, max_gap_seconds)
+    runtime_cte_parts: list[tuple[int, str, str, int]] = []
 
     for i, agg in enumerate(body.aggregations):
         alias = f"agg_{i}"
@@ -417,11 +424,27 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                 f"THEN NULLIF(data->>'{ts_f}', '')::timestamptz "
                 f"ELSE NULL END)"
             )
-            runtime_cte_parts.append((i, status_expr, ts_safe))
-            # Placeholder — replaced by CTE-based query below
+            # Sane bounds: 0 disables capping (legacy behavior); negative or
+            # absurdly large values get clamped to 24h so a misconfigured widget
+            # can't book a week-long gap as runtime.
+            cap = agg.max_gap_seconds if agg.max_gap_seconds is not None else 600
+            cap = max(0, min(int(cap), 86400))
+            runtime_cte_parts.append((i, status_expr, ts_safe, cap))
+            # Only count a row's delta when BOTH the row and its successor are
+            # status>=1 (machine running). When the sensor goes silent the
+            # next event is either missing (NULL → predicate fails) or
+            # status=0 (stopped → predicate fails), so the silent period
+            # doesn't get booked as runtime. The LEAST() further caps the
+            # per-row delta so even when both endpoints are status=1, a brief
+            # network blip doesn't inflate the total.
+            if cap > 0:
+                delta_expr = f"LEAST(_rt_delta_{i}, {cap})"
+            else:
+                delta_expr = f"_rt_delta_{i}"
             select_parts.append(
-                f"COALESCE(SUM(CASE WHEN _rt_status_{i} >= 1 "
-                f"THEN _rt_delta_{i} ELSE 0 END), 0) AS {alias}"
+                f"COALESCE(SUM(CASE "
+                f"WHEN _rt_status_{i} >= 1 AND _rt_next_status_{i} >= 1 "
+                f"THEN {delta_expr} ELSE 0 END), 0) AS {alias}"
             )
         elif agg.method == "count":
             select_parts.append(f"COUNT(*) AS {alias}")
@@ -609,12 +632,22 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         # happens to fall in the same time bucket.
         partition_expr = series_clause or group_clause or "'_all'"
         cte_extra_cols = []
-        for idx, status_expr, ts_safe in runtime_cte_parts:
+        for idx, status_expr, ts_safe, _cap in runtime_cte_parts:
             cte_extra_cols.append(f"{status_expr} AS _rt_status_{idx}")
             cte_extra_cols.append(
                 f"EXTRACT(EPOCH FROM ("
                 f"LEAD({ts_safe}) OVER (PARTITION BY {partition_expr} ORDER BY {ts_safe}) "
                 f"- {ts_safe})) AS _rt_delta_{idx}"
+            )
+            # Forward-fill of the status field: if the NEXT event in the
+            # same sensor's stream is also status>=1, we know the machine
+            # was running across the gap (subject to the LEAST() cap above).
+            # NULL when this is the last event in its partition — the SUM
+            # predicate `_rt_next_status_i >= 1` rejects NULL, so the final
+            # event's delta (which is also NULL anyway) doesn't contribute.
+            cte_extra_cols.append(
+                f"LEAD({status_expr}) OVER (PARTITION BY {partition_expr} ORDER BY {ts_safe}) "
+                f"AS _rt_next_status_{idx}"
             )
         cte_cols_sql = ", ".join(cte_extra_cols)
 
