@@ -4,11 +4,12 @@ Agent configuration CRUD.
 from typing import Optional
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Header, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func as sqlfunc
 from database import AgentConfigRow, AgentConfigVersionRow, AgentRunRow, get_session
-from runtime import run_agent
+from runtime import run_agent, stream_agent
 
 router = APIRouter()
 
@@ -28,6 +29,8 @@ AVAILABLE_TOOLS = [
     "list_pipelines",
     "create_pipeline",
     "run_pipeline",
+    "web_search",
+    "scrape_url",
 ]
 
 
@@ -447,6 +450,69 @@ async def list_versions(
         }
         for r in rows
     ]
+
+
+@router.post("/{agent_id}/test/stream")
+async def test_agent_stream(
+    agent_id: str,
+    body: TestRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Same surface as /test but emits SSE events as the agent works.
+
+    Each chunk is an SSE `data: {...}\\n\\n` block whose JSON `type` is one of:
+      - tool_start    {tool, tool_use_id}                    — agent is about to call this tool
+      - tool_calling  {tool, input}                          — full input args resolved
+      - tool_result   {tool, result}                         — tool returned (truncated by runtime)
+      - text_delta    {text}                                 — partial agent reasoning text
+      - done          {iterations, error?}                   — terminal event
+      - error         {error, iterations}                    — fatal mid-run
+
+    Frontend renders each as a step in a live timeline so the user can watch
+    web_search → scrape_url → action_propose unfold instead of staring at a
+    spinner until the whole loop finishes.
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    result = await db.execute(
+        select(AgentConfigRow).where(AgentConfigRow.id == agent_id, AgentConfigRow.tenant_id == tenant_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    system_prompt = agent.system_prompt
+    knowledge_scope = agent.knowledge_scope
+    if knowledge_scope:
+        scope_lines = "\n".join(
+            f"  - {e.get('label', e.get('object_type_id', '?'))}" for e in knowledge_scope
+        )
+        system_prompt = system_prompt.rstrip() + f"\n\nDATA SCOPE (test run):\n{scope_lines}"
+
+    async def gen():
+        async for chunk in stream_agent(
+            agent_id=agent.id,
+            system_prompt=system_prompt,
+            model=agent.model,
+            enabled_tools=agent.enabled_tools or [],
+            max_iterations=agent.max_iterations,
+            conversation_history=[],
+            new_user_message=body.message,
+            tenant_id=tenant_id,
+            knowledge_scope=knowledge_scope,
+            dry_run=body.dry_run,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable buffering at the reverse proxy
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/{agent_id}/versions/{version_id}/restore")

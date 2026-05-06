@@ -571,46 +571,118 @@ const ChatPanel: React.FC<{ agentId: string }> = ({ agentId }) => {
 
 const AGENT_API_URL = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
 
+interface TraceItem {
+  role: string;
+  text?: string;
+  tool?: string;
+  input?: unknown;
+  result?: unknown;
+  toolUseId?: string;
+}
+
 const TestPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
   const [input, setInput] = useState('');
   const [dryRun, setDryRun] = useState(true);
   const [running, setRunning] = useState(false);
-  const [trace, setTrace] = useState<{ role: string; type?: string; text?: string; tool?: string; input?: unknown; result?: unknown }[]>([]);
+  const [trace, setTrace] = useState<TraceItem[]>([]);
   const [finalText, setFinalText] = useState('');
   const [iterations, setIterations] = useState(0);
   const [error, setError] = useState('');
+  const traceEndRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll the trace to the bottom as new events arrive so the user
+  // sees the latest step without having to scroll manually.
+  React.useEffect(() => {
+    traceEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [trace.length]);
 
   const run = async () => {
     if (!input.trim()) return;
-    setRunning(true); setTrace([]); setFinalText(''); setError(''); setIterations(0);
+    setRunning(true);
+    setTrace([]);
+    setFinalText('');
+    setError('');
+    setIterations(0);
+
     try {
-      const r = await fetch(`${AGENT_API_URL}/agents/${agent.id}/test`, {
+      const resp = await fetch(`${AGENT_API_URL}/agents/${agent.id}/test/stream`, {
         method: 'POST',
-        headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+        headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ message: input.trim(), dry_run: dryRun }),
       });
-      const data = await r.json();
-      setFinalText(data.final_text || '');
-      setIterations(data.iterations || 0);
-      setError(data.error || '');
-      // Build a simplified trace
-      const msgs: typeof trace = [];
-      for (const msg of (data.trace || [])) {
-        const content = msg.content;
-        if (typeof content === 'string') {
-          msgs.push({ role: msg.role, text: content });
-        } else if (Array.isArray(content)) {
-          for (const block of content) {
-            if (block.type === 'text') msgs.push({ role: 'text', text: block.text });
-            if (block.type === 'tool_use') msgs.push({ role: 'tool_use', tool: block.name, input: block.input });
+      if (!resp.body) {
+        setError('Streaming response had no body');
+        return;
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      // Track in-flight tool calls by tool_use_id so we can update each
+      // entry from `tool_start` (skeleton) → `tool_calling` (full input)
+      // → `tool_result` (final output) without duplicating timeline rows.
+      const liveText: { idx: number } = { idx: -1 };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Split out completed SSE events. Each event ends with \n\n.
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const ev of events) {
+          const line = ev.trim();
+          if (!line.startsWith('data:')) continue;
+          let payload: Record<string, unknown> = {};
+          try {
+            payload = JSON.parse(line.slice(5).trim());
+          } catch {
+            continue;
           }
-        } else if (Array.isArray(msg.content)) {
-          for (const block of msg.content) {
-            if (block.type === 'tool_result') msgs.push({ role: 'tool_result', tool: '', result: block.content });
-          }
+          const type = payload.type as string;
+          setTrace((prev) => {
+            const next = [...prev];
+            if (type === 'text_delta') {
+              const txt = String(payload.text || '');
+              // Coalesce consecutive text_delta events into one timeline row.
+              if (liveText.idx === -1 || next[liveText.idx]?.role !== 'text') {
+                next.push({ role: 'text', text: txt });
+                liveText.idx = next.length - 1;
+              } else {
+                next[liveText.idx] = { ...next[liveText.idx], text: (next[liveText.idx].text || '') + txt };
+              }
+            } else if (type === 'tool_start') {
+              liveText.idx = -1; // text run ended
+              next.push({
+                role: 'tool_use',
+                tool: String(payload.tool || ''),
+                toolUseId: String(payload.tool_use_id || ''),
+                input: undefined,
+              });
+            } else if (type === 'tool_calling') {
+              // Fill in the input args on the most recent matching tool_use row.
+              for (let i = next.length - 1; i >= 0; i--) {
+                if (next[i].role === 'tool_use' && next[i].tool === payload.tool && next[i].input === undefined) {
+                  next[i] = { ...next[i], input: payload.input };
+                  break;
+                }
+              }
+            } else if (type === 'tool_result') {
+              liveText.idx = -1;
+              next.push({ role: 'tool_result', tool: String(payload.tool || ''), result: payload.result });
+            } else if (type === 'error') {
+              setError(String(payload.error || ''));
+            } else if (type === 'done') {
+              setIterations(Number(payload.iterations || 0));
+              if (payload.error) setError(String(payload.error));
+            } else if (type === 'final_text' && typeof payload.text === 'string') {
+              setFinalText(payload.text);
+            }
+            return next;
+          });
         }
       }
-      setTrace(msgs);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setRunning(false);
     }
@@ -644,22 +716,74 @@ const TestPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
         {iterations > 0 && <span style={{ fontSize: 11, color: C.dim }}>{iterations} iteration{iterations !== 1 ? 's' : ''}</span>}
       </div>
 
-      {/* Trace */}
-      {trace.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em' }}>REASONING TRACE</div>
-          {trace.map((item, i) => (
-            <div key={i} style={{
-              padding: '8px 12px', fontSize: 12,
-              backgroundColor: item.role === 'tool_use' ? '#FFFBEB' : item.role === 'tool_result' ? '#F0FDF4' : C.card,
-              border: `1px solid ${item.role === 'tool_use' ? '#FDE68A' : item.role === 'tool_result' ? '#86EFAC' : C.border}`,
-              borderRadius: 4,
-            }}>
-              {item.role === 'tool_use' && <><span style={{ fontWeight: 600, color: C.warn }}>→ {TOOL_LABELS[item.tool || ''] || item.tool}</span><pre style={{ margin: '4px 0 0', fontSize: 11, color: C.muted }}>{JSON.stringify(item.input, null, 2)}</pre></>}
-              {item.role === 'tool_result' && <><span style={{ fontWeight: 600, color: C.success }}>← Result</span><pre style={{ margin: '4px 0 0', fontSize: 11, color: C.muted, maxHeight: 120, overflowY: 'auto' }}>{typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2)}</pre></>}
-              {item.role === 'text' && <span style={{ color: C.text, whiteSpace: 'pre-wrap' }}>{item.text}</span>}
-            </div>
-          ))}
+      {/* Trace — vertical timeline with connector line */}
+      {(trace.length > 0 || running) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 11, color: C.muted, letterSpacing: '0.06em', marginBottom: 6 }}>
+            REASONING TRACE {running && <span style={{ color: C.accent }}>· live</span>}
+          </div>
+          <div style={{ position: 'relative', paddingLeft: 22 }}>
+            {/* Connector line running through the dots */}
+            <div style={{
+              position: 'absolute', left: 9, top: 8, bottom: 8, width: 2,
+              backgroundColor: C.border,
+            }} />
+            {trace.map((item, i) => {
+              const isLast = i === trace.length - 1;
+              const colors = (() => {
+                if (item.role === 'tool_use') return { dot: '#D97706', bg: '#FFFBEB', border: '#FDE68A' };
+                if (item.role === 'tool_result') return { dot: '#059669', bg: '#F0FDF4', border: '#86EFAC' };
+                return { dot: C.muted, bg: C.card, border: C.border };
+              })();
+              return (
+                <div key={i} style={{ position: 'relative', marginBottom: 8 }}>
+                  {/* Dot on the connector line */}
+                  <div style={{
+                    position: 'absolute', left: -22, top: 8, width: 12, height: 12,
+                    borderRadius: '50%', backgroundColor: colors.dot,
+                    boxShadow: `0 0 0 3px ${C.bg}`,
+                    transition: 'background-color 200ms ease',
+                  }} />
+                  {/* Pulse on the latest dot while still streaming */}
+                  {isLast && running && (
+                    <div className="status-dot-live" style={{
+                      position: 'absolute', left: -22, top: 8, width: 12, height: 12,
+                      borderRadius: '50%', backgroundColor: colors.dot, opacity: 0.4,
+                    }} />
+                  )}
+                  <div style={{
+                    padding: '8px 12px', fontSize: 12,
+                    backgroundColor: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 4,
+                  }}>
+                    {item.role === 'tool_use' && (
+                      <>
+                        <span style={{ fontWeight: 600, color: '#B45309' }}>
+                          → {TOOL_LABELS[item.tool || ''] || item.tool || 'tool'}
+                        </span>
+                        <pre style={{ margin: '4px 0 0', fontSize: 11, color: C.muted, maxHeight: 200, overflow: 'auto' }}>
+                          {item.input === undefined ? '…resolving args…' : JSON.stringify(item.input, null, 2)}
+                        </pre>
+                      </>
+                    )}
+                    {item.role === 'tool_result' && (
+                      <>
+                        <span style={{ fontWeight: 600, color: '#047857' }}>
+                          ← {TOOL_LABELS[item.tool || ''] || item.tool || 'result'}
+                        </span>
+                        <pre style={{ margin: '4px 0 0', fontSize: 11, color: C.muted, maxHeight: 160, overflow: 'auto' }}>
+                          {typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2)}
+                        </pre>
+                      </>
+                    )}
+                    {item.role === 'text' && (
+                      <span style={{ color: C.text, whiteSpace: 'pre-wrap' }}>{item.text}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={traceEndRef} />
+          </div>
         </div>
       )}
 
