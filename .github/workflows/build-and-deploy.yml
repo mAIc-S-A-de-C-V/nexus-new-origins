@@ -235,31 +235,37 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
           provenance: false
+          # All VITE_*_URL build args go through the Caddy proxy at
+          # https://${APP_DOMAIN}/api/<slug>. Caddy strips the /api/<slug>/
+          # prefix before forwarding so backends keep mounting at root.
+          # APP_DOMAIN must be set as a repo secret (e.g. "app.maic.ai");
+          # if it's empty the URLs become https:///… and the build will
+          # produce a frontend that can't reach anything — fail loudly.
           build-args: |
-            VITE_CONNECTOR_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8001
-            VITE_PIPELINE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8002
-            VITE_INFERENCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8003
-            VITE_ONTOLOGY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8004
-            VITE_EVENT_LOG_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8005
-            VITE_AUDIT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8006
-            VITE_CORRELATION_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8008
-            VITE_PROCESS_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8009
-            VITE_ALERT_ENGINE_URL=http://${{ secrets.EC2_HOST }}:8010
-            VITE_AUTH_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8011
-            VITE_LOGIC_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8012
-            VITE_AGENT_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8013
-            VITE_UTILITY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8014
-            VITE_ANALYTICS_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8015
-            VITE_EVAL_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8016
-            VITE_LINEAGE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8017
-            VITE_SEARCH_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8018
-            VITE_DATA_QUALITY_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8019
-            VITE_COLLABORATION_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8020
-            VITE_API_GATEWAY_URL=http://${{ secrets.EC2_HOST }}:8021
-            VITE_ADMIN_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8022
-            VITE_PROJECT_MGMT_URL=http://${{ secrets.EC2_HOST }}:9000
-            VITE_FINANCE_SERVICE_URL=http://${{ secrets.EC2_HOST }}:9001
-            VITE_KERNEL_SERVICE_URL=http://${{ secrets.EC2_HOST }}:8024
+            VITE_CONNECTOR_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/connector
+            VITE_PIPELINE_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/pipeline
+            VITE_INFERENCE_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/inference
+            VITE_ONTOLOGY_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/ontology
+            VITE_EVENT_LOG_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/event-log
+            VITE_AUDIT_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/audit
+            VITE_CORRELATION_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/correlation
+            VITE_PROCESS_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/process
+            VITE_ALERT_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/alert
+            VITE_AUTH_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/auth
+            VITE_LOGIC_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/logic
+            VITE_AGENT_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/agent
+            VITE_UTILITY_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/utility
+            VITE_ANALYTICS_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/analytics
+            VITE_EVAL_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/eval
+            VITE_LINEAGE_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/lineage
+            VITE_SEARCH_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/search
+            VITE_DATA_QUALITY_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/data-quality
+            VITE_COLLABORATION_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/collaboration
+            VITE_API_GATEWAY_URL=https://${{ secrets.APP_DOMAIN }}/api/gateway
+            VITE_ADMIN_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/admin
+            VITE_PROJECT_MGMT_URL=https://${{ secrets.APP_DOMAIN }}/api/project
+            VITE_FINANCE_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/finance
+            VITE_KERNEL_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/kernel
 
   # ── Deploy: pull on EC2, no building, no disk pressure ──────────────────
   deploy:
@@ -313,8 +319,24 @@ jobs:
             export IMAGE_TAG="sha-$(echo "$IMAGE_TAG" | sed 's/^sha-//' | cut -c1-7)"
             echo "Deploying IMAGE_TAG=$IMAGE_TAG"
 
-            # Runtime .env (build-time URLs already baked into the frontend image)
-            printf 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}\nADMIN_SEED_PASSWORD=${{ secrets.ADMIN_SEED_PASSWORD }}\nALLOWED_ORIGIN_EC2=http://${{ secrets.EC2_HOST }}:3000\nIMAGE_TAG='"$IMAGE_TAG"'\n' > .env
+            # Runtime .env. VITE_*_URL is baked into the frontend image at
+            # build time so no need to repeat here. We DO need:
+            #   DOMAIN  → Caddy uses this to claim the Let's Encrypt cert
+            #   ALLOWED_ORIGIN_EC2 → backend CORS allowlist (must include
+            #                        the HTTPS host AND the IP-based dev URL
+            #                        so internal scripts hitting the IP still
+            #                        pass CORS)
+            # APP_DOMAIN must be set as a repo secret (e.g. "app.maic.ai").
+            # The previous version of this step wrote a 4-line .env and
+            # silently dropped DOMAIN on every deploy, which caused Caddy to
+            # fall back to issuing certs for "localhost" on each push.
+            {
+              echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}"
+              echo "ADMIN_SEED_PASSWORD=${{ secrets.ADMIN_SEED_PASSWORD }}"
+              echo "DOMAIN=${{ secrets.APP_DOMAIN }}"
+              echo "ALLOWED_ORIGIN_EC2=https://${{ secrets.APP_DOMAIN }},http://${{ secrets.EC2_HOST }}:3000"
+              echo "IMAGE_TAG=$IMAGE_TAG"
+            } > .env
 
             # Authenticate to GHCR. Prefers GHCR_PULL_TOKEN (read-only PAT,
             # principle of least privilege on the EC2 box). Falls back to
