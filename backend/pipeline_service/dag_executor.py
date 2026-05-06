@@ -1637,28 +1637,42 @@ def _map(node, records_in: list[dict]) -> list[dict]:
             except Exception:
                 mappings_raw = None
     if isinstance(mappings_raw, dict) and mappings_raw:
+        # Default behavior: rename listed fields, KEEP unmapped fields.
+        # The previous "only listed fields are kept" semantics was a footgun:
+        # users would set up a few renames and silently lose the rest of the
+        # record. Set `dropUnmapped: true` (or `drop_unmapped`) on the node
+        # config to opt back into projection-style mapping.
+        drop_unmapped = bool(cfg.get("dropUnmapped") or cfg.get("drop_unmapped"))
         result = []
         for rec in records_in:
-            new_rec: dict = {}
+            # Start with a shallow copy of the input so unmapped fields flow
+            # through untouched, then strip the source keys that get renamed
+            # so we don't end up with both `PR Number` and `pr_number`.
+            new_rec: dict = {} if drop_unmapped else dict(rec)
             for src_path, tgt_spec in mappings_raw.items():
-                # Normalise to a list of specs so we handle arrays uniformly
                 specs = tgt_spec if isinstance(tgt_spec, list) else [tgt_spec]
                 for spec in specs:
                     if isinstance(spec, str):
                         val = _get_nested(rec, src_path)
                         if val is not None:
                             new_rec[spec] = val
+                            # Drop the source key (top-level only — nested
+                            # accessors like "address.city" leave the parent
+                            # alone since the parent may host other fields).
+                            if not drop_unmapped and "." not in src_path:
+                                new_rec.pop(src_path, None)
                     elif isinstance(spec, dict):
                         tgt_field = spec.get("target") or spec.get("targetField")
                         transform = spec.get("transform") or spec.get("transform_type", "")
                         t_args = spec.get("args") or {}
                         if not tgt_field:
                             continue
-                        # Build a throwaway record so _apply_transform can act on it
                         tmp = dict(rec)
                         tmp = _apply_transform(tmp, src_path, tgt_field, transform, t_args)
                         if tmp.get(tgt_field) is not None:
                             new_rec[tgt_field] = tmp[tgt_field]
+                            if not drop_unmapped and "." not in src_path:
+                                new_rec.pop(src_path, None)
             result.append(new_rec)
         return result
 
@@ -1879,9 +1893,20 @@ def _cast(node, records_in: list[dict]) -> list[dict]:
 
 
 def _flatten(node, records_in: list[dict]) -> list[dict]:
-    """Explode an array field — one row per array item."""
+    """Explode an array field — one row per array item.
+
+    Reads the field name from any of `arrayField` / `array_field` / `path` —
+    the UI's "Nested Path" input writes `path`, while the assistant agent
+    and the docs use `arrayField`. Accepting both keeps existing pipelines
+    working regardless of how they were constructed.
+    """
     cfg = node.config or {}
-    array_field = cfg.get("arrayField") or cfg.get("array_field", "")
+    array_field = (
+        cfg.get("arrayField")
+        or cfg.get("array_field")
+        or cfg.get("path")
+        or ""
+    )
     if not array_field:
         return records_in
     result = []
