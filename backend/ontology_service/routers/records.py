@@ -430,20 +430,22 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             cap = agg.max_gap_seconds if agg.max_gap_seconds is not None else 600
             cap = max(0, min(int(cap), 86400))
             runtime_cte_parts.append((i, status_expr, ts_safe, cap))
-            # Only count a row's delta when BOTH the row and its successor are
-            # status>=1 (machine running). When the sensor goes silent the
-            # next event is either missing (NULL → predicate fails) or
-            # status=0 (stopped → predicate fails), so the silent period
-            # doesn't get booked as runtime. The LEAST() further caps the
-            # per-row delta so even when both endpoints are status=1, a brief
-            # network blip doesn't inflate the total.
+            # Count the delta from any running event to its successor, capped
+            # at `cap` so a sensor that goes silent for hours doesn't book the
+            # entire silence as runtime. We deliberately do NOT require the
+            # next event to also be status>=1 — a status=1 → status=0
+            # transition is precisely the "machine ran from A until B" case
+            # (B is the moment it stopped), and dropping that interval
+            # silently zeros out legitimate runtime. Verified against Grafana
+            # ground-truth: requiring next_status>=1 made 05/03 read 0.000h
+            # when the sensor genuinely ran for ~36 minutes that day.
             if cap > 0:
                 delta_expr = f"LEAST(_rt_delta_{i}, {cap})"
             else:
                 delta_expr = f"_rt_delta_{i}"
             select_parts.append(
                 f"COALESCE(SUM(CASE "
-                f"WHEN _rt_status_{i} >= 1 AND _rt_next_status_{i} >= 1 "
+                f"WHEN _rt_status_{i} >= 1 "
                 f"THEN {delta_expr} ELSE 0 END), 0) AS {alias}"
             )
         elif agg.method == "count":
@@ -638,16 +640,6 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                 f"EXTRACT(EPOCH FROM ("
                 f"LEAD({ts_safe}) OVER (PARTITION BY {partition_expr} ORDER BY {ts_safe}) "
                 f"- {ts_safe})) AS _rt_delta_{idx}"
-            )
-            # Forward-fill of the status field: if the NEXT event in the
-            # same sensor's stream is also status>=1, we know the machine
-            # was running across the gap (subject to the LEAST() cap above).
-            # NULL when this is the last event in its partition — the SUM
-            # predicate `_rt_next_status_i >= 1` rejects NULL, so the final
-            # event's delta (which is also NULL anyway) doesn't contribute.
-            cte_extra_cols.append(
-                f"LEAD({status_expr}) OVER (PARTITION BY {partition_expr} ORDER BY {ts_safe}) "
-                f"AS _rt_next_status_{idx}"
             )
         cte_cols_sql = ", ".join(cte_extra_cols)
 
