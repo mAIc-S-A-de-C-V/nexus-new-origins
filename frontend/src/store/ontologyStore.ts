@@ -25,15 +25,27 @@ function snakeToCamel(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-function camelToSnake(obj: Record<string, unknown>): Record<string, unknown> {
+// Same opaque-keys pattern as pipelineStore.camelToSnake — see the comment
+// there. Object values under these keys are user-defined data with arbitrary
+// keys; recursing transforms the keys into garbage.
+const OPAQUE_KEYS = new Set([
+  'config', 'mappings', 'casts', 'headers', 'queryParams', 'query_params',
+  'transforms', 'rules', 'enrichments', 'fieldMappings', 'field_mappings',
+  'context', 'attributes', 'metadata', 'meta', 'settings', 'data',
+]);
+
+function camelToSnake(obj: Record<string, unknown>, parentKey: string = ''): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
     const snake = k.replace(/([A-Z])/g, (c) => `_${c.toLowerCase()}`);
+    const opaque = OPAQUE_KEYS.has(k) || OPAQUE_KEYS.has(snake);
     if (v && typeof v === 'object' && !Array.isArray(v)) {
-      out[snake] = camelToSnake(v as Record<string, unknown>);
+      out[snake] = opaque ? v : camelToSnake(v as Record<string, unknown>, snake);
     } else if (Array.isArray(v)) {
       out[snake] = v.map((item) =>
-        item && typeof item === 'object' ? camelToSnake(item as Record<string, unknown>) : item
+        item && typeof item === 'object' && !opaque
+          ? camelToSnake(item as Record<string, unknown>, snake)
+          : item
       );
     } else {
       out[snake] = v;

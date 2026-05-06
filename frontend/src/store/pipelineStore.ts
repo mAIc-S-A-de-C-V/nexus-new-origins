@@ -39,15 +39,32 @@ function snakeToCamel(obj: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-function camelToSnake(obj: Record<string, unknown>): Record<string, unknown> {
+// Keys whose VALUES are user-defined dicts (arbitrary keys like Excel column
+// names with spaces / slashes / capitals) — recursing into them would
+// camelToSnake the user's data and break downstream lookups. e.g. a user-typed
+// MAP mapping `"PR Number": "pr_number"` would become `"_p_r _number": "pr_number"`,
+// the source key no longer matches anything in the records, and zero renames
+// happen. The backend's dual-key reads (`cfg.get("connectorId") or cfg.get("connector_id")`)
+// handle the camelCase fallback at the API layer, so leaving these objects
+// untransformed is safe.
+const OPAQUE_KEYS = new Set([
+  'config', 'mappings', 'casts', 'headers', 'queryParams', 'query_params',
+  'transforms', 'rules', 'enrichments', 'fieldMappings', 'field_mappings',
+  'context', 'attributes', 'metadata', 'meta',
+]);
+
+function camelToSnake(obj: Record<string, unknown>, parentKey: string = ''): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
     const snake = k.replace(/([A-Z])/g, (c) => `_${c.toLowerCase()}`);
+    const opaque = OPAQUE_KEYS.has(k) || OPAQUE_KEYS.has(snake);
     if (v && typeof v === 'object' && !Array.isArray(v)) {
-      out[snake] = camelToSnake(v as Record<string, unknown>);
+      out[snake] = opaque ? v : camelToSnake(v as Record<string, unknown>, snake);
     } else if (Array.isArray(v)) {
       out[snake] = v.map((item) =>
-        item && typeof item === 'object' ? camelToSnake(item as Record<string, unknown>) : item
+        item && typeof item === 'object' && !opaque
+          ? camelToSnake(item as Record<string, unknown>, snake)
+          : item
       );
     } else {
       out[snake] = v;
