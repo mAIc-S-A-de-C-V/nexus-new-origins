@@ -1775,28 +1775,85 @@ def _cast(node, records_in: list[dict]) -> list[dict]:
     end up rendered as [object Object] in the UI. When casting a dict or
     list to string we use json.dumps so the result is valid JSON, not the
     Python repr.
+
+    Accepted `casts` shapes (forgiving — the documented form is the list,
+    but we accept the dict form too because it's a common mistake):
+        list:     [{"field":"x","toType":"integer"}, ...]
+        dict:     {"x": "integer", "y": "datetime", ...}    (auto-converted)
+        string:   JSON of either of the above
     """
     import json as _json
     cfg = node.config or {}
-    casts: list[dict] = cfg.get("casts") or []
+    raw_casts = cfg.get("casts")
+
+    if isinstance(raw_casts, str):
+        try:
+            raw_casts = _json.loads(raw_casts)
+        except (TypeError, _json.JSONDecodeError):
+            return records_in
+
+    if isinstance(raw_casts, dict):
+        # User wrote {"field": "type", ...} instead of [{"field":..., "toType":...}, ...]
+        # Both are reasonable; convert the friendlier shape to the canonical one.
+        casts: list[dict] = [
+            {"field": str(k), "toType": str(v)}
+            for k, v in raw_casts.items()
+            if k
+        ]
+    elif isinstance(raw_casts, list):
+        casts = [c for c in raw_casts if isinstance(c, dict)]
+    else:
+        casts = []
+
     if not casts:
         return records_in
+
+    # Type aliases — short forms users naturally try, mapped to canonical names.
+    _ALIAS = {
+        "int": "integer", "integer": "integer", "long": "integer", "number": "float",
+        "float": "float", "double": "float", "decimal": "float",
+        "str": "string", "string": "string", "text": "string",
+        "bool": "boolean", "boolean": "boolean",
+        "date": "datetime", "datetime": "datetime", "timestamp": "datetime",
+    }
 
     def _coerce(value, to_type: str):
         if value is None:
             return value
-        if to_type == "string":
+        canonical = _ALIAS.get(str(to_type).strip().lower(), str(to_type).strip().lower())
+        if canonical == "string":
             if isinstance(value, (dict, list)):
                 return _json.dumps(value, ensure_ascii=False, default=str)
             if isinstance(value, str):
                 return value
             return str(value)
-        if to_type == "integer":
-            return int(value)
-        if to_type == "float":
+        if canonical == "integer":
+            if isinstance(value, str) and value.strip() == "":
+                return None
+            return int(float(value)) if isinstance(value, str) else int(value)
+        if canonical == "float":
+            if isinstance(value, str) and value.strip() == "":
+                return None
             return float(value)
-        if to_type == "boolean":
+        if canonical == "boolean":
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "y", "on")
             return bool(value)
+        if canonical == "datetime":
+            # openpyxl already hands us ISO strings; values from elsewhere
+            # may be epoch ints/floats. Don't mangle already-ISO strings;
+            # convert epoch numbers to ISO; pass other types through.
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (int, float)):
+                from datetime import datetime as _dt, timezone as _tz
+                # Heuristic: > 1e10 looks like ms epoch, smaller is seconds
+                seconds = value / 1000.0 if value > 1e10 else float(value)
+                try:
+                    return _dt.fromtimestamp(seconds, tz=_tz.utc).isoformat()
+                except (ValueError, OSError):
+                    return str(value)
+            return value
         return value
 
     result = []
