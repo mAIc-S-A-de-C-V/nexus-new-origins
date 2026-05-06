@@ -15,7 +15,7 @@ const AUTH_TYPES: AuthType[] = ['Bearer', 'ApiKey', 'OAuth2', 'Basic', 'None'];
 const NEEDS_URL = new Set([
   'REST_API', 'GRAPHQL_API', 'WEBSOCKET', 'SAP_ERP', 'HUBSPOT',
   'SALESFORCE', 'RELATIONAL_DB', 'GOOGLE_SHEETS', 'KAFKA',
-  'WEBHOOK', 'MONGODB', 'DATA_WAREHOUSE',
+  'WEBHOOK', 'MONGODB', 'DATA_WAREHOUSE', 'GRAFANA_INFLUX',
   // FIREFLIES and GITHUB use fixed URLs — pre-filled on the backend
 ]);
 
@@ -25,6 +25,7 @@ const DEFAULT_AUTH: Record<string, AuthType> = {
   WEBSOCKET: 'Bearer',
   SAP_ERP: 'Basic',
   HUBSPOT: 'Bearer',
+  GRAFANA_INFLUX: 'Bearer',
   SALESFORCE: 'OAuth2',
   RELATIONAL_DB: 'Basic',
   FILE_UPLOAD: 'None',
@@ -44,6 +45,7 @@ const URL_PLACEHOLDER: Record<string, string> = {
   WEBSOCKET: 'wss://stream.example.com',
   SAP_ERP: 'https://sap-host:8000',
   HUBSPOT: 'https://api.hubapi.com',
+  GRAFANA_INFLUX: 'https://grafana.example.com:3003',
   SALESFORCE: 'https://yourorg.my.salesforce.com',
   RELATIONAL_DB: 'postgresql://host:5432/dbname',
   GOOGLE_SHEETS: 'https://sheets.googleapis.com/v4/spreadsheets/SHEET_ID',
@@ -183,6 +185,13 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
   const [githubOwner, setGithubOwner] = useState('');
   const [githubRepo, setGithubRepo] = useState('');
   const [githubOrg, setGithubOrg] = useState('');
+  // Grafana / InfluxDB scope — required for the SOURCE node to build a Flux query.
+  const [grafanaDatasourceUid, setGrafanaDatasourceUid] = useState('');
+  const [grafanaBucket, setGrafanaBucket] = useState('');
+  const [grafanaMeasurement, setGrafanaMeasurement] = useState('alldevices');
+  const [grafanaField, setGrafanaField] = useState('running');
+  const [grafanaDevices, setGrafanaDevices] = useState('');
+  const [grafanaTlsSkipVerify, setGrafanaTlsSkipVerify] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [isPrivate, setIsPrivate] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -230,6 +239,14 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
         if (githubOwner.trim()) extraConfig.owner = githubOwner.trim();
         if (githubRepo.trim()) extraConfig.repo = githubRepo.trim();
         if (githubOrg.trim()) extraConfig.org = githubOrg.trim();
+      }
+      if (connectorType.type === 'GRAFANA_INFLUX') {
+        if (grafanaDatasourceUid.trim()) extraConfig.datasource_uid = grafanaDatasourceUid.trim();
+        if (grafanaBucket.trim()) extraConfig.bucket = grafanaBucket.trim();
+        if (grafanaMeasurement.trim()) extraConfig.measurement = grafanaMeasurement.trim();
+        if (grafanaField.trim()) extraConfig.field = grafanaField.trim();
+        if (grafanaDevices.trim()) extraConfig.devices = grafanaDevices.trim();
+        if (grafanaTlsSkipVerify) extraConfig.tls_skip_verify = 'true';
       }
 
       await addConnector({
@@ -492,6 +509,58 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
                 <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px', marginLeft: 4 }}>/repos/&#123;owner&#125;/&#123;repo&#125;/commits</code>,
                 <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px', marginLeft: 4 }}>/repos/&#123;owner&#125;/&#123;repo&#125;/pulls?state=all</code>,
                 <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px', marginLeft: 4 }}>/orgs/&#123;org&#125;/members</code>.
+              </div>
+            </div>
+          )}
+
+          {connectorType.type === 'GRAFANA_INFLUX' && (
+            <div style={fieldStyle}>
+              <label style={labelStyle}>InfluxDB Scope</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <input
+                  style={inputStyle}
+                  value={grafanaDatasourceUid}
+                  onChange={(e) => setGrafanaDatasourceUid(e.target.value)}
+                  placeholder="datasource UID (e.g. efj5xtufyr85cd)"
+                />
+                <input
+                  style={inputStyle}
+                  value={grafanaBucket}
+                  onChange={(e) => setGrafanaBucket(e.target.value)}
+                  placeholder="bucket (e.g. bucket01)"
+                />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+                <input
+                  style={inputStyle}
+                  value={grafanaMeasurement}
+                  onChange={(e) => setGrafanaMeasurement(e.target.value)}
+                  placeholder="measurement (default: alldevices)"
+                />
+                <input
+                  style={inputStyle}
+                  value={grafanaField}
+                  onChange={(e) => setGrafanaField(e.target.value)}
+                  placeholder="field (default: running)"
+                />
+              </div>
+              <input
+                style={{ ...inputStyle, marginTop: 8 }}
+                value={grafanaDevices}
+                onChange={(e) => setGrafanaDevices(e.target.value)}
+                placeholder="devices (CSV, optional — empty = all)"
+              />
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12, color: '#374151', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={grafanaTlsSkipVerify}
+                  onChange={(e) => setGrafanaTlsSkipVerify(e.target.checked)}
+                  style={{ accentColor: '#2563EB' }}
+                />
+                Skip TLS verification (self-signed cert)
+              </label>
+              <div style={{ fontSize: '11px', color: '#64748B', marginTop: '6px' }}>
+                Find the <strong>datasource UID</strong> in Grafana → Connections → Data sources → your InfluxDB → Settings (top-right URL or `uid` field). The token below should be a Grafana <strong>service-account</strong> token with Viewer role.
               </div>
             </div>
           )}
