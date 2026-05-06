@@ -1651,16 +1651,20 @@ def _map(node, records_in: list[dict]) -> list[dict]:
             new_rec: dict = {} if drop_unmapped else dict(rec)
             for src_path, tgt_spec in mappings_raw.items():
                 specs = tgt_spec if isinstance(tgt_spec, list) else [tgt_spec]
+                # Pop the source key whenever a rename is configured for it
+                # — even if the value is None / empty. Otherwise the OT ends
+                # up with both `Task L` AND `task_l` columns side-by-side
+                # whenever some rows had an empty value for the source.
+                if not drop_unmapped and "." not in src_path and src_path in new_rec:
+                    src_was_present = True
+                else:
+                    src_was_present = False
+
                 for spec in specs:
                     if isinstance(spec, str):
                         val = _get_nested(rec, src_path)
                         if val is not None:
                             new_rec[spec] = val
-                            # Drop the source key (top-level only — nested
-                            # accessors like "address.city" leave the parent
-                            # alone since the parent may host other fields).
-                            if not drop_unmapped and "." not in src_path:
-                                new_rec.pop(src_path, None)
                     elif isinstance(spec, dict):
                         tgt_field = spec.get("target") or spec.get("targetField")
                         transform = spec.get("transform") or spec.get("transform_type", "")
@@ -1671,8 +1675,12 @@ def _map(node, records_in: list[dict]) -> list[dict]:
                         tmp = _apply_transform(tmp, src_path, tgt_field, transform, t_args)
                         if tmp.get(tgt_field) is not None:
                             new_rec[tgt_field] = tmp[tgt_field]
-                            if not drop_unmapped and "." not in src_path:
-                                new_rec.pop(src_path, None)
+
+                # Always drop the source key once we've attempted the rename
+                # (regardless of whether the value was non-null), so the
+                # output schema doesn't carry both forms.
+                if src_was_present:
+                    new_rec.pop(src_path, None)
             result.append(new_rec)
         return result
 
