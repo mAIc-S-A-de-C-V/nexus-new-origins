@@ -116,6 +116,8 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
             return await _whatsapp_schema(cfg)
         if connector_type == "EMAIL_INBOX":
             return await _email_schema(creds, cfg)
+        if connector_type == "GRAFANA_INFLUX":
+            return await _grafana_influx_schema(base_url, creds, cfg)
         if connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return {}, [], "Schema preview not supported for database connectors — connect directly via your DB client."
         return {}, [], f"Schema fetch not yet supported for {connector_type}."
@@ -364,6 +366,8 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
         elif connector_type == "EMAIL_INBOX":
             from email_connector import imap_test
             return await imap_test(creds, cfg)
+        elif connector_type == "GRAFANA_INFLUX":
+            ok, msg = await _grafana_influx_test(base_url, creds, cfg)
         elif connector_type == "REST_API":
             ok, msg = await _rest_api_test(base_url, creds, cfg, db=db)
         else:
@@ -954,3 +958,168 @@ async def _email_schema(creds: dict, cfg: dict) -> tuple[dict, list, Optional[st
     except Exception as e:
         return {}, [], f"IMAP fetch failed: {e}"
     return schema_definition(), sample, None
+
+
+# ── Grafana / InfluxDB ──────────────────────────────────────────────────
+
+def _grafana_auth_header(creds: dict) -> Optional[str]:
+    """Either a Bearer token (preferred) or basic-auth fallback. Returns None
+    if no usable credential is configured.
+    """
+    import base64 as _b64
+    token = creds.get("api_key") or creds.get("token") or ""
+    if token:
+        return f"Bearer {token}"
+    user = creds.get("username") or creds.get("user") or ""
+    pwd = creds.get("password") or ""
+    if user and pwd:
+        return "Basic " + _b64.b64encode(f"{user}:{pwd}".encode()).decode()
+    return None
+
+
+def _grafana_build_flux(*, bucket: str, measurement: str, field: str,
+                        devices: list[str] | None, start_iso: str, stop_iso: str,
+                        every: str, aggregate_fn: str = "mean") -> str:
+    parts = [
+        f'from(bucket: "{bucket}")',
+        f'  |> range(start: time(v: "{start_iso}"), stop: time(v: "{stop_iso}"))',
+        f'  |> filter(fn: (r) => r["_measurement"] == "{measurement}")',
+        f'  |> filter(fn: (r) => r["_field"] == "{field}")',
+    ]
+    if devices:
+        # Quote each, build a Flux array, narrow with contains() — one round-trip.
+        device_arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
+        parts.append(
+            f'  |> filter(fn: (r) => contains(value: r["device"], set: {device_arr}))'
+        )
+    parts.append(
+        f'  |> aggregateWindow(every: {every}, fn: {aggregate_fn}, createEmpty: false)'
+    )
+    parts.append('  |> yield(name: "mean")')
+    return "\n".join(parts)
+
+
+async def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_header: str,
+                          insecure: bool = False, timeout: float = 60.0) -> dict:
+    """Hit /api/ds/query with a Flux query. Returns the raw JSON payload."""
+    body = {
+        "queries": [{
+            "refId": "A",
+            "datasource": {"uid": ds_uid, "type": "influxdb"},
+            "query": flux,
+        }],
+    }
+    headers = {"Content-Type": "application/json", "Authorization": auth_header}
+    async with httpx.AsyncClient(timeout=timeout, verify=not insecure) as client:
+        r = await client.post(f"{grafana_url}/api/ds/query", headers=headers, json=body)
+        if r.status_code >= 400:
+            raise RuntimeError(f"grafana query {r.status_code}: {r.text[:300]}")
+        return r.json()
+
+
+def _grafana_frames_to_records(payload: dict, *, field_name: str) -> list[dict]:
+    """Reshape Grafana's frame JSON into [{id, time, sensor_name, device, <field>}]."""
+    from datetime import datetime, timezone
+    out: list[dict] = []
+    for ref in payload.get("results", {}).values():
+        for frame in ref.get("frames", []) or []:
+            schema = frame.get("schema", {})
+            fields = schema.get("fields", []) or []
+            if len(fields) < 2:
+                continue
+            cols = frame.get("data", {}).get("values", []) or []
+            if len(cols) < 2 or not cols[0]:
+                continue
+            device = (fields[1].get("labels") or {}).get("device", "")
+            for ts_ms, v in zip(cols[0], cols[1]):
+                if ts_ms is None or v is None:
+                    continue
+                ts_iso = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
+                out.append({
+                    "id": f"{device}:{ts_iso}",
+                    "time": ts_iso,
+                    "sensor_name": device,
+                    "device": device,
+                    field_name: float(v),
+                })
+    return out
+
+
+async def _grafana_influx_test(base_url: str, creds: dict, cfg: dict) -> tuple[bool, str]:
+    """Verify the API key works and the configured datasource is reachable."""
+    if not base_url:
+        return False, "Base URL is required (e.g. https://grafana.example.com:3003)"
+    auth = _grafana_auth_header(creds)
+    if not auth:
+        return False, "Provide a Grafana API key (recommended) or username + password"
+    ds_uid = cfg.get("datasource_uid") or creds.get("datasource_uid") or ""
+    if not ds_uid:
+        return False, "datasource_uid is required (find under Grafana → Connections → Data sources)"
+    insecure = bool(cfg.get("tls_skip_verify") or creds.get("tls_skip_verify"))
+    base = base_url.rstrip("/")
+    headers = {"Authorization": auth}
+    async with httpx.AsyncClient(timeout=15.0, verify=not insecure) as client:
+        try:
+            r = await client.get(f"{base}/api/datasources/uid/{ds_uid}", headers=headers)
+        except Exception as e:
+            return False, f"Could not reach {base}: {e}"
+        if r.status_code == 401:
+            return False, "Auth rejected — token expired or wrong, or basic-auth is disabled in Grafana"
+        if r.status_code == 404:
+            return False, f"Datasource {ds_uid} not found on this Grafana instance"
+        if r.status_code >= 400:
+            return False, f"HTTP {r.status_code}: {r.text[:200]}"
+        ds = r.json() or {}
+        return True, f"Connected — datasource {ds.get('name', ds_uid)!r} ({ds.get('type', 'unknown')})"
+
+
+async def _grafana_influx_schema(base_url: str, creds: dict, cfg: dict) -> tuple[dict, list, Optional[str]]:
+    """Schema + small sample (last 30 minutes) for the configured datasource.
+
+    Schema is derived from the user-configured measurement/field list — for
+    the dashboard's `running` field we project (id, time, sensor_name,
+    device, running). Sample uses a -30m / 5m aggregation so the user can
+    eyeball the shape before scheduling.
+    """
+    auth = _grafana_auth_header(creds)
+    if not auth:
+        return {}, [], "Missing Grafana auth (api_key or username/password)"
+    ds_uid = cfg.get("datasource_uid") or creds.get("datasource_uid") or ""
+    if not ds_uid:
+        return {}, [], "datasource_uid is required"
+    bucket = cfg.get("bucket") or creds.get("bucket") or ""
+    measurement = cfg.get("measurement") or "alldevices"
+    field = cfg.get("field") or "running"
+    devices_raw = cfg.get("devices") or ""
+    devices = [d.strip() for d in str(devices_raw).split(",") if d.strip()] or None
+    insecure = bool(cfg.get("tls_skip_verify") or creds.get("tls_skip_verify"))
+    if not bucket:
+        return {}, [], "bucket is required (e.g. bucket01)"
+
+    from datetime import datetime, timedelta, timezone as _tz
+    end = datetime.now(_tz.utc).replace(microsecond=0)
+    start = end - timedelta(minutes=30)
+    flux = _grafana_build_flux(
+        bucket=bucket, measurement=measurement, field=field, devices=devices,
+        start_iso=start.isoformat().replace("+00:00", "Z"),
+        stop_iso=end.isoformat().replace("+00:00", "Z"),
+        every="5m",
+    )
+    try:
+        payload = await _grafana_query(
+            base_url.rstrip("/"), ds_uid, flux, auth_header=auth, insecure=insecure,
+        )
+    except Exception as e:
+        return {}, [], f"grafana query failed: {e}"
+    sample = _grafana_frames_to_records(payload, field_name=field)
+    schema = {
+        "primary_key": "id",
+        "properties": [
+            {"name": "id", "data_type": "string"},
+            {"name": "time", "data_type": "datetime"},
+            {"name": "sensor_name", "data_type": "string"},
+            {"name": "device", "data_type": "string"},
+            {"name": field, "data_type": "number"},
+        ],
+    }
+    return schema, sample[:50], None

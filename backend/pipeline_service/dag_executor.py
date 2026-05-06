@@ -967,6 +967,166 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
                 return rows
 
+            # ── Grafana / InfluxDB connector path ──────────────────────────
+            # Pulls time-series data through Grafana's /api/ds/query proxy.
+            # Each (measurement, field) combination produces one row per
+            # (device, time-bucket). Configuration:
+            #   measurement      InfluxDB measurement (default "alldevices")
+            #   field            field key (e.g. "running", "temp")
+            #   devices          comma-separated device list (empty = all)
+            #   aggregate_every  Flux aggregateWindow size (default "5m")
+            #   aggregate_fn     mean | sum | last | max | min (default mean)
+            #   lookback_minutes used when no incremental watermark
+            if conn_type == "GRAFANA_INFLUX":
+                ds_uid = (
+                    conn_config.get("datasource_uid")
+                    or credentials.get("datasource_uid")
+                    or cfg.get("datasource_uid") or ""
+                )
+                bucket = (
+                    conn_config.get("bucket") or credentials.get("bucket")
+                    or cfg.get("bucket") or ""
+                )
+                measurement = cfg.get("measurement") or conn_config.get("measurement") or "alldevices"
+                field_name = cfg.get("field") or conn_config.get("field") or "running"
+                devices_raw = cfg.get("devices") or conn_config.get("devices") or ""
+                devices = [d.strip() for d in str(devices_raw).split(",") if d.strip()] or None
+                aggregate_every = cfg.get("aggregate_every") or conn_config.get("aggregate_every") or "5m"
+                aggregate_fn = (cfg.get("aggregate_fn") or conn_config.get("aggregate_fn") or "mean").lower()
+                lookback_minutes = int(cfg.get("lookback_minutes") or 60)
+                insecure = bool(conn_config.get("tls_skip_verify") or credentials.get("tls_skip_verify"))
+
+                if not (base_url and ds_uid and bucket):
+                    if audit_extras is not None:
+                        audit_extras["error"] = (
+                            "GRAFANA_INFLUX needs base_url, datasource_uid, and bucket configured "
+                            "on the connector"
+                        )
+                    return []
+
+                # Auth: prefer Grafana API key; fall back to basic auth.
+                import base64 as _b64
+                token = credentials.get("api_key") or credentials.get("token") or ""
+                if token:
+                    auth_header = f"Bearer {token}"
+                elif credentials.get("username") and credentials.get("password"):
+                    auth_header = "Basic " + _b64.b64encode(
+                        f"{credentials['username']}:{credentials['password']}".encode()
+                    ).decode()
+                else:
+                    if audit_extras is not None:
+                        audit_extras["error"] = "GRAFANA_INFLUX needs api_key (Grafana token) in credentials"
+                    return []
+
+                # Incremental — use the last `time` we successfully ingested
+                # as the Flux range start. Falls back to lookback_minutes on
+                # first run.
+                incremental_key = (
+                    cfg.get("incrementalKey") or cfg.get("incremental_key")
+                    or cfg.get("watermark_column") or cfg.get("watermarkColumn") or ""
+                )
+                if not incremental_key and cfg.get("incremental"):
+                    incremental_key = "time"
+                last_watermark: Optional[str] = None
+                if incremental_key:
+                    last_watermark = await _get_last_watermark(pipeline.id)
+
+                from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                end_dt = _dt.now(_tz.utc).replace(microsecond=0)
+                if last_watermark:
+                    try:
+                        start_dt = _dt.fromisoformat(last_watermark.replace("Z", "+00:00"))
+                    except ValueError:
+                        start_dt = end_dt - _td(minutes=lookback_minutes)
+                else:
+                    start_dt = end_dt - _td(minutes=lookback_minutes)
+
+                flux_parts = [
+                    f'from(bucket: "{bucket}")',
+                    f'  |> range(start: time(v: "{start_dt.isoformat().replace("+00:00", "Z")}"), '
+                    f'stop: time(v: "{end_dt.isoformat().replace("+00:00", "Z")}"))',
+                    f'  |> filter(fn: (r) => r["_measurement"] == "{measurement}")',
+                    f'  |> filter(fn: (r) => r["_field"] == "{field_name}")',
+                ]
+                if devices:
+                    arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
+                    flux_parts.append(
+                        f'  |> filter(fn: (r) => contains(value: r["device"], set: {arr}))'
+                    )
+                flux_parts.append(
+                    f'  |> aggregateWindow(every: {aggregate_every}, fn: {aggregate_fn}, createEmpty: false)'
+                )
+                flux_parts.append('  |> yield(name: "mean")')
+                flux = "\n".join(flux_parts)
+
+                gf_url = f"{base_url}/api/ds/query"
+                if audit_extras is not None:
+                    audit_extras["url"] = gf_url
+                    audit_extras["datasource_uid"] = ds_uid
+                    audit_extras["measurement"] = measurement
+                    audit_extras["field"] = field_name
+                    audit_extras["devices"] = devices or []
+                    audit_extras["aggregate_every"] = aggregate_every
+                    audit_extras["aggregate_fn"] = aggregate_fn
+                    audit_extras["range_start"] = start_dt.isoformat()
+                    audit_extras["range_stop"] = end_dt.isoformat()
+                    audit_extras["last_watermark"] = last_watermark
+
+                async with httpx.AsyncClient(timeout=120, verify=not insecure) as gf_client:
+                    gf_resp = await gf_client.post(
+                        gf_url,
+                        headers={"Content-Type": "application/json", "Authorization": auth_header},
+                        json={
+                            "queries": [{
+                                "refId": "A",
+                                "datasource": {"uid": ds_uid, "type": "influxdb"},
+                                "query": flux,
+                            }],
+                        },
+                    )
+                if audit_extras is not None:
+                    audit_extras["http_status"] = gf_resp.status_code
+                if gf_resp.status_code >= 400:
+                    if audit_extras is not None:
+                        audit_extras["response_error"] = gf_resp.text[:500]
+                    return []
+
+                payload = gf_resp.json()
+                # Reshape Grafana frames → [{id, time, sensor_name, device, <field>}]
+                records: list[dict] = []
+                for ref in payload.get("results", {}).values():
+                    for frame in ref.get("frames", []) or []:
+                        fields_meta = frame.get("schema", {}).get("fields", []) or []
+                        cols = frame.get("data", {}).get("values", []) or []
+                        if len(fields_meta) < 2 or len(cols) < 2 or not cols[0]:
+                            continue
+                        device_label = (fields_meta[1].get("labels") or {}).get("device", "")
+                        for ts_ms, v in zip(cols[0], cols[1]):
+                            if ts_ms is None or v is None:
+                                continue
+                            ts_iso = _dt.fromtimestamp(ts_ms / 1000.0, tz=_tz.utc).isoformat()
+                            records.append({
+                                "id": f"{device_label}:{ts_iso}",
+                                "time": ts_iso,
+                                "sensor_name": device_label,
+                                "device": device_label,
+                                field_name: float(v),
+                            })
+
+                if audit_extras is not None:
+                    audit_extras["raw_row_count"] = len(records)
+
+                # Track watermark for next run — uses the latest `time` in the
+                # actual returned rows so partial backfills advance reliably.
+                if incremental_key and records:
+                    times = [r.get(incremental_key) for r in records if r.get(incremental_key)]
+                    if times and audit_extras is not None:
+                        audit_extras["_watermark_value"] = str(max(times))
+
+                if records:
+                    asyncio.create_task(_touch_connector_last_sync(connector_id, pipeline.tenant_id))
+                return records
+
             # Parse last_sync from connector details for template resolution
             raw_last_sync = conn.get("last_sync")
             last_sync_dt = None

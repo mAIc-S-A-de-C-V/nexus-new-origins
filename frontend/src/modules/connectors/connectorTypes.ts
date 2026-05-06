@@ -162,6 +162,14 @@ export const CONNECTOR_TYPES: ConnectorTypeDefinition[] = [
     iconName: 'Mail',
     color: '#0EA5E9',
   },
+  {
+    type: 'GRAFANA_INFLUX',
+    displayName: 'Grafana / InfluxDB',
+    description: 'Pull time-series data from an InfluxDB datasource via Grafana\'s query proxy. Auth uses a Grafana API key (Viewer role is enough). SOURCE nodes specify measurement, field, and an optional device list.',
+    category: 'Stream',
+    iconName: 'Activity',
+    color: '#F46800',
+  },
 ];
 
 export const getConnectorTypeDef = (type: string): ConnectorTypeDefinition | undefined =>
