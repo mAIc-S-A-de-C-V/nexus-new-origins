@@ -67,6 +67,8 @@ services:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-kernel-service:${IMAGE_TAG:-latest}
   whatsapp-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-whatsapp-service:${IMAGE_TAG:-latest}
+  scraping-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-scraping-service:${IMAGE_TAG:-latest}
   project-management-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-project-management-service:${IMAGE_TAG:-latest}
   finance-service:

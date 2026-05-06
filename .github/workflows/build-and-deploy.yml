@@ -165,6 +165,9 @@ jobs:
           - service: whatsapp-service
             context: ./backend/whatsapp_service
             dockerfile: Dockerfile
+          - service: scraping-service
+            context: ./backend
+            dockerfile: scraping_service/Dockerfile
           - service: project-management-service
             context: ./nexus-apps/project-management-service
             dockerfile: Dockerfile
