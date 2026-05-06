@@ -742,6 +742,53 @@ async def execute_tool(
                         "note": "Dry run — no changes written. In production this would create a pending_confirmation proposal.",
                     }
 
+                # Auto-bootstrap: if the action template doesn't exist yet,
+                # create a stub one so the agent can land its memo without
+                # an out-of-band seed step. Default to requires_confirmation
+                # so nothing fires automatically — it always queues for
+                # human approval. Same pattern as LLM_CLASSIFY's pnc_alert
+                # auto-create. Property types are inferred from the proposed
+                # inputs (string/number/array/object); the action's owner can
+                # tighten the schema later via the Ontology UI.
+                check = await client.get(
+                    f"{ONTOLOGY_URL}/actions/{action_name}", headers=headers
+                )
+                if check.status_code == 404:
+                    def _infer_type(v: Any) -> str:
+                        if isinstance(v, bool):
+                            return "boolean"
+                        if isinstance(v, (int, float)):
+                            return "number"
+                        if isinstance(v, list):
+                            return "array"
+                        if isinstance(v, dict):
+                            return "object"
+                        return "string"
+                    inferred_schema = {
+                        str(k): _infer_type(v) for k, v in (inputs or {}).items()
+                    }
+                    create_resp = await client.post(
+                        f"{ONTOLOGY_URL}/actions",
+                        json={
+                            "name": action_name,
+                            "description": (
+                                f"Auto-created by agent {agent_id} on first proposal. "
+                                "Edit description / schema in the Ontology UI."
+                            ),
+                            "requires_confirmation": True,
+                            "enabled": True,
+                            "input_schema": inferred_schema,
+                        },
+                        headers=headers,
+                    )
+                    if not create_resp.is_success and create_resp.status_code != 409:
+                        return {
+                            "error": (
+                                f"action template '{action_name}' did not exist and auto-create "
+                                f"failed: HTTP {create_resp.status_code} {create_resp.text[:200]}"
+                            )
+                        }
+
                 r = await client.post(
                     f"{ONTOLOGY_URL}/actions/{action_name}/execute",
                     json={
