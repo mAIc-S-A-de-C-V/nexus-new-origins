@@ -798,6 +798,9 @@ const ConfigurationTab: React.FC<{
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {connector.type === 'EMAIL_INBOX' && (
+        <EmailInboxConfigSection connector={connector} />
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <FieldGroup label="Base URL">
           <input
@@ -1153,6 +1156,140 @@ const ConfigurationTab: React.FC<{
     </div>
   );
 };
+
+// EMAIL_INBOX-specific config block, rendered at the top of the Configuration
+// tab. Lets the user toggle attachment download + cap on an existing
+// connector without touching the curl. PUTs the config directly with the
+// merged values; we don't share state with the big REST_API config form
+// below because email connectors don't have any of those fields anyway.
+const EmailInboxConfigSection: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
+  const cfg = (connector.config || {}) as Record<string, unknown>;
+  const [defaultFolder, setDefaultFolder] = useState<string>(
+    String(cfg.default_folder || cfg.defaultFolder || 'INBOX'),
+  );
+  const initialInclude = (() => {
+    const v = cfg.include_attachments ?? cfg.includeAttachments;
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'string') return v.toLowerCase() === 'true';
+    return false;  // matches the SOURCE-path fallback
+  })();
+  const [includeAttachments, setIncludeAttachments] = useState<boolean>(initialInclude);
+  const initialMaxMb = (() => {
+    const raw = cfg.max_attachment_bytes ?? cfg.maxAttachmentBytes;
+    const n = parseInt(String(raw || ''), 10);
+    if (!Number.isFinite(n) || n <= 0) return 10;
+    return Math.max(1, Math.round(n / (1024 * 1024)));
+  })();
+  const [maxAttachmentMb, setMaxAttachmentMb] = useState<number>(initialMaxMb);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const onSave = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      const merged = {
+        ...cfg,
+        default_folder: defaultFolder.trim() || 'INBOX',
+        include_attachments: includeAttachments ? 'true' : 'false',
+        max_attachment_bytes: String(Math.max(1, maxAttachmentMb) * 1024 * 1024),
+      };
+      const r = await fetch(`${CONNECTOR_API}/connectors/${connector.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+        body: JSON.stringify({ config: merged }),
+      });
+      if (!r.ok) {
+        const detail = await r.text();
+        throw new Error(`HTTP ${r.status}: ${detail.slice(0, 200)}`);
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const dirty = (
+    defaultFolder !== String(cfg.default_folder || cfg.defaultFolder || 'INBOX')
+    || includeAttachments !== initialInclude
+    || maxAttachmentMb !== initialMaxMb
+  );
+
+  return (
+    <div style={{
+      border: '1px solid #E2E8F0', borderRadius: 8, padding: '14px 16px',
+      backgroundColor: '#F8FAFC', display: 'flex', flexDirection: 'column', gap: 12,
+    }}>
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#0D1117', marginBottom: 2 }}>
+          Mailbox settings
+        </div>
+        <div style={{ fontSize: 11, color: '#64748B' }}>
+          These apply to every pipeline that pulls from this connector unless overridden on a SOURCE node.
+        </div>
+      </div>
+
+      <FieldGroup label="Default folder">
+        <input
+          value={defaultFolder}
+          onChange={(e) => setDefaultFolder(e.target.value)}
+          placeholder="INBOX"
+          style={inputStyle}
+        />
+      </FieldGroup>
+
+      <FieldGroup label="Attachments">
+        <label style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '8px 10px', border: '1px solid #E2E8F0', borderRadius: 6,
+          backgroundColor: '#fff', cursor: 'pointer',
+        }}>
+          <input
+            type="checkbox"
+            checked={includeAttachments}
+            onChange={(e) => setIncludeAttachments(e.target.checked)}
+            style={{ accentColor: '#2563EB' }}
+          />
+          <span style={{ fontSize: 12, color: '#0D1117', flex: 1 }}>
+            Download attachment bytes (required for ATTACHMENT_PARSE downstream)
+          </span>
+        </label>
+        {includeAttachments && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+            <input
+              type="number"
+              value={maxAttachmentMb}
+              min={1}
+              max={100}
+              onChange={(e) => setMaxAttachmentMb(parseInt(e.target.value, 10) || 10)}
+              style={{ ...inputStyle, width: 90, flex: 'none' }}
+            />
+            <span style={{ fontSize: 11, color: '#64748B' }}>
+              MB max per attachment — anything bigger is skipped (still listed in <code>attachment_names</code>, just no payload)
+            </span>
+          </div>
+        )}
+      </FieldGroup>
+
+      {err && (
+        <div style={{ fontSize: 11, color: '#DC2626', padding: '6px 10px', backgroundColor: '#FEF2F2', borderRadius: 4 }}>
+          {err}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant="primary" size="sm" onClick={onSave} disabled={!dirty || saving}>
+          {saving ? 'Saving…' : saved ? 'Saved ✓' : 'Save mailbox settings'}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
 
 const PipelinesTab: React.FC<{
   pipelines: import('../../types/pipeline').Pipeline[];
