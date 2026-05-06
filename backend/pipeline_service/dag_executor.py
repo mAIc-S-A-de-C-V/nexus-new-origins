@@ -988,10 +988,28 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     or cfg.get("bucket") or ""
                 )
                 measurement = cfg.get("measurement") or conn_config.get("measurement") or "alldevices"
-                field_name = cfg.get("field") or conn_config.get("field") or "running"
+                # Multi-field support: prefer `fields` (CSV) on either the
+                # node or the connector; fall back to the legacy single
+                # `field` setting. We pivot all of them into one row per
+                # (device, time) so records carry the same multi-column
+                # shape the device-level ingestion produced.
+                fields_raw = (
+                    cfg.get("fields") or conn_config.get("fields")
+                    or cfg.get("field") or conn_config.get("field")
+                    or "running"
+                )
+                if isinstance(fields_raw, list):
+                    fields_list = [str(f).strip() for f in fields_raw if str(f).strip()]
+                else:
+                    fields_list = [s.strip() for s in str(fields_raw).split(",") if s.strip()]
+                if not fields_list:
+                    fields_list = ["running"]
                 devices_raw = cfg.get("devices") or conn_config.get("devices") or ""
                 devices = [d.strip() for d in str(devices_raw).split(",") if d.strip()] or None
-                aggregate_every = cfg.get("aggregate_every") or conn_config.get("aggregate_every") or "5m"
+                # Empty `aggregate_every` = raw events at native cadence
+                # (matches the original device-level ingestion). Set a value
+                # like "5m" only when downsampling is desirable.
+                aggregate_every = cfg.get("aggregate_every") or conn_config.get("aggregate_every") or ""
                 aggregate_fn = (cfg.get("aggregate_fn") or conn_config.get("aggregate_fn") or "mean").lower()
                 lookback_minutes = int(cfg.get("lookback_minutes") or 60)
                 insecure = bool(conn_config.get("tls_skip_verify") or credentials.get("tls_skip_verify"))
@@ -1046,17 +1064,26 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     f'  |> range(start: time(v: "{start_dt.isoformat().replace("+00:00", "Z")}"), '
                     f'stop: time(v: "{end_dt.isoformat().replace("+00:00", "Z")}"))',
                     f'  |> filter(fn: (r) => r["_measurement"] == "{measurement}")',
-                    f'  |> filter(fn: (r) => r["_field"] == "{field_name}")',
                 ]
+                fields_arr = "[" + ", ".join(f'"{f}"' for f in fields_list) + "]"
+                flux_parts.append(
+                    f'  |> filter(fn: (r) => contains(value: r["_field"], set: {fields_arr}))'
+                )
                 if devices:
                     arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
                     flux_parts.append(
                         f'  |> filter(fn: (r) => contains(value: r["device"], set: {arr}))'
                     )
+                if aggregate_every:
+                    flux_parts.append(
+                        f'  |> aggregateWindow(every: {aggregate_every}, fn: {aggregate_fn}, createEmpty: false)'
+                    )
+                # Pivot folds the multi-field result into one row per (device,
+                # _time) — each requested field becomes its own column.
                 flux_parts.append(
-                    f'  |> aggregateWindow(every: {aggregate_every}, fn: {aggregate_fn}, createEmpty: false)'
+                    '  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")'
                 )
-                flux_parts.append('  |> yield(name: "mean")')
+                flux_parts.append('  |> yield(name: "pivoted")')
                 flux = "\n".join(flux_parts)
 
                 gf_url = f"{base_url}/api/ds/query"
@@ -1081,6 +1108,10 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                                 "refId": "A",
                                 "datasource": {"uid": ds_uid, "type": "influxdb"},
                                 "query": flux,
+                                # Override Grafana's 1001-point safety cap;
+                                # otherwise raw-mode pulls truncate silently
+                                # before reaching the records reshape.
+                                "maxDataPoints": 500_000,
                             }],
                         },
                     )
@@ -1092,7 +1123,8 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     return []
 
                 payload = gf_resp.json()
-                # Reshape Grafana frames → [{id, time, sensor_name, device, <field>}]
+                # Reshape pivoted frames → one record per (device, _time)
+                # carrying every requested field as its own top-level column.
                 records: list[dict] = []
                 for ref in payload.get("results", {}).values():
                     for frame in ref.get("frames", []) or []:
@@ -1100,18 +1132,48 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                         cols = frame.get("data", {}).get("values", []) or []
                         if len(fields_meta) < 2 or len(cols) < 2 or not cols[0]:
                             continue
-                        device_label = (fields_meta[1].get("labels") or {}).get("device", "")
-                        for ts_ms, v in zip(cols[0], cols[1]):
-                            if ts_ms is None or v is None:
+                        # Find the _time column (always 0 in practice, but
+                        # be defensive about column ordering).
+                        time_idx = next(
+                            (i for i, f in enumerate(fields_meta) if f.get("type") == "time"),
+                            0,
+                        )
+                        value_indices = [i for i in range(len(fields_meta)) if i != time_idx]
+                        if not value_indices:
+                            continue
+                        # Device tag lives on the value-typed columns post-pivot.
+                        device_label = ""
+                        for vi in value_indices:
+                            lbl = fields_meta[vi].get("labels") or {}
+                            if lbl.get("device"):
+                                device_label = lbl["device"]
+                                break
+                        n_rows = len(cols[time_idx])
+                        for row_idx in range(n_rows):
+                            ts_ms = cols[time_idx][row_idx]
+                            if ts_ms is None:
                                 continue
                             ts_iso = _dt.fromtimestamp(ts_ms / 1000.0, tz=_tz.utc).isoformat()
-                            records.append({
+                            rec: dict = {
                                 "id": f"{device_label}:{ts_iso}",
                                 "time": ts_iso,
                                 "sensor_name": device_label,
                                 "device": device_label,
-                                field_name: float(v),
-                            })
+                            }
+                            for vi in value_indices:
+                                fname = fields_meta[vi].get("name") or f"col_{vi}"
+                                val = cols[vi][row_idx] if row_idx < len(cols[vi]) else None
+                                if val is None:
+                                    continue
+                                ftype = (fields_meta[vi].get("type") or "").lower()
+                                if ftype == "number":
+                                    try:
+                                        rec[fname] = float(val)
+                                    except (TypeError, ValueError):
+                                        rec[fname] = val
+                                else:
+                                    rec[fname] = val
+                            records.append(rec)
 
                 if audit_extras is not None:
                     audit_extras["raw_row_count"] = len(records)

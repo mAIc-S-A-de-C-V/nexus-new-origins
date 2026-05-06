@@ -57,34 +57,43 @@ def _http_post(url: str, *, data: bytes, headers: dict[str, str], insecure: bool
         return e.code, e.read()
 
 
-def _build_flux(bucket: str, measurement: str, field: str, devices: list[str] | None,
+def _build_flux(bucket: str, measurement: str, fields: list[str], devices: list[str] | None,
                 start_iso: str, stop_iso: str, every: str) -> str:
-    """Build a Flux query for a measurement+field, optionally narrowed to a
-    specific device list. `every` is the aggregateWindow window (e.g. "5m").
+    """Build a Flux query for a measurement and one-or-more fields, optionally
+    narrowed to a device list. `every` empty = raw events; non-empty (e.g.
+    "5m") = aggregateWindow downsample. Pivot folds multi-field results into
+    one row per (device, _time) so each record carries every field as a column.
     """
+    if not fields:
+        raise ValueError("at least one field is required")
     parts = [
         f'from(bucket: "{bucket}")',
         f'  |> range(start: time(v: "{start_iso}"), stop: time(v: "{stop_iso}"))',
         f'  |> filter(fn: (r) => r["_measurement"] == "{measurement}")',
-        f'  |> filter(fn: (r) => r["_field"] == "{field}")',
     ]
+    field_arr = "[" + ", ".join(f'"{f}"' for f in fields) + "]"
+    parts.append(f'  |> filter(fn: (r) => contains(value: r["_field"], set: {field_arr}))')
     if devices:
-        # OR-chain device filters via contains() — keeps one round-trip.
         device_arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
         parts.append(
             f'  |> filter(fn: (r) => contains(value: r["device"], set: {device_arr}))'
         )
-    parts.append(f'  |> aggregateWindow(every: {every}, fn: mean, createEmpty: false)')
-    parts.append('  |> yield(name: "mean")')
+    if every:
+        parts.append(f'  |> aggregateWindow(every: {every}, fn: mean, createEmpty: false)')
+    parts.append('  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")')
+    parts.append('  |> yield(name: "pivoted")')
     return "\n".join(parts)
 
 
-def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_header: str, insecure: bool) -> dict:
+def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_header: str, insecure: bool,
+                    max_data_points: int = 500_000) -> dict:
     body = json.dumps({
         "queries": [{
             "refId": "A",
             "datasource": {"uid": ds_uid, "type": "influxdb"},
             "query": flux,
+            # Override Grafana's 1001-point cap that truncates raw-mode pulls.
+            "maxDataPoints": int(max_data_points),
         }],
     }).encode("utf-8")
     headers = {
@@ -97,37 +106,56 @@ def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_header: str
     return json.loads(raw)
 
 
-def _frames_to_records(payload: dict, *, field_name: str) -> list[dict]:
-    """Reshape Grafana frames into [{id, time, sensor_name, device, <field>}].
-
-    Grafana returns one frame per series; each frame has two columns:
-      - column 0: timestamps (ms epoch, integer)
-      - column 1: numeric values, with `labels.device` carrying the tag value
+def _frames_to_records(payload: dict) -> list[dict]:
+    """Reshape pivoted Grafana frames into one record per (device, _time).
+    Each pivoted field becomes its own top-level column on the record.
     """
     records: list[dict] = []
     for ref_block in payload.get("results", {}).values():
         for frame in ref_block.get("frames", []) or []:
-            schema = frame.get("schema", {})
-            fields = schema.get("fields", [])
-            if len(fields) < 2:
+            fields_meta = frame.get("schema", {}).get("fields", [])
+            cols = frame.get("data", {}).get("values", [])
+            if len(fields_meta) < 2 or len(cols) < 2 or not cols[0]:
                 continue
-            data_cols = frame.get("data", {}).get("values", [])
-            if len(data_cols) < 2 or not data_cols[0]:
+            time_idx = next(
+                (i for i, f in enumerate(fields_meta) if f.get("type") == "time"),
+                0,
+            )
+            value_indices = [i for i in range(len(fields_meta)) if i != time_idx]
+            if not value_indices:
                 continue
-            device = (fields[1].get("labels") or {}).get("device", "")
-            timestamps_ms = data_cols[0]
-            values = data_cols[1]
-            for ts_ms, v in zip(timestamps_ms, values):
-                if ts_ms is None or v is None:
+            device = ""
+            for vi in value_indices:
+                lbl = fields_meta[vi].get("labels") or {}
+                if lbl.get("device"):
+                    device = lbl["device"]
+                    break
+            n_rows = len(cols[time_idx])
+            for row_idx in range(n_rows):
+                ts_ms = cols[time_idx][row_idx]
+                if ts_ms is None:
                     continue
                 ts_iso = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
-                records.append({
+                rec: dict = {
                     "id": f"{device}:{ts_iso}",
                     "time": ts_iso,
                     "sensor_name": device,
                     "device": device,
-                    field_name: float(v),
-                })
+                }
+                for vi in value_indices:
+                    fname = fields_meta[vi].get("name") or f"col_{vi}"
+                    val = cols[vi][row_idx] if row_idx < len(cols[vi]) else None
+                    if val is None:
+                        continue
+                    ftype = (fields_meta[vi].get("type") or "").lower()
+                    if ftype == "number":
+                        try:
+                            rec[fname] = float(val)
+                        except (TypeError, ValueError):
+                            rec[fname] = val
+                    else:
+                        rec[fname] = val
+                records.append(rec)
     return records
 
 
@@ -158,10 +186,19 @@ def _chunked(seq: list, n: int) -> Iterable[list]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--measurement", default="alldevices")
-    ap.add_argument("--field", default="running")
+    ap.add_argument(
+        "--fields",
+        default="running,temp,heap,wifi_rssi,reconn,uptime,wifi_ok",
+        help="Comma-separated InfluxDB field names; pivoted into one record per (device, time)",
+    )
+    ap.add_argument("--field", default="", help="(legacy single-field — overridden by --fields if set)")
     ap.add_argument("--devices", default="", help="Comma-separated device names; empty = all")
     ap.add_argument("--lookback-days", type=int, default=30)
-    ap.add_argument("--aggregate-every", default="5m")
+    ap.add_argument(
+        "--aggregate-every",
+        default="",
+        help="Flux aggregateWindow size (e.g. 5m). Empty = raw events at native cadence.",
+    )
     ap.add_argument("--day-window", type=int, default=1, help="Days per Flux query (smaller = more requests, less RAM)")
     ap.add_argument("--batch-size", type=int, default=1000)
     ap.add_argument("--insecure", action="store_true", help="Skip TLS verification (self-signed certs)")
@@ -202,6 +239,13 @@ def main() -> int:
         auth_header = f"Basic {b64}"
 
     devices = [d.strip() for d in args.devices.split(",") if d.strip()] or None
+    # Multi-field by default; legacy --field still works as a single-field override.
+    fields = [f.strip() for f in args.fields.split(",") if f.strip()]
+    if not fields and args.field:
+        fields = [args.field.strip()]
+    if not fields:
+        print("must provide --fields or --field", file=sys.stderr)
+        return 2
 
     # ── Walk the lookback window in day-sized chunks ─────────────────────
     end = datetime.now(timezone.utc).replace(microsecond=0)
@@ -215,7 +259,7 @@ def main() -> int:
         flux = _build_flux(
             bucket=bucket,
             measurement=args.measurement,
-            field=args.field,
+            fields=fields,
             devices=devices,
             start_iso=cur.isoformat().replace("+00:00", "Z"),
             stop_iso=chunk_end.isoformat().replace("+00:00", "Z"),
@@ -228,7 +272,7 @@ def main() -> int:
             cur = chunk_end
             continue
 
-        records = _frames_to_records(payload, field_name=args.field)
+        records = _frames_to_records(payload)
         total_records += len(records)
         per_device: dict[str, int] = {}
         for r in records:

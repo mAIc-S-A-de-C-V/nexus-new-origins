@@ -977,36 +977,56 @@ def _grafana_auth_header(creds: dict) -> Optional[str]:
     return None
 
 
-def _grafana_build_flux(*, bucket: str, measurement: str, field: str,
+def _grafana_build_flux(*, bucket: str, measurement: str, fields: list[str],
                         devices: list[str] | None, start_iso: str, stop_iso: str,
-                        every: str, aggregate_fn: str = "mean") -> str:
+                        every: Optional[str] = None, aggregate_fn: str = "mean") -> str:
+    """Build a Flux query that returns one row per (device, time) with all
+    requested fields as columns. Pivot folds multi-field results into a
+    flat shape so we can land them as a single record per timestamp.
+
+    `every=None` (or empty) skips aggregateWindow → raw events at native
+    cadence. Use a non-empty value (e.g. "5m") for downsampled buckets.
+    """
+    if not fields:
+        raise ValueError("at least one field is required")
     parts = [
         f'from(bucket: "{bucket}")',
         f'  |> range(start: time(v: "{start_iso}"), stop: time(v: "{stop_iso}"))',
         f'  |> filter(fn: (r) => r["_measurement"] == "{measurement}")',
-        f'  |> filter(fn: (r) => r["_field"] == "{field}")',
     ]
+    field_arr = "[" + ", ".join(f'"{f}"' for f in fields) + "]"
+    parts.append(f'  |> filter(fn: (r) => contains(value: r["_field"], set: {field_arr}))')
     if devices:
-        # Quote each, build a Flux array, narrow with contains() — one round-trip.
         device_arr = "[" + ", ".join(f'"{d}"' for d in devices) + "]"
         parts.append(
             f'  |> filter(fn: (r) => contains(value: r["device"], set: {device_arr}))'
         )
-    parts.append(
-        f'  |> aggregateWindow(every: {every}, fn: {aggregate_fn}, createEmpty: false)'
-    )
-    parts.append('  |> yield(name: "mean")')
+    if every:
+        parts.append(
+            f'  |> aggregateWindow(every: {every}, fn: {aggregate_fn}, createEmpty: false)'
+        )
+    # Pivot: one row per _time, one column per _field. After this each frame
+    # has columns [_time, field1, field2, …] with `device` in field labels.
+    parts.append('  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")')
+    parts.append('  |> yield(name: "pivoted")')
     return "\n".join(parts)
 
 
 async def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_header: str,
-                          insecure: bool = False, timeout: float = 60.0) -> dict:
-    """Hit /api/ds/query with a Flux query. Returns the raw JSON payload."""
+                          insecure: bool = False, timeout: float = 60.0,
+                          max_data_points: int = 500_000) -> dict:
+    """Hit /api/ds/query with a Flux query. Returns the raw JSON payload.
+
+    `maxDataPoints` overrides Grafana's default 1001-point safety cap that
+    would otherwise truncate raw-mode pulls. 500k handles weeks of multi-
+    field raw events comfortably; bump higher for longer backfill chunks.
+    """
     body = {
         "queries": [{
             "refId": "A",
             "datasource": {"uid": ds_uid, "type": "influxdb"},
             "query": flux,
+            "maxDataPoints": int(max_data_points),
         }],
     }
     headers = {"Content-Type": "application/json", "Authorization": auth_header}
@@ -1017,31 +1037,81 @@ async def _grafana_query(grafana_url: str, ds_uid: str, flux: str, *, auth_heade
         return r.json()
 
 
-def _grafana_frames_to_records(payload: dict, *, field_name: str) -> list[dict]:
-    """Reshape Grafana's frame JSON into [{id, time, sensor_name, device, <field>}]."""
+def _grafana_frames_to_records(payload: dict, *, field_name: str = "") -> list[dict]:
+    """Reshape Grafana's pivoted frame JSON into one record per (device, time)
+    with each pivoted field as a top-level column.
+
+    Frame shape (after Flux pivot):
+        column 0: _time (ms epoch)
+        columns 1..N: one per pivoted field; field name in schema.fields[i].name,
+                      device tag in schema.fields[i].labels.device
+    """
     from datetime import datetime, timezone
     out: list[dict] = []
     for ref in payload.get("results", {}).values():
         for frame in ref.get("frames", []) or []:
             schema = frame.get("schema", {})
-            fields = schema.get("fields", []) or []
-            if len(fields) < 2:
-                continue
+            fields_meta = schema.get("fields", []) or []
             cols = frame.get("data", {}).get("values", []) or []
-            if len(cols) < 2 or not cols[0]:
+            if len(fields_meta) < 2 or len(cols) < 2 or not cols[0]:
                 continue
-            device = (fields[1].get("labels") or {}).get("device", "")
-            for ts_ms, v in zip(cols[0], cols[1]):
-                if ts_ms is None or v is None:
+
+            # Find the time column (first time-typed field, conventionally col 0)
+            time_idx = next(
+                (i for i, f in enumerate(fields_meta) if f.get("type") == "time"),
+                0,
+            )
+            value_field_indices = [
+                i for i in range(len(fields_meta)) if i != time_idx
+            ]
+            if not value_field_indices:
+                continue
+
+            # Device label is on the value-typed columns (Flux puts the tag
+            # there, not on _time). Take the first value column's device.
+            device = ""
+            for vi in value_field_indices:
+                lbl = fields_meta[vi].get("labels") or {}
+                if lbl.get("device"):
+                    device = lbl["device"]
+                    break
+
+            n_rows = len(cols[time_idx])
+            for row_idx in range(n_rows):
+                ts_ms = cols[time_idx][row_idx]
+                if ts_ms is None:
                     continue
                 ts_iso = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
-                out.append({
+                rec: dict = {
                     "id": f"{device}:{ts_iso}",
                     "time": ts_iso,
                     "sensor_name": device,
                     "device": device,
-                    field_name: float(v),
-                })
+                }
+                for vi in value_field_indices:
+                    fname = fields_meta[vi].get("name") or f"col_{vi}"
+                    val = cols[vi][row_idx] if row_idx < len(cols[vi]) else None
+                    if val is None:
+                        continue
+                    # Preserve booleans + ints + numeric strings; coerce
+                    # number-typed columns to float for consistency.
+                    ftype = (fields_meta[vi].get("type") or "").lower()
+                    if ftype == "number":
+                        try:
+                            rec[fname] = float(val)
+                        except (TypeError, ValueError):
+                            rec[fname] = val
+                    else:
+                        rec[fname] = val
+                # Single-field legacy callers want the value under the
+                # configured field name even if the frame's column name
+                # differs (rare but possible after Flux operations).
+                if field_name and field_name not in rec and len(value_field_indices) == 1:
+                    vi = value_field_indices[0]
+                    val = cols[vi][0] if cols[vi] else None
+                    if val is not None:
+                        rec[field_name] = float(val) if isinstance(val, (int, float)) else val
+                out.append(rec)
     return out
 
 
@@ -1073,13 +1143,25 @@ async def _grafana_influx_test(base_url: str, creds: dict, cfg: dict) -> tuple[b
         return True, f"Connected — datasource {ds.get('name', ds_uid)!r} ({ds.get('type', 'unknown')})"
 
 
+def _grafana_resolve_fields(cfg: dict) -> list[str]:
+    """Pull the list of InfluxDB fields to fetch from connector/node config.
+    Accepts either `fields` (CSV list, preferred) or legacy `field` (single).
+    """
+    raw = cfg.get("fields") or cfg.get("field") or ""
+    if isinstance(raw, list):
+        out = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        out = [s.strip() for s in str(raw).split(",") if s.strip()]
+    return out or ["running"]
+
+
 async def _grafana_influx_schema(base_url: str, creds: dict, cfg: dict) -> tuple[dict, list, Optional[str]]:
     """Schema + small sample (last 30 minutes) for the configured datasource.
 
-    Schema is derived from the user-configured measurement/field list — for
-    the dashboard's `running` field we project (id, time, sensor_name,
-    device, running). Sample uses a -30m / 5m aggregation so the user can
-    eyeball the shape before scheduling.
+    Pulls all configured fields with a Flux pivot so the sample shows the
+    real multi-field record shape that production runs will produce.
+    aggregate_every empty (default) returns raw events at native cadence —
+    matches what the original device-level ingestion produced.
     """
     auth = _grafana_auth_header(creds)
     if not auth:
@@ -1089,21 +1171,25 @@ async def _grafana_influx_schema(base_url: str, creds: dict, cfg: dict) -> tuple
         return {}, [], "datasource_uid is required"
     bucket = cfg.get("bucket") or creds.get("bucket") or ""
     measurement = cfg.get("measurement") or "alldevices"
-    field = cfg.get("field") or "running"
+    fields = _grafana_resolve_fields(cfg)
     devices_raw = cfg.get("devices") or ""
     devices = [d.strip() for d in str(devices_raw).split(",") if d.strip()] or None
+    aggregate_every = cfg.get("aggregate_every") or ""  # "" = raw
+    aggregate_fn = (cfg.get("aggregate_fn") or "mean").lower()
     insecure = bool(cfg.get("tls_skip_verify") or creds.get("tls_skip_verify"))
     if not bucket:
         return {}, [], "bucket is required (e.g. bucket01)"
 
     from datetime import datetime, timedelta, timezone as _tz
     end = datetime.now(_tz.utc).replace(microsecond=0)
-    start = end - timedelta(minutes=30)
+    # Sample window: 5m raw or 30m aggregated, whichever covers more useful data
+    sample_minutes = 5 if not aggregate_every else 30
+    start = end - timedelta(minutes=sample_minutes)
     flux = _grafana_build_flux(
-        bucket=bucket, measurement=measurement, field=field, devices=devices,
+        bucket=bucket, measurement=measurement, fields=fields, devices=devices,
         start_iso=start.isoformat().replace("+00:00", "Z"),
         stop_iso=end.isoformat().replace("+00:00", "Z"),
-        every="5m",
+        every=aggregate_every or None, aggregate_fn=aggregate_fn,
     )
     try:
         payload = await _grafana_query(
@@ -1111,15 +1197,12 @@ async def _grafana_influx_schema(base_url: str, creds: dict, cfg: dict) -> tuple
         )
     except Exception as e:
         return {}, [], f"grafana query failed: {e}"
-    sample = _grafana_frames_to_records(payload, field_name=field)
-    schema = {
-        "primary_key": "id",
-        "properties": [
-            {"name": "id", "data_type": "string"},
-            {"name": "time", "data_type": "datetime"},
-            {"name": "sensor_name", "data_type": "string"},
-            {"name": "device", "data_type": "string"},
-            {"name": field, "data_type": "number"},
-        ],
-    }
+    sample = _grafana_frames_to_records(payload)
+    properties = [
+        {"name": "id", "data_type": "string"},
+        {"name": "time", "data_type": "datetime"},
+        {"name": "sensor_name", "data_type": "string"},
+        {"name": "device", "data_type": "string"},
+    ] + [{"name": f, "data_type": "number"} for f in fields]
+    schema = {"primary_key": "id", "properties": properties}
     return schema, sample[:50], None
