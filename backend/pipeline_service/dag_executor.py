@@ -885,16 +885,41 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     or conn_config.get("default_folder")
                     or "INBOX"
                 )
-                include_attach = bool(
+                # Pull attachment-handling defaults from the connector when
+                # the SOURCE node doesn't override them. Setting the toggle
+                # on the connector applies to every pipeline that reuses it.
+                # Strings ("true"/"false") are honored too — that's how the
+                # frontend serializes booleans into the connector config blob.
+                def _truthy(v) -> bool:
+                    if isinstance(v, bool):
+                        return v
+                    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+                include_attach_raw = (
                     cfg.get("includeAttachments")
-                    or cfg.get("include_attachments")
-                    or False
+                    if cfg.get("includeAttachments") is not None
+                    else cfg.get("include_attachments")
                 )
-                max_attach = int(
+                if include_attach_raw is None:
+                    include_attach_raw = (
+                        conn_config.get("include_attachments")
+                        if conn_config.get("include_attachments") is not None
+                        else conn_config.get("includeAttachments")
+                    )
+                # Default OFF — flipping defaults silently would surprise
+                # existing pipelines wired against email metadata only.
+                include_attach = _truthy(include_attach_raw) if include_attach_raw is not None else False
+
+                max_attach_raw = (
                     cfg.get("maxAttachmentBytes")
                     or cfg.get("max_attachment_bytes")
+                    or conn_config.get("max_attachment_bytes")
+                    or conn_config.get("maxAttachmentBytes")
                     or 10 * 1024 * 1024
                 )
+                try:
+                    max_attach = int(max_attach_raw)
+                except (TypeError, ValueError):
+                    max_attach = 10 * 1024 * 1024
 
                 incremental_key = (
                     cfg.get("incrementalKey") or cfg.get("incremental_key")

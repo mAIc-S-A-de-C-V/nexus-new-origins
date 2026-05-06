@@ -153,6 +153,12 @@ export const EmailSetupModal: React.FC<Props> = ({ onClose }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [defaultFolder, setDefaultFolder] = useState('INBOX');
+  // Default ON — the only thing this connector adds over IMAP+text-only
+  // pipelines is attachments. Most users wiring email→pipeline expect to
+  // parse attachments downstream (ATTACHMENT_PARSE node). Turn off only
+  // for read-only inbox monitoring with no parsing of payloads.
+  const [includeAttachments, setIncludeAttachments] = useState(true);
+  const [maxAttachmentMb, setMaxAttachmentMb] = useState<number>(10);
   const [showPassword, setShowPassword] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -207,6 +213,11 @@ export const EmailSetupModal: React.FC<Props> = ({ onClose }) => {
         config: {
           provider: provider.key,
           default_folder: defaultFolder.trim() || 'INBOX',
+          // Pipeline SOURCE reads these off the connector when the node
+          // doesn't override them — so toggling here applies to every
+          // pipeline that uses this connector unless overridden per node.
+          include_attachments: includeAttachments ? 'true' : 'false',
+          max_attachment_bytes: String(Math.max(1, maxAttachmentMb) * 1024 * 1024),
         },
         tags: ['messaging', 'email', provider.key],
         visibility: 'tenant',
@@ -292,6 +303,8 @@ export const EmailSetupModal: React.FC<Props> = ({ onClose }) => {
             username={username} setUsername={setUsername}
             password={password} setPassword={setPassword}
             defaultFolder={defaultFolder} setDefaultFolder={setDefaultFolder}
+            includeAttachments={includeAttachments} setIncludeAttachments={setIncludeAttachments}
+            maxAttachmentMb={maxAttachmentMb} setMaxAttachmentMb={setMaxAttachmentMb}
             showPassword={showPassword} setShowPassword={setShowPassword}
             testing={testing} testResult={testResult}
             canTestOrSave={!!canTestOrSave}
@@ -373,6 +386,8 @@ const ConfigStep: React.FC<{
   username: string; setUsername: (v: string) => void;
   password: string; setPassword: (v: string) => void;
   defaultFolder: string; setDefaultFolder: (v: string) => void;
+  includeAttachments: boolean; setIncludeAttachments: (v: boolean) => void;
+  maxAttachmentMb: number; setMaxAttachmentMb: (v: number) => void;
   showPassword: boolean; setShowPassword: (v: boolean) => void;
   testing: boolean;
   testResult: { ok: boolean; message: string } | null;
@@ -465,6 +480,39 @@ const ConfigStep: React.FC<{
         placeholder="INBOX"
         style={inputStyle()}
       />
+    </Field>
+
+    <Field label="Attachments">
+      <label style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '8px 10px', border: `1px solid ${C.border}`, borderRadius: 6,
+        backgroundColor: '#fff', cursor: 'pointer',
+      }}>
+        <input
+          type="checkbox"
+          checked={p.includeAttachments}
+          onChange={(e) => p.setIncludeAttachments(e.target.checked)}
+          style={{ accentColor: '#2563EB' }}
+        />
+        <span style={{ fontSize: 12, color: C.text, flex: 1 }}>
+          Download attachment bytes (required for ATTACHMENT_PARSE downstream)
+        </span>
+      </label>
+      {p.includeAttachments && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input
+            type="number"
+            value={p.maxAttachmentMb}
+            min={1}
+            max={100}
+            onChange={(e) => p.setMaxAttachmentMb(parseInt(e.target.value, 10) || 10)}
+            style={{ ...inputStyle(), width: 90, flex: 'none' }}
+          />
+          <span style={{ fontSize: 11, color: C.muted }}>
+            MB max per attachment — anything bigger is skipped (kept in <code>attachment_names</code> for visibility, just no payload)
+          </span>
+        </div>
+      )}
     </Field>
 
     {/* Provider-specific guide */}
