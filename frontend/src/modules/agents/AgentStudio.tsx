@@ -8,7 +8,7 @@ import { useNavigationStore } from '../../store/navigationStore';
 import {
   Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, MessageSquare, Database, Filter, X,
   Search, List, Zap, ShieldCheck, ListChecks, Network, CheckCircle, Clock, Play,
-  Activity, Shield, RefreshCw, ChevronRight, Hash,
+  Activity, Shield, RefreshCw, ChevronRight, Hash, Globe, Link2, Workflow, Plug,
 } from 'lucide-react';
 import { CommentsPanel } from '../../components/CommentsPanel';
 
@@ -33,6 +33,12 @@ const TOOL_META: Record<string, { label: string; desc: string; icon: React.React
   process_mining:     { label: 'Process Mining',     desc: 'Analyze event logs for patterns, bottlenecks, anomalies & co-occurrences', icon: <Activity size={14} />,  color: '#0891B2' },
   utility_list:       { label: 'List Utilities',     desc: 'Discover available utilities (OCR, scrape, geocode, etc.)',                icon: <Wrench size={14} />,    color: '#6B7280' },
   utility_run:        { label: 'Run Utility',        desc: 'Execute a pre-built utility — OCR, PDF extract, web scrape, geocode…',    icon: <Wrench size={14} />,    color: '#6B7280' },
+  web_search:         { label: 'Web Search',         desc: 'Search the public web (DuckDuckGo) — returns ranked URLs + snippets',     icon: <Globe size={14} />,      color: '#0EA5E9' },
+  scrape_url:         { label: 'Scrape URL',         desc: 'Fetch a single page with stealth headers — returns text, title, links',  icon: <Link2 size={14} />,      color: '#14B8A6' },
+  list_pipelines:     { label: 'List Pipelines',     desc: 'Discover saved pipelines available to run',                                icon: <Workflow size={14} />,   color: '#6366F1' },
+  create_pipeline:    { label: 'Create Pipeline',    desc: 'Author a new pipeline DAG (sources, transforms, sinks)',                  icon: <Plus size={14} />,       color: '#22C55E' },
+  run_pipeline:       { label: 'Run Pipeline',       desc: 'Trigger a saved pipeline run — returns run_id and status',                icon: <Play size={14} />,       color: '#F97316' },
+  list_connectors:    { label: 'List Connectors',    desc: 'Discover configured connectors (email, Grafana, S3, etc.)',               icon: <Plug size={14} />,       color: '#F43F5E' },
 };
 
 const TOOL_LABELS: Record<string, string> = Object.fromEntries(
