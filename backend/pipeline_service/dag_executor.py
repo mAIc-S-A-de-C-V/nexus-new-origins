@@ -1451,7 +1451,11 @@ def _filter(node, records_in: list[dict]) -> list[dict]:
             if str(fval) != str(value):
                 result.append(rec)
         elif operator == "contains":
-            if value is not None and str(value) in str(fval or ""):
+            # Case-insensitive — email subjects, file names, status strings,
+            # etc. arrive with arbitrary casing. A case-sensitive filter is
+            # almost always a footgun (e.g. "Ordenes de Compra" vs.
+            # "ORDENES DE COMPRA"). Use `eq`/`neq` when exact match matters.
+            if value is not None and str(value).lower() in str(fval or "").lower():
                 result.append(rec)
         else:
             result.append(rec)

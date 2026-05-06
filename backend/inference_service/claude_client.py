@@ -1586,18 +1586,34 @@ Available object types (data targets):
 User request: {description}
 
 ## Node types (use EXACTLY these uppercase values for "type"):
-- SOURCE — pull data from a connector. Config: {{"connector_id":"<id>","endpoint":"<path>","method":"GET","poll_frequency":"5m"}}. IMPORTANT: Check the connector's "endpoints" array for the correct HTTP method. If an endpoint has "method":"POST", set "method":"POST" in the SOURCE config. Default is GET.
-- FILTER — filter records. Config: {{"field":"<name>","operator":"==","value":"<val>"}}
+- SOURCE — pull data from a connector. Config: {{"connectorId":"<id>","endpoint":"<path>","method":"GET","poll_frequency":"5m"}}. IMPORTANT: Check the connector's "endpoints" array for the correct HTTP method. If an endpoint has "method":"POST", set "method":"POST" in the SOURCE config. Default is GET.
+  • For EMAIL_INBOX connectors: SOURCE config is {{"connectorId":"<id>","folder":"INBOX","includeAttachments":true,"maxAttachmentBytes":10485760,"incrementalKey":"received_at","batchSize":100}}. Set `includeAttachments:true` whenever a downstream ATTACHMENT_PARSE node will read the bytes. Use `incrementalKey:"received_at"` so each run only sees newer messages.
+- FILTER — drop rows that don't match. Config: {{"field":"<name>","operator":"contains|eq|neq|exists|not_null","value":"<val>"}}. To require multiple conditions (e.g. subject contains X AND has_attachments=true), chain TWO FILTER nodes — one per condition.
 - MAP — rename/transform fields. Config: {{"mappings":[{{"from":"src","to":"dst"}}]}}
-- CAST — change field types. Config: {{"casts":[{{"field":"name","toType":"string"}}]}}
+- CAST — change field types. Config: {{"casts":[{{"field":"name","toType":"string|int|number|datetime"}}]}}
 - ENRICH — add computed fields. Config: {{"enrichments":[]}}
-- FLATTEN — flatten nested arrays. Config: {{"arrayField":"items","prefix":"item"}}
-- DEDUPE — remove duplicates. Config: {{"keys":["field1"]}}
+- FLATTEN — explode an array field into one row per item. Config: {{"arrayField":"<field name>"}} — when the field's value is a list of dicts, each dict's keys become top-level fields on the new row. Always pair with ATTACHMENT_PARSE.
+- DEDUPE — remove duplicates. Config: {{"keys":["field1"],"strategy":"keep_first|keep_last|keep_highest","orderBy":"<field>"}}
 - VALIDATE — validate records. Config: {{"rules":[]}}
 - LLM_CLASSIFY — AI classification. Config: {{"textField":"<field>","prompt":"<optional>","batchSize":10,"createActions":true}}
-- SINK_OBJECT — write to ontology object type. Config: {{"objectTypeId":"<id>","objectTypeName":"<name>"}}
+- ATTACHMENT_PARSE — parse Excel/CSV attachment bytes off email records into a list of dicts. Config: {{"attachmentsField":"attachments","filenameMatch":".*\\\\.xlsx?$","sheet":"<optional sheet name>","headerRow":0,"dataStartCol":0,"outputField":"parsed_rows","primaryKeyHeader":"<header>","skipBlankRows":true}}. `dataStartCol` skips leading empty columns (some report templates have blank A-C). `primaryKeyHeader` is used by `skipBlankRows` to drop empty rows. Each parsed row gets `_attachment_filename` and `_attachment_content_type` for provenance. Always follow with FLATTEN(arrayField=<outputField>) to explode rows.
+- SINK_OBJECT — write to ontology object type. Config: {{"objectTypeId":"<id>","objectTypeName":"<name>","writeMode":"upsert|insert|replace","mergeKey":"<field used to match existing records>"}}
 - SINK_EVENT — write to process mining event log. Config: {{"objectTypeId":"<id>","caseIdField":"<field>","activityField":"<field>","timestampField":"<field>"}}
 - AGENT_RUN — trigger an AI agent. Config: {{"agentId":"<id>"}}
+
+## Common pipeline patterns
+
+**Email attachment → Object Type (Excel/CSV ingestion):**
+When the user wants to ingest spreadsheets that arrive as email attachments (purchase orders, invoices, reports, etc.), use this canonical chain:
+  SOURCE (EMAIL_INBOX, includeAttachments=true)
+    → FILTER (subject, contains, "<keyword>")           — drops irrelevant messages
+    → FILTER (has_attachments, eq, "true")               — drops messages without attachments
+    → ATTACHMENT_PARSE (filenameMatch=".*\\\\.xlsx?$")     — decode + parse
+    → FLATTEN (arrayField="parsed_rows")                 — explode 1 email → N records
+    → CAST (datetime/int conversions if needed)
+    → DEDUPE (keys=<primary key from spreadsheet header>, strategy="keep_last")
+    → SINK_OBJECT (writeMode="upsert", mergeKey=<same primary key>)
+Always include the `_attachment_filename` and `_attachment_content_type` provenance fields when you describe the OT schema.
 
 Generate a pipeline as JSON. Each node needs id, type (UPPERCASE), label, config, and position ({{x:0, y:N*120}}).
 Edges connect nodes sequentially via source/target node IDs.

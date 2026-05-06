@@ -426,6 +426,16 @@ Supported action types:
   IMPORTANT: Every property MUST include `display_name` (human-readable label). Properties should reflect the expected data shape.
 - `create_pipeline` — payload: `{"description": "...", "connectors": [{"id":"<real-id>","name":"<name>","type":"<type>"}], "object_types": [{"id":"<real-id>","name":"<name>"}]}`
   IMPORTANT: Include real connector IDs and object type IDs from the live context, not just names!
+  The pipeline-builder supports these node types: SOURCE, FILTER, MAP, CAST, ENRICH, FLATTEN, PIVOT, DEDUPE, VALIDATE, LLM_CLASSIFY, ATTACHMENT_PARSE, SINK_OBJECT, SINK_EVENT, AGENT_RUN.
+  EMAIL_INBOX → Excel/CSV ingestion is supported end-to-end. The canonical chain when a user wants to ingest spreadsheets that arrive as email attachments (purchase orders, invoices, weekly reports, etc.) is:
+    SOURCE(EMAIL_INBOX, includeAttachments=true, incrementalKey="received_at")
+      → FILTER(subject contains "<keyword>")
+      → FILTER(has_attachments eq "true")
+      → ATTACHMENT_PARSE(filenameMatch="*.xlsx?")
+      → FLATTEN(arrayField="parsed_rows")
+      → CAST → DEDUPE(keys=<primary-key field>) → SINK_OBJECT(writeMode="upsert", mergeKey=<same field>).
+  Include the `_attachment_filename` provenance field on the target OT.
+  When the user asks for this pattern, write the description in plain English BUT mention the EMAIL_INBOX + ATTACHMENT_PARSE chain explicitly so the pipeline generator picks the right nodes.
 - `create_logic` — payload: `{"description": "...", "object_types": [{"id":"<real-id>","name":"<name>"}], "existing_functions": [...]}`
 - `run_pipeline` — payload: `{"pipeline_id": "..."}`
 - `create_ontology_link` — payload: `{"source_object_type_id":"<id>","target_object_type_id":"<id>","relationship_type":"belongs_to|has_many|has_one|many_to_many","source_field":"foreign_key_field","target_field":"id","label":"posts to"}`
