@@ -280,8 +280,8 @@ services:
 
   logic-service:
     build:
-      context: ./backend/logic_service
-      dockerfile: Dockerfile
+      context: ./backend
+      dockerfile: logic_service/Dockerfile
     ports:
       - "8012:8012"
     mem_limit: 384m
@@ -706,10 +706,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8024:8024"
-    mem_limit: 384m
+    mem_limit: 1500m
     networks:
       - nexus-net
-    command: uvicorn main:app --host 0.0.0.0 --port 8024 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8024
     logging: *default-logging
 
   # ─── Workbench kernel (Jupyter-style notebook execution) ────────────────────
@@ -755,6 +755,30 @@ services:
       - nexus-net
     logging: *default-logging
 
+  # ─── Caddy reverse proxy + Let's Encrypt TLS ─────────────────────────────
+  # Set DOMAIN=app.maic.ai (or your hostname) before `docker compose up -d caddy`.
+  # Caddy auto-issues + auto-renews certs as long as ports 80/443 are open and
+  # the hostname's A record points at this host.
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    mem_limit: 256m
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - nexus-net
+    depends_on:
+      - frontend
+    restart: unless-stopped
+    logging: *default-logging
+
 volumes:
   postgres_data:
   timescale_data:
@@ -762,6 +786,8 @@ volumes:
   nexus_backups:
   sepsis-data:
   minio_data:
+  caddy_data:
+  caddy_config:
 
 networks:
   nexus-net:

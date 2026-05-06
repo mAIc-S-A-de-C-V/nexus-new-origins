@@ -1,0 +1,109 @@
+# Nexus reverse proxy + automatic Let's Encrypt
+#
+# DEPLOY: set DOMAIN env var on the host (e.g. DOMAIN=app.maic.ai) before
+# `docker compose up -d caddy`. Caddy auto-issues + auto-renews certs.
+#
+# All backend services are reverse-proxied under /api/<service>/ with the
+# prefix stripped before the request hits the upstream — backends keep
+# mounting at root, no code changes.
+
+{
+	# Use ZeroSSL as a fallback issuer if Let's Encrypt rate-limits.
+	email admin@maic.ai
+}
+
+{$DOMAIN:localhost} {
+	encode gzip zstd
+
+	# ── Frontend (default route) ─────────────────────────────────────────
+	handle / {
+		reverse_proxy frontend:3000
+	}
+	handle /assets/* {
+		reverse_proxy frontend:3000
+	}
+	handle /vite-favicon.ico {
+		reverse_proxy frontend:3000
+	}
+
+	# ── Backend services ─────────────────────────────────────────────────
+	# Each service gets a /api/<slug>/ prefix that's stripped before
+	# proxying. Frontend's VITE_*_URL env vars must point at these paths.
+	handle_path /api/connector/* {
+		reverse_proxy connector-service:8001
+	}
+	handle_path /api/pipeline/* {
+		reverse_proxy pipeline-service:8002
+	}
+	handle_path /api/inference/* {
+		reverse_proxy inference-service:8003
+	}
+	handle_path /api/ontology/* {
+		reverse_proxy ontology-service:8004
+	}
+	handle_path /api/event-log/* {
+		reverse_proxy event-log-service:8005
+	}
+	handle_path /api/audit/* {
+		reverse_proxy audit-service:8006
+	}
+	handle_path /api/correlation/* {
+		reverse_proxy correlation-engine:8008
+	}
+	handle_path /api/process/* {
+		reverse_proxy process-engine-service:8009
+	}
+	handle_path /api/alert/* {
+		reverse_proxy alert-engine-service:8010
+	}
+	handle_path /api/auth/* {
+		reverse_proxy auth-service:8011
+	}
+	handle_path /api/logic/* {
+		reverse_proxy logic-service:8012
+	}
+	handle_path /api/agent/* {
+		reverse_proxy agent-service:8013
+	}
+	handle_path /api/utility/* {
+		reverse_proxy utility-service:8014
+	}
+	handle_path /api/analytics/* {
+		reverse_proxy analytics-service:8015
+	}
+	handle_path /api/eval/* {
+		reverse_proxy eval-service:8016
+	}
+	handle_path /api/lineage/* {
+		reverse_proxy lineage-service:8017
+	}
+	handle_path /api/search/* {
+		reverse_proxy search-service:8018
+	}
+	handle_path /api/data-quality/* {
+		reverse_proxy data-quality-service:8019
+	}
+	handle_path /api/collaboration/* {
+		reverse_proxy collaboration-service:8020
+	}
+	handle_path /api/gateway/* {
+		reverse_proxy api-gateway-service:8021
+	}
+	handle_path /api/admin/* {
+		reverse_proxy admin-service:8022
+	}
+	handle_path /api/kernel/* {
+		reverse_proxy kernel-service:8026
+	}
+	handle_path /api/project/* {
+		reverse_proxy project-management-service:9000
+	}
+	handle_path /api/finance/* {
+		reverse_proxy finance-service:9001
+	}
+
+	# Fallback: anything else goes to frontend (SPA routes like /apps, /pipelines, etc.)
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
