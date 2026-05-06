@@ -419,7 +419,34 @@ export const PipelineBuilder: React.FC = () => {
   };
 
   const handleSave = async () => {
-    if (!currentPipeline) return;
+    // No pipeline yet (user added steps without clicking "New" first) — prompt
+    // for a name and auto-create one rather than silently no-op'ing.
+    if (!currentPipeline) {
+      if (localSteps.length === 0) {
+        return; // nothing to save anyway
+      }
+      const name = window.prompt(
+        'Name this pipeline:',
+        `Pipeline ${new Date().toISOString().slice(0, 10)}`,
+      );
+      if (!name || !name.trim()) return;
+      setSaving(true);
+      try {
+        const now = new Date().toISOString();
+        const created = await addPipeline({
+          id: '', name: name.trim(), status: 'DRAFT', nodes: [], edges: [],
+          connectorIds: [],
+          createdAt: now, updatedAt: now, tenantId: getTenantId(), version: 1,
+        });
+        selectPipeline(created.id);
+        const stepsWithPos = localSteps.map((s, i) => ({ ...s, position: { x: 0, y: i * 120 } }));
+        await updatePipelineNodes(created.id, stepsWithPos, []);
+        setDirty(false);
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     setSaving(true);
     const stepsWithPos = localSteps.map((s, i) => ({ ...s, position: { x: 0, y: i * 120 } }));
     await updatePipelineNodes(currentPipeline.id, stepsWithPos, []);
