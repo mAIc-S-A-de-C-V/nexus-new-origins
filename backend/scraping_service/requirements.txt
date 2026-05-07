@@ -9,5 +9,10 @@ scrapling>=0.2,<1.0
 # Required by Scrapling's AsyncFetcher when stealthy_headers=True — provides
 # browser-grade TLS fingerprinting via libcurl-impersonate.
 curl_cffi>=0.7,<1.0
+# Scrapling imports the playwright Python package at module load time even
+# when only AsyncFetcher (the non-browser path) is used. The Python package
+# alone is ~50MB; we deliberately do NOT run `playwright install` so no
+# browser binaries get downloaded — that's only needed for StealthyFetcher.
+playwright>=1.45,<2.0
 lxml>=5.2
 beautifulsoup4>=4.12
