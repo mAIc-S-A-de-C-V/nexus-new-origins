@@ -512,9 +512,14 @@ const RollupsTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
 
   // Form state
   const [targetOtId, setTargetOtId] = useState<string>('');
-  const [dimensionsRaw, setDimensionsRaw] = useState<string>('activity');
-  // Metrics: comma-separated. Defaults match the original behaviour
-  // (count + count_distinct on case_id) when left blank.
+  const [dimensionsRaw, setDimensionsRaw] = useState<string>('');
+  // 'records' aggregates each record's data directly (right for sensor /
+  // telemetry analytics). 'events' aggregates the event audit log (right for
+  // process mining where case_count matters).
+  const [sourceMode, setSourceMode] = useState<'records' | 'events'>('records');
+  // Which `data->>` field carries the row's timestamp.
+  const [timeField, setTimeField] = useState<string>('time');
+  // Metrics: comma-separated. Default = count of events.
   const [metricsRaw, setMetricsRaw] = useState<string>('');
   // Default to last 7 days; user can stretch the FROM date for longer backfills.
   const todayIso = new Date().toISOString().slice(0, 16); // yyyy-MM-ddTHH:mm
@@ -556,7 +561,9 @@ const RollupsTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
           target_object_type_id: targetOtId,
           from_hour: new Date(fromHour).toISOString(),
           to_hour: new Date(toHour).toISOString(),
-          dimensions: dims.length > 0 ? dims : ['activity'],
+          dimensions: dims,
+          source_mode: sourceMode,
+          time_field: timeField || 'time',
           metrics: metricsRaw.trim() ? metricsRaw : null,
         }),
       });
@@ -615,6 +622,42 @@ const RollupsTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
           <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
             Tip: create an empty OT (e.g. <code>{objectType.name}_hourly_metrics</code>)
             in the Ontology Graph first; the first backfill auto-populates its schema.
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div>
+            <label style={labelStyle}>Source mode</label>
+            <select
+              style={inputStyle}
+              value={sourceMode}
+              onChange={(e) => setSourceMode(e.target.value as 'records' | 'events')}
+            >
+              <option value="records">Records (sensor / general analytics)</option>
+              <option value="events">Events (process mining)</option>
+            </select>
+            <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
+              Records mode reads each record's <code>data</code> directly — use
+              this for sensor/telemetry. Events mode aggregates the audit log,
+              for process-mining case analysis.
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>
+              Time field
+              {sourceMode === 'events' && ' (ignored in events mode)'}
+            </label>
+            <input
+              style={{ ...inputStyle, opacity: sourceMode === 'events' ? 0.5 : 1 }}
+              value={timeField}
+              onChange={(e) => setTimeField(e.target.value)}
+              placeholder="time"
+              disabled={sourceMode === 'events'}
+            />
+            <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
+              Which <code>data-&gt;&gt;</code> field holds the row's timestamp.
+              For your sensor data: <code>time</code>.
+            </div>
           </div>
         </div>
 

@@ -2959,6 +2959,8 @@ async def _rollup_aggregate(node, records_in: list[dict], pipeline: Pipeline) ->
         "hours_back": hours_back,
         "dimensions": dimensions,
         "metrics": metrics_cfg,
+        "source_mode": cfg.get("sourceMode") or cfg.get("source_mode") or "records",
+        "time_field": cfg.get("timeField") or cfg.get("time_field") or "time",
         "activity_attribute": cfg.get("activityAttribute") or cfg.get("activity_attribute") or "",
         "case_id_attribute": cfg.get("caseIdAttribute") or cfg.get("case_id_attribute") or "",
         "timestamp_attribute": cfg.get("timestampAttribute") or cfg.get("timestamp_attribute") or "",

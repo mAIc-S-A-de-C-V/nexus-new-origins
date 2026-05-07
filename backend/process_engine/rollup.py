@@ -418,3 +418,229 @@ async def rollup_recent(
         dimensions=dimensions,
         **kwargs,
     )
+
+
+# ── Records-based rollup ──────────────────────────────────────────────────────
+# The events-based rollup above is the right shape for process-mining (where
+# every event has a case_id, an activity name, and case lifecycle is the unit
+# of analysis). For sensor/telemetry data the events table doesn't help — what
+# you actually want is to aggregate the records table directly, because each
+# row IS a sensor reading and the dimensions/values you want live in `data`,
+# not in `attributes.record_snapshot`.
+#
+# This function reads from `object_records` (postgres-side, not timescale) and
+# performs the same hour-bucket GROUP BY + metric aggregation but against the
+# raw record fields.
+
+async def compute_records_rollup(
+    *,
+    pg_db: AsyncSession,                      # postgres session (object_records lives here)
+    source_object_type_id: str,
+    target_object_type_id: str,
+    tenant_id: str,
+    from_hour: datetime,
+    to_hour: datetime,
+    dimensions: list[str],
+    metrics: Optional[list[dict] | str] = None,
+    time_field: str = "time",                 # which `data->>` field to bucket by
+) -> dict:
+    """Roll up `object_records` rows for [from_hour, to_hour) into the target OT.
+
+    Reads each record's `data` JSONB column directly — dimensions resolve to
+    `data->>'<dim>'`, metric fields to numeric casts of `data->>'<field>'`,
+    bucketing on `(data->>:time_field)::timestamptz`.
+
+    Idempotent via composite `_rollup_key`. Returns the same summary shape
+    compute_hourly_rollup does so callers can swap modes without changing
+    their result handling.
+    """
+    started_at = time.perf_counter()
+    from_hour = _floor_hour(from_hour)
+    to_hour = _floor_hour(to_hour)
+    if to_hour <= from_hour:
+        return {"rows_written": 0, "hours_processed": 0, "elapsed_ms": 0.0,
+                "warning": "to_hour <= from_hour, nothing to do"}
+
+    # Validate field names — they go into the SQL string (not bind params)
+    # because PostgreSQL JSONB operators don't accept parameterized keys at
+    # the right semantic spot. We only allow conservative identifier chars.
+    safe_time_field = _safe_snapshot_field(time_field) or "time"
+
+    dim_select_parts: list[str] = []
+    dim_group_parts: list[str] = []
+    for i, dim in enumerate(dimensions):
+        safe = _safe_snapshot_field(dim)
+        if not safe:
+            continue
+        dim_select_parts.append(
+            f"COALESCE(NULLIF(data->>'{safe}', ''), '(unknown)') AS d_{i}"
+        )
+        dim_group_parts.append(f"d_{i}")
+
+    parsed_metrics = parse_metrics_string(metrics) if metrics else []
+    if not parsed_metrics:
+        parsed_metrics = [{"method": "count", "field": None, "name": "event_count"}]
+
+    metric_select_parts: list[str] = []
+    for i, m in enumerate(parsed_metrics):
+        method = m["method"]
+        field = m.get("field")
+        alias = f"m_{i}"
+        if method == "count":
+            metric_select_parts.append(f"COUNT(*) AS {alias}")
+        elif method == "count_distinct":
+            # No "case_id" concept here — best-effort distinct-by-source-id
+            metric_select_parts.append(f"COUNT(DISTINCT source_id) AS {alias}")
+        elif method in ("sum", "avg", "min", "max"):
+            safe = _safe_snapshot_field(field or "")
+            if not safe:
+                metric_select_parts.append(f"NULL::numeric AS {alias}")
+                continue
+            value_expr = (
+                f"CASE WHEN data->>'{safe}' ~ "
+                f"'^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                f"THEN (data->>'{safe}')::numeric ELSE NULL END"
+            )
+            metric_select_parts.append(f"{method.upper()}({value_expr}) AS {alias}")
+
+    metric_select_sql = ",\n            ".join(metric_select_parts)
+    extra_select = (", " + ", ".join(dim_select_parts)) if dim_select_parts else ""
+    extra_group = (", " + ", ".join(dim_group_parts)) if dim_group_parts else ""
+
+    # Regex-guarded timestamptz cast on data->>:time_field. Same pattern as
+    # records.py uses to keep one bad row from breaking the whole query.
+    ts_safe = (
+        f"(CASE WHEN data->>'{safe_time_field}' ~ "
+        f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+        f"THEN NULLIF(data->>'{safe_time_field}', '')::timestamptz "
+        f"ELSE NULL END)"
+    )
+
+    sql = text(f"""
+        SELECT
+            date_trunc('hour', {ts_safe}) AS hour_bucket
+            {extra_select},
+            {metric_select_sql}
+        FROM object_records
+        WHERE object_type_id = :source_ot
+          AND tenant_id = :tenant_id
+          AND {ts_safe} >= :from_hour
+          AND {ts_safe} <  :to_hour
+        GROUP BY hour_bucket {extra_group}
+        ORDER BY hour_bucket
+    """)
+
+    bind_params = {
+        "source_ot": source_object_type_id,
+        "tenant_id": tenant_id,
+        "from_hour": from_hour,
+        "to_hour": to_hour,
+    }
+
+    try:
+        await pg_db.execute(text("SET LOCAL work_mem = '256MB'"))
+    except Exception:
+        pass
+
+    try:
+        result = await asyncio.wait_for(
+            pg_db.execute(sql, bind_params),
+            timeout=ROLLUP_QUERY_TIMEOUT_S,
+        )
+        rows = result.fetchall()
+    except asyncio.TimeoutError:
+        logger.warning(
+            "records rollup timed out (%.0fs) source_ot=%s tenant=%s",
+            ROLLUP_QUERY_TIMEOUT_S, source_object_type_id, tenant_id,
+        )
+        raise
+
+    # Build records to ingest (same shape as the events-based rollup so the
+    # frontend doesn't have to switch column names based on source mode).
+    records: list[dict] = []
+    for r in rows:
+        if r.hour_bucket is None:
+            # Row whose time field wasn't a valid ISO timestamp — skip rather
+            # than write a "—" row to the rollup OT.
+            continue
+        hour_iso = r.hour_bucket.astimezone(timezone.utc).isoformat()
+        dim_values: list[str] = []
+        for i in range(len(dim_select_parts)):
+            v = getattr(r, f"d_{i}", None)
+            dim_values.append(str(v) if v is not None else "")
+        rec: dict = {
+            "_rollup_key": "|".join([hour_iso] + dim_values),
+            "hour_bucket": hour_iso,
+        }
+        for i, m in enumerate(parsed_metrics):
+            v = getattr(r, f"m_{i}", None)
+            col = m["name"]
+            if m["method"] in ("count", "count_distinct"):
+                rec[col] = int(v or 0)
+            else:
+                rec[col] = float(v) if v is not None else None
+        valid_dims = [d for d in dimensions if _safe_snapshot_field(d)]
+        for dim, value in zip(valid_dims, dim_values):
+            rec[dim] = value
+        records.append(rec)
+
+    # Same ingest shape as events-based rollup — upsert by _rollup_key.
+    rows_written = 0
+    if records:
+        try:
+            async with httpx.AsyncClient(timeout=ROLLUP_INGEST_TIMEOUT_S) as client:
+                resp = await client.post(
+                    f"{ONTOLOGY_URL}/object-types/{target_object_type_id}/records/ingest",
+                    json={
+                        "records": records,
+                        "pk_field": "_rollup_key",
+                        "pipeline_id": "rollup-hourly",
+                    },
+                    headers={"x-tenant-id": tenant_id},
+                )
+                if resp.is_success:
+                    rows_written = int((resp.json() or {}).get("ingested", len(records)))
+                else:
+                    raise RuntimeError(
+                        f"Ontology ingest returned {resp.status_code}: {resp.text[:200]}"
+                    )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Could not reach ontology service: {exc}") from exc
+
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    return {
+        "rows_written": rows_written,
+        "hours_processed": int((to_hour - from_hour).total_seconds() // 3600),
+        "from_hour": from_hour.isoformat(),
+        "to_hour": to_hour.isoformat(),
+        "dimensions": [d for d in dimensions if _safe_snapshot_field(d)],
+        "source_mode": "records",
+        "time_field": safe_time_field,
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
+
+
+async def records_rollup_recent(
+    *,
+    pg_db: AsyncSession,
+    source_object_type_id: str,
+    target_object_type_id: str,
+    tenant_id: str,
+    hours_back: int,
+    dimensions: list[str],
+    **kwargs,
+) -> dict:
+    """Records-mode equivalent of rollup_recent."""
+    now = datetime.now(timezone.utc)
+    to_hour = _floor_hour(now)
+    from_hour = to_hour - timedelta(hours=max(1, int(hours_back)))
+    return await compute_records_rollup(
+        pg_db=pg_db,
+        source_object_type_id=source_object_type_id,
+        target_object_type_id=target_object_type_id,
+        tenant_id=tenant_id,
+        from_hour=from_hour,
+        to_hour=to_hour,
+        dimensions=dimensions,
+        **kwargs,
+    )
