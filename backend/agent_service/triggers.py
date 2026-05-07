@@ -204,55 +204,67 @@ async def hydrate_rows(object_type: str, row_ids: list[str], tenant_id: str) -> 
     """Fetch full row data via analytics_service /explore/query.
 
     `object_type` may be either an OT UUID (preferred — pipeline_service
-    passes target_object_type_id) or a slug. Falls back to ID-only stubs
-    if the lookup fails so the trigger still fires rather than silently
-    dropping the event.
+    passes target_object_type_id) or a slug. analytics /explore/query does
+    not support an "in" op, so we fan out N parallel "eq" lookups against
+    the source-id field. Falls back to ID-only stubs on failure.
     """
     if not row_ids or not object_type:
         return []
     headers = {"x-tenant-id": tenant_id}
-    try:
-        async with httpx.AsyncClient(timeout=INTERNAL_TIMEOUT_S) as client:
-            ot_id = object_type
-            # Resolve slug → UUID if necessary (UUIDs contain dashes; slugs
-            # historically don't, so this is an OK heuristic for v1).
-            if "-" not in object_type or len(object_type) < 30:
-                try:
-                    list_resp = await client.get(
-                        f"{ONTOLOGY_URL}/object-types",
-                        headers=headers,
-                    )
-                    if list_resp.is_success:
-                        for ot in list_resp.json() or []:
-                            if ot.get("name") == object_type:
-                                ot_id = ot.get("id") or object_type
-                                break
-                except Exception:
-                    pass
-
-            resp = await client.post(
-                f"{ANALYTICS_URL}/explore/query",
-                headers=headers,
-                json={
-                    "object_type_id": ot_id,
-                    "filters": [{"field": "_source_id", "op": "in", "value": row_ids}],
-                    "limit": max(len(row_ids), 1),
-                },
-            )
-            if resp.is_success:
-                data = resp.json() or {}
-                rows = data.get("rows") or []
-                if rows:
-                    return list(rows)
-            else:
-                logger.warning(
-                    "hydrate_rows query failed (%s): %s",
-                    resp.status_code, resp.text[:200],
+    async with httpx.AsyncClient(timeout=INTERNAL_TIMEOUT_S) as client:
+        # Resolve slug → UUID if necessary (UUIDs contain dashes; slugs
+        # historically don't, so this is a serviceable heuristic).
+        ot_id = object_type
+        if "-" not in object_type or len(object_type) < 30:
+            try:
+                list_resp = await client.get(
+                    f"{ONTOLOGY_URL}/object-types",
+                    headers=headers,
                 )
-    except Exception:
-        logger.exception("hydrate_rows failed")
-    # Fallback so the run still goes through
-    return [{"_source_id": rid} for rid in row_ids]
+                if list_resp.is_success:
+                    for ot in list_resp.json() or []:
+                        if ot.get("name") == object_type:
+                            ot_id = ot.get("id") or object_type
+                            break
+            except Exception:
+                pass
+
+        async def _fetch_one(rid: str) -> Optional[dict]:
+            try:
+                resp = await client.post(
+                    f"{ANALYTICS_URL}/explore/query",
+                    headers=headers,
+                    json={
+                        "object_type_id": ot_id,
+                        "filters": [{"field": "_source_id", "op": "eq", "value": str(rid)}],
+                        "limit": 1,
+                    },
+                )
+                if resp.is_success:
+                    data = resp.json() or {}
+                    rows = data.get("rows") or []
+                    if rows:
+                        return rows[0]
+                else:
+                    logger.warning(
+                        "hydrate one (%s) failed: HTTP %s %s",
+                        rid, resp.status_code, resp.text[:160],
+                    )
+            except Exception:
+                logger.exception("hydrate one (%s) raised", rid)
+            return None
+
+        results = await asyncio.gather(*(_fetch_one(rid) for rid in row_ids))
+
+    out: list[dict] = []
+    for rid, row in zip(row_ids, results):
+        if row is not None:
+            out.append(row)
+        else:
+            # Stub so the trigger still attempts a fire — agent will see at
+            # least the source id and can degrade gracefully.
+            out.append({"_source_id": rid})
+    return out
 
 
 # ── Firing ───────────────────────────────────────────────────────────────────
@@ -398,19 +410,22 @@ async def fire_trigger(
             f"pipeline {pipeline_id}. Process each one:\n\n"
             f"```json\n{_json.dumps(after_dedupe, ensure_ascii=False, default=str, indent=2)}\n```"
         )
-        ok, _ = await _fire_one(
+        ok, msg = await _fire_one(
             agent=agent,
             tenant_id=trigger.tenant_id,
             title=f"[Trigger] {trigger.name} — {len(after_dedupe)} row(s)",
             user_message=body,
         )
         summary["fired" if ok else "errors"] = 1
+        if not ok:
+            summary["error_samples"] = [msg]
         return summary
 
     # per_row mode — bound parallelism
     sem = asyncio.Semaphore(max(1, trigger.max_concurrent or 5))
     fired = 0
     errors = 0
+    error_samples: list[str] = []
     lock = asyncio.Lock()
 
     async def _worker(row: dict) -> None:
@@ -425,7 +440,7 @@ async def fire_trigger(
                     f"Process it:\n\n```json\n{_json.dumps(row, ensure_ascii=False, default=str, indent=2)}\n```"
                 )
             label = str(row.get(trigger.dedupe_field) or row.get("_id") or "row")[:40]
-            ok, _ = await _fire_one(
+            ok, msg = await _fire_one(
                 agent=agent,
                 tenant_id=trigger.tenant_id,
                 title=f"[Trigger] {trigger.name} — {label}",
@@ -436,10 +451,14 @@ async def fire_trigger(
                     fired += 1
                 else:
                     errors += 1
+                    if len(error_samples) < 3 and msg:
+                        error_samples.append(f"{label}: {msg}")
 
     await asyncio.gather(*(_worker(r) for r in after_dedupe))
     summary["fired"] = fired
     summary["errors"] = errors
+    if error_samples:
+        summary["error_samples"] = error_samples
     return summary
 
 

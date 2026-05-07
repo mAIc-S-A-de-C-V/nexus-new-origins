@@ -1330,6 +1330,21 @@ const TriggersPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
                       )}
                     </div>
                   )}
+                  {Array.isArray((t.last_fire_summary as Record<string, unknown> | null | undefined)?.error_samples) &&
+                   ((t.last_fire_summary as Record<string, unknown>).error_samples as string[]).length > 0 && (
+                    <details style={{ marginTop: 6, fontSize: 11 }}>
+                      <summary style={{ color: C.error, cursor: 'pointer' }}>
+                        {((t.last_fire_summary as Record<string, unknown>).error_samples as string[]).length} error sample(s)
+                      </summary>
+                      <pre style={{
+                        margin: '4px 0 0', padding: 8, fontSize: 10,
+                        backgroundColor: '#FEF2F2', border: `1px solid #FECACA`,
+                        borderRadius: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      }}>
+                        {((t.last_fire_summary as Record<string, unknown>).error_samples as string[]).join('\n')}
+                      </pre>
+                    </details>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button onClick={() => handleTestFire(t)}
