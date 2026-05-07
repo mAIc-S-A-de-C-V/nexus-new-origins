@@ -1566,7 +1566,21 @@ async def _run_pivot_query(
     t0 = time.perf_counter()
 
     # ── Fast path: count via SQL GROUP BY ───────────────────────────────────
-    if metric == "count":
+    if metric in ("count", "count_events"):
+        # `count`        — COUNT(DISTINCT case_id) — distinct cases per group.
+        #                  Right semantic for typical process mining (orders,
+        #                  tickets, customers).
+        # `count_events` — COUNT(*) — every event row counted independently.
+        #                  Right semantic for sensor / telemetry data where
+        #                  case_id is auto-generated per row anyway and the
+        #                  DISTINCT pass just burns memory on a redundant
+        #                  dedup.
+        agg_expr = (
+            "COUNT(DISTINCT resolved_case_id)"
+            if metric == "count"
+            else "COUNT(*)"
+        )
+
         # Build SELECT/GROUP BY expressions for each dimension. Each dim_*
         # expression operates on the columns produced by the _events CTE.
         dim_exprs: list[str] = []
@@ -1581,7 +1595,7 @@ async def _run_pivot_query(
         select_parts = []
         for i, expr in enumerate(dim_exprs):
             select_parts.append(f"{expr} AS d_{i}")
-        select_parts.append("COUNT(DISTINCT resolved_case_id) AS value")
+        select_parts.append(f"{agg_expr} AS value")
 
         group_by = ", ".join(f"d_{i}" for i in range(len(dim_exprs)))
 
@@ -1611,6 +1625,12 @@ async def _run_pivot_query(
 
         merged_params = {**bind_params, **dim_params}
         try:
+            # Bump work_mem just for this transaction so the GROUP BY hash
+            # agg stays in RAM on tables with millions of rows. The
+            # container has 2GB headroom so 256MB for one query is safe;
+            # default 32MB blows the hash table out to disk above ~500k
+            # input rows.
+            await db.execute(text("SET LOCAL work_mem = '256MB'"))
             result = await asyncio.wait_for(
                 db.execute(sql, merged_params),
                 timeout=PIVOT_QUERY_TIMEOUT_S,
