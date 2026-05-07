@@ -183,6 +183,13 @@ async def init_db():
             "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0",
             "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS duration_ms INTEGER",
+            # These three were added to the model later but never migrated, so
+            # any tenant that existed before the column-addition crashes the
+            # moment a non-test autonomous run tries to persist (scheduler or
+            # trigger fire). Bring older DBs forward.
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS final_text TEXT",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS pipeline_id VARCHAR",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS pipeline_run_id VARCHAR",
             # Make sure pipeline_triggers picks up later-added columns on existing dbs
             "ALTER TABLE pipeline_triggers ADD COLUMN IF NOT EXISTS last_fire_summary JSON",
         ]:
