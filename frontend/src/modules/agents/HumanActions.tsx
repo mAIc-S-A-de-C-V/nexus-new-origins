@@ -3,7 +3,7 @@ import {
   CheckCircle, XCircle, Clock, Bot, User, AlertTriangle, AlertCircle,
   Plus, Trash2, Edit2, Shield, ToggleLeft, ToggleRight,
   Filter, RefreshCw, ChevronRight, Inbox, History, Settings,
-  ArrowUpCircle, Info, Layers,
+  ArrowUpCircle, Info, Layers, ExternalLink,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useHumanActionsStore, ActionExecution } from '../../store/humanActionsStore';
@@ -340,6 +340,124 @@ function RichText({ text, style }: { text: string; style?: React.CSSProperties }
   );
 }
 
+// ── Smart value renderer for proposed inputs ─────────────────────────────────
+// Replaces a flat JSON.stringify() dump. Recognizes:
+//   - URLs           → clickable link with external-link icon
+//   - null/empty     → em dash
+//   - boolean        → coloured ✓/✗
+//   - array of objects (uniform-ish) → real <table> with column union
+//   - array of primitives → comma-separated
+//   - single object  → key/value mini-grid
+//   - primitive      → inline string
+
+const RichValue: React.FC<{ value: unknown; depth?: number }> = ({ value, depth = 0 }) => {
+  if (value === null || value === undefined || value === '') {
+    return <span style={{ color: C.dim }}>—</span>;
+  }
+  if (typeof value === 'boolean') {
+    return value
+      ? <span style={{ color: C.success, fontWeight: 600 }}>✓</span>
+      : <span style={{ color: C.dim }}>✗</span>;
+  }
+  if (typeof value === 'number') {
+    return <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value.toLocaleString()}</span>;
+  }
+  if (typeof value === 'string') {
+    if (/^https?:\/\//i.test(value)) {
+      return (
+        <a href={value} target="_blank" rel="noreferrer noopener" style={{
+          color: C.accent, textDecoration: 'none', display: 'inline-flex',
+          alignItems: 'center', gap: 4, wordBreak: 'break-all',
+        }}>
+          {value}
+          <ExternalLink size={11} style={{ flexShrink: 0 }} />
+        </a>
+      );
+    }
+    return <>{value}</>;
+  }
+  // Array
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span style={{ color: C.dim }}>(empty)</span>;
+    const allObj = value.every(v => v !== null && typeof v === 'object' && !Array.isArray(v));
+    if (allObj && depth === 0) {
+      // union of keys preserving first-seen order
+      const cols: string[] = [];
+      const seen = new Set<string>();
+      for (const row of value as Record<string, unknown>[]) {
+        for (const k of Object.keys(row)) {
+          if (!seen.has(k)) { seen.add(k); cols.push(k); }
+        }
+      }
+      return (
+        <div style={{ overflowX: 'auto', maxWidth: '100%', border: `1px solid ${C.borderLight}`, borderRadius: 4 }}>
+          <table style={{ borderCollapse: 'collapse', fontSize: 11, width: '100%' }}>
+            <thead>
+              <tr style={{ backgroundColor: C.bg }}>
+                {cols.map(c => (
+                  <th key={c} style={{
+                    textAlign: 'left', padding: '6px 10px', fontWeight: 600,
+                    color: C.muted, borderBottom: `1px solid ${C.border}`,
+                    fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                    fontSize: 10, textTransform: 'lowercase', whiteSpace: 'nowrap',
+                  }}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(value as Record<string, unknown>[]).map((row, i) => (
+                <tr key={i} style={{
+                  borderBottom: i < value.length - 1 ? `1px solid ${C.borderLight}` : 'none',
+                  backgroundColor: i % 2 === 0 ? C.panel : C.bg,
+                }}>
+                  {cols.map(c => (
+                    <td key={c} style={{
+                      padding: '6px 10px', verticalAlign: 'top',
+                      wordBreak: 'break-word', maxWidth: 320,
+                    }}>
+                      <RichValue value={row[c]} depth={depth + 1} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    // primitives or nested arrays — comma-separated
+    return (
+      <span>
+        {(value as unknown[]).map((v, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <span style={{ color: C.dim }}>, </span>}
+            <RichValue value={v} depth={depth + 1} />
+          </React.Fragment>
+        ))}
+      </span>
+    );
+  }
+  // Plain object
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) return <span style={{ color: C.dim }}>{'{}'}</span>;
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 12px',
+      fontSize: 11, alignItems: 'baseline',
+    }}>
+      {entries.map(([k, v]) => (
+        <React.Fragment key={k}>
+          <div style={{
+            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+            color: C.muted, fontWeight: 600, whiteSpace: 'nowrap',
+          }}>{k}</div>
+          <div style={{ minWidth: 0 }}><RichValue value={v} depth={depth + 1} /></div>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
+
 // ── Detail Panel (right side) ─────────────────────────────────────────────────
 
 const DetailPanel: React.FC<{
@@ -613,9 +731,8 @@ const DetailPanel: React.FC<{
                   <div style={{ width: 160, flexShrink: 0, fontWeight: 600, color: C.muted, fontFamily: 'monospace', fontSize: 11 }}>
                     {k}
                   </div>
-                  <div style={{ color: C.text, fontFamily: typeof v === 'object' ? 'monospace' : 'inherit',
-                    fontSize: typeof v === 'object' ? 11 : 12, wordBreak: 'break-word' }}>
-                    {typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v ?? '')}
+                  <div style={{ color: C.text, fontSize: 12, wordBreak: 'break-word', flex: 1, minWidth: 0 }}>
+                    <RichValue value={v} />
                   </div>
                 </div>
               ))
