@@ -201,19 +201,19 @@ async def dedupe_rows(
 # ── Row hydration ────────────────────────────────────────────────────────────
 
 async def hydrate_rows(object_type: str, row_ids: list[str], tenant_id: str) -> list[dict]:
-    """Fetch full row data via analytics_service /explore/query.
+    """Fetch full row data via ontology_service's by-source-id endpoint.
 
-    `object_type` may be either an OT UUID (preferred — pipeline_service
-    passes target_object_type_id) or a slug. analytics /explore/query does
-    not support an "in" op, so we fan out N parallel "eq" lookups against
-    the source-id field. Falls back to ID-only stubs on failure.
+    `object_type` is the OT UUID (pipeline_service passes target_object_type_id).
+    A slug is also accepted and resolved upfront. We avoid analytics_service's
+    /explore/query because its filter engine treats every field as a JSONB
+    extract from `data`, but `source_id` is a real column on object_records —
+    so a `_source_id eq X` filter via analytics never matches.
     """
     if not row_ids or not object_type:
         return []
     headers = {"x-tenant-id": tenant_id}
     async with httpx.AsyncClient(timeout=INTERNAL_TIMEOUT_S) as client:
-        # Resolve slug → UUID if necessary (UUIDs contain dashes; slugs
-        # historically don't, so this is a serviceable heuristic).
+        # Resolve slug → UUID if necessary
         ot_id = object_type
         if "-" not in object_type or len(object_type) < 30:
             try:
@@ -231,23 +231,21 @@ async def hydrate_rows(object_type: str, row_ids: list[str], tenant_id: str) -> 
 
         async def _fetch_one(rid: str) -> Optional[dict]:
             try:
-                resp = await client.post(
-                    f"{ANALYTICS_URL}/explore/query",
+                resp = await client.get(
+                    f"{ONTOLOGY_URL}/object-types/{ot_id}/records/{rid}",
                     headers=headers,
-                    json={
-                        "object_type_id": ot_id,
-                        "filters": [{"field": "_source_id", "op": "eq", "value": str(rid)}],
-                        "limit": 1,
-                    },
                 )
                 if resp.is_success:
-                    data = resp.json() or {}
-                    rows = data.get("rows") or []
-                    if rows:
-                        return rows[0]
-                else:
+                    body = resp.json() or {}
+                    record = body.get("record")
+                    if isinstance(record, dict):
+                        # Surface metadata the way the agent expects to see it
+                        out_row = dict(record)
+                        out_row["_source_id"] = body.get("source_id", rid)
+                        return out_row
+                elif resp.status_code != 404:
                     logger.warning(
-                        "hydrate one (%s) failed: HTTP %s %s",
+                        "hydrate one (%s) HTTP %s %s",
                         rid, resp.status_code, resp.text[:160],
                     )
             except Exception:
@@ -261,9 +259,7 @@ async def hydrate_rows(object_type: str, row_ids: list[str], tenant_id: str) -> 
         if row is not None:
             out.append(row)
         else:
-            # Stub so the trigger still attempts a fire — agent will see at
-            # least the source id and can degrade gracefully.
-            out.append({"_source_id": rid})
+            out.append({"_source_id": rid})  # stub fallback so the trigger still fires
     return out
 
 
