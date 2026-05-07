@@ -20,7 +20,7 @@ const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localh
 const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8002';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
 
-type TabId = 'properties' | 'data' | 'pipeline' | 'versions' | 'diff' | 'links' | 'correlate' | 'pii' | 'quality' | 'comments';
+type TabId = 'properties' | 'data' | 'pipeline' | 'versions' | 'diff' | 'links' | 'correlate' | 'pii' | 'quality' | 'comments' | 'rollups';
 
 interface ObjectTypePanelProps {
   objectType: ObjectType;
@@ -36,6 +36,7 @@ const BASE_TABS: { id: TabId; label: string }[] = [
   { id: 'correlate', label: 'Correlate' },
   { id: 'pii', label: 'PII Scan' },
   { id: 'quality', label: 'Quality' },
+  { id: 'rollups', label: 'Rollups' },
   { id: 'comments', label: 'Comments' },
 ];
 
@@ -482,6 +483,238 @@ const QualityTab: React.FC<{ objectTypeId: string }> = ({ objectTypeId }) => {
           </div>
         );
       })}
+    </div>
+  );
+};
+
+// ── Rollups Tab ───────────────────────────────────────────────────────────────
+// Pre-aggregate this OT's events into a destination OT once per hour. Useful
+// for high-volume tables (sensor telemetry, etc.) where the dashboard would
+// otherwise scan millions of raw events per chart.
+
+const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
+
+interface RollupRunResult {
+  rows_written: number;
+  hours_processed: number;
+  from_hour: string;
+  to_hour: string;
+  dimensions: string[];
+  elapsed_ms: number;
+}
+
+const RollupsTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
+  const { objectTypes, fetchObjectTypes } = useOntologyStore();
+  const tenantId = getTenantId() || 'tenant-001';
+
+  // Other OTs in this tenant — candidates for the target OT picker.
+  const candidateTargets = objectTypes.filter((o) => o.id !== objectType.id);
+
+  // Form state
+  const [targetOtId, setTargetOtId] = useState<string>('');
+  const [dimensionsRaw, setDimensionsRaw] = useState<string>('activity');
+  // Default to last 7 days; user can stretch the FROM date for longer backfills.
+  const todayIso = new Date().toISOString().slice(0, 16); // yyyy-MM-ddTHH:mm
+  const sevenAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0, 16);
+  const [fromHour, setFromHour] = useState<string>(sevenAgoIso);
+  const [toHour, setToHour] = useState<string>(todayIso);
+
+  // Run state
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<RollupRunResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (objectTypes.length === 0) fetchObjectTypes();
+  }, []);
+
+  const handleRun = async () => {
+    if (!targetOtId) {
+      setError('Pick a target object type to write rollup rows into.');
+      return;
+    }
+    const dims = dimensionsRaw
+      .split(',')
+      .map((d) => d.trim())
+      .filter(Boolean);
+    setRunning(true);
+    setResult(null);
+    setError(null);
+    try {
+      const resp = await fetch(`${PROCESS_API}/process/rollups/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tenant-id': tenantId,
+        },
+        body: JSON.stringify({
+          source_object_type_id: objectType.id,
+          target_object_type_id: targetOtId,
+          from_hour: new Date(fromHour).toISOString(),
+          to_hour: new Date(toHour).toISOString(),
+          dimensions: dims.length > 0 ? dims : ['activity'],
+        }),
+      });
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${txt.slice(0, 300)}`);
+      }
+      const data = (await resp.json()) as RollupRunResult;
+      setResult(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const targetOt = candidateTargets.find((o) => o.id === targetOtId);
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', height: 32, padding: '0 10px', fontSize: 12,
+    border: '1px solid #E2E8F0', borderRadius: 4, backgroundColor: '#FFF',
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 11, color: '#64748B', display: 'block', marginBottom: 4,
+    textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600,
+  };
+
+  return (
+    <div style={{ padding: 20, maxWidth: 720 }}>
+      <div style={{ marginBottom: 18 }}>
+        <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0, marginBottom: 4 }}>
+          Backfill rollup
+        </h3>
+        <p style={{ fontSize: 12, color: '#64748B', margin: 0, lineHeight: 1.5 }}>
+          Pre-aggregate this object type's events by hour into a destination OT,
+          one row per (hour, dimension) tuple. Re-running for the same window
+          replaces existing rows — safe to repeat.
+        </p>
+      </div>
+
+      <div style={{ display: 'grid', gap: 14 }}>
+        <div>
+          <label style={labelStyle}>Target OT (where rollup rows are written)</label>
+          <select
+            style={inputStyle}
+            value={targetOtId}
+            onChange={(e) => setTargetOtId(e.target.value)}
+          >
+            <option value="">— pick an empty OT to write into —</option>
+            {[...candidateTargets]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+          </select>
+          <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
+            Tip: create an empty OT (e.g. <code>{objectType.name}_hourly_metrics</code>)
+            in the Ontology Graph first; the first backfill auto-populates its schema.
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div>
+            <label style={labelStyle}>From (hour boundary)</label>
+            <input
+              style={inputStyle}
+              type="datetime-local"
+              value={fromHour}
+              onChange={(e) => setFromHour(e.target.value)}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>To (exclusive)</label>
+            <input
+              style={inputStyle}
+              type="datetime-local"
+              value={toHour}
+              onChange={(e) => setToHour(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label style={labelStyle}>Dimensions (comma-separated)</label>
+          <input
+            style={inputStyle}
+            value={dimensionsRaw}
+            onChange={(e) => setDimensionsRaw(e.target.value)}
+            placeholder="activity, resource"
+          />
+          <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
+            Built-ins: <code>activity</code>, <code>resource</code>, <code>month</code>, <code>day_of_week</code>.
+            Anything else is read from <code>record_snapshot.&lt;name&gt;</code>.
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+          <button
+            onClick={handleRun}
+            disabled={running || !targetOtId}
+            style={{
+              height: 32, padding: '0 14px', fontSize: 12, fontWeight: 600,
+              border: 'none', borderRadius: 4,
+              backgroundColor: running || !targetOtId ? '#94A3B8' : '#2563EB',
+              color: '#FFF',
+              cursor: running || !targetOtId ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {running ? 'Running backfill…' : 'Run backfill'}
+          </button>
+          {running && (
+            <span style={{ fontSize: 11, color: '#64748B' }}>
+              This can take 1–5 minutes for windows ≥ 30 days. Don't close this tab.
+            </span>
+          )}
+        </div>
+
+        {result && (
+          <div style={{
+            border: '1px solid #BFDBFE', backgroundColor: '#EFF6FF',
+            borderRadius: 6, padding: 14, fontSize: 12, color: '#1E40AF',
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>✓ Backfill complete</div>
+            <div>
+              Wrote <strong>{result.rows_written.toLocaleString()}</strong> rollup
+              {' '}rows across <strong>{result.hours_processed.toLocaleString()}</strong> hours
+              {' '}in <strong>{(result.elapsed_ms / 1000).toFixed(1)}s</strong>.
+            </div>
+            <div style={{ marginTop: 6, color: '#475569' }}>
+              Window: {new Date(result.from_hour).toLocaleString()} →
+              {' '}{new Date(result.to_hour).toLocaleString()}
+              {' '}· dims: {result.dimensions.join(', ') || '(none)'}
+            </div>
+            {targetOt && (
+              <div style={{ marginTop: 8, color: '#475569' }}>
+                Open <strong>{targetOt.name}</strong> → Data tab to see the rolled-up rows.
+              </div>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <div style={{
+            border: '1px solid #FECACA', backgroundColor: '#FEF2F2',
+            borderRadius: 6, padding: 14, fontSize: 12, color: '#991B1B',
+            whiteSpace: 'pre-wrap',
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Backfill failed</div>
+            {error}
+          </div>
+        )}
+      </div>
+
+      <div style={{
+        marginTop: 28, padding: 12, fontSize: 11, color: '#64748B',
+        backgroundColor: '#F8FAFC', borderRadius: 6, border: '1px solid #E2E8F0',
+      }}>
+        <strong>Want this on a schedule?</strong> The same endpoint also has a
+        {' '}<code>/run-recent</code> sibling that re-runs the last N hours.
+        Add a cron entry on the host to keep the rollup current. UI for managed
+        scheduling + run history is on the way.
+      </div>
     </div>
   );
 };
@@ -1359,6 +1592,9 @@ export const ObjectTypePanel: React.FC<ObjectTypePanelProps> = ({ objectType, on
         )}
         {activeTab === 'quality' && (
           <QualityTab objectTypeId={objectType.id} />
+        )}
+        {activeTab === 'rollups' && (
+          <RollupsTab objectType={objectType} />
         )}
         {activeTab === 'comments' && (
           <CommentsPanel entityType="object_type" entityId={objectType.id} compact />
