@@ -265,16 +265,84 @@ async def hydrate_rows(object_type: str, row_ids: list[str], tenant_id: str) -> 
 
 # ── Firing ───────────────────────────────────────────────────────────────────
 
+def _build_steps_and_calls(new_messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Walk the run's message trace and build:
+      - steps    : full ordered timeline (thinking + tool_call + tool_result)
+                   that powers the run drilldown's "All steps" view
+      - tool_calls: condensed [{tool, input, result}] list for the run summary
+    Mirrors what /agents/{id}/test does so trigger-fired runs render the same.
+    """
+    steps: list[dict] = []
+    tool_calls: list[dict] = []
+    pending_tool: dict[str, dict] = {}  # tool_use_id -> tool_call entry
+
+    for msg in new_messages or []:
+        role = msg.get("role")
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        if role == "assistant":
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text = (block.get("text") or "").strip()
+                    if text:
+                        steps.append({"kind": "thinking", "text": text[:4000]})
+                elif block.get("type") == "tool_use":
+                    inp = block.get("input", {})
+                    trimmed = (
+                        {k: (str(v)[:300] if isinstance(v, str) and len(str(v)) > 300 else v)
+                         for k, v in inp.items()}
+                        if isinstance(inp, dict) else inp
+                    )
+                    entry = {
+                        "tool": block.get("name"),
+                        "tool_use_id": block.get("id", ""),
+                        "input": trimmed,
+                    }
+                    pending_tool[block.get("id", "")] = entry
+                    tool_calls.append(entry)
+                    steps.append({
+                        "kind": "tool_call",
+                        "tool": block.get("name"),
+                        "input": trimmed,
+                        "tool_use_id": block.get("id", ""),
+                    })
+        elif role == "user":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tid = block.get("tool_use_id", "")
+                    raw = block.get("content", "")
+                    if isinstance(raw, list):
+                        raw = " ".join(b.get("text", "") for b in raw if isinstance(b, dict))
+                    short = str(raw)[:500]
+                    steps.append({
+                        "kind": "tool_result",
+                        "tool_use_id": tid,
+                        "result": short,
+                    })
+                    if tid in pending_tool:
+                        pending_tool[tid]["result"] = short
+    # Strip tool_use_id from tool_calls (it's noise for the summary view)
+    for tc in tool_calls:
+        tc.pop("tool_use_id", None)
+    return steps, tool_calls
+
+
 async def _fire_one(
     *,
     agent: AgentConfigRow,
     tenant_id: str,
     title: str,
     user_message: str,
+    pipeline_id: Optional[str] = None,
+    pipeline_run_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Create a thread + invoke run_agent + persist run record. Returns
-    (ok, error_or_final_text). Mirrors scheduler.fire_schedule's pattern so
-    trigger-fired runs show up in the same Agent Runs history view."""
+    (ok, error_or_final_text). Captures the full reasoning trace so the
+    Operations → Agents drilldown renders the same as a Test-panel run."""
+    started_at = datetime.now(timezone.utc)
     try:
         async with AsyncSessionLocal() as db:
             thread = AgentThreadRow(
@@ -309,30 +377,40 @@ async def _fire_one(
             knowledge_scope=agent.knowledge_scope,
         )
 
-        # Persist a run record for observability — same shape scheduler uses
-        tool_calls: list[dict] = []
-        for msg in outcome.get("new_messages", []) or []:
-            content = msg.get("content", [])
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        tool_calls.append({"tool": block.get("name")})
+        steps, tool_calls = _build_steps_and_calls(outcome.get("new_messages", []) or [])
+        final_text = outcome.get("final_text", "") or ""
+        duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
 
         async with AsyncSessionLocal() as db:
-            db.add(AgentRunRow(
+            run_row = AgentRunRow(
                 id=str(uuid4()),
                 agent_id=agent.id,
                 thread_id=thread_id,
                 tenant_id=tenant_id,
                 iterations=outcome.get("iterations", 0),
                 tool_calls=tool_calls,
-                final_text_len=len(outcome.get("final_text", "")),
+                final_text_len=len(final_text),
                 is_test=False,
                 error=outcome.get("error"),
-            ))
+            )
+            # Extended fields — wrapped in try so older DBs still missing one
+            # of these columns don't fail the whole insert.
+            try:
+                run_row.steps = steps
+                run_row.final_text = final_text[:8000] if final_text else None
+                run_row.input_tokens = int(outcome.get("input_tokens") or 0)
+                run_row.output_tokens = int(outcome.get("output_tokens") or 0)
+                run_row.cache_creation_tokens = int(outcome.get("cache_creation_tokens") or 0)
+                run_row.cache_read_tokens = int(outcome.get("cache_read_tokens") or 0)
+                run_row.duration_ms = duration_ms
+                run_row.pipeline_id = pipeline_id
+                run_row.pipeline_run_id = pipeline_run_id
+            except Exception:
+                pass
+            db.add(run_row)
             await db.commit()
 
-        return True, str(outcome.get("final_text", ""))[:240]
+        return True, final_text[:240]
     except Exception as exc:
         logger.exception("trigger fire failed")
         return False, str(exc)[:240]
@@ -411,6 +489,8 @@ async def fire_trigger(
             tenant_id=trigger.tenant_id,
             title=f"[Trigger] {trigger.name} — {len(after_dedupe)} row(s)",
             user_message=body,
+            pipeline_id=pipeline_id,
+            pipeline_run_id=run_id,
         )
         summary["fired" if ok else "errors"] = 1
         if not ok:
@@ -441,6 +521,8 @@ async def fire_trigger(
                 tenant_id=trigger.tenant_id,
                 title=f"[Trigger] {trigger.name} — {label}",
                 user_message=user_message,
+                pipeline_id=pipeline_id,
+                pipeline_run_id=run_id,
             )
             async with lock:
                 if ok:

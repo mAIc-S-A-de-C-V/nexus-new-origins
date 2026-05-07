@@ -62,6 +62,12 @@ async def run_agent(
     new_messages = [{"role": "user", "content": new_user_message}]
     iterations = 0
     final_text = ""
+    # Per-run token counters so callers (scheduler, triggers, the test endpoint)
+    # can persist real numbers onto AgentRunRow instead of always-zero defaults.
+    input_tokens_total = 0
+    output_tokens_total = 0
+    cache_creation_total = 0
+    cache_read_total = 0
 
     while iterations < max_iterations:
         iterations += 1
@@ -75,6 +81,10 @@ async def run_agent(
         )
         track_token_usage(tenant_id, "agent_service", cfg.model,
                           turn["input_tokens"], turn["output_tokens"])
+        input_tokens_total += int(turn.get("input_tokens") or 0)
+        output_tokens_total += int(turn.get("output_tokens") or 0)
+        cache_creation_total += int(turn.get("cache_creation_input_tokens") or 0)
+        cache_read_total += int(turn.get("cache_read_input_tokens") or 0)
 
         assistant_content: list[dict] = []
         final_text = turn["text"] or final_text
@@ -96,6 +106,10 @@ async def run_agent(
                 "new_messages": new_messages,
                 "final_text": final_text,
                 "iterations": iterations,
+                "input_tokens": input_tokens_total,
+                "output_tokens": output_tokens_total,
+                "cache_creation_tokens": cache_creation_total,
+                "cache_read_tokens": cache_read_total,
             }
 
         tool_results = []
@@ -115,6 +129,10 @@ async def run_agent(
         "new_messages": new_messages,
         "final_text": final_text,
         "iterations": iterations,
+        "input_tokens": input_tokens_total,
+        "output_tokens": output_tokens_total,
+        "cache_creation_tokens": cache_creation_total,
+        "cache_read_tokens": cache_read_total,
         "error": f"Reached max iterations ({max_iterations})",
     }
 
