@@ -620,11 +620,27 @@ services:
     image: timescale/timescaledb:latest-pg16
     ports:
       - "5434:5432"
-    mem_limit: 768m
+    # 768m was below what the image's auto-tuned shared_buffers requested,
+    # so any heavy GROUP BY / index build triggered the kernel OOM-killer
+    # mid-query. 2g gives Postgres enough headroom for sort + hash
+    # aggregates on the events table without hitting the cgroup ceiling.
+    mem_limit: 2g
+    shm_size: 256m
     environment:
       POSTGRES_USER: nexus
       POSTGRES_PASSWORD: nexus_pass
       POSTGRES_DB: nexus_events
+    # Pin shared_buffers and friends explicitly. Without this the image
+    # auto-tunes against the host's RAM, not the container limit, and the
+    # backend gets OOM-killed under load (asyncpg surfaces it as
+    # ConnectionDoesNotExistError mid-query).
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=32MB
+      -c maintenance_work_mem=256MB
+      -c effective_cache_size=1GB
+      -c max_wal_size=1GB
     volumes:
       - timescale_data:/var/lib/postgresql/data
     healthcheck:
