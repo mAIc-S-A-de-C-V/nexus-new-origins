@@ -786,23 +786,39 @@ export const OntologyGraph: React.FC = () => {
       }}>
         <h1 style={{ fontSize: '16px', fontWeight: 500, color: '#0D1117' }}>Ontology Graph</h1>
 
-        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginLeft: '8px' }}>
-          {objectTypes.map((ot) => (
-            <button
-              key={ot.id}
-              onClick={() => setSelectedObjectType(ot)}
-              onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, ot }); }}
-              style={{
-                height: '26px', padding: '0 10px', borderRadius: '2px',
-                border: `1px solid ${selectedObjectType?.id === ot.id ? '#2563EB' : '#E2E8F0'}`,
-                backgroundColor: selectedObjectType?.id === ot.id ? '#EFF6FF' : '#FFFFFF',
-                color: selectedObjectType?.id === ot.id ? '#1D4ED8' : '#64748B',
-                fontSize: '12px', cursor: 'pointer', transition: 'all 80ms',
-              }}
-            >
-              {ot.name}
-            </button>
-          ))}
+        <div
+          style={{ display: 'flex', alignItems: 'center', marginLeft: '8px', gap: 6 }}
+          onContextMenu={(e) => {
+            // Right-click anywhere on the selector with an OT chosen → context
+            // menu for that OT (delete / etc.) — mirrors the old pill behavior.
+            if (!selectedObjectType) return;
+            e.preventDefault();
+            setCtxMenu({ x: e.clientX, y: e.clientY, ot: selectedObjectType });
+          }}
+        >
+          <select
+            value={selectedObjectType?.id || ''}
+            onChange={(e) => {
+              const id = e.target.value;
+              if (!id) { setSelectedObjectType(null); return; }
+              const ot = objectTypes.find((o) => o.id === id);
+              if (ot) setSelectedObjectType(ot);
+            }}
+            style={{
+              height: '28px', minWidth: 200, padding: '0 28px 0 10px', borderRadius: '4px',
+              border: `1px solid ${selectedObjectType ? '#2563EB' : '#E2E8F0'}`,
+              backgroundColor: selectedObjectType ? '#EFF6FF' : '#FFFFFF',
+              color: selectedObjectType ? '#1D4ED8' : '#64748B',
+              fontSize: '12px', cursor: 'pointer',
+            }}
+          >
+            <option value="">All object types ({objectTypes.length})</option>
+            {[...objectTypes]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((ot) => (
+                <option key={ot.id} value={ot.id}>{ot.name}</option>
+              ))}
+          </select>
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
