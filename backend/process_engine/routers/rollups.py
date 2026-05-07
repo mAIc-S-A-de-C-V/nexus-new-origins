@@ -34,6 +34,10 @@ class RollupRunRequest(BaseModel):
     timestamp_attribute: str = ""
     excluded_activities: list[str] = Field(default_factory=list)
     attribute_filters: dict[str, str] = Field(default_factory=dict)
+    # Either a comma-separated string ("count, avg:value, max:reading") or a
+    # list of {method, field?, name?} dicts. Defaults (when not supplied) to
+    # count + count_distinct for backward compat with the original rollup.
+    metrics: object | None = None
 
 
 class RollupRecentRequest(BaseModel):
@@ -46,6 +50,7 @@ class RollupRecentRequest(BaseModel):
     timestamp_attribute: str = ""
     excluded_activities: list[str] = Field(default_factory=list)
     attribute_filters: dict[str, str] = Field(default_factory=dict)
+    metrics: object | None = None
 
 
 @router.post("/run")
@@ -73,6 +78,7 @@ async def run_rollup(
             timestamp_attribute=body.timestamp_attribute,
             excluded_activities=body.excluded_activities,
             attribute_filters=body.attribute_filters,
+            metrics=body.metrics,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -102,6 +108,7 @@ async def run_rollup_recent(
             timestamp_attribute=body.timestamp_attribute,
             excluded_activities=body.excluded_activities,
             attribute_filters=body.attribute_filters,
+            metrics=body.metrics,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))

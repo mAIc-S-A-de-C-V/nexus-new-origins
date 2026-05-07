@@ -69,6 +69,87 @@ def _floor_hour(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
 
+_VALID_METRIC_METHODS = {"count", "count_distinct", "sum", "avg", "min", "max"}
+
+
+def parse_metrics_string(s: str | list | None) -> list[dict]:
+    """Parse a friendly metrics string into a list of {method, field?, name?}.
+
+    Accepts:
+      - a list (already-parsed) — returned as-is after validation
+      - a comma-separated string: "count, avg:value, max:reading as peak"
+
+    Each token is either:
+      - "count" / "count_distinct"  → no field needed
+      - "<method>:<field>"          → method ∈ sum/avg/min/max, field on snapshot
+      - "<method>:<field> as <name>"→ optional alias for the output column
+
+    Returns a list of dicts:
+      {"method": str, "field": str | None, "name": str}
+    """
+    if not s:
+        return []
+    if isinstance(s, list):
+        out: list[dict] = []
+        for spec in s:
+            if not isinstance(spec, dict):
+                continue
+            method = str(spec.get("method", "")).strip().lower()
+            if method not in _VALID_METRIC_METHODS:
+                continue
+            field = spec.get("field") or None
+            name = spec.get("name") or _default_metric_name(method, field)
+            out.append({"method": method, "field": field, "name": name})
+        return out
+
+    parsed: list[dict] = []
+    for tok in str(s).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        # Optional 'as <alias>' suffix
+        alias: Optional[str] = None
+        if " as " in tok.lower():
+            i = tok.lower().rindex(" as ")
+            alias = tok[i + 4:].strip() or None
+            tok = tok[:i].strip()
+        if ":" in tok:
+            method, field = (p.strip() for p in tok.split(":", 1))
+        else:
+            method, field = tok, ""
+        method = method.lower()
+        if method not in _VALID_METRIC_METHODS:
+            # Skip unknown methods rather than failing the whole rollup —
+            # makes the field forgiving when users mistype.
+            continue
+        parsed.append({
+            "method": method,
+            "field": field or None,
+            "name": alias or _default_metric_name(method, field or None),
+        })
+    return parsed
+
+
+def _default_metric_name(method: str, field: Optional[str]) -> str:
+    if method in ("count",):
+        return "event_count"
+    if method == "count_distinct":
+        return "case_count"
+    if not field:
+        return method
+    # Sanitise field for use as a column name
+    safe = "".join(c if c.isalnum() or c == "_" else "_" for c in field)
+    return f"{method}_{safe}"
+
+
+def _safe_snapshot_field(field: str) -> str:
+    """Allow A-Za-z0-9_- and dot only. Returns '' if invalid."""
+    import re as _re
+    if _re.match(r"^[A-Za-z0-9_.\-]+$", field or ""):
+        return field
+    return ""
+
+
 async def compute_hourly_rollup(
     *,
     db: AsyncSession,
@@ -83,6 +164,7 @@ async def compute_hourly_rollup(
     timestamp_attribute: str = "",
     excluded_activities: Optional[list[str]] = None,
     attribute_filters: Optional[dict[str, str]] = None,
+    metrics: Optional[list[dict] | str] = None,
 ) -> dict:
     """Roll up events for every hour in [from_hour, to_hour) and upsert the
     summaries into the target OT.
@@ -149,6 +231,46 @@ async def compute_hourly_rollup(
     extra_select = (", " + ", ".join(dim_select_parts)) if dim_select_parts else ""
     extra_group = (", " + ", ".join(dim_group_parts)) if dim_group_parts else ""
 
+    # Build metric SELECT columns. If the caller didn't specify metrics, default
+    # to count + count_distinct for backward compat.
+    parsed_metrics = parse_metrics_string(metrics) if metrics else []
+    if not parsed_metrics:
+        parsed_metrics = [
+            {"method": "count", "field": None, "name": "event_count"},
+            {"method": "count_distinct", "field": None, "name": "case_count"},
+        ]
+
+    metric_select_parts: list[str] = []
+    for i, m in enumerate(parsed_metrics):
+        method = m["method"]
+        field = m.get("field")
+        alias = f"m_{i}"
+        if method == "count":
+            metric_select_parts.append(f"COUNT(*) AS {alias}")
+        elif method == "count_distinct":
+            metric_select_parts.append(
+                f"COUNT(DISTINCT resolved_case_id) AS {alias}"
+            )
+        elif method in ("sum", "avg", "min", "max"):
+            safe_field = _safe_snapshot_field(field or "")
+            if not safe_field:
+                # Caller asked for sum/avg/etc but the field name is bad — emit
+                # NULL rather than dropping the metric so the column still
+                # appears in the destination OT and the user can spot the bug.
+                metric_select_parts.append(f"NULL::numeric AS {alias}")
+                continue
+            # Regex-guarded numeric cast — any row whose value isn't a clean
+            # number becomes NULL, which SUM/AVG/MIN/MAX naturally ignore.
+            value_expr = (
+                f"CASE WHEN snapshot->>'{safe_field}' ~ "
+                f"'^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                f"THEN (snapshot->>'{safe_field}')::numeric ELSE NULL END"
+            )
+            sql_fn = method.upper()
+            metric_select_parts.append(f"{sql_fn}({value_expr}) AS {alias}")
+
+    metric_select_sql = ",\n            ".join(metric_select_parts)
+
     sql = text(f"""
         WITH _events AS (
             SELECT
@@ -170,8 +292,7 @@ async def compute_hourly_rollup(
         SELECT
             date_trunc('hour', resolved_ts) AS hour_bucket
             {extra_select},
-            COUNT(*) AS event_count,
-            COUNT(DISTINCT resolved_case_id) AS case_count
+            {metric_select_sql}
         FROM _events
         GROUP BY hour_bucket {extra_group}
         ORDER BY hour_bucket
@@ -214,9 +335,18 @@ async def compute_hourly_rollup(
         rec: dict = {
             "_rollup_key": "|".join(rollup_key_parts),
             "hour_bucket": hour_iso,
-            "event_count": int(r.event_count or 0),
-            "case_count": int(r.case_count or 0),
         }
+        # Add a column for each metric, named per the metric spec.
+        for i, m in enumerate(parsed_metrics):
+            v = getattr(r, f"m_{i}", None)
+            col_name = m["name"]
+            if m["method"] in ("count", "count_distinct"):
+                rec[col_name] = int(v or 0)
+            else:
+                # sum/avg/min/max on numeric snapshot values — preserve None
+                # (rather than coercing to 0) so charts can distinguish
+                # "no readings this hour" from "readings averaged to 0".
+                rec[col_name] = float(v) if v is not None else None
         for dim, value in zip(dimensions, dim_values):
             rec[dim] = value
         records.append(rec)

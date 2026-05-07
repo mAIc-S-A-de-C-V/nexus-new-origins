@@ -210,7 +210,8 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
     configFields: [
       { key: 'sourceObjectTypeId', label: 'Source object type', type: 'select', options: [], required: true },
       { key: 'targetObjectTypeId', label: 'Target object type (rollup destination)', type: 'select', options: [], required: true },
-      { key: 'dimensions', label: 'Dimensions (comma-separated, e.g. "activity,resource")', type: 'text', default: 'activity', placeholder: 'activity' },
+      { key: 'dimensions', label: 'Dimensions (comma-separated, e.g. "sensor_name,metric")', type: 'text', default: 'activity', placeholder: 'sensor_name' },
+      { key: 'metrics', label: 'Metrics (e.g. "count, avg:value, max:value")', type: 'text', placeholder: 'count, avg:value, max:value' },
       { key: 'hoursBack', label: 'Re-aggregate last N hours each run', type: 'number', default: 2 },
       { key: 'activityAttribute', label: 'Activity attribute (optional)', type: 'text', placeholder: 'leave empty to use activity column' },
       { key: 'caseIdAttribute', label: 'Case-id attribute (optional)', type: 'text', placeholder: 'leave empty to use case_id column' },

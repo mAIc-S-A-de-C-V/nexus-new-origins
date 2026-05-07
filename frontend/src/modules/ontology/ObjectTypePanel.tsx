@@ -513,6 +513,9 @@ const RollupsTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
   // Form state
   const [targetOtId, setTargetOtId] = useState<string>('');
   const [dimensionsRaw, setDimensionsRaw] = useState<string>('activity');
+  // Metrics: comma-separated. Defaults match the original behaviour
+  // (count + count_distinct on case_id) when left blank.
+  const [metricsRaw, setMetricsRaw] = useState<string>('');
   // Default to last 7 days; user can stretch the FROM date for longer backfills.
   const todayIso = new Date().toISOString().slice(0, 16); // yyyy-MM-ddTHH:mm
   const sevenAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
@@ -554,6 +557,7 @@ const RollupsTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
           from_hour: new Date(fromHour).toISOString(),
           to_hour: new Date(toHour).toISOString(),
           dimensions: dims.length > 0 ? dims : ['activity'],
+          metrics: metricsRaw.trim() ? metricsRaw : null,
         }),
       });
       if (!resp.ok) {
@@ -641,11 +645,31 @@ const RollupsTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
             style={inputStyle}
             value={dimensionsRaw}
             onChange={(e) => setDimensionsRaw(e.target.value)}
-            placeholder="activity, resource"
+            placeholder="sensor_name, metric"
           />
           <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
-            Built-ins: <code>activity</code>, <code>resource</code>, <code>month</code>, <code>day_of_week</code>.
-            Anything else is read from <code>record_snapshot.&lt;name&gt;</code>.
+            For sensor data, use record fields like <code>sensor_name</code> — not
+            <code> activity</code>, which is event metadata. Built-ins:
+            <code> activity</code>, <code>resource</code>, <code>month</code>, <code>day_of_week</code>.
+            Anything else reads from <code>record_snapshot.&lt;name&gt;</code>.
+          </div>
+        </div>
+
+        <div>
+          <label style={labelStyle}>Metrics (comma-separated, optional)</label>
+          <input
+            style={inputStyle}
+            value={metricsRaw}
+            onChange={(e) => setMetricsRaw(e.target.value)}
+            placeholder="count, avg:value, max:value, min:value"
+          />
+          <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
+            Each token is <code>method</code> or <code>method:field</code>. Methods:
+            <code> count</code> (events), <code>count_distinct</code> (cases),
+            <code> sum</code>, <code>avg</code>, <code>min</code>, <code>max</code>.
+            Field names refer to <code>record_snapshot.&lt;field&gt;</code> and must
+            be numeric. Optional <code>... as &lt;alias&gt;</code> renames the column.
+            Leave blank for the default <code>event_count + case_count</code>.
           </div>
         </div>
 

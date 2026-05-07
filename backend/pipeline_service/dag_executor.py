@@ -2952,11 +2952,13 @@ async def _rollup_aggregate(node, records_in: list[dict], pipeline: Pipeline) ->
     if isinstance(dimensions, str):
         dimensions = [d.strip() for d in dimensions.split(",") if d.strip()]
 
+    metrics_cfg = cfg.get("metrics") or cfg.get("Metrics") or None
     payload = {
         "source_object_type_id": source_ot,
         "target_object_type_id": target_ot,
         "hours_back": hours_back,
         "dimensions": dimensions,
+        "metrics": metrics_cfg,
         "activity_attribute": cfg.get("activityAttribute") or cfg.get("activity_attribute") or "",
         "case_id_attribute": cfg.get("caseIdAttribute") or cfg.get("case_id_attribute") or "",
         "timestamp_attribute": cfg.get("timestampAttribute") or cfg.get("timestamp_attribute") or "",
