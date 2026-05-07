@@ -111,15 +111,31 @@ def _build_user_excl(excluded: list[str]) -> tuple[str, dict]:
 
 
 def _build_date_filter(ts_expr: str, start_date: str | None, end_date: str | None) -> tuple[str, dict]:
-    """Build SQL fragment for date range filtering."""
-    clauses = []
+    """Build SQL fragment for date range filtering.
+
+    SQLAlchemy's named-parameter regex doesn't recognize `:foo` when it's
+    immediately followed by `::cast` — the leading `::` looks like a param
+    terminator boundary it can't disambiguate cleanly, so the bind never
+    happens and Postgres receives literal `:start_date::timestamptz` text.
+    Workaround: bind a real Python datetime so asyncpg can infer the type
+    natively, no SQL-side cast needed.
+    """
+    from datetime import datetime as _dt
+    clauses: list[str] = []
     params: dict = {}
+
+    def _to_dt(s: str):
+        try:
+            return _dt.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return s  # let asyncpg fail loudly if it really is junk
+
     if start_date:
-        clauses.append(f"AND ({ts_expr}) >= :start_date::timestamptz")
-        params["start_date"] = start_date
+        clauses.append(f"AND ({ts_expr}) >= :start_date")
+        params["start_date"] = _to_dt(start_date)
     if end_date:
-        clauses.append(f"AND ({ts_expr}) <= :end_date::timestamptz")
-        params["end_date"] = end_date
+        clauses.append(f"AND ({ts_expr}) <= :end_date")
+        params["end_date"] = _to_dt(end_date)
     return " ".join(clauses), params
 
 
