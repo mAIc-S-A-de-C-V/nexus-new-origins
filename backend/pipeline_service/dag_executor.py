@@ -607,6 +607,8 @@ async def _execute_node(
         return await _llm_classify(node, records_in, pipeline, progress_ctx=progress_ctx)
     if node.type == NodeType.ATTACHMENT_PARSE:
         return _attachment_parse(node, records_in)
+    if node.type == NodeType.ROLLUP_AGGREGATE:
+        return await _rollup_aggregate(node, records_in, pipeline)
     return records_in
 
 
@@ -2909,6 +2911,75 @@ async def _agent_run(node, records_in: list[dict], pipeline: Pipeline) -> list[d
 
     asyncio.create_task(_fire())
     print(f"[AGENT_RUN] Agent task dispatched (non-blocking)")
+    return records_in
+
+
+PROCESS_ENGINE_API = os.environ.get("PROCESS_ENGINE_URL", "http://process-engine-service:8009")
+
+
+async def _rollup_aggregate(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+    """
+    ROLLUP_AGGREGATE — pre-aggregate raw events from a source OT into a target
+    OT, hour-by-hour. Wraps the process-engine /process/rollups/run-recent
+    endpoint so the pipeline scheduler (cron expression on the pipeline) drives
+    the rollup cadence — no separate cron / curl needed.
+
+    Config fields:
+      sourceObjectTypeId  — OT whose events to aggregate (required)
+      targetObjectTypeId  — OT to write rolled-up rows into (required)
+      hoursBack           — re-aggregate this many recent hours each run.
+                            Default 2 — gives a 1-hour overlap with the
+                            previous run that catches late-arriving events
+                            without re-doing history.
+      dimensions          — list of dimensions to GROUP BY (default ["activity"])
+      excludedActivities  — list of activity names to ignore
+      activityAttribute, caseIdAttribute, timestampAttribute — optional
+                            record_snapshot field overrides
+
+    This node is non-streaming — it doesn't take records from upstream and
+    doesn't produce records downstream. It returns whatever it received in
+    so chaining still works (uncommon but legal).
+    """
+    cfg = node.config or {}
+    source_ot = cfg.get("sourceObjectTypeId") or cfg.get("source_object_type_id") or ""
+    target_ot = cfg.get("targetObjectTypeId") or cfg.get("target_object_type_id") or ""
+    if not source_ot or not target_ot:
+        print(f"[ROLLUP_AGGREGATE] Skipped — missing source ({source_ot!r}) or target ({target_ot!r}) OT id on node {node.id}")
+        return records_in
+
+    hours_back = int(cfg.get("hoursBack") or cfg.get("hours_back") or 2)
+    dimensions = cfg.get("dimensions") or ["activity"]
+    if isinstance(dimensions, str):
+        dimensions = [d.strip() for d in dimensions.split(",") if d.strip()]
+
+    payload = {
+        "source_object_type_id": source_ot,
+        "target_object_type_id": target_ot,
+        "hours_back": hours_back,
+        "dimensions": dimensions,
+        "activity_attribute": cfg.get("activityAttribute") or cfg.get("activity_attribute") or "",
+        "case_id_attribute": cfg.get("caseIdAttribute") or cfg.get("case_id_attribute") or "",
+        "timestamp_attribute": cfg.get("timestampAttribute") or cfg.get("timestamp_attribute") or "",
+        "excluded_activities": cfg.get("excludedActivities") or cfg.get("excluded_activities") or [],
+        "attribute_filters": cfg.get("attributeFilters") or cfg.get("attribute_filters") or {},
+    }
+
+    print(f"[ROLLUP_AGGREGATE] Calling /process/rollups/run-recent (source={source_ot}, target={target_ot}, hours_back={hours_back}, dims={dimensions})")
+    try:
+        async with httpx.AsyncClient(timeout=600) as client:
+            resp = await client.post(
+                f"{PROCESS_ENGINE_API}/process/rollups/run-recent",
+                json=payload,
+                headers={"x-tenant-id": pipeline.tenant_id},
+            )
+        if resp.is_success:
+            data = resp.json()
+            print(f"[ROLLUP_AGGREGATE] Wrote {data.get('rows_written', 0)} rollup rows over {data.get('hours_processed', 0)} hours in {data.get('elapsed_ms', 0):.0f}ms")
+        else:
+            print(f"[ROLLUP_AGGREGATE] process-engine returned {resp.status_code}: {resp.text[:300]}")
+    except Exception as exc:
+        print(f"[ROLLUP_AGGREGATE] Failed to call process-engine: {exc}")
+
     return records_in
 
 

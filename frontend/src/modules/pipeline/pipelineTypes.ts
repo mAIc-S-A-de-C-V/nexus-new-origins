@@ -201,4 +201,20 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'skipBlankRows', label: 'Skip rows with empty primary key', type: 'boolean', default: true },
     ],
   },
+  {
+    type: 'ROLLUP_AGGREGATE',
+    label: 'Rollup Aggregate',
+    description: 'Pre-aggregate raw events from a source object type into a destination OT, hour-by-hour. Use this as the only node in a pipeline scheduled hourly to keep dashboards fast on multi-million-row event tables. Re-aggregates the last N hours each run (idempotent), so dashboards see near-real-time data without scanning raw events.',
+    color: '#0EA5E9',
+    iconName: 'Layers',
+    configFields: [
+      { key: 'sourceObjectTypeId', label: 'Source object type', type: 'select', options: [], required: true },
+      { key: 'targetObjectTypeId', label: 'Target object type (rollup destination)', type: 'select', options: [], required: true },
+      { key: 'dimensions', label: 'Dimensions (comma-separated, e.g. "activity,resource")', type: 'text', default: 'activity', placeholder: 'activity' },
+      { key: 'hoursBack', label: 'Re-aggregate last N hours each run', type: 'number', default: 2 },
+      { key: 'activityAttribute', label: 'Activity attribute (optional)', type: 'text', placeholder: 'leave empty to use activity column' },
+      { key: 'caseIdAttribute', label: 'Case-id attribute (optional)', type: 'text', placeholder: 'leave empty to use case_id column' },
+      { key: 'timestampAttribute', label: 'Timestamp attribute (optional)', type: 'text', placeholder: 'leave empty to use timestamp column' },
+    ],
+  },
 ];

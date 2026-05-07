@@ -45,6 +45,7 @@ class NodeType(str, Enum):
     AGENT_RUN = "AGENT_RUN"
     LLM_CLASSIFY = "LLM_CLASSIFY"
     ATTACHMENT_PARSE = "ATTACHMENT_PARSE"
+    ROLLUP_AGGREGATE = "ROLLUP_AGGREGATE"
 
 
 class PipelineStatus(str, Enum):

@@ -34,7 +34,7 @@ const NODE_ICONS: Record<string, React.ReactNode> = {
 };
 
 const CONNECTOR_FIELDS = new Set(['connectorId', 'lookupConnectorId']);
-const OBJECT_TYPE_FIELDS = new Set(['objectTypeId']);
+const OBJECT_TYPE_FIELDS = new Set(['objectTypeId', 'sourceObjectTypeId', 'targetObjectTypeId']);
 const AGENT_FIELDS = new Set(['agentId']);
 const MODEL_FIELDS = new Set(['model']);
 

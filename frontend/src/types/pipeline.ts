@@ -12,7 +12,8 @@ export type NodeType =
   | 'SINK_EVENT'
   | 'AGENT_RUN'
   | 'LLM_CLASSIFY'
-  | 'ATTACHMENT_PARSE';
+  | 'ATTACHMENT_PARSE'
+  | 'ROLLUP_AGGREGATE';
 
 export type PipelineStatus = 'RUNNING' | 'IDLE' | 'FAILED' | 'PAUSED' | 'DRAFT' | 'COMPLETED';
 

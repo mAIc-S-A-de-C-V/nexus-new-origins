@@ -103,6 +103,7 @@ export const nodeColors: Record<string, string> = {
   AGENT_RUN: '#7C3AED',
   LLM_CLASSIFY: '#DC2626',
   ATTACHMENT_PARSE: '#0891B2',
+  ROLLUP_AGGREGATE: '#0EA5E9',
 };
 
 export const categoryColors: Record<string, { bg: string; text: string }> = {
