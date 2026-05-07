@@ -23,6 +23,37 @@ from typing import Any, Optional
 logger = logging.getLogger("scraping")
 
 
+def _css_first(node: Any, selector: str):
+    """Compat shim. Scrapling 0.4 dropped .css_first(); use .css() and index."""
+    try:
+        matches = node.css(selector)
+    except Exception:
+        return None
+    if not matches:
+        return None
+    try:
+        return matches[0]
+    except Exception:
+        return None
+
+
+def _node_text(node: Any) -> str:
+    """Pull text from a Scrapling Selector. In 0.4+ ``.text`` is direct-only —
+    we want all descendants, so prefer ``get_all_text()`` and fall back."""
+    if node is None:
+        return ""
+    try:
+        gat = getattr(node, "get_all_text", None)
+        if callable(gat):
+            return str(gat() or "")
+    except Exception:
+        pass
+    try:
+        return str(node.text or "")
+    except Exception:
+        return ""
+
+
 def _resolve_ddg_redirect(href: str) -> str:
     """DuckDuckGo's HTML page wraps result links in /l/?uddg=<urlencoded>.
     Unwrap them so callers get the actual destination."""
@@ -64,8 +95,8 @@ async def search_duckduckgo(query: str, max_results: int = 10) -> dict:
     results: list[dict] = []
     # DDG's HTML uses .result blocks; .result__a is the title link, .result__snippet is body
     for el in page.css(".result")[: max_results * 2]:  # over-pull, then cap
-        title_el = el.css_first(".result__a") or el.css_first(".result__title a")
-        snippet_el = el.css_first(".result__snippet")
+        title_el = _css_first(el, ".result__a") or _css_first(el, ".result__title a")
+        snippet_el = _css_first(el, ".result__snippet")
         if not title_el:
             continue
         href = ""
@@ -78,9 +109,9 @@ async def search_duckduckgo(query: str, max_results: int = 10) -> dict:
         if not href.startswith(("http://", "https://")):
             continue
         results.append({
-            "title": (title_el.text or "").strip()[:300],
+            "title": _node_text(title_el).strip()[:300],
             "url": href,
-            "snippet": (snippet_el.text or "").strip()[:600] if snippet_el else "",
+            "snippet": _node_text(snippet_el).strip()[:600] if snippet_el else "",
         })
         if len(results) >= max_results:
             break
@@ -139,27 +170,27 @@ async def scrape_url(
         out["error"] = f"HTTP {status}"
         return out
 
-    title_el = page.css_first("title")
+    title_el = _css_first(page, "title")
     if title_el:
-        out["title"] = (title_el.text or "").strip()[:300]
+        out["title"] = _node_text(title_el).strip()[:300]
 
     if selector:
         try:
             els = page.css(selector)
-            out["selected"] = [(e.text or "").strip()[:500] for e in els[:50]]
+            out["selected"] = [_node_text(e).strip()[:500] for e in els[:50]]
         except Exception as exc:
             out["selector_error"] = str(exc)
 
     if extract_text:
         # Prefer <main>/<article>/.content if present; fall back to <body>.
         main = (
-            page.css_first("main")
-            or page.css_first("article")
-            or page.css_first(".content")
-            or page.css_first("body")
+            _css_first(page, "main")
+            or _css_first(page, "article")
+            or _css_first(page, ".content")
+            or _css_first(page, "body")
         )
         if main:
-            text = (main.text or "").strip()
+            text = _node_text(main).strip()
             # Collapse runs of whitespace so the LLM doesn't waste context on \n\n\n.
             import re as _re
             text = _re.sub(r"\s+\n", "\n", text)
@@ -176,7 +207,7 @@ async def scrape_url(
             if href.startswith(("http://", "https://")):
                 links.append({
                     "href": href,
-                    "text": (a.text or "").strip()[:200],
+                    "text": _node_text(a).strip()[:200],
                 })
                 if len(links) >= 100:
                     break
