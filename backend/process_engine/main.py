@@ -7,6 +7,7 @@ from routers import process
 from routers import conformance
 from routers import processes
 from routers import by_process
+from routers import rollups
 
 # CORS
 _raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
@@ -26,6 +27,7 @@ app.include_router(process.router, prefix="/process", tags=["process"])
 app.include_router(conformance.router, prefix="/process/conformance", tags=["conformance"])
 app.include_router(processes.router, prefix="/process/processes", tags=["processes"])
 app.include_router(by_process.router, prefix="/process/by-process", tags=["by-process"])
+app.include_router(rollups.router, prefix="/process/rollups", tags=["rollups"])
 
 
 @app.on_event("startup")
