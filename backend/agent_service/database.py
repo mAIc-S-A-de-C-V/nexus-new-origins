@@ -140,6 +140,37 @@ class AgentScheduleRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class PipelineTriggerRow(Base):
+    """Event-driven trigger: when a pipeline run completes, fire an agent against
+    the rows that were just inserted (or all rows from the run, if configured)."""
+    __tablename__ = "pipeline_triggers"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    pipeline_id = Column(String, nullable=False, index=True)
+    agent_id = Column(String, nullable=False, index=True)
+
+    # Source selection
+    on_new_only = Column(Boolean, nullable=False, default=True)   # newly-inserted rows vs. all rows
+    min_new_rows = Column(Integer, nullable=False, default=1)     # fire only if ≥ this many qualifying rows
+
+    # Execution shape
+    mode = Column(String, nullable=False, default="per_row")      # "per_row" | "per_batch"
+    max_concurrent = Column(Integer, nullable=False, default=5)   # cap parallel agent runs per fire
+    prompt_template = Column(Text, nullable=False, default="")    # supports {{row.field}} placeholders
+
+    # Filtering & dedupe
+    row_filter = Column(JSON, nullable=False, default=list)       # [{field, op, value}] AND-combined
+    dedupe_action_name = Column(String, nullable=True)            # skip rows whose key already has this action
+    dedupe_field = Column(String, nullable=True)                  # field on the row used as dedupe key
+
+    enabled = Column(Boolean, nullable=False, default=True)
+    last_fired_at = Column(DateTime(timezone=True), nullable=True)
+    last_fire_summary = Column(JSON, nullable=True)               # {matched, fired, skipped_filter, skipped_dedupe, errors}
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -152,6 +183,8 @@ async def init_db():
             "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0",
             "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS duration_ms INTEGER",
+            # Make sure pipeline_triggers picks up later-added columns on existing dbs
+            "ALTER TABLE pipeline_triggers ADD COLUMN IF NOT EXISTS last_fire_summary JSON",
         ]:
             try:
                 await conn.execute(sa_text(col_sql))

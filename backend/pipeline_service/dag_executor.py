@@ -35,6 +35,36 @@ EVENT_LOG_API = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-servic
 CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
 AGENT_API = os.environ.get("AGENT_SERVICE_URL", "http://agent-service:8013")
 
+# Per-run capture of which rows hit which sinks. We use a ContextVar so
+# concurrent runs of the same pipeline (rare but legal) don't trample each
+# other — each asyncio task has its own context. The caller sets it at the
+# start of execute_and_persist, _sink_object reads it, and the pipeline-event
+# emitter drains it after the run.
+import contextvars as _ctxvars
+
+_run_sink_results: _ctxvars.ContextVar[dict[str, dict] | None] = _ctxvars.ContextVar(
+    "run_sink_results", default=None,
+)
+
+
+def init_run_sink_capture() -> dict[str, dict]:
+    """Call at the start of a run to install a fresh sink-results dict on the
+    current context. Returns the dict so the caller can read from it later."""
+    bucket: dict[str, dict] = {}
+    _run_sink_results.set(bucket)
+    return bucket
+
+
+def _record_sink_results(ot_id: str, new_ids: set[str], all_ids: set[str]) -> None:
+    """Merge a SINK_OBJECT result into the current run's accumulator. No-op
+    when the context wasn't initialised (e.g. ad-hoc tests)."""
+    bucket = _run_sink_results.get()
+    if bucket is None:
+        return
+    sink = bucket.setdefault(ot_id, {"new_ids": set(), "all_ids": set()})
+    sink["new_ids"].update(new_ids)
+    sink["all_ids"].update(all_ids)
+
 
 def _resolve_date_templates(params: dict, last_sync=None) -> dict:
     """Inline resolution of date templates in query params for pipeline executor."""
@@ -2530,6 +2560,18 @@ async def _sink_object(node, records_in: list[dict], pipeline: Pipeline) -> list
                     total_ingested += ingest_data.get("ingested", len(batch))
             if total_ingested:
                 print(f"[SINK_OBJECT] Ingested {total_ingested} records ({total_new} new) in {(len(records_in) + batch_sz - 1) // batch_sz} batches")
+    except Exception:
+        pass
+
+    # Capture which IDs hit this sink so the pipeline-event emitter can pass
+    # them to agent_service/triggers downstream.
+    try:
+        all_ids: set[str] = set()
+        for r in records_in:
+            v = r.get(pk_field)
+            if v is not None and v != "":
+                all_ids.add(str(v))
+        _record_sink_results(ot_id, set(new_source_ids), all_ids)
     except Exception:
         pass
 

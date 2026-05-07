@@ -13,13 +13,45 @@ from shared.models import Pipeline, PipelineNode, PipelineEdge, EventLogQualityS
 from shared.enums import PipelineStatus
 from shared.token_tracker import track_token_usage
 from database import PipelineRow, PipelineRunRow, get_session
-from dag_executor import DagExecutor
+from dag_executor import DagExecutor, init_run_sink_capture
 
 router = APIRouter()
 executor = DagExecutor()
 
 EVENT_LOG_URL = os.environ.get("EVENT_LOG_SERVICE_URL", "http://event-log-service:8005")
 ONTOLOGY_URL = os.environ.get("ONTOLOGY_SERVICE_URL", "http://ontology-service:8004")
+AGENT_URL = os.environ.get("AGENT_SERVICE_URL", "http://agent-service:8013")
+
+
+async def _emit_pipeline_trigger_event(
+    *,
+    tenant_id: str,
+    pipeline_id: str,
+    run_id: str,
+    object_type: str,
+    new_row_ids: list[str],
+    all_row_ids: list[str],
+) -> None:
+    """Best-effort POST to agent_service so any matching pipeline_triggers fire.
+    Failures don't bubble up — the pipeline run already succeeded."""
+    if not new_row_ids and not all_row_ids:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{AGENT_URL}/triggers/internal/pipeline-event",
+                headers={"x-tenant-id": tenant_id},
+                json={
+                    "tenant_id": tenant_id,
+                    "pipeline_id": pipeline_id,
+                    "run_id": run_id,
+                    "object_type": object_type,
+                    "new_row_ids": new_row_ids,
+                    "all_row_ids": all_row_ids,
+                },
+            )
+    except Exception:
+        pass  # don't surface trigger failures to the pipeline result
 
 
 async def _emit_event(payload: dict) -> None:
@@ -246,6 +278,11 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
         except Exception:
             pass  # progress writes never break the run
 
+    # Install per-run sink capture so SINK_OBJECT can record which IDs were
+    # written this run; we drain it after execute completes to fire any
+    # matching pipeline triggers.
+    sink_bucket = init_run_sink_capture()
+
     await executor.execute(pipeline, run, runs_list, progress_callback=_write_progress)
 
     # Persist result
@@ -321,6 +358,29 @@ async def _execute_and_persist(pipeline: Pipeline, run: dict, run_id: str, pipel
             "error": run.get("error"),
         },
     })
+
+    # Fire agent triggers bound to this pipeline. We aggregate IDs across all
+    # SINK_OBJECT nodes (typically one) and pass them along with the OT id.
+    if final_status == "COMPLETED":
+        try:
+            new_ids: set[str] = set()
+            all_ids: set[str] = set()
+            primary_ot = ""
+            for ot, summary in (sink_bucket or {}).items():
+                primary_ot = primary_ot or ot
+                new_ids.update(summary.get("new_ids") or [])
+                all_ids.update(summary.get("all_ids") or [])
+            if new_ids or all_ids:
+                await _emit_pipeline_trigger_event(
+                    tenant_id=tenant_id,
+                    pipeline_id=pipeline_id,
+                    run_id=run_id,
+                    object_type=primary_ot or pipeline.target_object_type_id or "",
+                    new_row_ids=sorted(new_ids),
+                    all_row_ids=sorted(all_ids),
+                )
+        except Exception:
+            pass
 
 
 @router.get("/runs/recent")

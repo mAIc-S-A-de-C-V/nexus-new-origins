@@ -3,7 +3,7 @@ from fastapi import FastAPI, Depends
 from fastapi import Request as _Request
 from fastapi.responses import Response as _Response
 from fastapi.middleware.cors import CORSMiddleware
-from routers import agents, threads, schedules, model_providers
+from routers import agents, threads, schedules, model_providers, triggers
 from database import init_db
 from scheduler import start_scheduler, stop_scheduler
 from auth_middleware import require_auth
@@ -33,6 +33,7 @@ app.include_router(agents.router, prefix="/agents", tags=["agents"], dependencie
 app.include_router(threads.router, prefix="/threads", tags=["threads"], dependencies=[Depends(require_auth)])
 app.include_router(schedules.router, prefix="/agents", tags=["schedules"], dependencies=[Depends(require_auth)])
 app.include_router(model_providers.router, prefix="/model-providers", tags=["model-providers"], dependencies=[Depends(require_auth)])
+app.include_router(triggers.router, prefix="/triggers", tags=["triggers"], dependencies=[Depends(require_auth)])
 
 from fastapi import Request as _RequestSize
 from fastapi.responses import JSONResponse as _JSONResponse

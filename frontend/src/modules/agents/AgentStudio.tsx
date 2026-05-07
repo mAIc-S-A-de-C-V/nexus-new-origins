@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useAgentStore, AgentConfig, AgentSchedule, KnowledgeScopeEntry } from '../../store/agentStore';
+import { useAgentStore, AgentConfig, AgentSchedule, KnowledgeScopeEntry, PipelineTrigger, FilterClause } from '../../store/agentStore';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { getTenantId } from '../../store/authStore';
 import { useNavigationStore } from '../../store/navigationStore';
@@ -1129,6 +1129,399 @@ const SchedulePanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
   );
 };
 
+// ── Triggers Panel ────────────────────────────────────────────────────────────
+// Pipeline-event triggers: when a pipeline finishes, fire this agent against
+// the rows just inserted (or all rows from the run, if configured).
+
+const PIPELINE_API = import.meta.env.VITE_PIPELINE_SERVICE_URL || 'http://localhost:8003';
+
+const FILTER_OPS: FilterClause['op'][] = [
+  'eq', 'ne', 'gt', 'gte', 'lt', 'lte',
+  'in', 'not_in', 'contains', 'starts_with', 'ends_with',
+  'is_null', 'is_not_null',
+];
+
+interface PipelineSummary { id: string; name: string; target_object_type_id?: string }
+
+const blankTriggerForm = (agentId: string): Omit<PipelineTrigger, 'id' | 'tenant_id' | 'last_fired_at' | 'last_fire_summary' | 'created_at' | 'updated_at'> => ({
+  name: '',
+  pipeline_id: '',
+  agent_id: agentId,
+  on_new_only: true,
+  min_new_rows: 1,
+  mode: 'per_row',
+  max_concurrent: 5,
+  prompt_template: '',
+  row_filter: [],
+  dedupe_action_name: '',
+  dedupe_field: '',
+  enabled: true,
+});
+
+const TriggersPanel: React.FC<{ agent: AgentConfig }> = ({ agent }) => {
+  const { triggers, fetchTriggers, createTrigger, updateTrigger, deleteTrigger, testFireTrigger } = useAgentStore();
+  const [pipelines, setPipelines] = useState<PipelineSummary[]>([]);
+  const [editing, setEditing] = useState<PipelineTrigger | null | 'new'>(null);
+  const [form, setForm] = useState(blankTriggerForm(agent.id));
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchTriggers(agent.id);
+    (async () => {
+      try {
+        const r = await fetch(`${PIPELINE_API}/pipelines`, { headers: { 'x-tenant-id': getTenantId() } });
+        const data = await r.json();
+        setPipelines(Array.isArray(data) ? data : []);
+      } catch { /* non-fatal */ }
+    })();
+  }, [agent.id]);
+
+  const agentTriggers = triggers.filter((t) => t.agent_id === agent.id);
+
+  const startCreate = () => {
+    setForm(blankTriggerForm(agent.id));
+    setEditing('new');
+    setError(null);
+  };
+
+  const startEdit = (t: PipelineTrigger) => {
+    setForm({
+      name: t.name,
+      pipeline_id: t.pipeline_id,
+      agent_id: t.agent_id,
+      on_new_only: t.on_new_only,
+      min_new_rows: t.min_new_rows,
+      mode: t.mode,
+      max_concurrent: t.max_concurrent,
+      prompt_template: t.prompt_template || '',
+      row_filter: [...(t.row_filter || [])],
+      dedupe_action_name: t.dedupe_action_name || '',
+      dedupe_field: t.dedupe_field || '',
+      enabled: t.enabled,
+    });
+    setEditing(t);
+    setError(null);
+  };
+
+  const handleSave = async () => {
+    if (!form.name.trim() || !form.pipeline_id) {
+      setError('Name and pipeline are required.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = {
+        ...form,
+        dedupe_action_name: form.dedupe_action_name?.trim() || null,
+        dedupe_field: form.dedupe_field?.trim() || null,
+        row_filter: form.row_filter.filter((c) => c.field && c.op),
+      };
+      if (editing === 'new') {
+        await createTrigger(payload);
+      } else if (editing) {
+        await updateTrigger(editing.id, payload);
+      }
+      setEditing(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTestFire = async (t: PipelineTrigger) => {
+    setTesting(t.id);
+    try {
+      const ids = window.prompt(
+        'Comma-separated row source-IDs to fire this trigger against:',
+        '',
+      );
+      if (!ids) return;
+      const arr = ids.split(',').map((s) => s.trim()).filter(Boolean);
+      const summary = await testFireTrigger(t.id, { new_row_ids: arr, all_row_ids: arr });
+      window.alert(`Fired:\n${JSON.stringify(summary, null, 2)}`);
+      fetchTriggers(agent.id);
+    } catch (e) {
+      window.alert(`Test fire failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  const updateClause = (idx: number, patch: Partial<FilterClause>) => {
+    setForm((f) => ({
+      ...f,
+      row_filter: f.row_filter.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
+    }));
+  };
+
+  const inputStyle: React.CSSProperties = {
+    height: 30, padding: '0 10px', fontSize: 12,
+    border: `1px solid ${C.border}`, borderRadius: 4, backgroundColor: C.panel,
+  };
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>Pipeline Triggers</div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+            Fire this agent automatically when a pipeline run finishes.
+          </div>
+        </div>
+        <button onClick={startCreate} style={{
+          height: 30, padding: '0 12px', fontSize: 12, fontWeight: 600,
+          border: 'none', borderRadius: 4, backgroundColor: C.accent, color: '#FFF',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
+        }}>
+          <Plus size={12} /> New Trigger
+        </button>
+      </div>
+
+      {agentTriggers.length === 0 && editing == null && (
+        <div style={{ padding: 28, textAlign: 'center', color: C.dim, fontSize: 12, border: `1px dashed ${C.border}`, borderRadius: 6 }}>
+          No triggers yet. Click "New Trigger" to wire this agent to a pipeline.
+        </div>
+      )}
+
+      {/* Existing triggers list */}
+      <div style={{ display: 'grid', gap: 10 }}>
+        {agentTriggers.map((t) => {
+          const pipe = pipelines.find((p) => p.id === t.pipeline_id);
+          return (
+            <div key={t.id} style={{
+              border: `1px solid ${C.border}`, borderRadius: 6, padding: 12,
+              backgroundColor: C.panel,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {t.name}
+                    <span style={{
+                      fontSize: 9, padding: '1px 6px', borderRadius: 8,
+                      backgroundColor: t.enabled ? '#DCFCE7' : '#FEE2E2',
+                      color: t.enabled ? '#16A34A' : '#DC2626',
+                    }}>
+                      {t.enabled ? 'enabled' : 'disabled'}
+                    </span>
+                    <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 8, backgroundColor: C.accentDim, color: C.accent }}>
+                      {t.mode}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                    <span>Pipeline: <code>{pipe?.name || t.pipeline_id.slice(0, 8)}</code></span>
+                    <span>{t.on_new_only ? 'new rows only' : 'all rows'}</span>
+                    <span>min {t.min_new_rows}</span>
+                    <span>max {t.max_concurrent} parallel</span>
+                    {(t.row_filter?.length || 0) > 0 && <span>{t.row_filter.length} filter clause(s)</span>}
+                    {t.dedupe_action_name && <span>dedupe: {t.dedupe_action_name}/{t.dedupe_field}</span>}
+                  </div>
+                  {t.last_fired_at && (
+                    <div style={{ fontSize: 10, color: C.dim, marginTop: 4 }}>
+                      Last fired {new Date(t.last_fired_at).toLocaleString()}
+                      {t.last_fire_summary && (
+                        <> — fired {String((t.last_fire_summary as Record<string, unknown>).fired ?? 0)},
+                           filtered {String((t.last_fire_summary as Record<string, unknown>).skipped_filter ?? 0)},
+                           deduped {String((t.last_fire_summary as Record<string, unknown>).skipped_dedupe ?? 0)},
+                           errors {String((t.last_fire_summary as Record<string, unknown>).errors ?? 0)}</>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button onClick={() => handleTestFire(t)}
+                    title="Manually fire with specific row IDs"
+                    disabled={testing === t.id}
+                    style={{ padding: '4px 8px', fontSize: 11, border: `1px solid ${C.border}`, borderRadius: 4, backgroundColor: C.panel, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Play size={11} /> Test
+                  </button>
+                  <button onClick={() => startEdit(t)}
+                    style={{ padding: '4px 8px', fontSize: 11, border: `1px solid ${C.border}`, borderRadius: 4, backgroundColor: C.panel, cursor: 'pointer' }}>
+                    Edit
+                  </button>
+                  <button onClick={async () => {
+                    if (!window.confirm(`Delete trigger "${t.name}"?`)) return;
+                    await deleteTrigger(t.id);
+                  }}
+                    style={{ padding: '4px 8px', fontSize: 11, border: `1px solid #FECACA`, borderRadius: 4, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}>
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Create/edit form */}
+      {editing != null && (
+        <div style={{
+          marginTop: 18, border: `1px solid ${C.accent}`, borderRadius: 6,
+          padding: 16, backgroundColor: C.panel,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+            {editing === 'new' ? 'New trigger' : `Edit: ${(editing as PipelineTrigger).name}`}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Name
+              <input style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Research new POs" />
+            </label>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Pipeline
+              <select style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                value={form.pipeline_id}
+                onChange={(e) => setForm({ ...form, pipeline_id: e.target.value })}>
+                <option value="">— pick a pipeline —</option>
+                {pipelines.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', gap: 18, marginTop: 14, flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <input type="checkbox" checked={form.on_new_only}
+                onChange={(e) => setForm({ ...form, on_new_only: e.target.checked })} />
+              Only newly-inserted rows
+            </label>
+
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <input type="radio" name="mode"
+                checked={form.mode === 'per_row'}
+                onChange={() => setForm({ ...form, mode: 'per_row' })} />
+              One run per row
+            </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <input type="radio" name="mode"
+                checked={form.mode === 'per_batch'}
+                onChange={() => setForm({ ...form, mode: 'per_batch' })} />
+              One run for the batch
+            </label>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Min rows to fire
+              <input type="number" style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                value={form.min_new_rows}
+                min={1}
+                onChange={(e) => setForm({ ...form, min_new_rows: parseInt(e.target.value) || 1 })} />
+            </label>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Max concurrent
+              <input type="number" style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                value={form.max_concurrent}
+                min={1}
+                onChange={(e) => setForm({ ...form, max_concurrent: parseInt(e.target.value) || 1 })} />
+            </label>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Dedupe action (optional)
+              <input style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                value={form.dedupe_action_name || ''}
+                placeholder="po_research_memo"
+                onChange={(e) => setForm({ ...form, dedupe_action_name: e.target.value })} />
+            </label>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Dedupe field (optional)
+              <input style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                value={form.dedupe_field || ''}
+                placeholder="pr_number"
+                onChange={(e) => setForm({ ...form, dedupe_field: e.target.value })} />
+            </label>
+          </div>
+
+          {/* Row filter clauses */}
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span>Row filter (AND-combined)</span>
+              <button onClick={() => setForm({ ...form, row_filter: [...form.row_filter, { field: '', op: 'eq', value: '' }] })}
+                style={{ fontSize: 11, padding: '3px 8px', border: `1px solid ${C.border}`, borderRadius: 4, backgroundColor: C.panel, cursor: 'pointer' }}>
+                + Add clause
+              </button>
+            </div>
+            {form.row_filter.length === 0 && (
+              <div style={{ fontSize: 11, color: C.dim, fontStyle: 'italic' }}>
+                No filters — every row qualifies.
+              </div>
+            )}
+            <div style={{ display: 'grid', gap: 6 }}>
+              {form.row_filter.map((c, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 130px 1fr 30px', gap: 6, alignItems: 'center' }}>
+                  <input style={inputStyle}
+                    placeholder="field name"
+                    value={c.field}
+                    onChange={(e) => updateClause(i, { field: e.target.value })} />
+                  <select style={inputStyle}
+                    value={c.op}
+                    onChange={(e) => updateClause(i, { op: e.target.value as FilterClause['op'] })}>
+                    {FILTER_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
+                  </select>
+                  <input style={inputStyle}
+                    placeholder={c.op === 'in' || c.op === 'not_in' ? 'comma,separated,values' : 'value'}
+                    value={typeof c.value === 'string' ? c.value : (c.value == null ? '' : JSON.stringify(c.value))}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (c.op === 'in' || c.op === 'not_in') {
+                        updateClause(i, { value: raw.split(',').map((s) => s.trim()).filter(Boolean) });
+                      } else {
+                        updateClause(i, { value: raw });
+                      }
+                    }}
+                    disabled={c.op === 'is_null' || c.op === 'is_not_null'} />
+                  <button onClick={() => setForm({ ...form, row_filter: form.row_filter.filter((_, j) => j !== i) })}
+                    style={{ height: 30, border: `1px solid #FECACA`, borderRadius: 4, backgroundColor: '#FEF2F2', color: '#DC2626', cursor: 'pointer' }}>
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <label style={{ fontSize: 11, color: C.muted, display: 'block', marginTop: 14 }}>
+            Prompt template — supports {'{{row.field}}'} placeholders
+            <textarea style={{ ...inputStyle, width: '100%', marginTop: 4, height: 130, padding: 10, fontFamily: 'ui-monospace, SFMono-Regular, monospace' }}
+              value={form.prompt_template}
+              onChange={(e) => setForm({ ...form, prompt_template: e.target.value })}
+              placeholder={`Research this PR:\n  pr_number = {{row.pr_number}}\n  mfg_part_number = {{row.mfg_part_number}}\n  part_desc = {{row.part_desc}}`} />
+          </label>
+
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, marginTop: 12 }}>
+            <input type="checkbox" checked={form.enabled}
+              onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+            Enabled
+          </label>
+
+          {error && (
+            <div style={{ marginTop: 10, padding: 8, fontSize: 11, color: '#DC2626', backgroundColor: '#FEF2F2', borderRadius: 4 }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+            <button onClick={handleSave} disabled={saving}
+              style={{ height: 30, padding: '0 14px', fontSize: 12, fontWeight: 600, border: 'none', borderRadius: 4, backgroundColor: C.accent, color: '#FFF', cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+              {saving ? 'Saving…' : (editing === 'new' ? 'Create trigger' : 'Save changes')}
+            </button>
+            <button onClick={() => setEditing(null)}
+              style={{ height: 30, padding: '0 14px', fontSize: 12, border: `1px solid ${C.border}`, borderRadius: 4, backgroundColor: C.panel, cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Audit Panel ───────────────────────────────────────────────────────────────
 
 interface AuditRun {
@@ -1289,7 +1682,7 @@ const AgentStudio: React.FC = () => {
   } = useAgentStore();
   const { setBreadcrumbs, navigateTo } = useNavigationStore();
 
-  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat' | 'test' | 'history' | 'analytics' | 'schedule' | 'audit' | 'comments'>('config');
+  const [rightTab, setRightTab] = useState<'config' | 'knowledge' | 'chat' | 'test' | 'history' | 'analytics' | 'schedule' | 'triggers' | 'audit' | 'comments'>('config');
 
   useEffect(() => {
     fetchAgents();
@@ -1414,6 +1807,7 @@ const AgentStudio: React.FC = () => {
               { id: 'chat', label: 'Chat', icon: <MessageCircle size={12} /> },
               { id: 'test', label: 'Test', icon: <CheckCircle size={12} /> },
               { id: 'schedule', label: 'Schedule', icon: <Clock size={12} />, badge: schedules.filter((s) => s.agent_id === selectedAgent.id && s.enabled).length || null },
+              { id: 'triggers', label: 'Triggers', icon: <Zap size={12} /> },
               { id: 'history', label: 'History', icon: <Loader size={12} /> },
               { id: 'analytics', label: 'Analytics', icon: <Bot size={12} /> },
               { id: 'audit', label: 'Audit', icon: <Shield size={12} /> },
@@ -1445,6 +1839,7 @@ const AgentStudio: React.FC = () => {
           {rightTab === 'chat' && <div style={{ flex: 1, overflow: 'hidden' }}><ChatPanel agentId={selectedAgent.id} /></div>}
           {rightTab === 'test' && <TestPanel agent={selectedAgent} />}
           {rightTab === 'schedule' && <SchedulePanel agent={selectedAgent} />}
+          {rightTab === 'triggers' && <TriggersPanel agent={selectedAgent} />}
           {rightTab === 'history' && <HistoryPanel agent={selectedAgent} />}
           {rightTab === 'analytics' && <AnalyticsPanel agent={selectedAgent} />}
           {rightTab === 'audit' && <AuditPanel agent={selectedAgent} />}

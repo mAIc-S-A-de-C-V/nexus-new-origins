@@ -75,6 +75,39 @@ export interface AgentSchedule {
   updated_at?: string;
 }
 
+export interface FilterClause {
+  field: string;
+  op: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'not_in'
+    | 'contains' | 'starts_with' | 'ends_with' | 'is_null' | 'is_not_null';
+  value?: unknown;
+}
+
+export interface PipelineTrigger {
+  id: string;
+  tenant_id: string;
+  name: string;
+  pipeline_id: string;
+  agent_id: string;
+  on_new_only: boolean;
+  min_new_rows: number;
+  mode: 'per_row' | 'per_batch';
+  max_concurrent: number;
+  prompt_template: string;
+  row_filter: FilterClause[];
+  dedupe_action_name?: string | null;
+  dedupe_field?: string | null;
+  enabled: boolean;
+  last_fired_at?: string | null;
+  last_fire_summary?: Record<string, unknown> | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type PipelineTriggerCreate = Omit<
+  PipelineTrigger,
+  'id' | 'tenant_id' | 'last_fired_at' | 'last_fire_summary' | 'created_at' | 'updated_at'
+>;
+
 interface AgentStore {
   agents: AgentConfig[];
   selectedAgent: AgentConfig | null;
@@ -87,6 +120,7 @@ interface AgentStore {
   streamingText: string;
   streamingTools: StreamingTool[];
   schedules: AgentSchedule[];
+  triggers: PipelineTrigger[];
 
   fetchAgents: () => Promise<void>;
   selectAgent: (agent: AgentConfig | null) => void;
@@ -109,6 +143,12 @@ interface AgentStore {
   deleteSchedule: (agentId: string, scheduleId: string) => Promise<void>;
   runScheduleNow: (agentId: string, scheduleId: string) => Promise<void>;
 
+  fetchTriggers: (agentId?: string, pipelineId?: string) => Promise<void>;
+  createTrigger: (data: PipelineTriggerCreate) => Promise<PipelineTrigger>;
+  updateTrigger: (triggerId: string, data: Partial<PipelineTriggerCreate>) => Promise<void>;
+  deleteTrigger: (triggerId: string) => Promise<void>;
+  testFireTrigger: (triggerId: string, body: { new_row_ids?: string[]; all_row_ids?: string[]; object_type?: string }) => Promise<Record<string, unknown>>;
+
   versions: AgentVersion[];
   fetchVersions: (agentId: string) => Promise<void>;
   restoreVersion: (agentId: string, versionId: string) => Promise<void>;
@@ -126,6 +166,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   streamingText: '',
   streamingTools: [],
   schedules: [],
+  triggers: [],
   versions: [],
 
   fetchAgents: async () => {
@@ -359,6 +400,59 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       method: 'POST',
       headers: { 'x-tenant-id': getTenantId() },
     });
+  },
+
+  fetchTriggers: async (agentId, pipelineId) => {
+    const params = new URLSearchParams();
+    if (agentId) params.set('agent_id', agentId);
+    if (pipelineId) params.set('pipeline_id', pipelineId);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const r = await fetch(`${AGENT_API}/triggers${qs}`, {
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    const data = await r.json();
+    set({ triggers: Array.isArray(data) ? data : [] });
+  },
+
+  createTrigger: async (data) => {
+    const r = await fetch(`${AGENT_API}/triggers`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) throw new Error(`Create trigger failed: ${r.status} ${await r.text()}`);
+    const trigger = await r.json();
+    set((s) => ({ triggers: [trigger, ...s.triggers] }));
+    return trigger;
+  },
+
+  updateTrigger: async (triggerId, data) => {
+    const r = await fetch(`${AGENT_API}/triggers/${triggerId}`, {
+      method: 'PUT',
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) throw new Error(`Update trigger failed: ${r.status} ${await r.text()}`);
+    const trigger = await r.json();
+    set((s) => ({ triggers: s.triggers.map((t) => (t.id === triggerId ? trigger : t)) }));
+  },
+
+  deleteTrigger: async (triggerId) => {
+    await fetch(`${AGENT_API}/triggers/${triggerId}`, {
+      method: 'DELETE',
+      headers: { 'x-tenant-id': getTenantId() },
+    });
+    set((s) => ({ triggers: s.triggers.filter((t) => t.id !== triggerId) }));
+  },
+
+  testFireTrigger: async (triggerId, body) => {
+    const r = await fetch(`${AGENT_API}/triggers/${triggerId}/test-fire`, {
+      method: 'POST',
+      headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`Test fire failed: ${r.status} ${await r.text()}`);
+    return await r.json();
   },
 
   fetchVersions: async (agentId) => {
