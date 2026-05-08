@@ -4,8 +4,8 @@ CRUD for recurring schedules + APScheduler wiring.
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Any
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Any, Optional
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -46,8 +46,9 @@ class ScheduleOut(BaseModel):
 async def list_schedules(
     function_id: str,
     session: AsyncSession = Depends(get_session),
-    tenant_id: str = "tenant-001",
+    x_tenant_id: Optional[str] = Header(None),
 ):
+    tenant_id = x_tenant_id or "tenant-001"
     rows = await session.execute(
         select(LogicScheduleRow).where(
             LogicScheduleRow.function_id == function_id,
@@ -62,8 +63,9 @@ async def create_schedule(
     function_id: str,
     body: ScheduleCreate,
     session: AsyncSession = Depends(get_session),
-    tenant_id: str = "tenant-001",
+    x_tenant_id: Optional[str] = Header(None),
 ):
+    tenant_id = x_tenant_id or "tenant-001"
     # Verify function exists
     fn = await session.get(LogicFunctionRow, function_id)
     if not fn or fn.tenant_id != tenant_id:
@@ -94,8 +96,9 @@ async def update_schedule(
     schedule_id: str,
     body: ScheduleUpdate,
     session: AsyncSession = Depends(get_session),
-    tenant_id: str = "tenant-001",
+    x_tenant_id: Optional[str] = Header(None),
 ):
+    tenant_id = x_tenant_id or "tenant-001"
     row = await session.get(LogicScheduleRow, schedule_id)
     if not row or row.function_id != function_id or row.tenant_id != tenant_id:
         raise HTTPException(404, "Schedule not found")
@@ -125,8 +128,9 @@ async def delete_schedule(
     function_id: str,
     schedule_id: str,
     session: AsyncSession = Depends(get_session),
-    tenant_id: str = "tenant-001",
+    x_tenant_id: Optional[str] = Header(None),
 ):
+    tenant_id = x_tenant_id or "tenant-001"
     row = await session.get(LogicScheduleRow, schedule_id)
     if not row or row.function_id != function_id or row.tenant_id != tenant_id:
         raise HTTPException(404, "Schedule not found")
