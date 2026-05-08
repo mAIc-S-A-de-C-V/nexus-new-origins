@@ -172,6 +172,12 @@ async def update_function(
 
     # Bump version on each save (draft edits don't lock version)
     row.version = (row.version or 1) + 1
+    # Set updated_at explicitly so the UPDATE carries our value. The column
+    # has onupdate=func.now() which would otherwise be server-generated, and
+    # reading row.updated_at after commit would trigger an async refresh
+    # outside the greenlet-safe context — failing with `greenlet_spawn has
+    # not been called`. Doing it client-side avoids the refresh entirely.
+    row.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return _fn_to_dict(row)
 
@@ -222,6 +228,7 @@ async def publish_function(
 
     row.status = "published"
     row.published_version = row.version
+    row.updated_at = datetime.now(timezone.utc)  # avoid post-commit refresh
     await db.commit()
     return _fn_to_dict(row)
 
