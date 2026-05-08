@@ -187,7 +187,7 @@ BPIC2019_SPEND_AREAS = ["IT Infrastructure", "Office Supplies", "Raw Materials",
                          "Professional Services", "Logistics", "Maintenance",
                          "Marketing", "Facilities"]
 
-def generate_bpic2019(n_cases: int = 5000) -> list[dict]:
+def generate_bpic2019(n_cases: int = 100000) -> list[dict]:
     rng = _seed("bpic2019")
     base = datetime(2018, 1, 1)
     rows = []
