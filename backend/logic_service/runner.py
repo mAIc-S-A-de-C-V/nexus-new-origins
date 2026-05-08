@@ -131,19 +131,42 @@ def _apply_filter(record: dict, field: str, op: str, value: str) -> bool:
 
 
 async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> Any:
-    """Query object records from the Ontology Service."""
+    """Query object records from the Ontology Service.
+
+    Two modes:
+
+    A. List mode (default) — `config = {object_type, filters?, limit?}`
+       Calls GET /object-types/{id}/records, applies filters in Python,
+       returns {records, count, total_before_filter}.
+
+    B. Aggregate mode — `config = {object_type, filters?, aggregate: {...}}`
+       Calls POST /object-types/{id}/aggregate with the body shape:
+         {
+           "group_by": "device",                          # optional
+           "time_bucket": {"field": "time", "interval": "hour"},  # optional
+           "aggregations": [
+             {"method": "count", "alias": "samples"},
+             {"field": "temp", "method": "avg", "alias": "avg_temp"},
+             ...
+           ],
+           "filters": "<filter spec>",
+           "limit": 5000
+         }
+       Returns {rows: [{<group_by>: ..., <time_bucket.field>: ..., <alias>: ...}], total_groups: N}.
+       The runner remaps positional `agg_N` keys to your aliases and `grp`/`series`
+       to your `group_by` / `time_bucket.field` names so the result is immediately
+       usable downstream (no need for a transform block just to rename keys).
+    """
     object_type = _resolve(config.get("object_type", ""), context)
-    limit = config.get("limit", 10)
+    aggregate_cfg = config.get("aggregate") or {}
 
     # Support both old single-string filter and new filters array
     filters_raw: list[dict] = config.get("filters", [])
     legacy_filter: str = config.get("filter", "")
 
-    # Fetch more records than the limit so filters have enough to work with
-    params: dict[str, Any] = {"limit": max(limit * 10, 200)}
-
     async with httpx.AsyncClient(timeout=30) as client:
         try:
+            # Resolve OT id from name/displayName (one place, both modes)
             r = await client.get(
                 f"{ONTOLOGY_URL}/object-types",
                 headers={"x-tenant-id": tenant_id},
@@ -154,8 +177,91 @@ async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> An
                 None,
             )
             if not ot:
-                return {"error": f"Object type '{object_type}' not found", "records": []}
+                return {"error": f"Object type '{object_type}' not found", "records": [], "rows": []}
 
+            # ── Aggregate mode ────────────────────────────────────────────
+            if aggregate_cfg and aggregate_cfg.get("aggregations"):
+                # Resolve template variables inside aggregate config
+                aggregations = [_resolve(a, context) for a in aggregate_cfg.get("aggregations", [])]
+                group_by = _resolve(aggregate_cfg.get("group_by", ""), context) or None
+                time_bucket = _resolve(aggregate_cfg.get("time_bucket"), context) if aggregate_cfg.get("time_bucket") else None
+
+                # Build server-side filter dict from filters_raw if present
+                server_filter = {}
+                for f in filters_raw or []:
+                    field = _resolve(f.get("field", ""), context)
+                    op = f.get("op", "==")
+                    val = _resolve(f.get("value", ""), context)
+                    if field and val != "":
+                        # Map common UI ops to the JSONB filter DSL
+                        op_map = {"==": "eq", "!=": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "contains": "contains"}
+                        server_filter[field] = {"op": op_map.get(op, op), "value": val}
+
+                body: dict[str, Any] = {
+                    "aggregations": [{k: v for k, v in a.items() if k != "alias"} for a in aggregations],
+                    "limit": int(aggregate_cfg.get("limit", 5000)),
+                }
+                if group_by: body["group_by"] = group_by
+                if time_bucket and time_bucket.get("field") and time_bucket.get("interval"):
+                    body["time_bucket"] = {"field": time_bucket["field"], "interval": time_bucket["interval"]}
+                if server_filter:
+                    body["filters"] = json.dumps(server_filter)
+                if aggregate_cfg.get("sort_by"):
+                    body["sort_by"] = aggregate_cfg["sort_by"]
+                    body["sort_dir"] = aggregate_cfg.get("sort_dir", "desc")
+
+                r2 = await client.post(
+                    f"{ONTOLOGY_URL}/object-types/{ot['id']}/aggregate",
+                    json=body,
+                    headers={"x-tenant-id": tenant_id, "Content-Type": "application/json"},
+                )
+                if not r2.is_success:
+                    return {"error": f"aggregate failed: {r2.status_code} {r2.text[:300]}", "rows": []}
+
+                data = r2.json()
+                raw_rows = data.get("rows", [])
+
+                # Remap agg_N → alias and grp/series → friendly key names.
+                # Server returns rows with `series` (group_by value) when both
+                # group_by AND time_bucket are set, `grp` (time bucket) when
+                # only time_bucket, and `group` when only group_by.
+                aliases = [a.get("alias") or f"agg_{i}" for i, a in enumerate(aggregations)]
+                bucket_key = (time_bucket or {}).get("field") if time_bucket else None
+                friendly_rows: list[dict] = []
+                for raw in raw_rows:
+                    row: dict[str, Any] = {}
+                    # Map group / time fields
+                    if "series" in raw and group_by:
+                        row[group_by] = raw["series"]
+                    if "grp" in raw:
+                        if bucket_key and not group_by:
+                            row[bucket_key] = raw["grp"]
+                        elif bucket_key and group_by:
+                            # When both are set, server uses `series` for the
+                            # group and `grp` for the time bucket.
+                            row[bucket_key] = raw["grp"]
+                        else:
+                            # No time_bucket → `grp` here is actually the group_by value
+                            if group_by:
+                                row[group_by] = raw["grp"]
+                    if "group" in raw and group_by:
+                        row[group_by] = raw["group"]
+                    # Map agg_N → alias
+                    for i, alias in enumerate(aliases):
+                        key = f"agg_{i}"
+                        if key in raw:
+                            row[alias] = raw[key]
+                    friendly_rows.append(row)
+
+                return {
+                    "rows": friendly_rows,
+                    "total_groups": data.get("total_groups", len(friendly_rows)),
+                    "count": len(friendly_rows),
+                }
+
+            # ── List mode (default) ───────────────────────────────────────
+            limit = config.get("limit", 10)
+            params: dict[str, Any] = {"limit": max(limit * 10, 200)}
             r2 = await client.get(
                 f"{ONTOLOGY_URL}/object-types/{ot['id']}/records",
                 params=params,
@@ -184,7 +290,7 @@ async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> An
 
             return {"records": records[:limit], "count": len(records), "total_before_filter": total_before_filter}
         except Exception as e:
-            return {"error": str(e), "records": []}
+            return {"error": str(e), "records": [], "rows": []}
 
 
 async def _run_llm_call(block: dict, context: dict, tenant_id: str = "unknown") -> Any:

@@ -54,14 +54,41 @@ logic_service/
 
 ## Block types (executed in `runner.py`)
 
-| Type | Config |
-|------|--------|
-| `ontology_query` | `{object_type, filters: [{field, op, value}], aggregate?, limit?}` — calls ontology-service. |
-| `llm_call` | `{prompt, model?, max_tokens?}` — Claude via shared/llm_router. |
-| `action` | `{action_name, inputs}` — propose/execute via ontology actions. |
-| `transform` | `{language: js|py, code}` — runs sandboxed transform. |
-| `email` | `{to, subject, body}` — SMTP send. |
-| `conditional` | `{expression, then_block, else_block}` — branch. |
+The runner only knows these eight block types — **do NOT generate `llm`, `condition`, `http_request`, or `notification`** (the UI palette has `conditional` and `foreach` but they aren't wired into the runtime yet).
+
+| Type | Config location | Fields |
+|------|----------------|--------|
+| `ontology_query` | nested in `block.config` | `object_type` (NAME), `filters: [{field, op, value}]`, `limit`, **`aggregate?: {group_by?, time_bucket?:{field,interval}, aggregations:[{method,field?,alias?}], limit?, sort_by?, sort_dir?}`** |
+| `llm_call` | top-level on `block` | `prompt_template`, `system_prompt`, `model`, `max_tokens`, `output_schema?` |
+| `action` | top-level | `action_name`, `params`, `reasoning` — calls `ontology /actions/{name}/execute` |
+| `ontology_update` | nested in `block.config` | `object_type_id`, `match_field`, `match_value`, `fields: {...}` — upserts via `/records/ingest` |
+| `transform` | top-level | `operation: pass\|extract_field\|format_string\|filter_list`, `source` (block ref), `field?`, `value?`, `template?` |
+| `send_email` | top-level | `to`, `subject`, `body`, `from_name?`, `bcc?` — supports list-of-dicts in `to` for batches |
+| `utility_call` | top-level | `utility_id`, `utility_params` — calls utility-service |
+| `http_call` | nested in `block.config` | `url`, `method`, `headers?`, `body?`, `auth_type?`, `auth_config?`, `timeout_seconds?`. **Use ONLY for external services — never the platform's own ontology/aggregate endpoints.** |
+
+### `ontology_query` aggregate mode
+
+Set `config.aggregate` and the block calls `POST /object-types/{id}/aggregate` instead of listing records. The runner remaps positional `agg_N` keys to your aliases and `grp` / `series` to your `group_by` / `time_bucket.field` names — the result is immediately usable downstream:
+
+```json
+{
+  "object_type": "DeviceTelemetry",
+  "filters": [{"field": "time", "op": ">=", "value": "{now_minus_1d}"}],
+  "aggregate": {
+    "group_by": "device",
+    "time_bucket": {"field": "time", "interval": "hour"},
+    "aggregations": [
+      {"method": "count",                            "alias": "sample_count"},
+      {"method": "avg", "field": "temp",             "alias": "avg_temp"},
+      {"method": "min", "field": "heap",             "alias": "min_heap"}
+    ],
+    "limit": 5000
+  }
+}
+```
+
+Returns `{"rows": [{"device": "Compactadora", "time": "2026-05-08T16:00:00Z", "sample_count": 22, "avg_temp": 53.3, "min_heap": 189100}, …], "total_groups": N}`.
 
 Variable interpolation (`_resolve()`):
 - `{inputs.field}` — input parameter.
@@ -85,10 +112,10 @@ Variable interpolation (`_resolve()`):
 
 | Intent | File |
 |--------|------|
-| Add new block type | `runner.py:_execute_block()` dispatcher + handler function. Document config schema in `routers/functions.py` validation. |
+| Add new block type | `runner.py:execute_function()` dispatcher + new `_run_<type>` handler. Add to `frontend/src/modules/logic/LogicStudio.tsx:BLOCK_TYPES`. Add a worked example to `backend/inference_service/claude_client.py:create_logic_function` prompt so the generator can produce it. |
 | Add new variable resolution syntax | `runner.py:_resolve()` regex + traversal. |
-| Add block validation | `routers/functions.py:_validate_blocks()` before persisting. |
-| Add transform language | extend `runner.py:_execute_transform()` (currently JS via mini-runner). |
-| Customize LLM behavior | `runner.py:_execute_llm_call()` — model, context window, token limits. |
+| Extend ontology_query (e.g. semantic search, lateral joins) | `runner.py:_run_ontology_query()` — already supports list + aggregate modes. |
+| Customize LLM behavior | `runner.py:_run_llm_call()` — model, context window, token limits. |
 | Add scheduling trigger types beyond cron | `scheduler.py:load_schedules_from_db()`. |
-| Persist additional run metadata | `runner.py` trace + `database.py:LogicRunRow` columns. |
+| Improve generator output | `backend/inference_service/claude_client.py:create_logic_function` prompt — every block type's exact schema is documented there with worked examples. The generator MUST produce fully-runnable functions; if you find a config combination it gets wrong, add a counter-example to the prompt. |
+| Wire generator into UI block editor | `frontend/src/modules/logic/LogicStudio.tsx` — add new fields next to the existing aggregate controls. |

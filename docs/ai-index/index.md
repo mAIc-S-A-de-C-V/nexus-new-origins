@@ -124,6 +124,10 @@ Domain-specific apps for MAIC's own ops.
 3. **Verify before editing.** Memory entries can drift; open the actual file referenced in the doc to confirm structure before changing.
 4. **Update this index when you add or rename services / modules.** It is mechanical — find the row, edit the line.
 
+## 2026-05 — `ontology_query` aggregate mode + create_logic generator fix
+
+The Logic Function block runner now has full aggregation in the `ontology_query` block via `config.aggregate = {group_by, time_bucket, aggregations: [{method, field, alias}]}`. The block hits `/object-types/{id}/aggregate` server-side and remaps positional `agg_N` keys to user aliases — no transform block needed just to rename fields. Use this for hourly/daily rollups instead of raw `http_call`. The LogicStudio UI got a Mode toggle (List vs Aggregate) with typed pickers for group_by, time bucket, and per-aggregation method/field/alias. The `create_logic_function` generator prompt was completely rewritten with the full block-type catalog (correct names: `llm_call` not `llm`, `http_call` not `http_request`, no `condition`/`notification`), nested-vs-top-level config locations, and three worked examples (hourly rollup, classify-and-act, daily summary email) so it produces fully-runnable functions instead of empty skeletons.
+
 ## 2026-05 expansion (gap-fill release)
 
 The platform's reachability through the UI and the in-site Assistant was significantly expanded in May 2026:

@@ -33,6 +33,10 @@ inference_service/
 | POST | `/infer/scan-all` | Async PII scan across all object types; returns scan id to poll. |
 | GET | `/infer/scan-results/{id}` | Poll async PII scan results. |
 | POST | `/infer/extract-from-document` | Vision-based OCR + structured field extraction. Uses claude-sonnet-4-6. |
+| POST | `/infer/create-logic` | NL → fully-runnable Logic Function. Body: `{description, object_types, existing_functions}`. Calls `claude_client.create_logic_function()` (which has the comprehensive block-schema prompt) then POSTs to `logic-service /logic/functions`. **Do not** revert this prompt to a short skeleton — the runner-vs-generator block-name mismatch is what produces empty configs in the UI. |
+| POST | `/infer/create-pipeline` | NL → pipeline definition. |
+| POST | `/infer/help`, `/infer/stream-help` | Nexus Assistant chat. System prompt is `NEXUS_HELP_SYSTEM` (in `routers/inference.py`) — every action type the assistant can propose is documented there. |
+| POST | `/infer/explain-lineage`, `/infer/surface-anomalies`, `/infer/chat` | Misc inline assistants. |
 
 ## Models
 
@@ -69,4 +73,5 @@ Regex `PATTERNS` dict for: EMAIL, PHONE, SSN, CREDIT_CARD, DOB, IP_ADDRESS, PASS
 | Change Claude verification | `routers/scanner.py:_claude_verify_pii()`. |
 | Extend vision extraction (new doc kind) | `routers/documents.py` + extend `ExtractRequest.document_kind` enum + Claude prompt for new kind. |
 | Add custom widget generator | `claude_client.py:generate_*_widget()` + `routers/inference.py`. |
+| Generator produces non-runnable Logic Functions | `claude_client.py:create_logic_function` prompt — extend the BLOCK TYPE CATALOG section and add a worked example for the broken case. The prompt is the **single source of truth** for what the generator can build; the runner schema and the prompt must stay in sync (see `backend/logic_service/runner.py:_run_*`). |
 | Token tracking missing | confirm `track_token_usage()` called after every Anthropic call. |

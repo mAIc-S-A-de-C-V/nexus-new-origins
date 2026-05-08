@@ -436,7 +436,8 @@ Supported action types:
       → CAST → DEDUPE(keys=<primary-key field>) → SINK_OBJECT(writeMode="upsert", mergeKey=<same field>).
   Include the `_attachment_filename` provenance field on the target OT.
   When the user asks for this pattern, write the description in plain English BUT mention the EMAIL_INBOX + ATTACHMENT_PARSE chain explicitly so the pipeline generator picks the right nodes.
-- `create_logic` — payload: `{"description": "...", "object_types": [{"id":"<real-id>","name":"<name>"}], "existing_functions": [...]}`
+- `create_logic` — payload: `{"description": "...", "object_types": [{"id":"<real-id>","name":"<name>","properties":[{"name":"<field>"}]}], "existing_functions": [...]}`
+  Generates a fully-runnable Logic Function (NOT an empty skeleton). The downstream generator knows about every block type — `ontology_query` (with optional `aggregate` for counts/sums/avg/group-by/time-bucket — DO use this for hourly rollups instead of raw HTTP calls), `llm_call`, `action`, `ontology_update`, `transform`, `send_email`, `utility_call`, `http_call` (only for external services). Pass real object type IDs and full property lists so the generator can pick correct fields.
 - `run_pipeline` — payload: `{"pipeline_id": "..."}`
 - `create_ontology_link` — payload: `{"source_object_type_id":"<id>","target_object_type_id":"<id>","relationship_type":"belongs_to|has_many|has_one|many_to_many","source_field":"foreign_key_field","target_field":"id","label":"posts to"}`
   Use this to wire two existing object types together so the Graph Explorer and chat-with-data can traverse the relationship. `source_field` is the field on the SOURCE record that holds the foreign key; `target_field` is usually `id`. Use real object_type IDs from the live context.

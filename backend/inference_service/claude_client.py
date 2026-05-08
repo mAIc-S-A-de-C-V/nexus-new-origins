@@ -1647,63 +1647,275 @@ Return ONLY valid JSON. No markdown, no explanation."""
     async def create_logic_function(
         self, description: str, object_types: list, existing_functions: list
     ) -> dict:
-        """Generate a logic function config from natural language description."""
-        prompt = f"""You are building a Logic Function for Nexus platform. Logic Functions are automated workflows composed of blocks.
+        """Generate a fully-runnable logic function config from a natural language description.
 
-Available object types and their fields:
-{json.dumps(object_types, indent=2)}
+        The output MUST be runnable as-is — every block must have its operational
+        config populated. Empty skeletons defeat the purpose. The prompt below
+        documents every supported block type with its exact field schema so the
+        LLM cannot guess wrong, and includes worked examples covering the most
+        common patterns (aggregate→write, list→classify→write, scheduled report).
+        """
+        prompt = f"""You are generating a Logic Function for the Nexus platform. The function MUST be runnable as soon as it's saved — every block's operational fields must be populated. Empty placeholders are unacceptable.
 
-Existing functions (for reference/calling):
-{json.dumps([f['name'] for f in existing_functions], indent=2)}
+Available object types in this tenant:
+{json.dumps([{{ "id": ot.get("id"), "name": ot.get("name") or ot.get("displayName"), "displayName": ot.get("displayName"), "properties": [p.get("name") for p in ot.get("properties", [])][:30] }} for ot in object_types], indent=2)}
 
-User request: {description}
+Existing logic functions you can reference:
+{json.dumps([{{ "id": f.get("id"), "name": f.get("name") }} for f in existing_functions], indent=2)}
 
-Generate a logic function as JSON:
+User request:
+{description}
+
+═══════════════════════════════════════════════════════════════════════════════
+BLOCK TYPE CATALOG — you MUST use exactly these type strings and these field paths.
+═══════════════════════════════════════════════════════════════════════════════
+
+1) ontology_query — read records OR aggregate.
+   Field paths are nested under `config`.
+   List mode:
+     {{ "id": "b1", "type": "ontology_query", "label": "...",
+        "config": {{
+          "object_type": "<NAME, not id — use the `name` field from the catalog>",
+          "filters": [{{"field": "<field>", "op": "==|!=|>|>=|<|<=|contains", "value": "<value or {{inputs.x}}>"}}],
+          "limit": 100
+        }} }}
+   Aggregate mode (use this whenever the user wants counts, sums, averages, group-bys, time buckets):
+     {{ "id": "b1", "type": "ontology_query", "label": "...",
+        "config": {{
+          "object_type": "<NAME>",
+          "filters": [{{"field": "<field>", "op": ">=", "value": "{{now_minus_1d}}"}}],
+          "aggregate": {{
+            "group_by": "<field>",                                 // optional
+            "time_bucket": {{"field": "<datetime field>", "interval": "hour|day|week|month|quarter|year"}},  // optional
+            "aggregations": [
+              {{"method": "count",                       "alias": "<friendly_name>"}},
+              {{"method": "avg|min|max|sum", "field": "<numeric field>", "alias": "<friendly_name>"}}
+            ],
+            "limit": 5000
+          }}
+        }} }}
+   Aggregate-mode result shape (already remapped — do NOT add a transform just to rename keys):
+     {{ "rows": [ {{ "<group_by>": <value>, "<time_bucket.field>": <ts>, "<alias>": <number>, ... }} ], "total_groups": N }}
+
+2) llm_call — call Claude. Fields are TOP-LEVEL on the block, NOT under `config`.
+     {{ "id": "b2", "type": "llm_call", "label": "...",
+        "prompt_template": "Analyze these records: {{b1.result.records}}\\nReturn ...",
+        "system_prompt": "You are a ...",
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "output_schema": {{ "category": "string", "priority": "low|medium|high|critical" }}  // optional, forces JSON
+     }}
+
+3) action — propose or execute an ontology Action by name. TOP-LEVEL fields.
+     {{ "id": "b3", "type": "action", "label": "...",
+        "action_name": "<exact action name from the platform>",
+        "params": {{ "<field>": "{{b2.result.category}}", ... }},
+        "reasoning": "<why we're proposing this>"
+     }}
+
+4) ontology_update — write fields back to one record. NESTED in `config`.
+     {{ "id": "b4", "type": "ontology_update", "label": "...",
+        "config": {{
+          "object_type_id": "<id>",
+          "match_field": "<pk field name>",
+          "match_value": "{{b1.result.records[0].id}}",
+          "fields": {{ "<field>": "{{b2.result.score}}", ... }}
+        }} }}
+
+5) http_call — generic HTTP. NESTED in `config`. ONLY use this for EXTERNAL services.
+   Do NOT use http_call for ontology operations — use ontology_query / ontology_update / action / ingest helper instead.
+     {{ "id": "b5", "type": "http_call", "label": "...",
+        "config": {{
+          "url": "https://api.example.com/x",
+          "method": "GET|POST|PUT|PATCH|DELETE",
+          "headers": {{ "Authorization": "Bearer ..." }},
+          "body": {{ ... }} | "raw string",
+          "auth_type": "none|bearer|basic|api_key",
+          "auth_config": {{ ... }},
+          "timeout_seconds": 30
+        }} }}
+   Result shape: {{ status_code, headers, body, elapsed_ms }}
+
+6) transform — pure-Python data shaping. TOP-LEVEL fields. Operations are STRICT — only these:
+   `pass` (return source as-is), `extract_field` (pluck one key from a dict),
+   `format_string` (interpolate a template), `filter_list` (keep items where field == value).
+   For complex JS logic, use http_call to a utility instead.
+     {{ "id": "b6", "type": "transform", "label": "...",
+        "operation": "pass|extract_field|format_string|filter_list",
+        "source": "b1.result.rows",      // block reference (no curly braces inside `source`)
+        "field":  "<field>",             // for extract_field / filter_list
+        "value":  "<expected value>",    // for filter_list
+        "template": "Hello {{inputs.name}}, you have {{b1.result.count}} items"  // for format_string
+     }}
+
+7) send_email — SMTP send (env-configured server). TOP-LEVEL fields.
+     {{ "id": "b7", "type": "send_email", "label": "...",
+        "to": "user@example.com",  // or "{{b2.result.email}}", or a list of dicts {{to,subject,body}} for batch
+        "subject": "Subject with {{inputs.x}}",
+        "body": "Plain-text body",
+        "from_name": "Nexus",
+        "bcc": "audit@example.com"   // optional
+     }}
+
+8) utility_call — invoke a utility from utility-service (PDF extract, OCR, web scrape, geocode, …). TOP-LEVEL fields.
+     {{ "id": "b8", "type": "utility_call", "label": "...",
+        "utility_id": "<id>",
+        "utility_params": {{ ... }}
+     }}
+
+═══════════════════════════════════════════════════════════════════════════════
+VARIABLE RESOLUTION
+═══════════════════════════════════════════════════════════════════════════════
+- {{inputs.<name>}} — function input parameter declared in input_schema
+- {{<block_id>.result}} — the entire result dict of a previous block
+- {{<block_id>.result.<field>}} — a specific field of a result
+- {{<block_id>.result[0].<field>}} — first item of a list result (for list_records mode)
+- {{now}}, {{now_minus_1d}}, {{now_minus_3d}}, {{now_minus_7d}}, {{now_minus_14d}}, {{now_minus_30d}}, {{now_minus_90d}} — built-in ISO timestamps
+
+═══════════════════════════════════════════════════════════════════════════════
+RULES — VIOLATING ANY OF THESE PRODUCES A NON-RUNNABLE FUNCTION
+═══════════════════════════════════════════════════════════════════════════════
+1. Use exactly the type strings above. NEVER use `llm` (use `llm_call`), `condition` (not supported by runner), `http_request` (use `http_call`), `notification` (use `send_email`).
+2. For ontology aggregations (sums, counts, averages, hourly/daily rollups, group-bys), ALWAYS use `ontology_query` with `aggregate`. NEVER use `http_call` for the platform's own /aggregate endpoint.
+3. For writing records back, prefer `ontology_update` (single record) or `action` (typed action) over raw `http_call`.
+4. Every config field shown above MUST be present and populated with real values from the user request — no placeholders like "<id>" or "TODO".
+5. `object_type` in `ontology_query` is the NAME (e.g. "DeviceTelemetry"), NOT the UUID id.
+6. Block IDs MUST be short, snake_case, and match `^[a-z][a-z0-9_]*$` (e.g. `b1`, `agg`, `classify`). They appear in references like `{{b1.result}}`.
+7. The `output_block` field at the function root MUST be the id of the LAST meaningful block (usually the write/email step).
+8. Function input_schema declares user-supplied runtime parameters: `[{{ "name": "since_iso", "type": "string", "required": false }}]`. Reference them via `{{inputs.since_iso}}`.
+9. Every block must be runnable in isolation — no field may be empty or contain a placeholder.
+
+═══════════════════════════════════════════════════════════════════════════════
+WORKED EXAMPLES
+═══════════════════════════════════════════════════════════════════════════════
+
+Example A — Hourly telemetry rollup ("compact device telemetry into hourly buckets"):
 {{
-  "name": "descriptive function name",
-  "description": "what this function does",
+  "name": "Hourly Device Telemetry Compaction",
+  "description": "Roll DeviceTelemetry up to per-(device,hour) rows in DeviceTelemetryHourly.",
+  "input_schema": [],
   "blocks": [
     {{
-      "id": "block-1",
+      "id": "agg",
       "type": "ontology_query",
-      "label": "Fetch Records",
+      "label": "Aggregate by device + hour",
       "config": {{
-        "object_type_id": "<id>",
-        "filters": [],
-        "limit": 100
+        "object_type": "DeviceTelemetry",
+        "filters": [{{ "field": "time", "op": ">=", "value": "{{now_minus_1d}}" }}],
+        "aggregate": {{
+          "group_by": "device",
+          "time_bucket": {{ "field": "time", "interval": "hour" }},
+          "aggregations": [
+            {{ "method": "count",                            "alias": "sample_count" }},
+            {{ "method": "avg", "field": "temp",             "alias": "avg_temp" }},
+            {{ "method": "min", "field": "temp",             "alias": "min_temp" }},
+            {{ "method": "max", "field": "temp",             "alias": "max_temp" }},
+            {{ "method": "avg", "field": "heap",             "alias": "avg_heap" }},
+            {{ "method": "min", "field": "heap",             "alias": "min_heap" }},
+            {{ "method": "max", "field": "uptime",           "alias": "max_uptime" }},
+            {{ "method": "avg", "field": "running",          "alias": "running_pct" }},
+            {{ "method": "avg", "field": "wifi_rssi",        "alias": "avg_wifi_rssi" }},
+            {{ "method": "min", "field": "wifi_rssi",        "alias": "min_wifi_rssi" }}
+          ],
+          "limit": 5000
+        }}
       }}
     }},
     {{
-      "id": "block-2",
-      "type": "llm",
-      "label": "AI Analysis",
-      "config": {{
-        "prompt": "Analyze this data: {{{{input}}}}",
-        "model": "claude-haiku-4-5-20251001"
-      }}
+      "id": "shape",
+      "type": "transform",
+      "label": "Shape with composite pk",
+      "operation": "pass",
+      "source": "agg.result.rows"
     }},
     {{
-      "id": "block-3",
-      "type": "condition",
-      "label": "Check Result",
+      "id": "write",
+      "type": "ontology_update",
+      "label": "Upsert into DeviceTelemetryHourly",
       "config": {{
-        "expression": "output.length > 0"
+        "object_type_id": "<DeviceTelemetryHourly id from the catalog>",
+        "match_field": "pk",
+        "match_value": "{{shape.result[0].device}}:{{shape.result[0].time}}",
+        "fields": {{
+          "device":         "{{shape.result[0].device}}",
+          "hour_bucket":    "{{shape.result[0].time}}",
+          "sample_count":   "{{shape.result[0].sample_count}}",
+          "avg_temp":       "{{shape.result[0].avg_temp}}",
+          "max_temp":       "{{shape.result[0].max_temp}}",
+          "min_heap":       "{{shape.result[0].min_heap}}",
+          "running_pct":    "{{shape.result[0].running_pct}}"
+        }}
       }}
     }}
   ],
-  "block_order": ["block-1", "block-2", "block-3"]
+  "output_block": "write"
 }}
 
-Available block types: ontology_query, llm, condition, http_request, transform, notification, email
-Return ONLY valid JSON."""
+Example B — Classify incoming records and propose an action:
+{{
+  "name": "Triage New Incidents",
+  "description": "Classify recent incidents with Claude and propose triage actions.",
+  "input_schema": [],
+  "blocks": [
+    {{ "id": "list", "type": "ontology_query", "label": "Recent incidents",
+       "config": {{ "object_type": "Incident",
+                    "filters": [{{ "field": "created_at", "op": ">=", "value": "{{now_minus_1d}}" }}],
+                    "limit": 50 }} }},
+    {{ "id": "classify", "type": "llm_call", "label": "Classify each",
+       "prompt_template": "Classify these incidents: {{list.result.records}}\\nReturn category and priority.",
+       "system_prompt": "You are an incident triage assistant.",
+       "model": "claude-haiku-4-5-20251001",
+       "max_tokens": 2048,
+       "output_schema": {{ "category": "string", "priority": "low|medium|high|critical" }} }},
+    {{ "id": "act", "type": "action", "label": "Propose triage action",
+       "action_name": "triage_incident",
+       "params": {{ "incident_id": "{{list.result.records[0].id}}",
+                    "category":    "{{classify.result.category}}",
+                    "priority":    "{{classify.result.priority}}" }},
+       "reasoning": "Auto-triaged by logic function" }}
+  ],
+  "output_block": "act"
+}}
+
+Example C — Daily summary email:
+{{
+  "name": "Daily Open Tickets Summary",
+  "description": "Email leadership the count of open tickets each morning.",
+  "input_schema": [],
+  "blocks": [
+    {{ "id": "count", "type": "ontology_query", "label": "Open ticket count",
+       "config": {{ "object_type": "Ticket",
+                    "filters": [{{ "field": "status", "op": "==", "value": "open" }}],
+                    "aggregate": {{ "aggregations": [{{ "method": "count", "alias": "open_tickets" }}] }} }} }},
+    {{ "id": "fmt", "type": "transform", "label": "Format message",
+       "operation": "format_string",
+       "template": "Open tickets right now: {{count.result.rows[0].open_tickets}}" }},
+    {{ "id": "send", "type": "send_email", "label": "Email leadership",
+       "to": "leadership@example.com",
+       "subject": "Daily ticket summary — {{now}}",
+       "body": "{{fmt.result}}",
+       "from_name": "Nexus" }}
+  ],
+  "output_block": "send"
+}}
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Now generate the function for the user's request. Return ONLY the JSON object — no markdown, no surrounding text. Substitute real `id` values from the object types catalog above. Every field must be filled in with a real working value, never a placeholder.
+"""
 
         text, _resolved_model = await self._chat_async(
             system=(
-                "You are a precise data engineering assistant. Always respond with "
-                "valid JSON only — no markdown, no explanations outside the JSON structure."
+                "You generate Logic Function configs for the Nexus platform. "
+                "Output MUST be a single valid JSON object — no markdown fences, "
+                "no commentary. Every block's operational fields must be populated "
+                "with real values; empty placeholders are unacceptable. Choose the "
+                "right block type for the job (ontology_query for ontology data, "
+                "ontology_update for writes, action for typed actions, http_call "
+                "ONLY for external services)."
             ),
             user_content=prompt,
-            max_tokens=2048,
+            max_tokens=8192,
         )
         content = text.strip()
         if content.startswith("```"):

@@ -324,11 +324,131 @@ const BlockEditor: React.FC<{
               )}
             </div>
 
+            {/* Mode toggle: list (default) vs aggregate */}
             <div>
-              <label style={labelStyle}>Limit</label>
-              <input style={{ ...inputStyle, width: 80 }} type="number" value={(block.config?.limit as number) || 10}
-                onChange={(e) => u({ config: { ...block.config, limit: parseInt(e.target.value) || 10 } })} />
+              <label style={labelStyle}>Mode</label>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {(['list', 'aggregate'] as const).map((mode) => {
+                  const active = mode === 'aggregate'
+                    ? !!(block.config?.aggregate as Record<string, unknown> | undefined)
+                    : !(block.config?.aggregate as Record<string, unknown> | undefined);
+                  return (
+                    <button key={mode} type="button"
+                      onClick={() => {
+                        if (mode === 'aggregate') {
+                          const cfg = block.config || {};
+                          if (!cfg.aggregate) {
+                            u({ config: { ...cfg, aggregate: { aggregations: [{ method: 'count', alias: 'count' }] } } });
+                          }
+                        } else {
+                          const { aggregate: _drop, ...rest } = (block.config as Record<string, unknown>) || {};
+                          u({ config: rest });
+                        }
+                      }}
+                      style={{
+                        padding: '4px 10px', fontSize: 11, fontWeight: 500,
+                        backgroundColor: active ? C.accentDim : 'transparent',
+                        color: active ? C.accent : C.muted,
+                        border: `1px solid ${active ? C.accent : C.border}`,
+                        borderRadius: 3, cursor: 'pointer',
+                      }}>
+                      {mode === 'list' ? 'List records' : 'Aggregate (group/count/avg/sum)'}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
+
+            {/* Aggregate mode UI */}
+            {!!(block.config?.aggregate as Record<string, unknown> | undefined) && (
+              <div style={{ paddingLeft: 8, borderLeft: `2px solid ${C.accent}`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {(() => {
+                  const agg = (block.config?.aggregate as Record<string, unknown>) || {};
+                  const setAgg = (patch: Record<string, unknown>) =>
+                    u({ config: { ...block.config, aggregate: { ...agg, ...patch } } });
+                  const aggregations = (agg.aggregations as Array<{ method: string; field?: string; alias?: string }>) || [];
+                  const tb = (agg.time_bucket as { field?: string; interval?: string } | undefined) || undefined;
+                  return (
+                    <>
+                      <div>
+                        <label style={labelStyle}>Group by (optional)</label>
+                        <select style={{ ...inputStyle }} value={(agg.group_by as string) || ''}
+                          onChange={(e) => setAgg({ group_by: e.target.value || undefined })}>
+                          <option value="">— none —</option>
+                          {otProperties.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <div style={{ flex: 1 }}>
+                          <label style={labelStyle}>Time bucket field (optional)</label>
+                          <select style={{ ...inputStyle }} value={tb?.field || ''}
+                            onChange={(e) => setAgg({ time_bucket: e.target.value ? { field: e.target.value, interval: tb?.interval || 'hour' } : undefined })}>
+                            <option value="">— none —</option>
+                            {otProperties.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                          </select>
+                        </div>
+                        <div style={{ width: 130 }}>
+                          <label style={labelStyle}>Interval</label>
+                          <select style={{ ...inputStyle }} value={tb?.interval || 'hour'} disabled={!tb?.field}
+                            onChange={(e) => setAgg({ time_bucket: { field: tb!.field!, interval: e.target.value } })}>
+                            {['hour', 'day', 'week', 'month', 'quarter', 'year'].map((i) => <option key={i} value={i}>{i}</option>)}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label style={labelStyle}>Aggregations</label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {aggregations.map((a, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                              <select style={{ ...inputStyle, width: 80 }} value={a.method}
+                                onChange={(e) => {
+                                  const next = [...aggregations]; next[i] = { ...a, method: e.target.value };
+                                  setAgg({ aggregations: next });
+                                }}>
+                                {['count', 'avg', 'sum', 'min', 'max'].map((m) => <option key={m} value={m}>{m}</option>)}
+                              </select>
+                              <select style={{ ...inputStyle, flex: 1 }} value={a.field || ''} disabled={a.method === 'count'}
+                                onChange={(e) => {
+                                  const next = [...aggregations]; next[i] = { ...a, field: e.target.value || undefined };
+                                  setAgg({ aggregations: next });
+                                }}>
+                                <option value="">{a.method === 'count' ? '(rows)' : '— select field —'}</option>
+                                {otProperties.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                              </select>
+                              <input style={{ ...inputStyle, width: 130 }} placeholder="alias" value={a.alias || ''}
+                                onChange={(e) => {
+                                  const next = [...aggregations]; next[i] = { ...a, alias: e.target.value || undefined };
+                                  setAgg({ aggregations: next });
+                                }} />
+                              <button type="button" onClick={() => setAgg({ aggregations: aggregations.filter((_, j) => j !== i) })}
+                                style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: 2, lineHeight: 0 }}>
+                                <Trash2 size={11} />
+                              </button>
+                            </div>
+                          ))}
+                          <button type="button"
+                            onClick={() => setAgg({ aggregations: [...aggregations, { method: 'count', alias: 'count' }] })}
+                            style={{ alignSelf: 'flex-start', padding: '3px 8px', fontSize: 11, color: C.accent, backgroundColor: C.accentDim, border: 'none', borderRadius: 3, cursor: 'pointer' }}>
+                            + add aggregation
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Limit only matters in list mode (aggregate has its own internal cap) */}
+            {!(block.config?.aggregate as Record<string, unknown> | undefined) && (
+              <div>
+                <label style={labelStyle}>Limit</label>
+                <input style={{ ...inputStyle, width: 80 }} type="number" value={(block.config?.limit as number) || 10}
+                  onChange={(e) => u({ config: { ...block.config, limit: parseInt(e.target.value) || 10 } })} />
+              </div>
+            )}
           </>
         )}
 
