@@ -176,16 +176,43 @@ export interface AgentRunDetail {
   created_at?: string | null;
 }
 
-export type AnyRunDetail = PipelineRunDetail | AgentRunDetail;
+export interface LogicTraceStep {
+  block_id: string;
+  status: 'completed' | 'failed' | string;
+  duration_ms?: number | null;
+  error?: string | null;
+  result?: unknown;
+}
+
+export interface LogicRunDetail {
+  kind: 'function';
+  id: string;
+  function_id: string;
+  function_name?: string | null;
+  function_version?: number | null;
+  status: 'pending' | 'running' | 'completed' | 'failed' | string;
+  triggered_by?: string | null;
+  inputs: Record<string, unknown>;
+  output: unknown;
+  error?: string | null;
+  /** Backend stores trace as `{block_id: {…}}`; we normalise to ordered list. */
+  trace: LogicTraceStep[];
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at?: string | null;
+}
+
+export type AnyRunDetail = PipelineRunDetail | AgentRunDetail | LogicRunDetail;
 
 export interface SelectedRun {
-  kind: 'pipeline' | 'agent';
+  kind: 'pipeline' | 'agent' | 'function';
   runId: string;
   pipelineId?: string;
+  functionId?: string;
 }
 
 export interface EntityHistoryView {
-  kind: 'pipeline' | 'agent';
+  kind: 'pipeline' | 'agent' | 'function';
   entityId: string;
   entityName: string;
 }
@@ -220,6 +247,7 @@ interface OpsState {
 
   fetchPipelineRun: (pipelineId: string, runId: string) => Promise<PipelineRunDetail>;
   fetchAgentRun: (runId: string) => Promise<AgentRunDetail>;
+  fetchLogicRun: (runId: string) => Promise<LogicRunDetail>;
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -337,11 +365,51 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
         });
         if (get().entityHistory?.entityId !== e.entityId) return;  // user navigated away
         set({ entityHistoryRuns: runs, entityHistoryLoading: false });
-      } else {
+      } else if (e.kind === 'agent') {
         // Agents: filter from the polled snapshot. /runs/recent doesn't yet
         // accept agent_id; this is enough for a one-screen history view.
         const all = [...get().runningRuns, ...get().recentRuns];
         const runs = all.filter((r) => r.kind === 'agent' && r.entityId === e.entityId);
+        set({ entityHistoryRuns: runs, entityHistoryLoading: false });
+      } else {
+        // Logic functions — /logic/runs accepts function_id, so go direct
+        // for full history rather than filtering the polled snapshot.
+        const r = await fetch(
+          `${LOGIC_API}/logic/runs?function_id=${e.entityId}&limit=50`,
+          { headers },
+        );
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        type LogicRunApi = {
+          id: string; function_id: string; status: string;
+          error?: string | null; started_at?: string | null;
+          finished_at?: string | null; created_at?: string | null;
+          triggered_by?: string | null;
+        };
+        const rows: LogicRunApi[] = await r.json();
+        const runs: RunRow[] = rows.map((row) => {
+          const s = (row.status || '').toLowerCase();
+          const status: RunStatus = s === 'failed' ? 'failed'
+            : s === 'completed' ? 'success'
+            : 'running';
+          const startedAt = row.started_at || row.created_at || new Date(0).toISOString();
+          const finishedAt = row.finished_at || null;
+          const durationMs = finishedAt
+            ? new Date(finishedAt).getTime() - new Date(startedAt).getTime()
+            : (status === 'running' ? Date.now() - new Date(startedAt).getTime() : null);
+          return {
+            kind: 'function',
+            id: row.id,
+            entityId: row.function_id,
+            entityName: e.entityName,
+            status,
+            triggeredBy: row.triggered_by ?? undefined,
+            startedAt,
+            finishedAt,
+            durationMs,
+            errorMessage: row.error ?? null,
+          };
+        });
+        if (get().entityHistory?.entityId !== e.entityId) return;
         set({ entityHistoryRuns: runs, entityHistoryLoading: false });
       }
     } catch {
@@ -772,6 +840,44 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
       duration_ms: data.duration_ms ?? null,
       is_test: !!data.is_test,
       error: data.error,
+      created_at: data.created_at,
+    };
+  },
+
+  fetchLogicRun: async (runId) => {
+    const r = await fetch(`${LOGIC_API}/logic/runs/${runId}`, { headers: tenantHeaders() });
+    if (!r.ok) throw new Error(`Logic run ${runId}: HTTP ${r.status}`);
+    const data = await r.json();
+    // Backend trace is keyed by block_id; flatten to an ordered list so the
+    // UI can render each block in execution order. Keys are insertion-ordered
+    // in Python dicts (3.7+), so JSON preserves that order.
+    const traceObj = (data.trace || {}) as Record<string, {
+      result?: unknown;
+      duration_ms?: number;
+      status?: string;
+      error?: string | null;
+    }>;
+    const trace: LogicTraceStep[] = Object.entries(traceObj).map(([block_id, v]) => ({
+      block_id,
+      status: v.status || 'completed',
+      duration_ms: v.duration_ms ?? null,
+      error: v.error ?? null,
+      result: v.result,
+    }));
+    return {
+      kind: 'function',
+      id: data.id,
+      function_id: data.function_id,
+      function_name: data.function_name,
+      function_version: data.function_version,
+      status: data.status,
+      triggered_by: data.triggered_by,
+      inputs: data.inputs || {},
+      output: data.output,
+      error: data.error,
+      trace,
+      started_at: data.started_at,
+      finished_at: data.finished_at,
       created_at: data.created_at,
     };
   },

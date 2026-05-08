@@ -1,7 +1,7 @@
 /**
  * OperationsModule — top-level page.
  *
- * Routing precedence:
+ * Routing precedence (kinds: pipeline | agent | function):
  *   1. A drilldown is open (a specific run was selected) → RunDrilldown
  *   2. An entity's history is open (user clicked a Catalog pill) → EntityHistory
  *   3. Default → HivemindGrid

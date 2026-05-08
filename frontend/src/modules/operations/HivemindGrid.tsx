@@ -18,7 +18,6 @@ import {
   useOperationsStore, RunRow, RunStatus, CatalogEntry,
   timeAgoIso, fmtTokens, fmtCost,
 } from '../../store/operationsStore';
-import { useNavigationStore } from '../../store/navigationStore';
 
 const C = {
   bg: '#F8FAFC', panel: '#FFFFFF', border: '#E2E8F0', hover: '#F1F5F9',
@@ -234,7 +233,6 @@ export const HivemindGrid: React.FC = () => {
     lastFetchedAt, fetchSnapshot, startPolling, stopPolling,
     selectRun, viewEntityHistory,
   } = useOperationsStore();
-  const navigateTo = useNavigationStore((s) => s.navigateTo);
   const [catalogOpen, setCatalogOpen] = useState(true);
 
   useEffect(() => {
@@ -249,9 +247,7 @@ export const HivemindGrid: React.FC = () => {
     } else if (r.kind === 'agent') {
       selectRun({ kind: 'agent', runId: r.id });
     } else {
-      // No drilldown for logic runs yet — jump to Logic Studio so the user
-      // can find the function and inspect runs there.
-      navigateTo('logic');
+      selectRun({ kind: 'function', runId: r.id, functionId: r.entityId });
     }
   };
 
@@ -269,7 +265,11 @@ export const HivemindGrid: React.FC = () => {
         entityName: e.name,
       });
     } else if (e.kind === 'function') {
-      navigateTo('logic');
+      viewEntityHistory({
+        kind: 'function',
+        entityId: e.functionId || e.id,
+        entityName: e.name,
+      });
     } else if (e.kind === 'alert' && e.pipelineId && e.latestRunId) {
       selectRun({ kind: 'pipeline', runId: e.latestRunId, pipelineId: e.pipelineId });
     } else if (e.kind === 'alert' && e.agentId && e.latestRunId) {

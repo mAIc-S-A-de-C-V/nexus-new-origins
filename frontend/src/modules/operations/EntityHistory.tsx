@@ -7,7 +7,7 @@
  * opens the run drilldown.
  */
 import React from 'react';
-import { ArrowLeft, Workflow, Bot, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Workflow, Bot, Code2, RefreshCw } from 'lucide-react';
 import {
   useOperationsStore, RunRow, RunStatus,
   timeAgoIso, fmtTokens, fmtCost,
@@ -37,6 +37,7 @@ const fmtMs = (ms?: number | null): string => {
 
 const HistoryRow: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onSelect }) => {
   const isPipeline = row.kind === 'pipeline';
+  const isFunction = row.kind === 'function';
   return (
     <div
       onClick={onSelect}
@@ -67,13 +68,14 @@ const HistoryRow: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onSe
         {row.status === 'running' && (row.currentNodeLabel || 'running…')}
         {row.status === 'success' && isPipeline &&
           `${(row.rowsIn ?? 0).toLocaleString()} → ${(row.rowsOut ?? 0).toLocaleString()}`}
-        {row.status === 'success' && !isPipeline &&
+        {row.status === 'success' && row.kind === 'agent' &&
           `${row.iterations} iter · ${row.toolCount} tool${row.toolCount === 1 ? '' : 's'}`}
+        {row.status === 'success' && isFunction && 'completed'}
       </span>
       <span style={{ color: C.muted, fontFamily: MONO, fontSize: 11.5, textAlign: 'right' }}>
         {fmtMs(row.durationMs)}
       </span>
-      {isPipeline ? (
+      {isPipeline || isFunction ? (
         <span style={{ color: C.muted, fontFamily: MONO, fontSize: 11.5,
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {row.triggeredBy || ''}
@@ -101,6 +103,7 @@ const EntityHistory: React.FC = () => {
   if (!entityHistory) return null;
 
   const isPipeline = entityHistory.kind === 'pipeline';
+  const isFunction = entityHistory.kind === 'function';
   const runs = entityHistoryRuns;
   const failed = runs.filter((r) => r.status === 'failed').length;
   const succeeded = runs.filter((r) => r.status === 'success').length;
@@ -109,8 +112,10 @@ const EntityHistory: React.FC = () => {
   const openRun = (r: RunRow) => {
     if (r.kind === 'pipeline') {
       selectRun({ kind: 'pipeline', runId: r.id, pipelineId: r.entityId });
-    } else {
+    } else if (r.kind === 'agent') {
       selectRun({ kind: 'agent', runId: r.id });
+    } else {
+      selectRun({ kind: 'function', runId: r.id, functionId: r.entityId });
     }
   };
 
@@ -141,12 +146,14 @@ const EntityHistory: React.FC = () => {
         </button>
         {isPipeline
           ? <Workflow size={14} color={C.muted} />
-          : <Bot size={14} color={C.muted} />}
+          : isFunction
+            ? <Code2 size={14} color={C.muted} />
+            : <Bot size={14} color={C.muted} />}
         <h1 style={{ fontSize: 14, fontWeight: 600, color: C.text, margin: 0 }}>
           {entityHistory.entityName}
         </h1>
         <span style={{ fontSize: 11, color: C.subtle, fontFamily: MONO }}>
-          {isPipeline ? 'pipeline' : 'agent'} · history
+          {isPipeline ? 'pipeline' : isFunction ? 'logic function' : 'agent'} · history
         </span>
         <button
           onClick={() => fetchEntityHistory()}
@@ -184,7 +191,7 @@ const EntityHistory: React.FC = () => {
             padding: 24, fontSize: 13, color: C.subtle,
             border: `1px dashed ${C.border}`, borderRadius: 4, textAlign: 'center', background: C.panel,
           }}>
-            No runs yet for this {isPipeline ? 'pipeline' : 'agent'}.
+            No runs yet for this {isPipeline ? 'pipeline' : isFunction ? 'function' : 'agent'}.
           </div>
         ) : (
           <div style={{ border: `1px solid ${C.border}`, borderRadius: 4, overflow: 'hidden', background: C.panel }}>
@@ -198,7 +205,7 @@ const EntityHistory: React.FC = () => {
             }}>
               <span>When</span><span /><span>Outcome</span>
               <span style={{ textAlign: 'right' }}>Duration</span>
-              <span>{isPipeline ? 'Trigger' : 'Tokens / model'}</span>
+              <span>{isPipeline || isFunction ? 'Trigger' : 'Tokens / model'}</span>
               <span style={{ textAlign: 'right' }}>Cost</span>
             </div>
             {runs.map((r) => (

@@ -11,12 +11,12 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowLeft, Workflow, Bot, AlertCircle, CheckCircle2, Clock,
+  ArrowLeft, Workflow, Bot, Code2, AlertCircle, CheckCircle2, Clock,
   Terminal, Database, Activity as ActivityIcon, Copy, RefreshCw,
 } from 'lucide-react';
 import {
   useOperationsStore, OpsLogLine, NodeAuditDetail,
-  PipelineRunDetail, AgentRunDetail, AgentStep,
+  PipelineRunDetail, AgentRunDetail, AgentStep, LogicRunDetail, LogicTraceStep,
 } from '../../store/operationsStore';
 
 const C = {
@@ -637,12 +637,170 @@ const StepBlock: React.FC<{ step: AgentStep }> = ({ step }) => {
   );
 };
 
+// ── LOGIC RUN VIEW ───────────────────────────────────────────────────────────
+
+const LogicJson: React.FC<{ value: unknown; max?: number }> = ({ value, max = 4000 }) => {
+  let text: string;
+  if (value == null) {
+    return <span style={{ color: C.subtle, fontStyle: 'italic' }}>null</span>;
+  }
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  } catch {
+    text = String(value);
+  }
+  const truncated = text.length > max;
+  return (
+    <pre style={{
+      margin: 0, padding: '8px 10px',
+      background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4,
+      fontSize: 11.5, fontFamily: MONO, color: C.text,
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      maxHeight: 280, overflow: 'auto',
+    }}>
+      {truncated ? text.slice(0, max) + `\n… (${text.length - max} more chars)` : text}
+    </pre>
+  );
+};
+
+const TraceStep: React.FC<{ step: LogicTraceStep }> = ({ step }) => {
+  const failed = step.status === 'failed';
+  const accent = failed ? C.error : C.success;
+  return (
+    <div style={{
+      border: `1px solid ${C.border}`, borderRadius: 4, background: C.panel,
+      borderLeft: `3px solid ${accent}`, marginBottom: 10,
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+        borderBottom: `1px solid ${C.border}`,
+      }}>
+        <span style={{
+          fontSize: 12.5, fontWeight: 600, color: C.text, fontFamily: MONO,
+          flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{step.block_id}</span>
+        <span style={{
+          fontSize: 10.5, fontWeight: 700, fontFamily: MONO,
+          color: accent, background: failed ? C.errorLight : C.successLight,
+          padding: '2px 7px', borderRadius: 10, textTransform: 'uppercase',
+        }}>{step.status}</span>
+        {step.duration_ms != null && (
+          <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
+            {fmtMs(step.duration_ms)}
+          </span>
+        )}
+      </div>
+      <div style={{ padding: 10 }}>
+        {step.error && (
+          <div style={{
+            fontSize: 12, color: C.error, fontFamily: MONO,
+            background: C.errorLight, border: '1px solid #FECACA',
+            borderRadius: 4, padding: '6px 8px', marginBottom: step.result != null ? 8 : 0,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>{step.error}</div>
+        )}
+        {step.result !== undefined && (
+          <>
+            <div style={{
+              fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+              color: C.muted, letterSpacing: '.04em', marginBottom: 4,
+            }}>Result</div>
+            <LogicJson value={step.result} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const LogicView: React.FC<{ run: LogicRunDetail }> = ({ run }) => {
+  const inputCount = Object.keys(run.inputs || {}).length;
+  const stepsCount = run.trace.length;
+  const failedSteps = run.trace.filter((s) => s.status === 'failed').length;
+  return (
+    <div style={{ display: 'flex', height: '100%', minHeight: 0, overflow: 'hidden' }}>
+      {/* Left: trace timeline */}
+      <div style={{
+        flex: '1 1 60%', minWidth: 0, padding: '14px 18px', overflowY: 'auto',
+        borderRight: `1px solid ${C.border}`,
+      }}>
+        <div style={{
+          fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+          color: C.muted, letterSpacing: '.04em', marginBottom: 8,
+        }}>Trace · {stepsCount} block{stepsCount === 1 ? '' : 's'}</div>
+        {stepsCount === 0 && (
+          <div style={{
+            padding: 18, fontSize: 12, color: C.subtle,
+            border: `1px dashed ${C.border}`, borderRadius: 4, textAlign: 'center',
+          }}>
+            {run.status === 'pending' || run.status === 'running'
+              ? 'Run hasn’t executed any blocks yet.'
+              : 'No trace recorded for this run.'}
+          </div>
+        )}
+        {run.trace.map((s, i) => <TraceStep key={`${s.block_id}-${i}`} step={s} />)}
+      </div>
+
+      {/* Right: inputs / output / metadata */}
+      <div style={{
+        flex: '1 1 40%', minWidth: 0, padding: '14px 18px', overflowY: 'auto',
+        background: C.bg,
+      }}>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                         color: C.muted, letterSpacing: '.04em', marginBottom: 6 }}>
+            Inputs · {inputCount} field{inputCount === 1 ? '' : 's'}
+          </div>
+          <LogicJson value={run.inputs} />
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                         color: C.muted, letterSpacing: '.04em', marginBottom: 6 }}>
+            Output
+          </div>
+          {run.error
+            ? (
+              <div style={{
+                fontSize: 12, color: C.error, fontFamily: MONO,
+                background: C.errorLight, border: '1px solid #FECACA',
+                borderRadius: 4, padding: '8px 10px',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>{run.error}</div>
+            )
+            : <LogicJson value={run.output} />
+          }
+        </div>
+
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                         color: C.muted, letterSpacing: '.04em', marginBottom: 6 }}>
+            Metadata
+          </div>
+          <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
+            <tbody>
+              <Row k="Status" v={run.status} />
+              <Row k="Function" v={`${run.function_name || run.function_id.slice(0, 8)}${run.function_version ? ` · v${run.function_version}` : ''}`} />
+              <Row k="Triggered by" v={run.triggered_by || '—'} />
+              <Row k="Started at" v={fmtClock(run.started_at)} />
+              <Row k="Finished at" v={fmtClock(run.finished_at)} />
+              <Row k="Duration" v={fmtDuration(run.started_at, run.finished_at)} />
+              <Row k="Failed steps" v={String(failedSteps)} />
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── Page shell ───────────────────────────────────────────────────────────────
 
 export const RunDrilldown: React.FC = () => {
-  const { selected, selectRun, fetchPipelineRun, fetchAgentRun } = useOperationsStore();
+  const { selected, selectRun, fetchPipelineRun, fetchAgentRun, fetchLogicRun } = useOperationsStore();
   const [pipeline, setPipeline] = useState<PipelineRunDetail | null>(null);
   const [agent, setAgent] = useState<AgentRunDetail | null>(null);
+  const [logic, setLogic] = useState<LogicRunDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -653,12 +811,13 @@ export const RunDrilldown: React.FC = () => {
     try {
       if (selected.kind === 'pipeline' && selected.pipelineId) {
         const data = await fetchPipelineRun(selected.pipelineId, selected.runId);
-        setPipeline(data);
-        setAgent(null);
+        setPipeline(data); setAgent(null); setLogic(null);
       } else if (selected.kind === 'agent') {
         const data = await fetchAgentRun(selected.runId);
-        setAgent(data);
-        setPipeline(null);
+        setAgent(data); setPipeline(null); setLogic(null);
+      } else if (selected.kind === 'function') {
+        const data = await fetchLogicRun(selected.runId);
+        setLogic(data); setPipeline(null); setAgent(null);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -671,7 +830,9 @@ export const RunDrilldown: React.FC = () => {
     void load();
     // re-load if status is RUNNING — gives a live feel without sse
     const interval = setInterval(() => {
-      if (pipeline?.status === 'RUNNING' || (agent && !agent.error && agent.iterations === 0)) {
+      if (pipeline?.status === 'RUNNING'
+          || (agent && !agent.error && agent.iterations === 0)
+          || (logic && (logic.status === 'running' || logic.status === 'pending'))) {
         void load();
       }
     }, 4000);
@@ -681,7 +842,13 @@ export const RunDrilldown: React.FC = () => {
 
   if (!selected) return null;
 
-  const status = pipeline?.status || (agent ? (agent.error ? 'FAILED' : 'COMPLETED') : '');
+  // Normalize each run kind's status to one of FAILED / RUNNING / COMPLETED so
+  // the header pill colour and label is uniform across kinds.
+  const status = pipeline?.status
+    || (agent ? (agent.error ? 'FAILED' : 'COMPLETED') : '')
+    || (logic ? (logic.status === 'failed' ? 'FAILED'
+                : logic.status === 'completed' ? 'COMPLETED'
+                : 'RUNNING') : '');
   const statusColor = status === 'FAILED' ? C.error
                     : status === 'RUNNING' ? C.info
                     : status === 'COMPLETED' ? C.success
@@ -711,11 +878,15 @@ export const RunDrilldown: React.FC = () => {
           <ArrowLeft size={13} /> Back
         </button>
         <span style={{ fontSize: 12.5, color: C.muted }}>
-          Operations / {selected.kind === 'pipeline' ? 'Pipelines' : 'Agents'} /
+          Operations / {selected.kind === 'pipeline' ? 'Pipelines'
+            : selected.kind === 'agent' ? 'Agents'
+            : 'Functions'} /
           <span style={{ color: C.text, marginLeft: 4, fontWeight: 600 }}>
             {selected.kind === 'pipeline'
               ? (pipeline ? `${selected.pipelineId?.slice(0, 8) || ''}` : selected.pipelineId)
-              : (agent?.agent_name || selected.runId.slice(0, 8))}
+              : selected.kind === 'agent'
+                ? (agent?.agent_name || selected.runId.slice(0, 8))
+                : (logic?.function_name || logic?.function_id.slice(0, 8) || selected.runId.slice(0, 8))}
           </span>
         </span>
         <span style={{
@@ -724,7 +895,8 @@ export const RunDrilldown: React.FC = () => {
           fontFamily: MONO,
         }}>
           {selected.kind === 'pipeline' ? <Workflow size={10} style={{ marginRight: 4, verticalAlign: '-1px' }} />
-                                          : <Bot size={10}      style={{ marginRight: 4, verticalAlign: '-1px' }} />}
+            : selected.kind === 'agent' ? <Bot size={10} style={{ marginRight: 4, verticalAlign: '-1px' }} />
+            : <Code2 size={10} style={{ marginRight: 4, verticalAlign: '-1px' }} />}
           {status || (loading ? 'LOADING' : '—')}
         </span>
 
@@ -772,6 +944,15 @@ export const RunDrilldown: React.FC = () => {
           <span><strong style={{ color: C.error }}>Agent error.</strong> {agent.error}</span>
         </div>
       )}
+      {logic?.error && (
+        <div style={{
+          padding: '10px 18px', background: C.errorLight, borderBottom: '1px solid #FECACA',
+          fontSize: 13, color: '#7F1D1D', display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <AlertCircle size={14} color={C.error} />
+          <span><strong style={{ color: C.error }}>Function failed.</strong> {logic.error}</span>
+        </div>
+      )}
 
       {/* Body */}
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
@@ -781,7 +962,7 @@ export const RunDrilldown: React.FC = () => {
             {error}
           </div>
         )}
-        {loading && !pipeline && !agent && (
+        {loading && !pipeline && !agent && !logic && (
           <div style={{ padding: 24, color: C.subtle, fontSize: 13, textAlign: 'center' }}>
             <Clock size={16} style={{ marginRight: 6, verticalAlign: '-3px' }} />
             Loading run…
@@ -789,10 +970,11 @@ export const RunDrilldown: React.FC = () => {
         )}
         {pipeline && <PipelineView run={pipeline} />}
         {agent && <AgentView run={agent} />}
+        {logic && <LogicView run={logic} />}
       </div>
 
       {/* Footer summary */}
-      {(pipeline || agent) && (
+      {(pipeline || agent || logic) && (
         <div style={{
           height: 32, background: C.panel, borderTop: `1px solid ${C.border}`,
           padding: '0 18px', display: 'flex', alignItems: 'center', gap: 16, fontSize: 11.5,
@@ -824,6 +1006,19 @@ export const RunDrilldown: React.FC = () => {
               {((agent.input_tokens || 0) + (agent.output_tokens || 0)).toLocaleString()} tok · ${(agent.cost_usd || 0).toFixed((agent.cost_usd || 0) < 0.01 ? 4 : 3)}
             </span>
             {agent.created_at && <span>{fmtClock(agent.created_at)}</span>}
+          </>}
+          {logic && <>
+            <span><Code2 size={11} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+              {logic.function_name || logic.function_id.slice(0, 8)}
+              {logic.function_version ? ` · v${logic.function_version}` : ''}
+            </span>
+            <span><Clock size={11} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+              {fmtDuration(logic.started_at, logic.finished_at)}
+            </span>
+            <span>{logic.trace.length} block{logic.trace.length === 1 ? '' : 's'}</span>
+            {logic.triggered_by && <span><ActivityIcon size={11} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+              trigger {logic.triggered_by}
+            </span>}
           </>}
         </div>
       )}
