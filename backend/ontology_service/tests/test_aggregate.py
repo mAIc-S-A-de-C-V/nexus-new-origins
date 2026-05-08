@@ -248,6 +248,36 @@ def test_filters_operator_form():
     assert "data->>'amount' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$'" in sql
 
 
+def test_filters_list_of_dicts_ands_constraints_on_same_field():
+    """Multiple filters on the same field arrive as a list of constraint
+    dicts and must all be ANDed (regression: previously the second one
+    silently overwrote the first because they shared the JSON key)."""
+    body = AggregateRequest(
+        filters='{"device": [{"$neq": "Prueba"}, {"$neq": "Rajadora_3"}]}',
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    # Both inequalities must appear with distinct bind params.
+    assert "data->>'device' != :flt0" in sql
+    assert "data->>'device' != :flt1" in sql
+    assert params["flt0"] == "Prueba"
+    assert params["flt1"] == "Rajadora_3"
+
+
+def test_filters_multi_op_dict_uses_distinct_bind_params():
+    """{"$gt": 5, "$lt": 10} on the same field must bind two different
+    values — not collapse into one (regression)."""
+    body = AggregateRequest(
+        filters='{"amount": {"$gt": 5, "$lt": 10}}',
+        aggregations=[AggregationSpec(method="count")],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    assert "(data->>'amount')::numeric > :flt0" in sql
+    assert "(data->>'amount')::numeric < :flt1" in sql
+    assert params["flt0"] == 5.0
+    assert params["flt1"] == 10.0
+
+
 def test_timezone_wraps_date_trunc_with_at_time_zone_round_trip():
     """When the request includes a timezone, day/week/month buckets must
     align to the user's calendar, not UTC. The SQL builder does this by

@@ -67,7 +67,7 @@ def _mask_pii(records: list[dict], properties: list[dict], user_role: str) -> li
 # ── Filter helpers ──────────────────────────────────────────────────────────
 
 _FILTER_OPS = {
-    "eq", "neq", "gt", "gte", "lt", "lte", "in", "contains",
+    "eq", "neq", "gt", "gte", "lt", "lte", "in", "nin", "not_in", "contains",
     "is_null", "is_not_null",
 }
 
@@ -91,64 +91,75 @@ def _build_jsonb_filters(filter_json: str) -> list:
 
     conditions = []
     bind_params: dict = {}
+    # Each leaf op gets its own bind name so multi-op dicts and list-of-dicts
+    # (multi-filter AND on the same field) don't clobber each other's params.
+    counter = [0]
 
-    for idx, (field, value) in enumerate(raw.items()):
-        safe_field = field.replace("'", "''")  # prevent SQL injection in field name
-        accessor = f"data->>'{safe_field}'"
+    def _emit_op(accessor: str, op: str, op_val) -> None:
+        if op not in _FILTER_OPS:
+            return
+        param = f"_fp{counter[0]}"
+        counter[0] += 1
 
-        if isinstance(value, dict):
-            # Operator form: {"field": {"$op": val}}
+        if op == "eq":
+            conditions.append(text(f"{accessor} = :{param}"))
+            bind_params[param] = str(op_val)
+        elif op == "neq":
+            conditions.append(text(f"{accessor} != :{param}"))
+            bind_params[param] = str(op_val)
+        elif op in ("gt", "gte", "lt", "lte"):
+            sql_op = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
+            if isinstance(op_val, str) and re.match(r'^\d{4}-\d{2}-\d{2}', op_val):
+                conditions.append(text(
+                    f"NULLIF({accessor}, '')::timestamptz {sql_op} :{param}::timestamptz"
+                ))
+                bind_params[param] = str(op_val)
+            else:
+                try:
+                    cast_val = float(op_val)
+                    conditions.append(text(f"({accessor})::float {sql_op} :{param}"))
+                    bind_params[param] = cast_val
+                except (TypeError, ValueError):
+                    conditions.append(text(f"{accessor} {sql_op} :{param}"))
+                    bind_params[param] = str(op_val)
+        elif op == "in" and isinstance(op_val, list):
+            placeholders = ", ".join(f":{param}_{i}" for i in range(len(op_val)))
+            conditions.append(text(f"{accessor} IN ({placeholders})"))
+            for i, v in enumerate(op_val):
+                bind_params[f"{param}_{i}"] = str(v)
+        elif op in ("nin", "not_in") and isinstance(op_val, list):
+            placeholders = ", ".join(f":{param}_{i}" for i in range(len(op_val)))
+            conditions.append(text(
+                f"({accessor} NOT IN ({placeholders}) OR {accessor} IS NULL)"
+            ))
+            for i, v in enumerate(op_val):
+                bind_params[f"{param}_{i}"] = str(v)
+        elif op == "contains":
+            conditions.append(text(f"{accessor} ILIKE :{param}"))
+            bind_params[param] = f"%{op_val}%"
+        elif op == "is_null":
+            conditions.append(text(f"{accessor} IS NULL"))
+        elif op == "is_not_null":
+            conditions.append(text(f"{accessor} IS NOT NULL"))
+
+    def _emit_constraint(accessor: str, value) -> None:
+        # List-of-dicts → ANDed constraints on the same field.
+        if isinstance(value, list):
+            for item in value:
+                _emit_constraint(accessor, item)
+        elif isinstance(value, dict):
             for op_key, op_val in value.items():
-                op = op_key.lstrip("$")
-                if op not in _FILTER_OPS:
-                    continue
-                param = f"_fp{idx}"
-
-                if op == "eq":
-                    conditions.append(text(f"{accessor} = :{param}"))
-                    bind_params[param] = str(op_val)
-                elif op == "neq":
-                    conditions.append(text(f"{accessor} != :{param}"))
-                    bind_params[param] = str(op_val)
-                elif op in ("gt", "gte", "lt", "lte"):
-                    # Detect ISO datetime / date strings and use timestamptz
-                    # comparison instead of ::float (which would crash on
-                    # strings like "2026-02-07T16:00:00Z"). Falls back to
-                    # numeric comparison for everything that isn't a date.
-                    sql_op = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-                    if isinstance(op_val, str) and re.match(r'^\d{4}-\d{2}-\d{2}', op_val):
-                        conditions.append(text(
-                            f"NULLIF({accessor}, '')::timestamptz {sql_op} :{param}::timestamptz"
-                        ))
-                        bind_params[param] = str(op_val)
-                    else:
-                        try:
-                            cast_val = float(op_val)
-                            conditions.append(text(f"({accessor})::float {sql_op} :{param}"))
-                            bind_params[param] = cast_val
-                        except (TypeError, ValueError):
-                            # Non-numeric, non-date — fall back to text comparison
-                            conditions.append(text(f"{accessor} {sql_op} :{param}"))
-                            bind_params[param] = str(op_val)
-                elif op == "in":
-                    # op_val should be a list
-                    if isinstance(op_val, list):
-                        placeholders = ", ".join(f":{param}_{i}" for i in range(len(op_val)))
-                        conditions.append(text(f"{accessor} IN ({placeholders})"))
-                        for i, v in enumerate(op_val):
-                            bind_params[f"{param}_{i}"] = str(v)
-                elif op == "contains":
-                    conditions.append(text(f"{accessor} ILIKE :{param}"))
-                    bind_params[param] = f"%{op_val}%"
-                elif op == "is_null":
-                    conditions.append(text(f"{accessor} IS NULL"))
-                elif op == "is_not_null":
-                    conditions.append(text(f"{accessor} IS NOT NULL"))
+                _emit_op(accessor, op_key.lstrip("$"), op_val)
         else:
-            # Simple equality: {"field": "value"}
-            param = f"_fp{idx}"
+            param = f"_fp{counter[0]}"
+            counter[0] += 1
             conditions.append(text(f"{accessor} = :{param}"))
             bind_params[param] = str(value)
+
+    for field, value in raw.items():
+        safe_field = field.replace("'", "''")  # prevent SQL injection in field name
+        accessor = f"data->>'{safe_field}'"
+        _emit_constraint(accessor, value)
 
     # Bind params to the text() clauses
     bound = []
@@ -487,116 +498,122 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         except (json.JSONDecodeError, TypeError):
             parsed = {}
         if isinstance(parsed, dict):
-            for idx, (field, value) in enumerate(parsed.items()):
-                fkey = field.replace("'", "''")
-                accessor = f"data->>'{fkey}'"
-                if isinstance(value, dict):
-                    for op_key, op_val in value.items():
-                        op = op_key.lstrip("$")
-                        pname = f"flt{idx}"
-                        if op == "eq":
-                            where_parts.append(f"{accessor} = :{pname}")
-                            bind_params[pname] = str(op_val)
-                        elif op == "neq":
-                            where_parts.append(f"{accessor} != :{pname}")
-                            bind_params[pname] = str(op_val)
-                        elif op in ("gt", "gte", "lt", "lte"):
-                            cmp = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-                            val_str = str(op_val) if op_val is not None else ""
-                            # Three flavors of comparison depending on the
-                            # value's shape — picked at filter-build time:
-                            #
-                            #   ISO date string ("2026-04-25T...")  → timestamptz
-                            #     compare. Hits the xAxisRange presets and
-                            #     `after`/`before` filters that the frontend
-                            #     encodes as $gte/$lte.
-                            #
-                            #   Numeric                              → regex-
-                            #     guarded numeric cast (existing path).
-                            #
-                            #   Anything else                        → string
-                            #     compare (lexicographic).
-                            is_iso_date = (
-                                isinstance(op_val, str)
-                                and len(val_str) >= 10
-                                and val_str[4:5] == "-"
-                                and val_str[7:8] == "-"
+            # Each leaf constraint gets its own bind name so multi-op dicts
+            # ({"$gt": 5, "$lt": 10}) and list-of-dicts shapes (multi-filter
+            # ANDs on the same field) don't clobber each other's params.
+            _flt_counter = [0]
+
+            def _emit_op(accessor: str, op: str, op_val) -> None:
+                pname = f"flt{_flt_counter[0]}"
+                _flt_counter[0] += 1
+                if op == "eq":
+                    where_parts.append(f"{accessor} = :{pname}")
+                    bind_params[pname] = str(op_val)
+                elif op == "neq":
+                    where_parts.append(f"{accessor} != :{pname}")
+                    bind_params[pname] = str(op_val)
+                elif op in ("gt", "gte", "lt", "lte"):
+                    cmp = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
+                    val_str = str(op_val) if op_val is not None else ""
+                    # Three flavors of comparison depending on the
+                    # value's shape — picked at filter-build time:
+                    #
+                    #   ISO date string ("2026-04-25T...")  → timestamptz
+                    #     compare. Hits the xAxisRange presets and
+                    #     `after`/`before` filters that the frontend
+                    #     encodes as $gte/$lte.
+                    #
+                    #   Numeric                              → regex-
+                    #     guarded numeric cast (existing path).
+                    #
+                    #   Anything else                        → string
+                    #     compare (lexicographic).
+                    is_iso_date = (
+                        isinstance(op_val, str)
+                        and len(val_str) >= 10
+                        and val_str[4:5] == "-"
+                        and val_str[7:8] == "-"
+                    )
+                    if is_iso_date:
+                        # Regex-guard the column cast so a single
+                        # malformed row (e.g. legacy data with `time`
+                        # set to a non-ISO string) doesn't blow up
+                        # the whole query.
+                        # `regex AND cast` is NOT short-circuit-safe in
+                        # PG — the planner can choose to evaluate the
+                        # cast first and throw on a single non-ISO row.
+                        # CASE WHEN forces per-row eval order, so junk
+                        # values become NULL (which fails any compare
+                        # cleanly) instead of crashing the query.
+                        ts_safe = (
+                            f"(CASE WHEN {accessor} ~ "
+                            f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
+                            f"THEN NULLIF({accessor}, '')::timestamptz "
+                            f"ELSE NULL END)"
+                        )
+                        try:
+                            iso_normal = val_str.replace("Z", "+00:00")
+                            dt_val = datetime.fromisoformat(iso_normal)
+                        except ValueError:
+                            where_parts.append(
+                                f"{ts_safe} {cmp} (:{pname}::text)::timestamptz"
                             )
-                            if is_iso_date:
-                                # Regex-guard the column cast so a single
-                                # malformed row (e.g. legacy data with `time`
-                                # set to a non-ISO string) doesn't blow up
-                                # the whole query.
-                                #
-                                # Bind the value as a real Python datetime —
-                                # asyncpg reads the SQL type hint
-                                # `($3)::timestamptz` as "param is
-                                # timestamptz" and rejects str inputs at the
-                                # client layer. Parse to datetime here so it
-                                # round-trips correctly.
-                                # `regex AND cast` is NOT short-circuit-safe in
-                                # PG — the planner can choose to evaluate the
-                                # cast first and throw on a single non-ISO row.
-                                # CASE WHEN forces per-row eval order, so junk
-                                # values become NULL (which fails any compare
-                                # cleanly) instead of crashing the query.
-                                ts_safe = (
-                                    f"(CASE WHEN {accessor} ~ "
-                                    f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
-                                    f"THEN NULLIF({accessor}, '')::timestamptz "
-                                    f"ELSE NULL END)"
-                                )
-                                try:
-                                    iso_normal = val_str.replace("Z", "+00:00")
-                                    dt_val = datetime.fromisoformat(iso_normal)
-                                except ValueError:
-                                    # Couldn't parse — fall back to a
-                                    # text-cast SQL form that lets PG do the
-                                    # parsing (less efficient but still
-                                    # correct). Avoids the asyncpg type hint.
-                                    where_parts.append(
-                                        f"{ts_safe} {cmp} (:{pname}::text)::timestamptz"
-                                    )
-                                    bind_params[pname] = val_str
-                                else:
-                                    where_parts.append(f"{ts_safe} {cmp} :{pname}")
-                                    bind_params[pname] = dt_val
-                            else:
-                                try:
-                                    numeric_val = float(op_val)
-                                    where_parts.append(
-                                        f"{accessor} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
-                                        f"AND ({accessor})::numeric {cmp} :{pname}"
-                                    )
-                                    bind_params[pname] = numeric_val
-                                except (TypeError, ValueError):
-                                    where_parts.append(f"{accessor} {cmp} :{pname}")
-                                    bind_params[pname] = val_str
-                        elif op == "contains":
-                            where_parts.append(f"{accessor} ILIKE :{pname}")
-                            bind_params[pname] = f"%{op_val}%"
-                        elif op == "is_null":
-                            where_parts.append(f"{accessor} IS NULL")
-                        elif op == "is_not_null":
-                            where_parts.append(f"{accessor} IS NOT NULL")
-                        elif op == "in" and isinstance(op_val, list):
-                            placeholders = []
-                            for j, v in enumerate(op_val):
-                                k = f"{pname}_{j}"
-                                placeholders.append(f":{k}")
-                                bind_params[k] = str(v)
-                            where_parts.append(f"{accessor} IN ({', '.join(placeholders)})")
-                        elif op == "not_in" and isinstance(op_val, list):
-                            placeholders = []
-                            for j, v in enumerate(op_val):
-                                k = f"{pname}_{j}"
-                                placeholders.append(f":{k}")
-                                bind_params[k] = str(v)
-                            where_parts.append(f"({accessor} NOT IN ({', '.join(placeholders)}) OR {accessor} IS NULL)")
+                            bind_params[pname] = val_str
+                        else:
+                            where_parts.append(f"{ts_safe} {cmp} :{pname}")
+                            bind_params[pname] = dt_val
+                    else:
+                        try:
+                            numeric_val = float(op_val)
+                            where_parts.append(
+                                f"{accessor} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                                f"AND ({accessor})::numeric {cmp} :{pname}"
+                            )
+                            bind_params[pname] = numeric_val
+                        except (TypeError, ValueError):
+                            where_parts.append(f"{accessor} {cmp} :{pname}")
+                            bind_params[pname] = val_str
+                elif op == "contains":
+                    where_parts.append(f"{accessor} ILIKE :{pname}")
+                    bind_params[pname] = f"%{op_val}%"
+                elif op == "is_null":
+                    where_parts.append(f"{accessor} IS NULL")
+                elif op == "is_not_null":
+                    where_parts.append(f"{accessor} IS NOT NULL")
+                elif op in ("in", "nin", "not_in") and isinstance(op_val, list):
+                    placeholders = []
+                    for j, v in enumerate(op_val):
+                        k = f"{pname}_{j}"
+                        placeholders.append(f":{k}")
+                        bind_params[k] = str(v)
+                    if op == "in":
+                        where_parts.append(f"{accessor} IN ({', '.join(placeholders)})")
+                    else:
+                        where_parts.append(
+                            f"({accessor} NOT IN ({', '.join(placeholders)}) OR {accessor} IS NULL)"
+                        )
+
+            def _emit_constraint(accessor: str, value) -> None:
+                # List-of-dicts: each item is an ANDed constraint on the
+                # same field. Frontend emits this when the user has more
+                # than one filter targeting the same field (e.g.
+                # `device != "Prueba"` AND `device != "Rajadora3"`).
+                if isinstance(value, list):
+                    for item in value:
+                        _emit_constraint(accessor, item)
+                elif isinstance(value, dict):
+                    for op_key, op_val in value.items():
+                        _emit_op(accessor, op_key.lstrip("$"), op_val)
                 else:
-                    pname = f"flt{idx}"
+                    pname = f"flt{_flt_counter[0]}"
+                    _flt_counter[0] += 1
                     where_parts.append(f"{accessor} = :{pname}")
                     bind_params[pname] = str(value)
+
+            for field, value in parsed.items():
+                fkey = field.replace("'", "''")
+                accessor = f"data->>'{fkey}'"
+                _emit_constraint(accessor, value)
 
     where_sql = " AND ".join(where_parts)
 

@@ -45,9 +45,49 @@ export interface AggregateRow {
 }
 
 /**
+ * Translate a single AppFilter into the constraint shape the server expects
+ * for that field. eq stays as a primitive (so it serialises as
+ * `{field: "value"}`), everything else becomes `{$op: val}`.
+ */
+function encodeFilter(f: AppFilter): unknown | undefined {
+  const isUnaryOp = f.operator === 'is_empty' || f.operator === 'is_not_empty';
+  if (!isUnaryOp && (f.value == null || f.value === '')) return undefined;
+  switch (f.operator) {
+    case 'eq': return f.value;
+    case 'neq': return { $neq: f.value };
+    case 'in': {
+      const list = String(f.value).split(',').map((s) => s.trim()).filter(Boolean);
+      return list.length ? { $in: list } : undefined;
+    }
+    case 'not_in': {
+      const list = String(f.value).split(',').map((s) => s.trim()).filter(Boolean);
+      return list.length ? { $not_in: list } : undefined;
+    }
+    case 'gt': return { $gt: parseFloat(f.value) };
+    case 'gte': return { $gte: parseFloat(f.value) };
+    case 'lt': return { $lt: parseFloat(f.value) };
+    case 'lte': return { $lte: parseFloat(f.value) };
+    case 'after': return { $gte: f.value };
+    case 'before': return { $lte: f.value };
+    case 'contains': return { $contains: f.value };
+    case 'is_empty': return { $is_null: true };
+    case 'is_not_empty': return { $is_not_null: true };
+    default: return undefined;
+  }
+}
+
+/**
  * Combine the widget's own filters with the active cross-filter (if any, and
  * we are not the widget that emitted it) into the JSON dict the aggregate
  * endpoint expects (same shape as GET /records `filter=` param).
+ *
+ * When multiple filters target the same field (e.g. two `device != …`),
+ * they're emitted as a list of constraint dicts so the server ANDs them.
+ * The server-side parser walks lists item-by-item; a single-filter field
+ * keeps the legacy primitive/dict shape so old tests + endpoints stay happy.
+ *
+ * Cross-filter still wins on its field — that's intentional: a click on a
+ * chart drills in and supersedes the widget's own filter on the same field.
  *
  * Returns undefined when there are no filters, so the caller can omit the
  * field entirely from the request body.
@@ -57,37 +97,19 @@ export function buildServerFilters(
   crossFilter: CrossFilter | null,
   ownId: string,
 ): Record<string, unknown> | undefined {
-  const out: Record<string, unknown> = {};
+  const grouped = new Map<string, unknown[]>();
   for (const f of filters || []) {
     if (!f.field) continue;
-    const isUnaryOp = f.operator === 'is_empty' || f.operator === 'is_not_empty';
-    if (!isUnaryOp && (f.value == null || f.value === '')) continue;
-    switch (f.operator) {
-      case 'eq': out[f.field] = f.value; break;
-      case 'neq': out[f.field] = { $neq: f.value }; break;
-      case 'in': {
-        const list = String(f.value).split(',').map((s) => s.trim()).filter(Boolean);
-        if (list.length) out[f.field] = { $in: list };
-        break;
-      }
-      case 'not_in': {
-        const list = String(f.value).split(',').map((s) => s.trim()).filter(Boolean);
-        // Server doesn't have $not_in yet; encode as a negated $in for now.
-        // Long-term: add $not_in to records.py JSONB filter parser.
-        if (list.length) out[f.field] = { $not_in: list };
-        break;
-      }
-      case 'gt': out[f.field] = { $gt: parseFloat(f.value) }; break;
-      case 'gte': out[f.field] = { $gte: parseFloat(f.value) }; break;
-      case 'lt': out[f.field] = { $lt: parseFloat(f.value) }; break;
-      case 'lte': out[f.field] = { $lte: parseFloat(f.value) }; break;
-      case 'after': out[f.field] = { $gte: f.value }; break;
-      case 'before': out[f.field] = { $lte: f.value }; break;
-      case 'contains': out[f.field] = { $contains: f.value }; break;
-      case 'is_empty': out[f.field] = { $is_null: true }; break;
-      case 'is_not_empty': out[f.field] = { $is_not_null: true }; break;
-      default: break;
-    }
+    const enc = encodeFilter(f);
+    if (enc === undefined) continue;
+    const arr = grouped.get(f.field) ?? [];
+    arr.push(enc);
+    grouped.set(f.field, arr);
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [field, items] of grouped) {
+    out[field] = items.length === 1 ? items[0] : items;
   }
   if (crossFilter && crossFilter.sourceId !== ownId) {
     out[crossFilter.field] = crossFilter.value;

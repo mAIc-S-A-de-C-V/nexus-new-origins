@@ -29,10 +29,34 @@ describe('buildServerFilters', () => {
       { id: 'f1', field: 'amount', operator: 'gt', value: '100' },
       { id: 'f2', field: 'amount', operator: 'lte', value: '500' },
     ];
-    // The second write to `amount` overwrites the first — that's the documented
-    // behavior; multi-bound filters on the same field must be encoded by the AI
-    // as separate fields or we need a different shape.
-    expect(buildServerFilters(f, null, id)).toEqual({ amount: { $lte: 500 } });
+    // Two ranged constraints on the same field — emitted as a list so the
+    // server ANDs them (lower < amount <= upper).
+    expect(buildServerFilters(f, null, id)).toEqual({
+      amount: [{ $gt: 100 }, { $lte: 500 }],
+    });
+  });
+
+  it('groups multiple constraints on the same field into a list', () => {
+    const f: AppFilter[] = [
+      { id: 'f1', field: 'device', operator: 'neq', value: 'Prueba' },
+      { id: 'f2', field: 'device', operator: 'neq', value: 'Rajadora3' },
+    ];
+    // Both ≠ filters must apply (regression: previously the second one
+    // overwrote the first, so 'Prueba' rows still leaked through).
+    expect(buildServerFilters(f, null, id)).toEqual({
+      device: [{ $neq: 'Prueba' }, { $neq: 'Rajadora3' }],
+    });
+  });
+
+  it('still emits a single dict when only one filter targets a field', () => {
+    const f: AppFilter[] = [
+      { id: 'f1', field: 'device', operator: 'neq', value: 'Prueba' },
+      { id: 'f2', field: 'status', operator: 'eq', value: 'active' },
+    ];
+    expect(buildServerFilters(f, null, id)).toEqual({
+      device: { $neq: 'Prueba' },
+      status: 'active',
+    });
   });
 
   it('encodes after/before as $gte/$lte with the raw string', () => {
