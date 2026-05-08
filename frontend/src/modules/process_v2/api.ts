@@ -158,3 +158,56 @@ export const getTransitions = (id: string): Promise<{ transitions: ProcessTransi
 
 export const getBottlenecks = (id: string, topN = 10): Promise<{ bottlenecks: ProcessBottleneck[]; spans_objects: boolean }> =>
   fetch(`${PROCESS_API}/process/by-process/bottlenecks/${id}?top_n=${topN}`, { headers: headers() }).then(json);
+
+// ── Conformance models ─────────────────────────────────────────────────────
+
+export interface ConformanceModel {
+  id: string;
+  tenant_id: string;
+  name: string;
+  process_id: string | null;
+  object_type_id: string | null;
+  activities: string[];
+  is_active: boolean;
+  created_at: string | null;
+}
+
+export interface ConformanceCheckCase {
+  case_id: string;
+  fitness: number;
+  matched: number;
+  total_expected: number;
+  deviations: { type: 'skip' | 'wrong_order' | 'unauthorized' | 'rework'; activity: string }[];
+  is_compliant: boolean;
+}
+
+export const listConformanceModels = (processId: string): Promise<ConformanceModel[]> =>
+  fetch(`${PROCESS_API}/process/conformance/models/by-process/${processId}`, { headers: headers() }).then(json);
+
+export const createConformanceModel = (
+  processId: string,
+  body: { name: string; activities: string[]; is_active?: boolean },
+): Promise<ConformanceModel> =>
+  fetch(`${PROCESS_API}/process/conformance/models/by-process/${processId}`, {
+    method: 'POST', headers: headers(), body: JSON.stringify(body),
+  }).then(json);
+
+export const updateConformanceModel = (
+  processId: string,
+  modelId: string,
+  body: Partial<ConformanceModel>,
+): Promise<ConformanceModel> =>
+  fetch(`${PROCESS_API}/process/conformance/models/by-process/${processId}/${modelId}`, {
+    method: 'PATCH', headers: headers(), body: JSON.stringify(body),
+  }).then(json);
+
+export const deleteConformanceModel = (processId: string, modelId: string): Promise<void> =>
+  fetch(`${PROCESS_API}/process/conformance/models/by-process/${processId}/${modelId}`, {
+    method: 'DELETE', headers: headers(),
+  }).then((r) => { if (!r.ok && r.status !== 204) throw new Error(`${r.status}`); });
+
+export const checkConformance = (
+  processId: string,
+  modelId: string,
+): Promise<{ cases: ConformanceCheckCase[]; conformance_rate: number; avg_fitness: number; total_cases: number }> =>
+  fetch(`${PROCESS_API}/process/conformance/check/by-process/${processId}/${modelId}`, { headers: headers() }).then(json);

@@ -28,6 +28,7 @@ const SuperAdminPage  = lazy(() => import('./modules/superadmin/SuperAdminPage')
 const ProcessMiningV2 = lazy(() => import('./modules/process_v2/ProcessMiningV2'));
 const OperationsModule = lazy(() => import('./modules/operations/OperationsModule'));
 const SharePage       = lazy(() => import('./modules/share/SharePage'));
+const ScenariosPage   = lazy(() => import('./modules/scenarios/ScenariosPage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -118,6 +119,8 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading Admin..." />}><AdminHubPage /></Suspense>;
     case 'platform':
       return <Suspense fallback={<LoadingSpinner message="Loading Platform..." />}><SuperAdminPage /></Suspense>;
+    case 'scenarios':
+      return <Suspense fallback={<LoadingSpinner message="Loading Scenarios..." />}><ScenariosPage /></Suspense>;
     default:
       return <Suspense fallback={<LoadingSpinner />}><ConnectorGrid /></Suspense>;
   }

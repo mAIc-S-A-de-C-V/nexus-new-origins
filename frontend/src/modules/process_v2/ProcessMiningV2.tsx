@@ -18,6 +18,7 @@ import {
   getStats, getCases, getVariants, getTransitions, getBottlenecks, getCaseTimeline,
 } from './api';
 import { MapChat } from './MapChat';
+import ConformancePanel from './ConformancePanel';
 import { useOntologyStore } from '../../store/ontologyStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
@@ -50,7 +51,7 @@ const T = {
   mono:          'ui-monospace, SFMono-Regular, Menlo, monospace',
 };
 
-type Tab = 'overview' | 'map' | 'variants' | 'insights' | 'bottlenecks' | 'cases' | 'definition';
+type Tab = 'overview' | 'map' | 'variants' | 'insights' | 'bottlenecks' | 'cases' | 'conformance' | 'definition';
 
 const palette = [
   '#7C3AED', '#0EA5E9', '#F59E0B', '#10B981', '#EC4899',
@@ -358,6 +359,7 @@ const ProcessMiningV2: React.FC = () => {
         {selected && tab === 'insights'    && <InsightsPane process={selected} otName={otName} filterCtx={filterCtx} />}
         {selected && tab === 'bottlenecks' && <BottlenecksPane process={selected} otName={otName} filterCtx={filterCtx} />}
         {selected && tab === 'cases'       && <CasesPane process={selected} otName={otName} filterCtx={filterCtx} />}
+        {selected && tab === 'conformance' && <ConformancePane process={selected} />}
         {selected && tab === 'definition'  && (
           <DefinitionPane process={selected} objectTypes={objectTypes} onSaved={refreshProcesses} />
         )}
@@ -451,6 +453,7 @@ const Tabs: React.FC<{ tab: Tab; onTab: (t: Tab) => void }> = ({ tab, onTab }) =
     { id: 'insights',    label: 'Insights' },
     { id: 'bottlenecks', label: 'Bottlenecks' },
     { id: 'cases',       label: 'Cases' },
+    { id: 'conformance', label: 'Conformance' },
     { id: 'definition',  label: 'Definition' },
   ];
   return (
@@ -2339,6 +2342,20 @@ const CaseDetail: React.FC<{
       </div>
     </div>
   );
+};
+
+// ── Conformance tab ──────────────────────────────────────────────────────────
+
+const ConformancePane: React.FC<{ process: Process }> = ({ process }) => {
+  const [activities, setActivities] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    getTransitions(process.id)
+      .then((d) => { if (alive) setActivities(d.activities || []); })
+      .catch(() => { /* ignore */ });
+    return () => { alive = false; };
+  }, [process.id]);
+  return <ConformancePanel processId={process.id} knownActivities={activities} />;
 };
 
 // ── Definition tab ───────────────────────────────────────────────────────────

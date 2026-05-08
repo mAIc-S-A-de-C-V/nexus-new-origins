@@ -281,8 +281,34 @@ const ApiGatewayPage: React.FC = () => {
               </div>
             )}
 
-            <div style={{ marginTop: 8, fontSize: 11, color: C.muted }}>
-              OpenAPI spec: <code>{baseUrl}/v1/openapi.json</code>
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: C.muted }}>
+              <span>OpenAPI spec:</span>
+              <code>{baseUrl}/v1/openapi.json</code>
+              <button
+                onClick={async () => {
+                  try {
+                    const r = await fetch(`${baseUrl}/v1/openapi.json`, { headers: h });
+                    if (!r.ok) { alert(`Failed: ${r.status}`); return; }
+                    const blob = new Blob([await r.text()], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = 'nexus-openapi.json';
+                    document.body.appendChild(a); a.click();
+                    document.body.removeChild(a); URL.revokeObjectURL(url);
+                  } catch (e) {
+                    alert(`Download failed: ${e instanceof Error ? e.message : 'unknown'}`);
+                  }
+                }}
+                style={{ padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500, backgroundColor: C.accent, color: '#fff', border: 'none', cursor: 'pointer' }}
+              >
+                Download
+              </button>
+              <button
+                onClick={() => window.open(`${baseUrl}/v1/openapi.json`, '_blank')}
+                style={{ padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500, backgroundColor: '#fff', color: C.accent, border: `1px solid ${C.accent}`, cursor: 'pointer' }}
+              >
+                View
+              </button>
             </div>
           </div>
         )}

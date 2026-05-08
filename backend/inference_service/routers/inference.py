@@ -454,6 +454,97 @@ Supported action types:
 - `create_app_action` — payload: `{"app_id":"<id>","action":{"id":"act-...","name":"...","kind":"createObject","objectTypeId":"<id>","fieldMappings":[{"formField":"x","targetProperty":"y","transform":"asNumber"|"asDate"|"asUuid"|"literal","literalValue":"..."}],"validations":[{"field":"x","rule":"required"|"regex"|"min"|"max","value":"...","message":"..."}],"confirmation":{"title":"...","body":"..."},"onSuccess":{"type":"refreshWidget","targetWidgetId":"..."},"onError":{...}}}`
   Adds a typed action (mutation) to an EXISTING app. The action becomes available for record-creator / object-editor / action-button widgets in that app. Use real `app_id` and `objectTypeId` from the live context.
 
+### Lifecycle (update / delete / test)
+Use these to operate on EXISTING resources. Always reference real IDs from the live context.
+- `update_connector` — payload: `{"connector_id":"<id>","name":"...","description":"...","base_url":"...","config":{...}}` (only include fields you want to change)
+- `delete_connector` — payload: `{"connector_id":"<id>"}` — DESTRUCTIVE. Get user confirmation. Pipelines depending on this connector will break.
+- `test_connector` — payload: `{"connector_id":"<id>"}` — runs the source's connection test. Safe.
+- `update_pipeline` — payload: `{"pipeline_id":"<id>","name":"...","nodes":[...],"edges":[...]}` (partial)
+- `delete_pipeline` — payload: `{"pipeline_id":"<id>"}` — DESTRUCTIVE; stops schedules + triggers.
+- `update_object_type` — payload: `{"object_type_id":"<id>","name":"...","display_name":"...","properties":[...]}` — snapshots a new version
+- `delete_object_type` — payload: `{"object_type_id":"<id>"}` — DESTRUCTIVE; deletes ALL records.
+- `apply_enrichment` — payload: `{"object_type_id":"<id>","proposal":{...}}` — apply an enrichment proposal from inference (adds fields + links)
+- `delete_ontology_link` — payload: `{"link_id":"<id>"}`
+- `update_logic_function` — payload: `{"function_id":"<id>","blocks":[...]}` (partial)
+- `delete_logic_function` — payload: `{"function_id":"<id>"}`
+- `publish_logic_function` — payload: `{"function_id":"<id>"}` — promote current draft to production
+- `run_logic_function` — payload: `{"function_id":"<id>","inputs":{...}}`
+
+### Schedules (recurring runs)
+- `create_pipeline_schedule` — payload: `{"pipeline_id":"<id>","name":"...","cron_expression":"0 */6 * * *","enabled":true}` — standard 5-field cron
+- `update_pipeline_schedule` / `delete_pipeline_schedule` / `run_pipeline_schedule_now` — payload: `{"pipeline_id":"<id>","schedule_id":"<id>", ...}`
+- `create_logic_schedule` — payload: `{"function_id":"<id>","cron":"0 9 * * 1","label":"Weekly","inputs":{...},"enabled":true}`
+- `delete_logic_schedule` — payload: `{"function_id":"<id>","schedule_id":"<id>"}`
+- `create_agent_schedule` — payload: `{"agent_id":"<id>","name":"...","prompt":"<what the agent runs each tick>","cron_expression":"...","enabled":true}`
+- `delete_agent_schedule` — payload: `{"agent_id":"<id>","schedule_id":"<id>"}`
+
+### Agents
+- `create_agent` — payload: `{"name":"...","description":"...","system_prompt":"...","model":"claude-haiku-4-5-20251001","enabled_tools":[<tool ids from agent_service tool registry>],"max_iterations":10}`
+- `update_agent` / `delete_agent` — payload: `{"agent_id":"<id>", ...}`
+- `set_agent_knowledge_scope` — payload: `{"agent_id":"<id>","scope":[{"object_type_id":"<id>","label":"...","filters":[...]}]}` — restrict the agent's data access
+- `create_pipeline_trigger` — payload: `{"agent_id":"<id>","pipeline_id":"<id>","mode":"per_row"|"per_batch","on_new_only":true,"min_new_rows":1,"prompt_template":"..."}` — fires the agent after pipeline runs complete
+- `test_fire_trigger` — payload: `{"trigger_id":"<id>"}` — manual fire for testing
+- `delete_pipeline_trigger` — payload: `{"trigger_id":"<id>"}`
+
+### Eval suites (testing agents/logic functions)
+- `create_eval_suite` — payload: `{"name":"...","target_type":"agent"|"logic_function"|"logic_flow","target_id":"<id>","evaluator_configs":[{"evaluator_id":"exact_match"|"contains_key_details"|"rouge_score"|"json_schema_match"|"custom_expression","weight":1.0,"config":{...}}],"pass_threshold":0.8}`
+- `add_eval_case` — payload: `{"suite_id":"<id>","name":"...","inputs":{...},"expected_outputs":{...},"tags":[...]}`
+- `run_eval_suite` — payload: `{"suite_id":"<id>"}` — returns run_id
+
+### Alerts
+- `create_alert_rule` — payload: `{"name":"...","rule_type":"stuck_case"|"slow_transition"|"rework_spike"|"case_volume_anomaly","object_type_id":"<id>","process_id":"<id>","config":{<rule-type-specific>},"cooldown_minutes":60,"enabled":true}`
+  - stuck_case config: `{"threshold_hours":72}`
+  - slow_transition config: `{"from_activity":"...","to_activity":"...","threshold_hours":24}`
+  - rework_spike config: `{"spike_multiplier":2.0}`
+  - case_volume_anomaly config: `{"stddev_threshold":2.0}`
+- `update_alert_rule` / `delete_alert_rule` — payload: `{"rule_id":"<id>", ...}`
+- `test_alert_rule` — payload: `{"rule_id":"<id>"}` — dry-run; returns matching cases without firing notifications
+- `configure_notification_channel` — payload: `{"email_enabled":true,"email_recipients":"a@x.com,b@y.com","slack_enabled":true,"slack_webhook_url":"https://hooks.slack.com/..."}`
+- `test_notification_channels` — payload: `{}` — sends a test message
+- `acknowledge_notification` / `snooze_notification` — payload: `{"notification_id":"<id>"}` (snooze adds `"until":"<ISO 8601>"`)
+
+### Approvals & checkpoints
+- `create_approval_workflow` — payload: `{"name":"...","resource_type":"object_type"|"pipeline"|"agent","operations":["delete","export","bulk_run"],"required_approvers":2,"eligible_roles":["admin","analyst"],"expiry_hours":72,"enabled":true}`
+- `update_approval_workflow` / `delete_approval_workflow` — payload: `{"workflow_id":"<id>", ...}`
+- `approve_request` / `reject_request` — payload: `{"request_id":"<id>","note":"..."}` or `{"request_id":"<id>","reason":"..."}`
+- `create_checkpoint` — payload: `{"name":"...","prompt_text":"<question to ask user>","applies_to":[{"resource_type":"...","operations":["delete","export"]}],"applies_to_roles":["admin","analyst"],"enabled":true}` — empty applies_to_roles = all roles
+- `update_checkpoint` / `delete_checkpoint` — payload: `{"checkpoint_id":"<id>", ...}`
+
+### Users & tenants
+- `invite_user` — payload: `{"email":"...","name":"...","role":"superadmin"|"admin"|"analyst"|"viewer","password":"<temp 12+ chars w/ upper/lower/digit/special>","allowed_modules":[...]}`
+- `update_user` — payload: `{"user_id":"<id>","role":"...","is_active":true|false,"name":"...","allowed_modules":[...]}`
+- `delete_user` — payload: `{"user_id":"<id>"}`
+- `update_model_provider` / `delete_model_provider` / `test_model_provider` — payload: `{"provider_id":"<id>", ...}`
+
+### Apps (lifecycle + sharing)
+- `update_app` — payload: `{"app_id":"<id>","name":"...","components":[...],"settings":{...}}` (partial)
+- `delete_app` — payload: `{"app_id":"<id>"}`
+- `create_app_share` — payload: `{"app_id":"<id>","mode":"view"|"submit","access_mode":"public"|"password"|"email_whitelist"|"nexus_user","password":"...","expires_at":"<ISO>","max_uses":<int>}` — returns a token; the share URL is `/s/<token>`
+- `revoke_app_share` — payload: `{"share_id":"<id>"}`
+
+### API gateway
+- `create_api_endpoint` — payload: `{"slug":"<unique slug>","object_type_id":"<id>","object_type_name":"...","resource_type":"records"|"events"}` — registers an external `/v1/<slug>` endpoint
+- `delete_api_endpoint` — payload: `{"endpoint_id":"<id>"}`
+- `mint_api_key` — payload: `{"name":"...","scopes":["read:records"|"read:events"|"write:records"|"read:all"|"write:all"],"rate_limit_per_min":1000,"ip_allowlist":["1.2.3.4"]}` — returns the raw key ONCE; the user must save it.
+- `revoke_api_key` — payload: `{"key_id":"<id>"}`
+- `toggle_api_key` — payload: `{"key_id":"<id>","enabled":true|false}`
+
+### Process mining
+- `discover_processes` — payload: `{}` — auto-discovers processes from event log; returns ranked candidate case_keys
+- `backfill_process_case_key` — payload: `{"process_id":"<id>"}` — populates events.attributes.case_key from record_snapshot
+- `create_conformance_model` — payload: `{"name":"...","process_id":"<id>","activities":["a1","a2","a3"],"is_active":true}` — expected ordered activity sequence; or use `object_type_id` instead of `process_id`
+
+### PII & document extraction
+- `scan_pii_for_object_type` — payload: `{"object_type_id":"<id>"}` — runs regex + Claude verification PII detection
+- `scan_all_pii` — payload: `{}` — async sweep across all OTs; returns scan_id
+- `extract_document_fields` — payload: `{"document_id":"<id>","schema":[{"name":"...","type":"string","description":"..."}],"document_kind":"invoice"|"receipt"|"contract"}` — vision OCR + structured extraction
+
+### Notebooks & comments
+- `create_notebook` — payload: `{"name":"...","cells":[]}`
+- `delete_notebook` — payload: `{"notebook_id":"<id>"}`
+- `add_comment` — payload: `{"entity_type":"object_type"|"pipeline"|"agent"|"record"|"ontology_link","entity_id":"<id>","body":"...","parent_id":"<id?>"}` — set parent_id to reply
+- `resolve_comment` — payload: `{"comment_id":"<id>"}`
+
 Rules for action blocks:
 1. Show a brief plan (bullet list) BEFORE the action block.
 2. Include a `summary` array (3-6 short bullet strings) inside the block.

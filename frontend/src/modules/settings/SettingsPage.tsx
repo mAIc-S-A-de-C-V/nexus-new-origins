@@ -16,13 +16,16 @@ const ApiGatewayPage     = React.lazy(() => import('../gateway/ApiGatewayPage'))
 const PlatformHealthPage = React.lazy(() => import('../health/PlatformHealthPage'));
 const ModelCatalogTab    = React.lazy(() => import('./ModelCatalogTab'));
 const ConsumptionTab     = React.lazy(() => import('./ConsumptionTab'));
+const ApprovalsTab       = React.lazy(() => import('./ApprovalsTab'));
+const CheckpointsTab     = React.lazy(() => import('./CheckpointsTab'));
+const PiiScanTab         = React.lazy(() => import('./PiiScanTab'));
 
 const AUTH_API = import.meta.env.VITE_AUTH_SERVICE_URL || 'http://localhost:8011';
 const EVENT_API = import.meta.env.VITE_EVENT_LOG_SERVICE_URL || 'http://localhost:8005';
 const AUDIT_API = import.meta.env.VITE_AUDIT_SERVICE_URL || 'http://localhost:8006';
 const AGENT_API = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
 
-type TabId = 'general' | 'notifications' | 'api-keys' | 'providers' | 'catalog' | 'consumption' | 'retention' | 'permissions' | 'alerts' | 'gateway' | 'health';
+type TabId = 'general' | 'notifications' | 'api-keys' | 'providers' | 'catalog' | 'consumption' | 'retention' | 'permissions' | 'alerts' | 'approvals' | 'checkpoints' | 'pii' | 'gateway' | 'health';
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'general',       label: 'General',         icon: <Building2 size={13} /> },
@@ -34,6 +37,9 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'retention',     label: 'Data Retention',  icon: <Database size={13} /> },
   { id: 'permissions',   label: 'Permissions',     icon: <ShieldCheck size={13} /> },
   { id: 'alerts',        label: 'Alert Rules',     icon: <Bell size={13} /> },
+  { id: 'approvals',     label: 'Approval Workflows', icon: <ShieldCheck size={13} /> },
+  { id: 'checkpoints',   label: 'Compliance Gates', icon: <AlertCircle size={13} /> },
+  { id: 'pii',           label: 'PII Scanner',     icon: <ShieldCheck size={13} /> },
   { id: 'gateway',       label: 'API Gateway',     icon: <Globe size={13} /> },
   { id: 'health',        label: 'System Health',   icon: <Activity size={13} /> },
 ];
@@ -1281,6 +1287,24 @@ export const SettingsPage: React.FC = () => {
                 <AlertsPage />
               </React.Suspense>
             </div>
+          )}
+
+          {activeTab === 'approvals' && (
+            <React.Suspense fallback={<div style={{ padding: 32, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>Loading approvals…</div>}>
+              <ApprovalsTab />
+            </React.Suspense>
+          )}
+
+          {activeTab === 'checkpoints' && (
+            <React.Suspense fallback={<div style={{ padding: 32, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>Loading compliance gates…</div>}>
+              <CheckpointsTab />
+            </React.Suspense>
+          )}
+
+          {activeTab === 'pii' && (
+            <React.Suspense fallback={<div style={{ padding: 32, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>Loading PII scanner…</div>}>
+              <PiiScanTab />
+            </React.Suspense>
           )}
 
           {activeTab === 'gateway' && (

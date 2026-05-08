@@ -1104,7 +1104,7 @@ Line-chart rules:
    to the categorical column that distinguishes the series. The chart draws one
    line per distinct labelField value. Always set timeBucket explicitly.
 - Use an "in" filter with comma-separated values to scope a multi-series chart
-   to specific labels, e.g. {"field": "metric", "operator": "in", "value": "rpm, running, temp"}.
+   to specific labels, e.g. {{"field": "metric", "operator": "in", "value": "rpm, running, temp"}}.
 
 Bar-chart rules:
 - For "per stage / by category / distribution" with NO explicit numeric value → omit valueField entirely (the renderer counts per label)

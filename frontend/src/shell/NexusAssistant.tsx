@@ -11,12 +11,23 @@ import { useOntologyStore } from '../store/ontologyStore';
 import { getTenantId } from '../store/authStore';
 import { uuid } from '../lib/uuid';
 
-const INFERENCE_URL  = import.meta.env.VITE_INFERENCE_SERVICE_URL  || 'http://localhost:8003';
-const LOGIC_URL      = import.meta.env.VITE_LOGIC_SERVICE_URL      || 'http://localhost:8012';
-const ONTOLOGY_URL   = import.meta.env.VITE_ONTOLOGY_SERVICE_URL   || 'http://localhost:8004';
-const CONNECTOR_URL  = import.meta.env.VITE_CONNECTOR_SERVICE_URL  || 'http://localhost:8001';
-const PIPELINE_URL   = import.meta.env.VITE_PIPELINE_SERVICE_URL   || 'http://localhost:8002';
-const AGENT_URL      = import.meta.env.VITE_AGENT_SERVICE_URL      || 'http://localhost:8013';
+const INFERENCE_URL    = import.meta.env.VITE_INFERENCE_SERVICE_URL     || 'http://localhost:8003';
+const LOGIC_URL        = import.meta.env.VITE_LOGIC_SERVICE_URL         || 'http://localhost:8012';
+const ONTOLOGY_URL     = import.meta.env.VITE_ONTOLOGY_SERVICE_URL      || 'http://localhost:8004';
+const CONNECTOR_URL    = import.meta.env.VITE_CONNECTOR_SERVICE_URL     || 'http://localhost:8001';
+const PIPELINE_URL     = import.meta.env.VITE_PIPELINE_SERVICE_URL      || 'http://localhost:8002';
+const AGENT_URL        = import.meta.env.VITE_AGENT_SERVICE_URL         || 'http://localhost:8013';
+const ALERT_URL        = import.meta.env.VITE_ALERT_ENGINE_URL          || 'http://localhost:8010';
+const AUDIT_URL        = import.meta.env.VITE_AUDIT_SERVICE_URL         || 'http://localhost:8006';
+const AUTH_URL         = import.meta.env.VITE_AUTH_SERVICE_URL          || 'http://localhost:8011';
+const ADMIN_URL        = import.meta.env.VITE_ADMIN_SERVICE_URL         || 'http://localhost:8022';
+const EVAL_URL         = import.meta.env.VITE_EVAL_SERVICE_URL          || 'http://localhost:8016';
+const GATEWAY_URL      = import.meta.env.VITE_API_GATEWAY_URL           || 'http://localhost:8021';
+const PROCESS_URL      = import.meta.env.VITE_PROCESS_ENGINE_URL        || 'http://localhost:8009';
+const LINEAGE_URL      = import.meta.env.VITE_LINEAGE_SERVICE_URL       || 'http://localhost:8017';
+const SEARCH_URL       = import.meta.env.VITE_SEARCH_SERVICE_URL        || 'http://localhost:8018';
+const QUALITY_URL      = import.meta.env.VITE_DATA_QUALITY_SERVICE_URL  || 'http://localhost:8019';
+const COLLAB_URL       = import.meta.env.VITE_COLLABORATION_SERVICE_URL || 'http://localhost:8020';
 
 function fetchWithTimeout(url: string, opts: RequestInit, ms = 5000): Promise<any> {
   const controller = new AbortController();
@@ -105,17 +116,10 @@ async function fetchLiveContext(currentPage: string) {
 }
 
 // ── Action types ─────────────────────────────────────────────────────────────
-type NexusActionType =
-  | 'create_connector'
-  | 'create_object_type'
-  | 'create_pipeline'
-  | 'create_logic'
-  | 'run_pipeline'
-  | 'create_ontology_link'
-  | 'ingest_records'
-  | 'create_app'
-  | 'create_app_action'
-  | 'register_model_provider';
+// The assistant supports a union of "custom" action types (with hand-rolled
+// executors below) and "generic" action types (table-driven). Adding a generic
+// action only requires adding a row to GENERIC_ACTION_REGISTRY.
+type NexusActionType = string;
 
 interface NexusAction {
   type: NexusActionType;
@@ -124,10 +128,134 @@ interface NexusAction {
   payload: Record<string, unknown>;
 }
 
+// ── Generic (table-driven) action registry ──────────────────────────────────
+// Each entry = label, icon, HTTP method + URL builder + body builder.
+// The dispatcher in executeAction falls through to this table for any action
+// type not handled by a custom branch above.
+type ActionExecutor = {
+  label: string;
+  icon: React.ReactNode;
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  url: (p: Record<string, unknown>) => string;
+  body?: (p: Record<string, unknown>) => Record<string, unknown> | null;
+};
+
+// Helper to strip used keys from payload when building a body.
+const omit = (obj: Record<string, unknown>, keys: string[]) => {
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(obj)) if (!keys.includes(k)) out[k] = obj[k];
+  return out;
+};
+
+const GENERIC_ACTION_REGISTRY: Record<string, ActionExecutor> = {
+  // ── Connectors lifecycle
+  update_connector:    { label: 'Update Connector',    icon: <Database size={14}/>,    method: 'PUT',    url: p => `${CONNECTOR_URL}/connectors/${p.connector_id}`,                                  body: p => omit(p, ['connector_id']) },
+  delete_connector:    { label: 'Delete Connector',    icon: <Trash2 size={14}/>,      method: 'DELETE', url: p => `${CONNECTOR_URL}/connectors/${p.connector_id}` },
+  test_connector:      { label: 'Test Connector',      icon: <Check size={14}/>,       method: 'POST',   url: p => `${CONNECTOR_URL}/connectors/${p.connector_id}/test`,                              body: () => ({}) },
+
+  // ── Pipelines lifecycle
+  update_pipeline:     { label: 'Update Pipeline',     icon: <GitBranch size={14}/>,   method: 'PUT',    url: p => `${PIPELINE_URL}/pipelines/${p.pipeline_id}`,                                       body: p => omit(p, ['pipeline_id']) },
+  delete_pipeline:     { label: 'Delete Pipeline',     icon: <Trash2 size={14}/>,      method: 'DELETE', url: p => `${PIPELINE_URL}/pipelines/${p.pipeline_id}` },
+
+  // ── Pipeline schedules
+  create_pipeline_schedule: { label: 'Create Pipeline Schedule', icon: <Play size={14}/>,   method: 'POST',   url: p => `${PIPELINE_URL}/pipelines/${p.pipeline_id}/schedules`,                       body: p => omit(p, ['pipeline_id']) },
+  update_pipeline_schedule: { label: 'Update Pipeline Schedule', icon: <Play size={14}/>,   method: 'PUT',    url: p => `${PIPELINE_URL}/pipelines/${p.pipeline_id}/schedules/${p.schedule_id}`,      body: p => omit(p, ['pipeline_id', 'schedule_id']) },
+  delete_pipeline_schedule: { label: 'Delete Pipeline Schedule', icon: <Trash2 size={14}/>, method: 'DELETE', url: p => `${PIPELINE_URL}/pipelines/${p.pipeline_id}/schedules/${p.schedule_id}` },
+  run_pipeline_schedule_now:{ label: 'Run Schedule Now',         icon: <Play size={14}/>,   method: 'POST',   url: p => `${PIPELINE_URL}/pipelines/${p.pipeline_id}/schedules/${p.schedule_id}/run-now`, body: () => ({}) },
+
+  // ── Object types & links
+  update_object_type:  { label: 'Update Object Type',  icon: <Layers size={14}/>,      method: 'PUT',    url: p => `${ONTOLOGY_URL}/object-types/${p.object_type_id}`,                                 body: p => omit(p, ['object_type_id']) },
+  delete_object_type:  { label: 'Delete Object Type',  icon: <Trash2 size={14}/>,      method: 'DELETE', url: p => `${ONTOLOGY_URL}/object-types/${p.object_type_id}` },
+  apply_enrichment:    { label: 'Apply Enrichment',    icon: <Layers size={14}/>,      method: 'POST',   url: p => `${ONTOLOGY_URL}/object-types/${p.object_type_id}/enrich`,                          body: p => p.proposal as Record<string, unknown> },
+  delete_ontology_link:{ label: 'Delete Link',         icon: <Trash2 size={14}/>,      method: 'DELETE', url: p => `${ONTOLOGY_URL}/object-types/links/${p.link_id}` },
+
+  // ── Logic functions
+  update_logic_function:    { label: 'Update Logic Function',    icon: <Code size={14}/>,    method: 'PUT',    url: p => `${LOGIC_URL}/logic/functions/${p.function_id}`,                              body: p => omit(p, ['function_id']) },
+  delete_logic_function:    { label: 'Delete Logic Function',    icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${LOGIC_URL}/logic/functions/${p.function_id}` },
+  publish_logic_function:   { label: 'Publish Logic Function',   icon: <Check size={14}/>,   method: 'POST',   url: p => `${LOGIC_URL}/logic/functions/${p.function_id}/publish`,                       body: () => ({}) },
+  run_logic_function:       { label: 'Run Logic Function',       icon: <Play size={14}/>,    method: 'POST',   url: p => `${LOGIC_URL}/logic/functions/${p.function_id}/run`,                            body: p => ({ inputs: p.inputs || {} }) },
+  create_logic_schedule:    { label: 'Create Logic Schedule',    icon: <Play size={14}/>,    method: 'POST',   url: p => `${LOGIC_URL}/logic/functions/${p.function_id}/schedules`,                     body: p => omit(p, ['function_id']) },
+  delete_logic_schedule:    { label: 'Delete Logic Schedule',    icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${LOGIC_URL}/logic/functions/${p.function_id}/schedules/${p.schedule_id}` },
+
+  // ── Agents
+  create_agent:             { label: 'Create Agent',             icon: <Zap size={14}/>,     method: 'POST',   url: () => `${AGENT_URL}/agents`,                                                          body: p => p },
+  update_agent:             { label: 'Update Agent',             icon: <Zap size={14}/>,     method: 'PUT',    url: p => `${AGENT_URL}/agents/${p.agent_id}`,                                            body: p => omit(p, ['agent_id']) },
+  delete_agent:             { label: 'Delete Agent',             icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${AGENT_URL}/agents/${p.agent_id}` },
+  set_agent_knowledge_scope:{ label: 'Set Agent Data Scope',     icon: <Zap size={14}/>,     method: 'PUT',    url: p => `${AGENT_URL}/agents/${p.agent_id}/knowledge-scope`,                            body: p => ({ scope: p.scope }) },
+  create_agent_schedule:    { label: 'Create Agent Schedule',    icon: <Play size={14}/>,    method: 'POST',   url: p => `${AGENT_URL}/agents/${p.agent_id}/schedules`,                                  body: p => omit(p, ['agent_id']) },
+  delete_agent_schedule:    { label: 'Delete Agent Schedule',    icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${AGENT_URL}/agents/${p.agent_id}/schedules/${p.schedule_id}` },
+  create_pipeline_trigger:  { label: 'Create Pipeline Trigger',  icon: <Network size={14}/>, method: 'POST',   url: () => `${AGENT_URL}/triggers`,                                                        body: p => p },
+  test_fire_trigger:        { label: 'Test-Fire Trigger',        icon: <Play size={14}/>,    method: 'POST',   url: p => `${AGENT_URL}/triggers/${p.trigger_id}/test-fire`,                              body: () => ({}) },
+  delete_pipeline_trigger:  { label: 'Delete Trigger',           icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${AGENT_URL}/triggers/${p.trigger_id}` },
+
+  // ── Eval suites
+  create_eval_suite:        { label: 'Create Eval Suite',        icon: <BarChart2 size={14}/>, method: 'POST',  url: () => `${EVAL_URL}/suites`,                                                          body: p => p },
+  add_eval_case:            { label: 'Add Eval Case',            icon: <BarChart2 size={14}/>, method: 'POST',  url: p => `${EVAL_URL}/suites/${p.suite_id}/cases`,                                       body: p => omit(p, ['suite_id']) },
+  run_eval_suite:           { label: 'Run Eval Suite',           icon: <Play size={14}/>,      method: 'POST',  url: p => `${EVAL_URL}/suites/${p.suite_id}/run`,                                         body: () => ({}) },
+
+  // ── Alerts
+  create_alert_rule:        { label: 'Create Alert Rule',        icon: <AlertTriangle size={14}/>, method: 'POST',   url: () => `${ALERT_URL}/alerts/rules`,                                            body: p => p },
+  update_alert_rule:        { label: 'Update Alert Rule',        icon: <AlertTriangle size={14}/>, method: 'PATCH',  url: p => `${ALERT_URL}/alerts/rules/${p.rule_id}`,                                 body: p => omit(p, ['rule_id']) },
+  delete_alert_rule:        { label: 'Delete Alert Rule',        icon: <Trash2 size={14}/>,        method: 'DELETE', url: p => `${ALERT_URL}/alerts/rules/${p.rule_id}` },
+  test_alert_rule:          { label: 'Test Alert Rule',          icon: <Play size={14}/>,          method: 'POST',   url: p => `${ALERT_URL}/alerts/rules/${p.rule_id}/test`,                            body: () => ({}) },
+  configure_notification_channel:{ label: 'Configure Channels',  icon: <Network size={14}/>,       method: 'PUT',    url: () => `${ALERT_URL}/alerts/channels`,                                          body: p => p },
+  test_notification_channels:    { label: 'Test Channels',       icon: <Send size={14}/>,          method: 'POST',   url: () => `${ALERT_URL}/alerts/channels/test`,                                     body: () => ({}) },
+  acknowledge_notification: { label: 'Acknowledge Notification', icon: <Check size={14}/>,        method: 'POST',    url: p => `${ALERT_URL}/alerts/notifications/${p.notification_id}/read`,           body: () => ({}) },
+  snooze_notification:      { label: 'Snooze Notification',      icon: <Loader size={14}/>,       method: 'POST',    url: p => `${ALERT_URL}/alerts/notifications/${p.notification_id}/snooze`,         body: p => ({ until: p.until }) },
+
+  // ── Approvals & checkpoints
+  create_approval_workflow: { label: 'Create Approval Workflow', icon: <Check size={14}/>,   method: 'POST',   url: () => `${AUDIT_URL}/audit/approvals/workflows`,                                       body: p => p },
+  update_approval_workflow: { label: 'Update Approval Workflow', icon: <Check size={14}/>,   method: 'PUT',    url: p => `${AUDIT_URL}/audit/approvals/workflows/${p.workflow_id}`,                       body: p => omit(p, ['workflow_id']) },
+  delete_approval_workflow: { label: 'Delete Approval Workflow', icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${AUDIT_URL}/audit/approvals/workflows/${p.workflow_id}` },
+  approve_request:          { label: 'Approve Request',          icon: <Check size={14}/>,   method: 'POST',   url: p => `${AUDIT_URL}/audit/approvals/requests/${p.request_id}/approve`,                  body: p => ({ note: p.note || '' }) },
+  reject_request:           { label: 'Reject Request',           icon: <XCircle size={14}/>, method: 'POST',   url: p => `${AUDIT_URL}/audit/approvals/requests/${p.request_id}/reject`,                   body: p => ({ reason: p.reason || '' }) },
+  create_checkpoint:        { label: 'Create Checkpoint',        icon: <AlertTriangle size={14}/>, method: 'POST',   url: () => `${AUDIT_URL}/audit/checkpoints`,                                         body: p => p },
+  update_checkpoint:        { label: 'Update Checkpoint',        icon: <AlertTriangle size={14}/>, method: 'PUT',    url: p => `${AUDIT_URL}/audit/checkpoints/${p.checkpoint_id}`,                       body: p => omit(p, ['checkpoint_id']) },
+  delete_checkpoint:        { label: 'Delete Checkpoint',        icon: <Trash2 size={14}/>,        method: 'DELETE', url: p => `${AUDIT_URL}/audit/checkpoints/${p.checkpoint_id}` },
+
+  // ── Users & tenants
+  invite_user:              { label: 'Invite User',              icon: <Plus size={14}/>,    method: 'POST',   url: () => `${AUTH_URL}/auth/users`,                                                       body: p => p },
+  update_user:              { label: 'Update User',              icon: <Plus size={14}/>,    method: 'PATCH',  url: p => `${AUTH_URL}/auth/users/${p.user_id}`,                                           body: p => omit(p, ['user_id']) },
+  delete_user:              { label: 'Delete User',              icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${AUTH_URL}/auth/users/${p.user_id}` },
+  update_model_provider:    { label: 'Update Model Provider',    icon: <Zap size={14}/>,     method: 'PUT',    url: p => `${AGENT_URL}/model-providers/${p.provider_id}`,                                 body: p => omit(p, ['provider_id']) },
+  delete_model_provider:    { label: 'Delete Model Provider',    icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${AGENT_URL}/model-providers/${p.provider_id}` },
+  test_model_provider:      { label: 'Test Model Provider',      icon: <Check size={14}/>,   method: 'POST',   url: p => `${AGENT_URL}/model-providers/${p.provider_id}/test`,                            body: () => ({}) },
+
+  // ── Apps & shares
+  update_app:               { label: 'Update App',               icon: <Layers size={14}/>,  method: 'PUT',    url: p => `${ONTOLOGY_URL}/apps/${p.app_id}`,                                              body: p => omit(p, ['app_id']) },
+  delete_app:               { label: 'Delete App',               icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${ONTOLOGY_URL}/apps/${p.app_id}` },
+  create_app_share:         { label: 'Create App Share',         icon: <Network size={14}/>, method: 'POST',   url: p => `${ONTOLOGY_URL}/shares/apps/${p.app_id}/shares`,                                body: p => omit(p, ['app_id']) },
+  revoke_app_share:         { label: 'Revoke App Share',         icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${ONTOLOGY_URL}/shares/${p.share_id}` },
+
+  // ── API gateway
+  create_api_endpoint:      { label: 'Create API Endpoint',      icon: <Network size={14}/>, method: 'POST',   url: () => `${GATEWAY_URL}/gateway/manage`,                                               body: p => p },
+  delete_api_endpoint:      { label: 'Delete API Endpoint',      icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${GATEWAY_URL}/gateway/manage/${p.endpoint_id}` },
+  mint_api_key:             { label: 'Mint API Key',             icon: <Zap size={14}/>,     method: 'POST',   url: () => `${GATEWAY_URL}/gateway/keys`,                                                 body: p => p },
+  revoke_api_key:           { label: 'Revoke API Key',           icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${GATEWAY_URL}/gateway/keys/${p.key_id}` },
+  toggle_api_key:           { label: 'Toggle API Key',           icon: <Zap size={14}/>,     method: 'PATCH',  url: p => `${GATEWAY_URL}/gateway/keys/${p.key_id}/toggle`,                                body: p => ({ enabled: p.enabled }) },
+
+  // ── Process mining
+  discover_processes:       { label: 'Discover Processes',       icon: <Network size={14}/>, method: 'POST',   url: () => `${PROCESS_URL}/process/processes/auto-discover`,                              body: () => ({}) },
+  backfill_process_case_key:{ label: 'Backfill Process Cases',   icon: <Loader size={14}/>,  method: 'POST',   url: p => `${PROCESS_URL}/process/processes/${p.process_id}/backfill`,                    body: () => ({}) },
+  create_conformance_model: { label: 'Create Conformance Model', icon: <BarChart2 size={14}/>, method: 'POST', url: p => p.process_id ? `${PROCESS_URL}/process/conformance/models/by-process/${p.process_id}` : `${PROCESS_URL}/process/conformance/models/${p.object_type_id}`, body: p => omit(p, ['process_id', 'object_type_id']) },
+
+  // ── PII & document extraction
+  scan_pii_for_object_type: { label: 'Scan Object Type for PII', icon: <AlertTriangle size={14}/>, method: 'POST', url: () => `${INFERENCE_URL}/infer/scan-pii`,                                          body: p => ({ object_type_id: p.object_type_id }) },
+  scan_all_pii:             { label: 'Scan All Object Types',    icon: <AlertTriangle size={14}/>, method: 'POST', url: () => `${INFERENCE_URL}/infer/scan-all`,                                          body: () => ({}) },
+  extract_document_fields:  { label: 'Extract Document Fields',  icon: <Database size={14}/>,      method: 'POST', url: () => `${INFERENCE_URL}/infer/extract-from-document`,                              body: p => p },
+
+  // ── Notebooks & comments
+  create_notebook:          { label: 'Create Notebook',          icon: <Code size={14}/>,    method: 'POST',   url: () => `${ONTOLOGY_URL}/notebooks`,                                                    body: p => p },
+  delete_notebook:          { label: 'Delete Notebook',          icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${ONTOLOGY_URL}/notebooks/${p.notebook_id}` },
+  add_comment:              { label: 'Add Comment',              icon: <MessageSquare size={14}/>, method: 'POST',   url: () => `${COLLAB_URL}/comments`,                                                  body: p => p },
+  resolve_comment:          { label: 'Resolve Comment',          icon: <Check size={14}/>,         method: 'PATCH',  url: p => `${COLLAB_URL}/comments/${p.comment_id}`,                                  body: () => ({ resolved: true }) },
+};
+
 const ALL_ACTION_TYPES: NexusActionType[] = [
   'create_connector', 'create_object_type', 'create_pipeline', 'create_logic',
   'run_pipeline', 'create_ontology_link', 'ingest_records', 'create_app',
   'create_app_action', 'register_model_provider',
+  ...Object.keys(GENERIC_ACTION_REGISTRY),
 ];
 
 const ACTION_LABELS: Record<string, string> = {
@@ -141,6 +269,7 @@ const ACTION_LABELS: Record<string, string> = {
   create_app: 'Create App / Dashboard',
   create_app_action: 'Add Action to App',
   register_model_provider: 'Register AI Model',
+  ...Object.fromEntries(Object.entries(GENERIC_ACTION_REGISTRY).map(([k, v]) => [k, v.label])),
 };
 
 const ACTION_ICONS: Record<string, React.ReactNode> = {
@@ -154,6 +283,7 @@ const ACTION_ICONS: Record<string, React.ReactNode> = {
   create_app: <Layers size={14} />,
   create_app_action: <Code size={14} />,
   register_model_provider: <Zap size={14} />,
+  ...Object.fromEntries(Object.entries(GENERIC_ACTION_REGISTRY).map(([k, v]) => [k, v.icon])),
 };
 
 function ActionConfirmCard({
@@ -603,6 +733,40 @@ const NexusAssistant: React.FC = () => {
             id: uuid(),
             role: 'assistant',
             content: `Added action **${(newAction.name as string) || newAction.id}** to app \`${appId}\`.`,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return;
+      } else if (GENERIC_ACTION_REGISTRY[action.type]) {
+        // ── Generic / table-driven dispatcher ──────────────────────────────
+        // Every action registered in GENERIC_ACTION_REGISTRY is dispatched
+        // here. Adding a new action is one row in that table, no code changes.
+        const exec = GENERIC_ACTION_REGISTRY[action.type];
+        const targetUrl = exec.url(action.payload);
+        const targetBody = exec.body ? exec.body(action.payload) : null;
+        const init: RequestInit = { method: exec.method, headers };
+        if (targetBody !== null && exec.method !== 'DELETE') {
+          init.body = JSON.stringify(targetBody);
+        }
+        const resp = await fetch(targetUrl, init);
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(`${resp.status}: ${errText.slice(0, 200)}`);
+        }
+        // DELETE typically returns 204 No Content
+        let data: any = null;
+        if (resp.status !== 204) {
+          try { data = await resp.json(); } catch { /* empty body */ }
+        }
+        setActionStatuses(s => ({ ...s, [msgId]: 'done' }));
+        if (activeId) {
+          const summary = data && typeof data === 'object'
+            ? (data.id ? ` (id: \`${data.id}\`)` : '')
+            : '';
+          addMessage(activeId, {
+            id: uuid(),
+            role: 'assistant',
+            content: `**${action.name || ACTION_LABELS[action.type]}** completed${summary}.`,
             timestamp: new Date().toISOString(),
           });
         }

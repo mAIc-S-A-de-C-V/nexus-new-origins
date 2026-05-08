@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, LayoutDashboard, ChevronDown, ChevronUp,
   FolderKanban, Users, LogOut, DollarSign, Briefcase,
   BrainCircuit, Bot, MessageSquare, ShieldCheck, Wrench, Globe, FlaskConical,
-  Database, Shield, TrendingUp, BookOpen, Clock, Radio,
+  Database, Shield, TrendingUp, BookOpen, Clock, Radio, BarChart2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTimezone, COMMON_TIMEZONES } from '../lib/timezone';
@@ -65,6 +65,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'agents',        label: 'Agent Studio', i18nKey: 'nav.agentStudio', icon: <Bot size={16} />,             active: true, path: 'agents' },
   { id: 'evals',         label: 'Evals',        i18nKey: 'nav.evals',       icon: <FlaskConical size={16} />,    active: true, path: 'evals' },
   { id: 'value',         label: 'Value Monitor',i18nKey: 'nav.value',       icon: <TrendingUp size={16} />,      active: true, path: 'value' },
+  { id: 'scenarios',     label: 'Scenarios',    i18nKey: 'nav.scenarios',   icon: <BarChart2 size={16} />,       active: true, path: 'scenarios' },
   { id: 'activity',      label: 'Activity',     i18nKey: 'nav.activity',    icon: <Activity size={16} />,        active: true, path: 'activity' },
   { id: 'operations',    label: 'Operations',   i18nKey: 'nav.operations',  icon: <Radio size={16} />,           active: true, path: 'operations', alwaysVisible: true },
   { id: 'utilities',     label: 'Utilities',    i18nKey: 'nav.utilities',   icon: <Wrench size={16} />,          active: true, path: 'utilities' },
