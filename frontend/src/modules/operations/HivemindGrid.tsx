@@ -11,13 +11,14 @@
  */
 import React, { useEffect, useState } from 'react';
 import {
-  Workflow, Bot, Plug, Bell, RefreshCw, Cpu,
+  Workflow, Bot, Plug, Bell, Code2, RefreshCw, Cpu,
   AlertCircle, Coins, Zap, Hash, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import {
   useOperationsStore, RunRow, RunStatus, CatalogEntry,
   timeAgoIso, fmtTokens, fmtCost,
 } from '../../store/operationsStore';
+import { useNavigationStore } from '../../store/navigationStore';
 
 const C = {
   bg: '#F8FAFC', panel: '#FFFFFF', border: '#E2E8F0', hover: '#F1F5F9',
@@ -52,6 +53,7 @@ const fmtMs = (ms?: number | null): string => {
 
 const RunningCard: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onSelect }) => {
   const isPipeline = row.kind === 'pipeline';
+  const isFunction = row.kind === 'function';
   const pct = (row.currentStepIndex && row.totalSteps && row.totalSteps > 0)
     ? Math.round((row.currentStepIndex / row.totalSteps) * 100)
     : null;
@@ -73,7 +75,9 @@ const RunningCard: React.FC<{ row: RunRow; onSelect: () => void }> = ({ row, onS
           width: 7, height: 7, borderRadius: '50%', background: C.info,
           animation: 'opsPulse 1.4s ease-in-out infinite', flexShrink: 0,
         }} />
-        {isPipeline ? <Workflow size={13} color={C.muted} /> : <Bot size={13} color={C.muted} />}
+        {isPipeline ? <Workflow size={13} color={C.muted} />
+          : isFunction ? <Code2 size={13} color={C.muted} />
+          : <Bot size={13} color={C.muted} />}
         <span style={{
           fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -230,6 +234,7 @@ export const HivemindGrid: React.FC = () => {
     lastFetchedAt, fetchSnapshot, startPolling, stopPolling,
     selectRun, viewEntityHistory,
   } = useOperationsStore();
+  const navigateTo = useNavigationStore((s) => s.navigateTo);
   const [catalogOpen, setCatalogOpen] = useState(true);
 
   useEffect(() => {
@@ -241,8 +246,12 @@ export const HivemindGrid: React.FC = () => {
   const openRun = (r: RunRow) => {
     if (r.kind === 'pipeline') {
       selectRun({ kind: 'pipeline', runId: r.id, pipelineId: r.entityId });
-    } else {
+    } else if (r.kind === 'agent') {
       selectRun({ kind: 'agent', runId: r.id });
+    } else {
+      // No drilldown for logic runs yet — jump to Logic Studio so the user
+      // can find the function and inspect runs there.
+      navigateTo('logic');
     }
   };
 
@@ -259,6 +268,8 @@ export const HivemindGrid: React.FC = () => {
         entityId: e.agentId || e.id,
         entityName: e.name,
       });
+    } else if (e.kind === 'function') {
+      navigateTo('logic');
     } else if (e.kind === 'alert' && e.pipelineId && e.latestRunId) {
       selectRun({ kind: 'pipeline', runId: e.latestRunId, pipelineId: e.pipelineId });
     } else if (e.kind === 'alert' && e.agentId && e.latestRunId) {
@@ -360,12 +371,17 @@ export const HivemindGrid: React.FC = () => {
           }
         />
         {catalogOpen && (
+          // 3 cols × 2 rows. Five lanes flow row-major; the 6th cell stays
+          // empty by design — a 5-col single row was too cramped on
+          // anything narrower than a 24" monitor.
           <div style={{ padding: '0 24px 24px',
-                         display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+                         display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
             <Lane title="Pipelines" icon={<Workflow size={11} />}
                   entries={catalog.pipelines} onSelect={openCatalog} />
             <Lane title="Agents"     icon={<Bot size={11} />}
                   entries={catalog.agents} onSelect={openCatalog} />
+            <Lane title="Functions"  icon={<Code2 size={11} />}
+                  entries={catalog.functions} onSelect={openCatalog} />
             <Lane title="Connectors" icon={<Plug size={11} />}
                   entries={catalog.connectors} onSelect={openCatalog} />
             <Lane title="Alerts"     icon={<Bell size={11} />}

@@ -16,10 +16,11 @@ const PIPELINE_API  = import.meta.env.VITE_PIPELINE_SERVICE_URL  || 'http://loca
 const AGENT_API     = import.meta.env.VITE_AGENT_SERVICE_URL     || 'http://localhost:8013';
 const ALERT_API     = import.meta.env.VITE_ALERT_ENGINE_URL      || 'http://localhost:8010';
 const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
+const LOGIC_API     = import.meta.env.VITE_LOGIC_SERVICE_URL     || 'http://localhost:8012';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type RunKind = 'pipeline' | 'agent';
+export type RunKind = 'pipeline' | 'agent' | 'function';
 export type RunStatus = 'running' | 'success' | 'failed';
 
 export interface RunRow {
@@ -71,7 +72,7 @@ export interface RunRow {
 
 export interface CatalogEntry {
   id: string;
-  kind: 'pipeline' | 'agent' | 'connector' | 'alert';
+  kind: 'pipeline' | 'agent' | 'connector' | 'alert' | 'function';
   name: string;
   status: 'idle' | 'running' | 'success' | 'failed' | 'warning';
   /** terse per-entity verb — "12 runs / 24h", "last sync 4m ago", etc. */
@@ -81,6 +82,7 @@ export interface CatalogEntry {
   /** pipelines: needed to fetch the run audit */
   pipelineId?: string;
   agentId?: string;
+  functionId?: string;
   notificationId?: string;
   meta?: Record<string, string | number | undefined>;
 }
@@ -196,6 +198,7 @@ interface OpsState {
     agents: CatalogEntry[];
     connectors: CatalogEntry[];
     alerts: CatalogEntry[];
+    functions: CatalogEntry[];
   };
   aggregate: OpsAggregate;
 
@@ -262,7 +265,7 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 export const useOperationsStore = create<OpsState>((set, get) => ({
   runningRuns: [],
   recentRuns: [],
-  catalog: { pipelines: [], agents: [], connectors: [], alerts: [] },
+  catalog: { pipelines: [], agents: [], connectors: [], alerts: [], functions: [] },
   aggregate: {
     runningCount: 0, failedLast24h: 0, totalRunsLast24h: 0,
     tokensLast24h: 0, costUsdLast24h: 0, rowsProcessedLast24h: 0,
@@ -352,13 +355,18 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
     if (!get().lastFetchedAt) set({ loading: true });
     const headers = tenantHeaders();
 
-    const [pRunsRes, aRunsRes, alertsRes, connsRes, pipesRes, agentsRes] = await Promise.allSettled([
+    const [
+      pRunsRes, aRunsRes, alertsRes, connsRes, pipesRes, agentsRes,
+      lRunsRes, lFnsRes,
+    ] = await Promise.allSettled([
       fetch(`${PIPELINE_API}/pipelines/runs/recent?limit=60`, { headers }),
       fetch(`${AGENT_API}/agents/runs/recent?limit=60`,       { headers }),
       fetch(`${ALERT_API}/alerts/notifications?tenant_id=${getTenantId()}&unread_only=false&limit=20`),
       fetch(`${CONNECTOR_API}/connectors`,                    { headers }),
       fetch(`${PIPELINE_API}/pipelines`,                      { headers }),
       fetch(`${AGENT_API}/agents`,                            { headers }),
+      fetch(`${LOGIC_API}/logic/runs?limit=60`,               { headers }),
+      fetch(`${LOGIC_API}/logic/functions`,                   { headers }),
     ]);
 
     // ── Pipelines ────────────────────────────────────────────────────────
@@ -405,6 +413,30 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
     let agents: AgentMeta[] = [];
     if (agentsRes.status === 'fulfilled' && agentsRes.value.ok) {
       agents = await agentsRes.value.json();
+    }
+
+    // ── Logic functions ──────────────────────────────────────────────────
+    // Logic-service status vocabulary: pending | running | completed | failed.
+    // We collapse pending → running for the dashboard (it's transient).
+    type LogicRunApi = {
+      id: string;
+      function_id: string;
+      status: string;
+      error?: string | null;
+      started_at?: string | null;
+      finished_at?: string | null;
+      created_at?: string | null;
+      triggered_by?: string | null;
+    };
+    let logicRuns: LogicRunApi[] = [];
+    if (lRunsRes.status === 'fulfilled' && lRunsRes.value.ok) {
+      logicRuns = await lRunsRes.value.json();
+    }
+
+    type LogicFnMeta = { id: string; name?: string; status?: string };
+    let logicFns: LogicFnMeta[] = [];
+    if (lFnsRes.status === 'fulfilled' && lFnsRes.value.ok) {
+      logicFns = await lFnsRes.value.json();
     }
 
     // ── Build run rows ──────────────────────────────────────────────────
@@ -459,6 +491,32 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
         outputTokens: r.output_tokens || 0,
         cacheReadTokens: r.cache_read_tokens || 0,
         costUsd: r.cost_usd || 0,
+      });
+    }
+
+    const logicFnNameById = new Map(logicFns.map((f) => [f.id, f.name || f.id.slice(0, 8)]));
+    for (const r of logicRuns) {
+      const s = (r.status || '').toLowerCase();
+      const status: RunStatus =
+        s === 'failed' ? 'failed'
+          : s === 'completed' ? 'success'
+          : 'running';   // 'running' or 'pending'
+      const startedAt = r.started_at || r.created_at || new Date(0).toISOString();
+      const finishedAt = r.finished_at || null;
+      const durationMs = finishedAt
+        ? new Date(finishedAt).getTime() - new Date(startedAt).getTime()
+        : (status === 'running' ? Date.now() - new Date(startedAt).getTime() : null);
+      runRows.push({
+        kind: 'function',
+        id: r.id,
+        entityId: r.function_id,
+        entityName: logicFnNameById.get(r.function_id) || r.function_id.slice(0, 8),
+        status,
+        triggeredBy: r.triggered_by ?? undefined,
+        startedAt,
+        finishedAt,
+        durationMs,
+        errorMessage: r.error ?? null,
       });
     }
 
@@ -562,6 +620,36 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
       });
     }
 
+    // Logic functions
+    const cutoff24 = Date.now() - ONE_DAY_MS;
+    const latestRunByFunction = new Map<string, RunRow>();
+    for (const r of runRows) if (r.kind === 'function' && !latestRunByFunction.has(r.entityId)) latestRunByFunction.set(r.entityId, r);
+    const runsCountByFunction = new Map<string, number>();
+    for (const r of runRows) if (r.kind === 'function' && new Date(r.startedAt).getTime() >= cutoff24) {
+      runsCountByFunction.set(r.entityId, (runsCountByFunction.get(r.entityId) || 0) + 1);
+    }
+
+    const functionsCatalog: CatalogEntry[] = logicFns.map((f) => {
+      const latest = latestRunByFunction.get(f.id);
+      const status: CatalogEntry['status'] =
+        latest?.status === 'running' ? 'running'
+          : latest?.status === 'failed'  ? 'failed'
+          : latest?.status === 'success' ? 'success'
+          : 'idle';
+      const runs = runsCountByFunction.get(f.id) || 0;
+      const blurb = latest
+        ? (status === 'running'
+            ? `running · started ${timeAgoIso(latest.startedAt)}`
+            : status === 'failed'
+              ? (latest.errorMessage?.slice(0, 80) || 'failed')
+              : `${runs} run${runs === 1 ? '' : 's'} / 24h · last ${timeAgoIso(latest.startedAt)}`)
+        : 'never run';
+      return {
+        id: f.id, kind: 'function', name: f.name || f.id.slice(0, 8),
+        status, blurb, latestRunId: latest?.id, functionId: f.id,
+      };
+    });
+
     // Alerts
     type Notif = {
       id: string; rule_name: string; rule_type: string;
@@ -592,6 +680,7 @@ export const useOperationsStore = create<OpsState>((set, get) => ({
         agents: agentCatalog,
         connectors: connectorCatalog,
         alerts: alertCatalog,
+        functions: functionsCatalog,
       },
       aggregate: {
         runningCount: runningRuns.length,
