@@ -185,3 +185,43 @@ Watch the response — the agent should call `web_search`, `scrape_url`, then
   `mfg_part_number` in a week, the agent re-searches. Adding a
   `part_research_cache` OT and having the agent `query_records` on it
   before searching is a half-day add — see Phase 2 in the conversation.
+
+## System prompt additions for workflow routing
+
+When the `po_research_memo` action template has multi-stage workflow
+enabled (Catalog → Workflow tab), routing rules predicate on values that
+must come *from the proposed payload*. Add this block to the agent's
+system prompt:
+
+> **Workflow-required fields (always populate)**
+>
+> When you call `action_propose`, in addition to the existing memo fields,
+> also populate:
+>
+> - `total_estimated_value` (number) — your best estimate of *total spend*
+>   for this PR: `unit_price × quantity` from the most trustworthy quote
+>   you found (internal first, then web). Use `0` if no usable price.
+>   Workflow routing rules check this (e.g. `>= 10000` escalates to a
+>   manager).
+> - `currency` (string) — currency for `total_estimated_value`. Default
+>   `"USD"` if unsure.
+> - `options[]` — one entry per distinct vendor / source. Each option:
+>
+>   ```json
+>   {
+>     "id": "<stable id, e.g. 'asap-aerospace-quote'>",
+>     "vendor": "<name>",
+>     "unit_price": <number or null>,
+>     "currency": "USD",
+>     "quantity": <number>,
+>     "lead_time_days": <number or null>,
+>     "stock": "<short text>",
+>     "source_url": "<url>",
+>     "confidence": "high" | "medium" | "low"
+>   }
+>   ```
+>
+>   The manager reviews the options and ticks which ones to keep; the
+>   requester then picks one. **Always include at least one entry**, even
+>   if it's a stub `{vendor: "Direct OEM contact", confidence: "low"}`,
+>   so the workflow has something to hand back to the requester.

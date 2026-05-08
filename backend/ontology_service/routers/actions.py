@@ -14,7 +14,9 @@ from fastapi import APIRouter, HTTPException, Header, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from database import ActionDefinitionRow, ActionExecutionRow, get_session
+from database import ActionDefinitionRow, ActionExecutionRow, NotificationRow, get_session
+import workflow as wf
+import user_directory
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,8 @@ class ActionDefinitionCreate(BaseModel):
     writes_to_object_type: Optional[str] = None
     enabled: bool = True
     notify_email: Optional[str] = None   # email to notify when approved
+    # Multi-stage workflow definition. None or [] = legacy single-pending behavior.
+    workflow_stages: Optional[list[dict[str, Any]]] = None
 
 
 class ActionExecuteRequest(BaseModel):
@@ -78,6 +82,11 @@ class ActionExecuteRequest(BaseModel):
     source: Optional[str] = "manual"
     source_id: Optional[str] = None
     reasoning: Optional[str] = None
+    # Workflow context: who's the human "requester" (e.g. the procurement
+    # coordinator who triggered the agent run). Defaults to None — agents
+    # typically don't know this, but a UI-driven proposal can populate.
+    requester_user_id: Optional[str] = None
+    requester_email: Optional[str] = None
 
 
 class ActionConfirmRequest(BaseModel):
@@ -102,6 +111,7 @@ def _def_to_dict(row: ActionDefinitionRow) -> dict:
         "writes_to_object_type": row.writes_to_object_type,
         "enabled": row.enabled,
         "notify_email": row.notify_email,
+        "workflow_stages": getattr(row, "workflow_stages", None) or [],
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -123,6 +133,16 @@ def _exec_to_dict(row: ActionExecutionRow) -> dict:
         "source": row.source,
         "source_id": row.source_id,
         "reasoning": row.reasoning,
+        # Workflow fields (null on legacy executions)
+        "current_stage": getattr(row, "current_stage", None),
+        "stage_state": getattr(row, "stage_state", None),
+        "stage_history": getattr(row, "stage_history", None) or [],
+        "requester_user_id": getattr(row, "requester_user_id", None),
+        "requester_email": getattr(row, "requester_email", None),
+        "assigned_to_user_id": getattr(row, "assigned_to_user_id", None),
+        "assigned_to_email": getattr(row, "assigned_to_email", None),
+        "options": getattr(row, "options", None),
+        "selected_option_ids": getattr(row, "selected_option_ids", None) or [],
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -161,6 +181,8 @@ async def create_action(
         enabled=body.enabled,
         notify_email=body.notify_email,
     )
+    if body.workflow_stages is not None:
+        row.workflow_stages = body.workflow_stages
     db.add(row)
     await db.commit()
     return _def_to_dict(row)
@@ -209,6 +231,8 @@ async def update_action(
     row.writes_to_object_type = body.writes_to_object_type
     row.enabled = body.enabled
     row.notify_email = body.notify_email
+    if body.workflow_stages is not None:
+        row.workflow_stages = body.workflow_stages
     await db.commit()
     return _def_to_dict(row)
 
@@ -275,6 +299,55 @@ async def execute_action(
             source_id=body.source_id,
             reasoning=body.reasoning,
         )
+
+        # Multi-stage workflow path. Instantiate the engine, resolve the first
+        # assignee against auth_service users, and stamp it on the row.
+        stages = getattr(action_def, "workflow_stages", None) or []
+        if stages:
+            requester_user_id = body.requester_user_id
+            requester_email = body.requester_email
+            init = wf.instantiate_for_proposal(
+                stages,
+                body.inputs,
+                requester_user_id=requester_user_id,
+                requester_email=requester_email,
+            )
+            exec_row.current_stage = init["current_stage"]
+            exec_row.stage_state = init["stage_state"]
+            exec_row.stage_history = init["stage_history"]
+            exec_row.requester_user_id = init["requester_user_id"]
+            exec_row.requester_email = init["requester_email"]
+            # Mirror options into a top-level column so option_review/option_select
+            # stages can prune them without mutating the canonical inputs blob.
+            head = init.get("head_stage") or {}
+            options_field = head.get("options_field") or "options"
+            options_value = (body.inputs or {}).get(options_field)
+            if isinstance(options_value, list):
+                exec_row.options = options_value
+            # Resolve initial assignee
+            spec = init.get("assignee_spec")
+            if spec and exec_row.current_stage not in (wf.TERMINAL_COMPLETED, wf.TERMINAL_REJECTED):
+                resolved = await user_directory.resolve_assignee(
+                    tenant_id, spec, body.inputs or {},
+                )
+                if resolved:
+                    exec_row.assigned_to_user_id = resolved.get("user_id")
+                    exec_row.assigned_to_email = resolved.get("user_email")
+                    if exec_row.assigned_to_user_id:
+                        db.add(NotificationRow(
+                            id=str(uuid4()),
+                            tenant_id=tenant_id,
+                            user_id=exec_row.assigned_to_user_id,
+                            user_email=exec_row.assigned_to_email,
+                            kind="stage_assigned",
+                            action_execution_id=exec_row.id,
+                            action_name=action_name,
+                            title=f"Action awaiting your decision: {action_name}",
+                            body=f"Stage '{exec_row.current_stage}' was assigned to you.",
+                            deep_link=f"/human-actions/{exec_row.id}",
+                            payload={"stage": exec_row.current_stage},
+                        ))
+
         db.add(exec_row)
         await db.commit()
         return {**_exec_to_dict(exec_row), "requires_confirmation": True}

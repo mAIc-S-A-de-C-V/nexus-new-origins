@@ -200,6 +200,9 @@ class ActionDefinitionRow(Base):
     writes_to_object_type = Column(String, nullable=True)
     enabled = Column(Boolean, nullable=False, default=True)
     notify_email = Column(String, nullable=True)   # email to notify when execution is approved
+    # Multi-stage workflow definition. NULL/[] = legacy single-pending behavior.
+    # Each entry: {name, type, when (JSONLogic), assignee, options_field?, on_approve, on_reject, sla_seconds, on_timeout, notify_on_enter, notify_on_exit, parallel_branches?}
+    workflow_stages = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -222,8 +225,40 @@ class ActionExecutionRow(Base):
     source = Column(String, nullable=True)         # "agent:xxx", "logic_function:xxx", "manual"
     source_id = Column(String, nullable=True)      # agent_id or function_id
     reasoning = Column(Text, nullable=True)        # AI's justification for the action
+    # ── Multi-stage workflow state (only used when template.workflow_stages is set) ──
+    current_stage = Column(String, nullable=True, index=True)   # active stage name; "completed"/"rejected" terminal
+    # stage_state: {<stage_name>: {entered_at, sla_at, decisions: [...], status}}
+    # Tracks parallel branches: a "parallel_group" stage has child entries.
+    stage_state = Column(JSON, nullable=True)
+    # stage_history: append-only audit log of decisions [{stage, actor_user_id, actor_email, at, decision, note, payload_diff, selected_option_ids}]
+    stage_history = Column(JSON, nullable=True)
+    requester_user_id = Column(String, nullable=True, index=True)
+    requester_email = Column(String, nullable=True)
+    assigned_to_user_id = Column(String, nullable=True, index=True)  # who owns the current decision
+    assigned_to_email = Column(String, nullable=True)
+    # Mirrors inputs[options_field] at propose time and gets pruned as option_review stages strip rejected options.
+    options = Column(JSON, nullable=True)
+    selected_option_ids = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class NotificationRow(Base):
+    """In-app notifications for users — surfaced via top-bar bell."""
+    __tablename__ = "notifications"
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    user_email = Column(String, nullable=True)
+    kind = Column(String, nullable=False)  # "stage_assigned", "stage_completed", "execution_completed", "sla_warning"
+    action_execution_id = Column(String, nullable=True, index=True)
+    action_name = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=True)
+    deep_link = Column(String, nullable=True)  # e.g. "/human-actions/{exec_id}"
+    payload = Column(JSON, nullable=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 async def init_db():
@@ -414,6 +449,33 @@ async def init_db():
             DELETE FROM apps
             WHERE is_ephemeral = true AND expires_at IS NOT NULL AND expires_at < NOW();
         """))
+
+        # ── Workflow migrations (Phase: multi-stage approval) ───────────────
+        # action_definitions.workflow_stages — chain of stage configs
+        # action_executions: stage state, history, options, requester/assignee
+        for stmt in [
+            "ALTER TABLE action_definitions ADD COLUMN IF NOT EXISTS workflow_stages JSON",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS current_stage VARCHAR",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS stage_state JSON",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS stage_history JSON",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS requester_user_id VARCHAR",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS requester_email VARCHAR",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS assigned_to_user_id VARCHAR",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS assigned_to_email VARCHAR",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS options JSON",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS selected_option_ids JSON",
+            "CREATE INDEX IF NOT EXISTS ix_action_executions_current_stage ON action_executions(current_stage)",
+            "CREATE INDEX IF NOT EXISTS ix_action_executions_assigned_user ON action_executions(assigned_to_user_id)",
+            "CREATE INDEX IF NOT EXISTS ix_action_executions_requester ON action_executions(requester_user_id)",
+            # notifications: bell + filtering by user
+            "CREATE INDEX IF NOT EXISTS ix_notifications_user_unread ON notifications(user_id, read_at)",
+            "CREATE INDEX IF NOT EXISTS ix_notifications_user_created ON notifications(user_id, created_at DESC)",
+        ]:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                # Index creation can race with other workers on concurrent boots — non-fatal
+                pass
 
 
 async def get_session() -> AsyncSession:

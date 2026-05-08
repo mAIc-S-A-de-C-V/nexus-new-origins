@@ -5,7 +5,7 @@ from fastapi import FastAPI, Depends
 from fastapi import Request as _Request
 from fastapi.responses import Response as _Response
 from fastapi.middleware.cors import CORSMiddleware
-from routers import ontology, records, apps, actions, graph, notebooks, documents, shares
+from routers import ontology, records, apps, actions, graph, notebooks, documents, shares, workflow
 from database import init_db
 from shared.auth_middleware import require_auth
 from shared.nexus_logging import configure_logging
@@ -80,6 +80,7 @@ app.include_router(ontology.router, prefix="/object-types", tags=["ontology"], d
 app.include_router(records.router, prefix="/object-types", tags=["records"], dependencies=[Depends(require_auth)])
 app.include_router(apps.router, prefix="/apps", tags=["apps"], dependencies=[Depends(require_auth)])
 app.include_router(actions.router, prefix="/actions", tags=["actions"], dependencies=[Depends(require_auth)])
+app.include_router(workflow.router, prefix="/workflow", tags=["workflow"], dependencies=[Depends(require_auth)])
 app.include_router(graph.router, prefix="/graph", tags=["graph"], dependencies=[Depends(require_auth)])
 app.include_router(notebooks.router, prefix="/notebooks", tags=["notebooks"], dependencies=[Depends(require_auth)])
 app.include_router(documents.router, prefix="/documents", tags=["documents"], dependencies=[Depends(require_auth)])
@@ -146,6 +147,9 @@ async def _record_retention_loop():
 async def startup():
     await init_db()
     _asyncio.create_task(_record_retention_loop())
+    # Workflow SLA tick — escalates / auto-decides stages whose SLA elapsed.
+    from workflow_sla import sla_loop
+    _asyncio.create_task(sla_loop())
 
 
 @app.get("/health")

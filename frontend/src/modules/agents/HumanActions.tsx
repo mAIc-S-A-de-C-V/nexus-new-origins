@@ -10,6 +10,8 @@ import { useHumanActionsStore, ActionExecution } from '../../store/humanActionsS
 import { getTenantId } from '../../store/authStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { CheckpointGate } from '../audit/CheckpointGate';
+import WorkflowEditor from '../workflow/WorkflowEditor';
+import StageDecisionPanel from '../workflow/StageDecisionPanel';
 
 const AGENT_API = import.meta.env.VITE_AGENT_SERVICE_URL || 'http://localhost:8013';
 const DEDUP_AGENT_NAME = 'Action Deduplicator';
@@ -58,6 +60,7 @@ interface ActionDefinition {
   writes_to_object_type?: string;
   enabled: boolean;
   notify_email?: string;
+  workflow_stages?: import('../workflow/types').WorkflowStage[] | null;
   created_at?: string;
 }
 
@@ -470,6 +473,38 @@ const DetailPanel: React.FC<{
   const [rejectReason, setRejectReason] = useState('');
   const [acting, setActing] = useState(false);
   const { t } = useTranslation();
+  const { fetchPending } = useHumanActionsStore();
+
+  // If the execution is using a multi-stage workflow we render a different
+  // decision UI and need the template's stage definitions.
+  const execAny = exec as ActionExecution & {
+    current_stage?: string | null;
+    options?: unknown[] | null;
+    stage_state?: Record<string, unknown> | null;
+    stage_history?: unknown[] | null;
+    selected_option_ids?: string[];
+    requester_email?: string | null;
+    assigned_to_email?: string | null;
+  };
+  const isWorkflow = !!execAny.current_stage &&
+    execAny.current_stage !== 'completed' &&
+    execAny.current_stage !== 'rejected';
+  const [workflowStages, setWorkflowStages] = useState<import('../workflow/types').WorkflowStage[] | null>(null);
+  useEffect(() => {
+    if (!isWorkflow) { setWorkflowStages(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${ONTOLOGY_API}/actions/${exec.action_name}`, {
+          headers: { 'x-tenant-id': getTenantId() },
+        });
+        if (!res.ok) return;
+        const def = await res.json();
+        if (!cancelled) setWorkflowStages(def.workflow_stages || []);
+      } catch { /* */ }
+    })();
+    return () => { cancelled = true; };
+  }, [exec.action_name, isWorkflow]);
 
   const sev  = getSeverity(exec);
   const sc   = severityColor(sev);
@@ -775,8 +810,54 @@ const DetailPanel: React.FC<{
         )}
       </div>
 
-      {/* Action bar (pending only) */}
-      {mode === 'pending' && (
+      {/* Stage history breadcrumb (workflow only) */}
+      {isWorkflow && Array.isArray(execAny.stage_history) && (execAny.stage_history?.length ?? 0) > 0 && (
+        <div style={{
+          flexShrink: 0, borderTop: `1px solid ${C.border}`, backgroundColor: C.bg,
+          padding: '8px 24px', fontSize: 11, color: C.muted,
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontWeight: 600 }}>History:</span>
+          {(execAny.stage_history as Array<{ stage: string; decision: string; actor_email?: string }>).map((h, i) => (
+            <span key={i} style={{
+              padding: '2px 8px', borderRadius: 10, backgroundColor: C.panel, border: `1px solid ${C.border}`,
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+            }}>
+              <code style={{ fontSize: 10 }}>{h.stage}</code>
+              <span style={{ fontSize: 10, color: h.decision.includes('reject') ? C.error : C.success }}>
+                {h.decision}
+              </span>
+              {h.actor_email && <span style={{ fontSize: 10, color: C.dim }}>by {h.actor_email}</span>}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Workflow decision UI — replaces legacy approve/reject when stages are set */}
+      {mode === 'pending' && isWorkflow && workflowStages && workflowStages.length > 0 && (
+        <div style={{
+          flexShrink: 0, borderTop: `1px solid ${C.border}`,
+          backgroundColor: C.panel, padding: '14px 24px',
+        }}>
+          <StageDecisionPanel
+            executionId={exec.id}
+            state={{
+              current_stage: execAny.current_stage,
+              stage_state: execAny.stage_state,
+              stage_history: execAny.stage_history as never,
+              options: (execAny.options || []) as Array<Record<string, unknown>>,
+              selected_option_ids: execAny.selected_option_ids,
+              assigned_to_email: execAny.assigned_to_email,
+              requester_email: execAny.requester_email,
+            }}
+            templateStages={workflowStages}
+            onChange={() => fetchPending()}
+          />
+        </div>
+      )}
+
+      {/* Legacy action bar (single-step approval; pending only & not workflow) */}
+      {mode === 'pending' && !isWorkflow && (
         <div style={{
           flexShrink: 0, borderTop: `1px solid ${C.border}`,
           backgroundColor: C.panel, padding: '14px 24px',
@@ -875,6 +956,10 @@ const ActionForm: React.FC<{
   const [requiresConf, setRequiresConf] = useState(initial?.requires_confirmation ?? true);
   const [enabled, setEnabled]           = useState(initial?.enabled ?? true);
   const [notifyEmail, setNotifyEmail]   = useState(initial?.notify_email ?? '');
+  const [stages, setStages] = useState<import('../workflow/types').WorkflowStage[]>(
+    Array.isArray(initial?.workflow_stages) ? (initial!.workflow_stages as import('../workflow/types').WorkflowStage[]) : []
+  );
+  const [showWorkflow, setShowWorkflow] = useState(stages.length > 0);
   const [schemaErr, setSchemaErr]       = useState('');
   const [saving, setSaving]             = useState(false);
   const [err, setErr]                   = useState('');
@@ -893,6 +978,7 @@ const ActionForm: React.FC<{
         requires_confirmation: requiresConf, enabled,
         notify_email: notifyEmail.trim() || null,
         allowed_roles: [], writes_to_object_type: null,
+        workflow_stages: showWorkflow && stages.length > 0 ? stages : null,
       };
       const url = isEdit ? `${ONTOLOGY_API}/actions/${initial!.name}` : `${ONTOLOGY_API}/actions`;
       const res = await fetch(url, {
@@ -967,6 +1053,23 @@ const ActionForm: React.FC<{
           An email is sent to this address when a human approves this action.
         </div>
       </div>
+
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          {label('Multi-stage workflow (optional)')}
+          <label style={{ fontSize: 11, color: C.muted, display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={showWorkflow}
+              onChange={(e) => { setShowWorkflow(e.target.checked); if (!e.target.checked) setStages([]); }} />
+            Use multi-stage approval
+          </label>
+        </div>
+        {showWorkflow && (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: 12, backgroundColor: C.bg }}>
+            <WorkflowEditor stages={stages} onChange={setStages} />
+          </div>
+        )}
+      </div>
+
       {err && <div style={{ fontSize: 12, color: C.error, padding: '8px 12px', backgroundColor: C.errorDim,
         borderRadius: 4, border: `1px solid ${C.errorBorder}` }}>{err}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
