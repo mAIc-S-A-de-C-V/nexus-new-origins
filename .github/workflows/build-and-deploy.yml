@@ -121,8 +121,8 @@ jobs:
             context: ./backend/auth_service
             dockerfile: Dockerfile
           - service: logic-service
-            context: ./backend/logic_service
-            dockerfile: Dockerfile
+            context: ./backend
+            dockerfile: logic_service/Dockerfile
           - service: agent-service
             context: ./backend
             dockerfile: agent_service/Dockerfile
