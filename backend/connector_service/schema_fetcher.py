@@ -492,6 +492,9 @@ async def _hubspot(creds: dict, cfg: dict = {}) -> tuple[dict, list, Optional[st
             # engagement is its own one-event "case" and process mining shows
             # nothing meaningful.
             assoc_kinds = ("contacts", "companies", "deals", "tickets") if obj == "engagements" else ()
+            # Map plural HubSpot association kind → English singular for the
+            # column name. Naive `kind[:-1]` produces "companie" for "companies".
+            _singular = {"contacts": "contact", "companies": "company", "deals": "deal", "tickets": "ticket"}
             after = None
             while len(sample_rows) < max_records:
                 if use_listing:
@@ -539,7 +542,7 @@ async def _hubspot(creds: dict, cfg: dict = {}) -> tuple[dict, list, Optional[st
                                 # Singular column for the primary association — the
                                 # natural case key for process mining (e.g. group
                                 # by associated_deal_id to see the deal lifecycle).
-                                row[f"associated_{kind[:-1]}_id"] = ids[0]
+                                row[f"associated_{_singular[kind]}_id"] = ids[0]
                                 if len(ids) > 1:
                                     row[f"associated_{kind}"] = ",".join(ids)
                     sample_rows.append(row)

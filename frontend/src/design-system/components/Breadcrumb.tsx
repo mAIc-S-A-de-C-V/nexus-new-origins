@@ -3,7 +3,6 @@ import { ChevronRight, Search } from 'lucide-react';
 import { useNavigationStore, BreadcrumbItem } from '../../store/navigationStore';
 import { ThemeToggle } from './ThemeToggle';
 import { NotificationBell } from '../../shell/NotificationBell';
-import WorkflowNotificationBell from '../../modules/workflow/NotificationBell';
 import { useSearchStore } from '../../store/searchStore';
 
 export const Breadcrumb: React.FC = () => {
@@ -91,7 +90,6 @@ export const Breadcrumb: React.FC = () => {
       <div style={{ marginLeft: 8, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
         <ThemeToggle />
         <NotificationBell />
-        <WorkflowNotificationBell />
       </div>
     </div>
   );
