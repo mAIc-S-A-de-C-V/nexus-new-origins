@@ -22,6 +22,7 @@ import { useOntologyStore } from '../../store/ontologyStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
+const EVENT_LOG_API = import.meta.env.VITE_EVENT_LOG_SERVICE_URL || 'http://localhost:8005';
 
 // Match the rest of the app — light mode tokens borrowed from index.css
 const T = {
@@ -883,17 +884,48 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
   }, []);
 
   // Fetch sample records when a node is selected so the side panel can show
-  // concrete examples from the ontology. Aborts/replaces if the user clicks
-  // a different node before the previous fetch returns.
+  // concrete examples that flowed through this exact step. Strategy:
+  //   1. Hit the event log filtered by (object_type, activity) — events
+  //      carry record_snapshot in their attributes, so we get the actual
+  //      snapshots that traversed this node.
+  //   2. If the event log returns nothing, fall back to a generic ontology
+  //      records query (covers the case where no events exist yet but the
+  //      object type does).
   useEffect(() => {
     if (!selectedId) { setNodeSamples([]); return; }
-    const [ot] = selectedId.includes('::') ? selectedId.split('::', 2) : [''];
-    if (!ot) { setNodeSamples([]); return; }
+    const [ot, activity] = selectedId.includes('::') ? selectedId.split('::', 2) : ['', selectedId];
+    if (!ot && !activity) { setNodeSamples([]); return; }
     const ctrl = new AbortController();
+    const tenant = (() => {
+      try { return localStorage.getItem('nexus.tenantId') || 'tenant-001'; } catch { return 'tenant-001'; }
+    })();
+    const headers = { 'x-tenant-id': tenant } as Record<string, string>;
     setNodeSamplesLoading(true);
-    fetch(`${ONTOLOGY_API}/object-types/${ot}/records?limit=25`, { signal: ctrl.signal })
-      .then((r) => r.ok ? r.json() : { records: [] })
-      .then((d) => setNodeSamples(Array.isArray(d) ? d : (d.records || [])))
+
+    const params = new URLSearchParams({ limit: '25' });
+    if (ot) params.set('object_type', ot);
+    if (activity) params.set('activity', activity);
+    fetch(`${EVENT_LOG_API}/events?${params.toString()}`, { signal: ctrl.signal, headers })
+      .then((r) => r.ok ? r.json() : [])
+      .then((events: any[]) => {
+        // Surface the record_snapshot that flowed through this step.
+        const snaps: Record<string, unknown>[] = [];
+        for (const ev of events || []) {
+          const snap = ev?.attributes?.record_snapshot;
+          if (snap && typeof snap === 'object') snaps.push(snap as Record<string, unknown>);
+        }
+        if (snaps.length > 0) {
+          setNodeSamples(snaps);
+          return;
+        }
+        // No snapshots in events yet — fall back to a generic ontology lookup
+        // so the user still sees something concrete for this object type.
+        if (!ot) { setNodeSamples([]); return; }
+        return fetch(`${ONTOLOGY_API}/object-types/${ot}/records?limit=25`, { signal: ctrl.signal, headers })
+          .then((r) => r.ok ? r.json() : { records: [] })
+          .then((d) => setNodeSamples(Array.isArray(d) ? d : (d.records || [])))
+          .catch(() => { /* network or aborted */ });
+      })
       .catch(() => { /* aborted or network */ })
       .finally(() => setNodeSamplesLoading(false));
     return () => ctrl.abort();
@@ -1118,7 +1150,7 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
 
                 <div>
                   <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 6, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                    <span>Sample records · ontology</span>
+                    <span>Records that passed through this step</span>
                     {nodeSamples.length > 0 && (
                       <span style={{ fontSize: 10, fontWeight: 400, color: T.textSubtle }}>
                         showing {Math.min(nodeSamples.length, 8)} of {nodeSamples.length}
@@ -1129,7 +1161,7 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
                     <div style={{ fontSize: 11, color: T.textSubtle, padding: 8 }}>Loading…</div>
                   ) : nodeSamples.length === 0 ? (
                     <div style={{ fontSize: 11, color: T.textSubtle, padding: 8, lineHeight: 1.5 }}>
-                      No records returned for this object type. The ontology may not have this type registered yet, or the connector hasn't ingested any rows.
+                      No record snapshots on this step's events yet. Events emitted before the snapshot fix don't carry record data — re-ingest the source connector and the snapshots will start showing up here.
                     </div>
                   ) : (
                     <div style={{ background: T.surfaceHi, border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'auto', maxHeight: 260 }}>

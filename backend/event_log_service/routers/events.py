@@ -81,6 +81,7 @@ async def query_events(
     case_id: Optional[str] = Query(None),
     object_type: Optional[str] = Query(None),
     pipeline_id: Optional[str] = Query(None),
+    activity: Optional[str] = Query(None),
     from_time: Optional[datetime] = Query(None),
     to_time: Optional[datetime] = Query(None),
     limit: int = Query(100, le=1000),
@@ -96,6 +97,8 @@ async def query_events(
         filters.append(EventRow.object_type_id == object_type)
     if pipeline_id:
         filters.append(EventRow.pipeline_id == pipeline_id)
+    if activity:
+        filters.append(EventRow.activity == activity)
     if from_time:
         filters.append(EventRow.timestamp >= from_time)
     if to_time:
