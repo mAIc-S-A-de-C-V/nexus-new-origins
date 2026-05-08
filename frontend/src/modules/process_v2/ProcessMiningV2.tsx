@@ -21,6 +21,7 @@ import { MapChat } from './MapChat';
 import { useOntologyStore } from '../../store/ontologyStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
+const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
 // Match the rest of the app — light mode tokens borrowed from index.css
 const T = {
@@ -676,6 +677,10 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
   const [edgePopup, setEdgePopup] = useState<ProcessTransition | null>(null);
   const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  // Sample records from the ontology for the selected node's object type.
+  // Fetched lazily when a node is clicked so users get concrete examples.
+  const [nodeSamples, setNodeSamples] = useState<Record<string, unknown>[]>([]);
+  const [nodeSamplesLoading, setNodeSamplesLoading] = useState(false);
 
   // Debounce hover-leave so cursor crossing between visually overlapping edges
   // doesn't flicker the dim/highlight state. Without this, ReactFlow fires
@@ -877,6 +882,45 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
     return () => window.removeEventListener('keydown', h);
   }, []);
 
+  // Fetch sample records when a node is selected so the side panel can show
+  // concrete examples from the ontology. Aborts/replaces if the user clicks
+  // a different node before the previous fetch returns.
+  useEffect(() => {
+    if (!selectedId) { setNodeSamples([]); return; }
+    const [ot] = selectedId.includes('::') ? selectedId.split('::', 2) : [''];
+    if (!ot) { setNodeSamples([]); return; }
+    const ctrl = new AbortController();
+    setNodeSamplesLoading(true);
+    fetch(`${ONTOLOGY_API}/object-types/${ot}/records?limit=25`, { signal: ctrl.signal })
+      .then((r) => r.ok ? r.json() : { records: [] })
+      .then((d) => setNodeSamples(Array.isArray(d) ? d : (d.records || [])))
+      .catch(() => { /* aborted or network */ })
+      .finally(() => setNodeSamplesLoading(false));
+    return () => ctrl.abort();
+  }, [selectedId]);
+
+  // Per-node transition rollups for the inflow / outflow mini-charts.
+  const selectedNodeRollups = useMemo(() => {
+    if (!selectedId) return null;
+    const inbound = transitions
+      .filter((t) => t.from_activity && `${t.to_object_type_id || ''}::${t.to_activity}` === selectedId)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+    const outbound = transitions
+      .filter((t) => `${t.from_object_type_id || ''}::${t.from_activity}` === selectedId)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+    const totalEvents = (() => {
+      const node = nodes.find((n) => n.id === selectedId);
+      return ((node?.data as any)?.caseCount as number) || 0;
+    })();
+    const avgHours = (() => {
+      const node = nodes.find((n) => n.id === selectedId);
+      return ((node?.data as any)?.avgHours as number) || 0;
+    })();
+    return { inbound, outbound, totalEvents, avgHours };
+  }, [selectedId, transitions, nodes]);
+
   if (loading) return <Loading />;
   if (!variants.length) return <Empty />;
 
@@ -972,33 +1016,145 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
           // Parse "ot::activity" key
           const [ot, act] = selectedId.includes('::') ? selectedId.split('::', 2) : ['', selectedId];
           const inFilter = filterCtx?.filter.includes(selectedId);
+          const r = selectedNodeRollups;
+          const maxIn  = Math.max(1, ...(r?.inbound  || []).map((x) => x.count));
+          const maxOut = Math.max(1, ...(r?.outbound || []).map((x) => x.count));
+          // Pick a stable set of "interesting" columns from the first sample so
+          // the table actually shows useful fields rather than raw JSON.
+          const sampleColumns = (() => {
+            if (!nodeSamples.length) return [] as string[];
+            const HIDE = new Set(['_pipeline_id', '_pipeline_run_at', 'hs_body_preview']);
+            const PRIORITY = [
+              'hs_object_id', 'hs_engagement_type', 'hs_email_direction',
+              'hs_timestamp', 'associated_deal_id', 'associated_company_id',
+              'associated_contact_id', 'name', 'subject', 'id',
+            ];
+            const cols = new Set<string>();
+            for (const rec of nodeSamples.slice(0, 5)) {
+              for (const k of Object.keys(rec || {})) {
+                if (!HIDE.has(k)) cols.add(k);
+              }
+            }
+            const list = Array.from(cols);
+            list.sort((a, b) => {
+              const ia = PRIORITY.indexOf(a), ib = PRIORITY.indexOf(b);
+              if (ia >= 0 && ib >= 0) return ia - ib;
+              if (ia >= 0) return -1;
+              if (ib >= 0) return 1;
+              return a.localeCompare(b);
+            });
+            return list.slice(0, 5);
+          })();
+
           return (
             <div style={{
-              position: 'absolute', top: 12, left: 12,
+              position: 'absolute', top: 12, left: 12, bottom: 12,
               background: T.surface, border: `1px solid ${T.border}`,
-              borderRadius: 6, padding: 12, fontSize: 12, width: 260,
+              borderRadius: 6, fontSize: 12, width: 460,
               boxShadow: '0 10px 30px rgba(0,0,0,0.10)',
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
             }}>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>{otName(ot)}</div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 }}>
-                {act?.replace(/_/g, ' ')}
+              <div style={{ padding: '10px 14px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: colorForObjectType(ot, process.included_object_type_ids), fontWeight: 600 }}>
+                    {otName(ot) || '(unknown object type)'}
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: T.text, marginTop: 2 }}>
+                    {act?.replace(/_/g, ' ')}
+                  </div>
+                  {r && (
+                    <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4, fontFamily: T.mono }}>
+                      {r.totalEvents.toLocaleString()} events · avg {fmtH(r.avgHours)}
+                    </div>
+                  )}
+                </div>
+                <button onClick={() => setSelectedId(null)} style={{ ...btnGhost, padding: '2px 8px', fontSize: 11 }}>Close</button>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {filterCtx && (inFilter ? (
-                  <button onClick={() => filterCtx.remove(selectedId)} style={btnGhost}>
-                    ✕ Remove from filter
+
+              <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {filterCtx && (inFilter ? (
+                    <button onClick={() => filterCtx.remove(selectedId)} style={btnGhost}>
+                      Remove from filter
+                    </button>
+                  ) : (
+                    <button onClick={() => filterCtx.add(selectedId)} style={btnPrimary}>
+                      Filter to cases with this activity
+                    </button>
+                  ))}
+                  <button onClick={() => setFocusId(selectedId)} style={btnGhost}>
+                    Focus on reachable subgraph
                   </button>
-                ) : (
-                  <button onClick={() => filterCtx.add(selectedId)} style={btnPrimary}>
-                    Filter to cases with this activity
-                  </button>
-                ))}
-                <button onClick={() => setFocusId(selectedId)} style={btnGhost}>
-                  Focus on reachable subgraph
-                </button>
-              </div>
-              <div style={{ fontSize: 11, color: T.textSubtle, marginTop: 10, lineHeight: 1.5 }}>
-                Filtering narrows variants, cases, and insights to traces that pass through this activity.
+                </div>
+
+                {r && (r.inbound.length > 0 || r.outbound.length > 0) && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <MiniBarList
+                      title="Top inflow"
+                      rows={r.inbound.map((t) => ({
+                        label: `${t.from_activity}`,
+                        sub: otName(t.from_object_type_id),
+                        count: t.count,
+                        avg: t.avg_hours,
+                      }))}
+                      max={maxIn}
+                      color={T.accent}
+                      empty="No inflow — this is a Start activity."
+                    />
+                    <MiniBarList
+                      title="Top outflow"
+                      rows={r.outbound.map((t) => ({
+                        label: `${t.to_activity}`,
+                        sub: otName(t.to_object_type_id),
+                        count: t.count,
+                        avg: t.avg_hours,
+                      }))}
+                      max={maxOut}
+                      color={T.success}
+                      empty="No outflow — this is an End activity."
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 6, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span>Sample records · ontology</span>
+                    {nodeSamples.length > 0 && (
+                      <span style={{ fontSize: 10, fontWeight: 400, color: T.textSubtle }}>
+                        showing {Math.min(nodeSamples.length, 8)} of {nodeSamples.length}
+                      </span>
+                    )}
+                  </div>
+                  {nodeSamplesLoading ? (
+                    <div style={{ fontSize: 11, color: T.textSubtle, padding: 8 }}>Loading…</div>
+                  ) : nodeSamples.length === 0 ? (
+                    <div style={{ fontSize: 11, color: T.textSubtle, padding: 8, lineHeight: 1.5 }}>
+                      No records returned for this object type. The ontology may not have this type registered yet, or the connector hasn't ingested any rows.
+                    </div>
+                  ) : (
+                    <div style={{ background: T.surfaceHi, border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'auto', maxHeight: 260 }}>
+                      <table style={{ ...tableStyle, fontSize: 10 }}>
+                        <thead style={{ position: 'sticky', top: 0, background: T.surfaceCol, zIndex: 1 }}>
+                          <tr>
+                            {sampleColumns.map((c) => <th key={c} style={{ ...th, fontSize: 9, padding: '6px 8px' }}>{c}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {nodeSamples.slice(0, 8).map((rec, i) => (
+                            <tr key={i}>
+                              {sampleColumns.map((c) => {
+                                let v: unknown = (rec as any)[c];
+                                let str = v === null || v === undefined ? '—' : (typeof v === 'string' ? v : JSON.stringify(v));
+                                if (str.length > 60) str = str.slice(0, 60) + '…';
+                                return <td key={c} style={{ ...td, fontSize: 10, padding: '6px 8px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof v === 'string' ? v : ''}>{str}</td>;
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           );
@@ -2383,6 +2539,41 @@ const Card: React.FC<{ title: string; children: React.ReactNode; action?: React.
       {action}
     </div>
     <div style={{ padding: 14 }}>{children}</div>
+  </div>
+);
+
+const MiniBarList: React.FC<{
+  title: string;
+  rows: { label: string; sub?: string; count: number; avg: number }[];
+  max: number;
+  color: string;
+  empty?: string;
+}> = ({ title, rows, max, color, empty }) => (
+  <div>
+    <div style={{ fontSize: 10, fontWeight: 600, color: T.textMuted, marginBottom: 4, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+      {title}
+    </div>
+    {rows.length === 0 ? (
+      <div style={{ fontSize: 10, color: T.textSubtle, padding: '4px 0' }}>{empty || '—'}</div>
+    ) : (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {rows.map((r, i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, fontSize: 10 }}>
+              <span style={{ color: T.text, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.sub ? `${r.sub} · ${r.label}` : r.label}>
+                {r.label}
+              </span>
+              <span style={{ color: T.textMuted, fontFamily: T.mono, flexShrink: 0 }}>
+                {r.count.toLocaleString()} · {fmtH(r.avg)}
+              </span>
+            </div>
+            <div style={{ height: 4, background: T.borderSoft, borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{ width: `${Math.max(2, (r.count / max) * 100)}%`, height: '100%', background: color }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
   </div>
 );
 
