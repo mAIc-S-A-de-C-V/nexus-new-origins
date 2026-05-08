@@ -1693,6 +1693,10 @@ async def ingest_records(
     ingested = 0
     new_source_ids: list[str] = []
     updated_source_ids: list[str] = []
+    # Keep the post-mapping record dicts so emitted events can carry a
+    # record_snapshot. Without this, process v2 case-key backfill has nothing
+    # to resolve against.
+    snapshots_by_source_id: dict[str, dict] = {}
 
     for record in records:
         record = dict(record)
@@ -1722,6 +1726,7 @@ async def ingest_records(
                 data=record,
             ))
             new_source_ids.append(source_id)
+        snapshots_by_source_id[source_id] = record
         ingested += 1
 
     await db.commit()
@@ -1743,6 +1748,7 @@ async def ingest_records(
             actor_id=actor,
             actor_role="service",
             pipeline_id=pipeline_id,
+            record_snapshots=snapshots_by_source_id,
         )
     if updated_source_ids:
         emit_record_event_batch(
@@ -1754,6 +1760,7 @@ async def ingest_records(
             actor_id=actor,
             actor_role="service",
             pipeline_id=pipeline_id,
+            record_snapshots=snapshots_by_source_id,
         )
 
     return {

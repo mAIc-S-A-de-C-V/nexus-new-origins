@@ -94,6 +94,26 @@ def _role_for(actor_role: str) -> str:
     return mapping.get(actor_role.lower(), "SERVICE_ACCOUNT")
 
 
+# String fields in record snapshots get capped at this length when embedded
+# in events. Keeps the event log lean even for records that contain long
+# bodies (HTML email previews, descriptions). The join keys we care about
+# (foreign-key ids, dates, enums) are always short, so capping doesn't hurt
+# process-mining queries.
+_SNAPSHOT_MAX_STR = int(os.environ.get("EVENT_EMIT_SNAPSHOT_MAX_STR", "1024"))
+
+
+def _trim_snapshot(snap: Optional[dict]) -> Optional[dict]:
+    if not snap:
+        return None
+    out: dict = {}
+    for k, v in snap.items():
+        if isinstance(v, str) and len(v) > _SNAPSHOT_MAX_STR:
+            out[k] = v[:_SNAPSHOT_MAX_STR]
+        else:
+            out[k] = v
+    return out
+
+
 def emit_record_event(
     *,
     tenant_id: str,
@@ -106,6 +126,7 @@ def emit_record_event(
     before_state: Optional[dict] = None,
     after_state: Optional[dict] = None,
     pipeline_id: str = "",
+    record_snapshot: Optional[dict] = None,
 ) -> None:
     """
     Schedule a fire-and-forget emit. Returns immediately — the actual HTTP
@@ -114,8 +135,20 @@ def emit_record_event(
     Schedules two POSTs in parallel:
       · event-log /events   — process-mining event
       · audit-service /audit — audit trail entry
+
+    If `record_snapshot` is provided it lands at attributes.record_snapshot
+    on the event. Process v2 backfill resolves a process's case_key_attribute
+    against this snapshot, so omitting it makes case-key backfill a no-op.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    attributes: dict = {
+        "object_type_name": object_type_name,
+        "actor_id":         actor_id,
+    }
+    trimmed_snap = _trim_snapshot(record_snapshot)
+    if trimmed_snap is not None:
+        attributes["record_snapshot"] = trimmed_snap
 
     event_payload = {
         "id":              str(uuid4()),
@@ -127,10 +160,7 @@ def emit_record_event(
         "object_id":       record_id,
         "pipeline_id":     pipeline_id or "ontology-write",
         "connector_id":    "",
-        "attributes": {
-            "object_type_name": object_type_name,
-            "actor_id":         actor_id,
-        },
+        "attributes":      attributes,
     }
 
     audit_payload = {
@@ -180,6 +210,7 @@ def emit_record_event_batch(
     actor_id: str = "system",
     actor_role: str = "system",
     pipeline_id: str = "",
+    record_snapshots: Optional[dict[str, dict]] = None,
 ) -> None:
     """
     Bulk emit. Two modes:
@@ -191,6 +222,9 @@ def emit_record_event_batch(
       one ingest used to saturate the asyncio loop and stop the service
       responding — this collapses the spam to a single event with a
       `record_count` attribute and the first/last record ids.
+
+    `record_snapshots` (record_id → record dict) is optional but required
+    for downstream process v2 case-key backfill to find join keys.
     """
     if not record_ids:
         return
@@ -205,6 +239,7 @@ def emit_record_event_batch(
                 actor_id=actor_id,
                 actor_role=actor_role,
                 pipeline_id=pipeline_id,
+                record_snapshot=(record_snapshots or {}).get(rid),
             )
         return
 
