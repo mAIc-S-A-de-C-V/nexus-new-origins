@@ -677,6 +677,28 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
   const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
 
+  // Debounce hover-leave so cursor crossing between visually overlapping edges
+  // doesn't flicker the dim/highlight state. Without this, ReactFlow fires
+  // leave→enter pairs as the mouse moves micro-pixels between adjacent edges.
+  const hoverLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setHover = useCallback((id: string | null) => {
+    if (hoverLeaveTimerRef.current) {
+      clearTimeout(hoverLeaveTimerRef.current);
+      hoverLeaveTimerRef.current = null;
+    }
+    if (id !== null) {
+      setHoverEdgeId(id);
+    } else {
+      hoverLeaveTimerRef.current = setTimeout(() => {
+        setHoverEdgeId(null);
+        hoverLeaveTimerRef.current = null;
+      }, 120);
+    }
+  }, []);
+  useEffect(() => () => {
+    if (hoverLeaveTimerRef.current) clearTimeout(hoverLeaveTimerRef.current);
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     Promise.all([
@@ -811,10 +833,14 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
       });
     }
     if (hoverEdgeId) {
+      // Don't touch `animated` here — toggling it on/off restarts the dashed
+      // animation per re-render and causes visible flicker when the mouse
+      // crosses a region with many overlapping edges. We only adjust opacity
+      // and stroke width.
       return edges.map((e) =>
         e.id === hoverEdgeId
-          ? { ...e, animated: true, style: { ...(e.style || {}), strokeWidth: Math.max(3, ((e.style as any)?.strokeWidth ?? 2) + 1), opacity: 1 } }
-          : { ...e, label: '', style: { ...(e.style || {}), opacity: 0.08 } }
+          ? { ...e, style: { ...(e.style || {}), strokeWidth: Math.max(3, ((e.style as any)?.strokeWidth ?? 2) + 1), opacity: 1 } }
+          : { ...e, style: { ...(e.style || {}), opacity: 0.18 } }
       );
     }
     return edges;
@@ -915,8 +941,8 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onNodeClick={onNodeClick} onNodeDoubleClick={onNodeDoubleClick}
           onEdgeClick={onEdgeClick} onPaneClick={onPaneClick}
-          onEdgeMouseEnter={(_, e) => setHoverEdgeId(e.id)}
-          onEdgeMouseLeave={() => setHoverEdgeId(null)}
+          onEdgeMouseEnter={(_, e) => setHover(e.id)}
+          onEdgeMouseLeave={() => setHover(null)}
           fitView proOptions={{ hideAttribution: true }}
           minZoom={0.1} maxZoom={2}
         >
