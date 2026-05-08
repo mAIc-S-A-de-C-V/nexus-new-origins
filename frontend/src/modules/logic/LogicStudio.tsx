@@ -126,48 +126,40 @@ const FilterBuilder: React.FC<{
             </div>
 
             {/* Value */}
-            {!noVal && !isCustom && hasOptions && (
-              <select
-                style={{ ...sel, flex: 1, minWidth: 140 }}
-                value={paramOptions.some((p) => p.value === f.value) ? f.value : (samples.includes(f.value) ? f.value : '')}
-                onChange={(e) => {
-                  if (e.target.value === '__custom__') {
-                    setCustomRows((prev) => new Set(prev).add(i));
-                    updateFilter(i, { value: '' });
-                  } else {
-                    updateFilter(i, { value: e.target.value });
-                  }
-                }}
-              >
-                <option value="">— select value —</option>
-                {paramOptions.length > 0 && (
-                  <optgroup label="Function Parameters">
-                    {paramOptions.map((p) => (
-                      <option key={p.value} value={p.value}>{p.label}</option>
-                    ))}
-                  </optgroup>
-                )}
-                <optgroup label="Built-in Time Variables">
-                  {[
-                    { value: '{now}',           label: '{now} — current UTC time' },
-                    { value: '{now_minus_1d}',  label: '{now_minus_1d} — 1 day ago' },
-                    { value: '{now_minus_3d}',  label: '{now_minus_3d} — 3 days ago' },
-                    { value: '{now_minus_7d}',  label: '{now_minus_7d} — 7 days ago' },
-                    { value: '{now_minus_14d}', label: '{now_minus_14d} — 14 days ago' },
-                    { value: '{now_minus_30d}', label: '{now_minus_30d} — 30 days ago' },
-                    { value: '{now_minus_90d}', label: '{now_minus_90d} — 90 days ago' },
-                  ].map((t) => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
-                  ))}
-                </optgroup>
-                {samples.length > 0 && (
-                  <optgroup label="Known Values">
-                    {samples.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </optgroup>
-                )}
-                <option value="__custom__">Custom value…</option>
-              </select>
-            )}
+            {!noVal && !isCustom && hasOptions && (() => {
+              const TIME_VARS = [
+                { value: '{now}',           label: '{now}',            hint: 'current UTC time' },
+                { value: '{now_minus_1d}',  label: '{now_minus_1d}',   hint: '1 day ago' },
+                { value: '{now_minus_3d}',  label: '{now_minus_3d}',   hint: '3 days ago' },
+                { value: '{now_minus_7d}',  label: '{now_minus_7d}',   hint: '7 days ago' },
+                { value: '{now_minus_14d}', label: '{now_minus_14d}',  hint: '14 days ago' },
+                { value: '{now_minus_30d}', label: '{now_minus_30d}',  hint: '30 days ago' },
+                { value: '{now_minus_90d}', label: '{now_minus_90d}',  hint: '90 days ago' },
+              ];
+              const valueOptions = [
+                ...paramOptions.map((p) => ({ value: p.value, label: p.label, group: 'Function Parameters' })),
+                ...TIME_VARS.map((t) => ({ value: t.value, label: t.label, hint: t.hint, group: 'Built-in Time Variables' })),
+                ...samples.map((s) => ({ value: s, label: s, group: 'Known Values' })),
+                { value: '__custom__', label: 'Custom value…', group: 'Other' },
+              ];
+              return (
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <Select
+                    value={f.value || ''}
+                    onChange={(v) => {
+                      if (v === '__custom__') {
+                        setCustomRows((prev) => new Set(prev).add(i));
+                        updateFilter(i, { value: '' });
+                      } else {
+                        updateFilter(i, { value: v });
+                      }
+                    }}
+                    placeholder="— select value —"
+                    options={valueOptions}
+                  />
+                </div>
+              );
+            })()}
 
             {!noVal && !isCustom && !hasOptions && (
               <input
