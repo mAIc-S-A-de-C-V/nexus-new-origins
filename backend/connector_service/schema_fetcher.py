@@ -479,23 +479,41 @@ async def _hubspot(creds: dict, cfg: dict = {}) -> tuple[dict, list, Optional[st
         sample_rows = []
         try:
             key_props = _HUBSPOT_KEY_PROPS.get(obj, list(fields.keys())[:15])
+            # `engagements` is not supported by the v3 /search endpoint — use the
+            # GET listing endpoint instead. For everything else, /search is
+            # preferable because it returns the full set rather than the default
+            # listing slice.
+            use_listing = obj == "engagements"
             after = None
             while len(sample_rows) < 500:
-                body: dict = {
-                    "limit": 100,
-                    "properties": key_props,
-                    "filterGroups": [],
-                }
-                if after:
-                    body["after"] = after
-                page_r = await client.post(
-                    f"https://api.hubapi.com/crm/v3/objects/{obj}/search",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                    json=body,
-                )
+                if use_listing:
+                    params: dict = {
+                        "limit": 100,
+                        "properties": ",".join(key_props),
+                    }
+                    if after:
+                        params["after"] = after
+                    page_r = await client.get(
+                        f"https://api.hubapi.com/crm/v3/objects/{obj}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        params=params,
+                    )
+                else:
+                    body: dict = {
+                        "limit": 100,
+                        "properties": key_props,
+                        "filterGroups": [],
+                    }
+                    if after:
+                        body["after"] = after
+                    page_r = await client.post(
+                        f"https://api.hubapi.com/crm/v3/objects/{obj}/search",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json",
+                        },
+                        json=body,
+                    )
                 if not page_r.is_success:
                     break
                 page_data = page_r.json()
