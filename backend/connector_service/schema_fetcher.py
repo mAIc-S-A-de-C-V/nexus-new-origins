@@ -428,6 +428,10 @@ _HUBSPOT_KEY_PROPS: dict[str, list[str]] = {
         "name", "description", "price", "hs_sku",
         "createdate", "hs_lastmodifieddate",
     ],
+    "engagements": [
+        "hs_engagement_type", "hs_body_preview", "hs_timestamp",
+        "hubspot_owner_id", "hs_createdate", "hs_lastmodifieddate",
+    ],
 }
 
 

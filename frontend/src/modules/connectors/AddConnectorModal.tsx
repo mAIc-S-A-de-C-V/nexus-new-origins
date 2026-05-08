@@ -482,6 +482,7 @@ export const AddConnectorModal: React.FC<Props> = ({ connectorType, onClose, onS
                 <option value="tickets">Tickets</option>
                 <option value="line_items">Line Items</option>
                 <option value="products">Products</option>
+                <option value="engagements">Engagements</option>
               </select>
               <div style={{ fontSize: '11px', color: '#64748B', marginTop: '4px' }}>
                 Each object hits a different HubSpot endpoint: <code style={{ fontSize: '11px', backgroundColor: '#F1F5F9', padding: '1px 4px', borderRadius: '2px' }}>/crm/v3/objects/{hubspotObject}</code>
