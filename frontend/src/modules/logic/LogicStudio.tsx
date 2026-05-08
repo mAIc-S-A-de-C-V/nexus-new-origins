@@ -1051,6 +1051,11 @@ const LogicStudio: React.FC = () => {
         output_block: localFn.output_block,
       });
       setDirty(false);
+    } catch (err) {
+      // Surface the real error to the user instead of silently swallowing.
+      // logic-service now returns JSON {detail, type, ...} on 500 — show it.
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Save failed:\n\n${msg}\n\nOpen Network → the failed PUT → Response for full detail.`);
     } finally {
       setSaving(false);
     }
@@ -1110,7 +1115,7 @@ const LogicStudio: React.FC = () => {
               }}
             >
               <span style={{ fontSize: 13, fontWeight: selectedFn?.id === fn.id ? 500 : 400, textAlign: 'left' }}>
-                {fn.name}
+                {fn.name || '(unnamed)'}
               </span>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span style={{
@@ -1118,9 +1123,9 @@ const LogicStudio: React.FC = () => {
                   backgroundColor: fn.status === 'published' ? '#D1FAE5' : '#EDE9FE',
                   color: fn.status === 'published' ? C.success : C.accent,
                 }}>
-                  {fn.status.toUpperCase()}
+                  {(fn.status || 'draft').toUpperCase()}
                 </span>
-                <span style={{ fontSize: 10, color: C.dim }}>v{fn.version} · {fn.blocks.length} blocks</span>
+                <span style={{ fontSize: 10, color: C.dim }}>v{fn.version ?? '?'} · {fn.blocks?.length ?? 0} blocks</span>
               </div>
             </button>
           ))}

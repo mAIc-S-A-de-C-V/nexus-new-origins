@@ -145,6 +145,12 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
       headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
+    if (!r.ok) {
+      // Don't replace state with an error envelope. Let the caller decide.
+      let detail = `${r.status} ${r.statusText}`;
+      try { const e = await r.json(); detail = e.detail || JSON.stringify(e); } catch { /* keep status */ }
+      throw new Error(`Logic function create failed: ${detail}`);
+    }
     const fn = await r.json();
     set((s) => ({ functions: [fn, ...s.functions], selectedFn: fn }));
     return fn;
@@ -156,6 +162,13 @@ export const useLogicStore = create<LogicStore>((set, get) => ({
       headers: { 'x-tenant-id': getTenantId(), 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
+    if (!r.ok) {
+      // Don't merge an error envelope into state — that's how `fn.status`
+      // becomes undefined and the sidebar crashes on .toUpperCase().
+      let detail = `${r.status} ${r.statusText}`;
+      try { const e = await r.json(); detail = e.detail || JSON.stringify(e); } catch { /* keep status */ }
+      throw new Error(`Logic function save failed: ${detail}`);
+    }
     const fn = await r.json();
     set((s) => ({
       functions: s.functions.map((f) => (f.id === id ? fn : f)),
