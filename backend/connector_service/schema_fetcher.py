@@ -441,8 +441,11 @@ async def _hubspot(creds: dict, cfg: dict = {}) -> tuple[dict, list, Optional[st
         return {}, [], "No Bearer token configured"
 
     obj = cfg.get("hubspotObject", "contacts")
+    # Cap on records ingested per pull. Default 5000; configurable via
+    # config.maxRecords. HubSpot search is hard-capped at 10000 by their API.
+    max_records = int(cfg.get("maxRecords") or 5000)
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         # Fetch properties for the chosen object type
         props_r = await client.get(
             f"https://api.hubapi.com/crm/v3/properties/{obj}",
@@ -475,7 +478,7 @@ async def _hubspot(creds: dict, cfg: dict = {}) -> tuple[dict, list, Optional[st
             "total_properties": len(fields),
         }
 
-        # Fetch all records for the chosen object (paginated, up to 500)
+        # Fetch all records for the chosen object (paginated, up to max_records)
         sample_rows = []
         try:
             key_props = _HUBSPOT_KEY_PROPS.get(obj, list(fields.keys())[:15])
@@ -484,13 +487,20 @@ async def _hubspot(creds: dict, cfg: dict = {}) -> tuple[dict, list, Optional[st
             # preferable because it returns the full set rather than the default
             # listing slice.
             use_listing = obj == "engagements"
+            # For engagements, also pull associations so each row carries the
+            # contact/company/deal/ticket it belongs to. Without this every
+            # engagement is its own one-event "case" and process mining shows
+            # nothing meaningful.
+            assoc_kinds = ("contacts", "companies", "deals", "tickets") if obj == "engagements" else ()
             after = None
-            while len(sample_rows) < 500:
+            while len(sample_rows) < max_records:
                 if use_listing:
                     params: dict = {
                         "limit": 100,
                         "properties": ",".join(key_props),
                     }
+                    if assoc_kinds:
+                        params["associations"] = ",".join(assoc_kinds)
                     if after:
                         params["after"] = after
                     page_r = await client.get(
@@ -520,6 +530,18 @@ async def _hubspot(creds: dict, cfg: dict = {}) -> tuple[dict, list, Optional[st
                 for record in page_data.get("results", []):
                     row = {"hs_object_id": record.get("id")}
                     row.update(record.get("properties", {}))
+                    if assoc_kinds:
+                        assoc = record.get("associations", {}) or {}
+                        for kind in assoc_kinds:
+                            results = (assoc.get(kind, {}) or {}).get("results", []) or []
+                            ids = [str(r.get("id")) for r in results if r.get("id")]
+                            if ids:
+                                # Singular column for the primary association — the
+                                # natural case key for process mining (e.g. group
+                                # by associated_deal_id to see the deal lifecycle).
+                                row[f"associated_{kind[:-1]}_id"] = ids[0]
+                                if len(ids) > 1:
+                                    row[f"associated_{kind}"] = ",".join(ids)
                     sample_rows.append(row)
                 next_page = page_data.get("paging", {}).get("next", {})
                 after = next_page.get("after") if next_page else None
