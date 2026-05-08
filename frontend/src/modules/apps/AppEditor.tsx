@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { NexusApp, AppComponent, ComponentType, AppFilter, FilterOperator, AppVariable, DashboardFilterBar, RangePreset, AppEvent, AppEventAction, ContextBinding, AppAction, ActionKind } from '../../types/app';
 import { suggestedBucketForRange, detectEavPattern, type EavPattern } from './queryBuilder';
+import { Select } from '../../design-system/components/Select';
 import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
 import AppCanvas from './AppCanvas';
@@ -806,40 +807,42 @@ const FilterRow: React.FC<{
   const distinctValsRaw = useDistinctValues(objectTypeId, f.field);
   const distinctVals = React.useMemo(() => [...distinctValsRaw].sort(), [distinctValsRaw]);
 
+  // Numeric/substring ops take user-typed values — distinct lists don't help.
+  const isNumericOp = ['gt', 'gte', 'lt', 'lte'].includes(f.operator);
+  const isSubstringOp = ['contains', 'not_contains'].includes(f.operator);
+  const useTypeaheadValue =
+    !isMulti && !isDate && !isNumericOp && !isSubstringOp && distinctVals.length > 0;
+
   return (
     <div style={{
       marginBottom: 8, padding: '8px 9px',
       backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0',
       borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 5,
+      // box-sizing + minWidth:0 keep the card from extending past the
+      // 252px right panel when long badge text is rendered below.
+      boxSizing: 'border-box', minWidth: 0,
     }}>
       {/* Row 1: field + operator + delete */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        <select
-          value={f.field}
-          onChange={(e) => onUpdate({ field: e.target.value, value: '' })}
-          style={{
-            flex: 1, height: 24, padding: '0 4px',
-            border: '1px solid #E2E8F0', borderRadius: 4,
-            fontSize: 11, fontFamily: 'var(--font-mono)',
-            color: '#0D1117', backgroundColor: '#fff',
-          }}
-        >
-          {fields.length === 0 && <option value="">Select object type first</option>}
-          {fields.map((fld) => <option key={fld} value={fld}>{fld}</option>)}
-        </select>
-
-        <select
-          value={f.operator}
-          onChange={(e) => onUpdate({ operator: e.target.value as FilterOperator })}
-          style={{
-            width: 82, height: 24, padding: '0 4px',
-            border: '1px solid #E2E8F0', borderRadius: 4,
-            fontSize: 11, color: '#0D1117', backgroundColor: '#fff',
-          }}
-        >
-          {OPERATORS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-
+      <div style={{ display: 'flex', gap: 4, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Select
+            value={f.field}
+            onChange={(v) => onUpdate({ field: v, value: '' })}
+            options={fields.map((fld) => ({ value: fld, label: fld }))}
+            placeholder={fields.length === 0 ? 'Select object type first' : 'Field…'}
+            height={24}
+            style={{ fontSize: 11, fontFamily: 'var(--font-mono)' }}
+          />
+        </div>
+        <div style={{ width: 82, flexShrink: 0 }}>
+          <Select
+            value={f.operator}
+            onChange={(v) => onUpdate({ operator: v as FilterOperator })}
+            options={OPERATORS.map((o) => ({ value: o.value, label: o.label }))}
+            height={24}
+            style={{ fontSize: 11 }}
+          />
+        </div>
         <button onClick={onRemove} style={{
           width: 24, height: 24, border: '1px solid #FCA5A5',
           borderRadius: 4, backgroundColor: '#FEF2F2',
@@ -853,56 +856,15 @@ const FilterRow: React.FC<{
       {/* Row 2: value input — auto-detects date fields and distinct value sets */}
       {!noVal && (
         isMulti ? (
-          /* Comma-separated list for IN / NOT IN, e.g. "rpm, running, temp" */
-          <input
-            value={f.value}
-            onChange={(e) => onUpdate({ value: e.target.value })}
-            placeholder="comma-separated, e.g. rpm, running, temp"
-            list={distinctVals.length > 0 ? listId : undefined}
-            style={{
-              width: '100%', height: 24, padding: '0 6px',
-              border: '1px solid #E2E8F0', borderRadius: 4,
-              fontSize: 11, color: '#0D1117', backgroundColor: '#fff',
-              boxSizing: 'border-box',
-            }}
-          />
-        ) : isDate ? (
-          <input
-            type="datetime-local"
-            value={f.value ? f.value.slice(0, 16) : ''}
-            onChange={(e) => onUpdate({ value: e.target.value ? new Date(e.target.value).toISOString() : '' })}
-            style={{
-              width: '100%', height: 24, padding: '0 6px',
-              border: '1px solid #E2E8F0', borderRadius: 4,
-              fontSize: 11, color: '#0D1117', backgroundColor: '#fff',
-              boxSizing: 'border-box',
-            }}
-          />
-        ) : distinctVals.length > 0 && distinctVals.length <= 40 ? (
-          /* ≤40 distinct values → dropdown */
-          <select
-            value={f.value}
-            onChange={(e) => onUpdate({ value: e.target.value })}
-            style={{
-              width: '100%', height: 24, padding: '0 6px',
-              border: '1px solid #E2E8F0', borderRadius: 4,
-              fontSize: 11, color: f.value ? '#0D1117' : '#94A3B8', backgroundColor: '#fff',
-              boxSizing: 'border-box',
-            }}
-          >
-            <option value="">— pick a value —</option>
-            {distinctVals.map((v) => (
-              <option key={v} value={v}>{v.length > 50 ? v.slice(0, 50) + '…' : v}</option>
-            ))}
-          </select>
-        ) : (
-          /* Many values → text input with datalist autocomplete */
+          /* Comma-separated list for IN / NOT IN, e.g. "rpm, running, temp".
+             Stays a free-text input because each token is user-typed; the
+             datalist gives per-token autocomplete suggestions. */
           <>
             <input
-              list={distinctVals.length > 0 ? listId : undefined}
               value={f.value}
               onChange={(e) => onUpdate({ value: e.target.value })}
-              placeholder="value…"
+              placeholder="comma-separated, e.g. rpm, running, temp"
+              list={distinctVals.length > 0 ? listId : undefined}
               style={{
                 width: '100%', height: 24, padding: '0 6px',
                 border: '1px solid #E2E8F0', borderRadius: 4,
@@ -916,6 +878,46 @@ const FilterRow: React.FC<{
               </datalist>
             )}
           </>
+        ) : isDate ? (
+          <input
+            type="datetime-local"
+            value={f.value ? f.value.slice(0, 16) : ''}
+            onChange={(e) => onUpdate({ value: e.target.value ? new Date(e.target.value).toISOString() : '' })}
+            style={{
+              width: '100%', height: 24, padding: '0 6px',
+              border: '1px solid #E2E8F0', borderRadius: 4,
+              fontSize: 11, color: '#0D1117', backgroundColor: '#fff',
+              boxSizing: 'border-box',
+            }}
+          />
+        ) : useTypeaheadValue ? (
+          /* Distinct values available + the operator wants an exact value:
+             use the design-system typeahead so the popover is themed,
+             searchable, and matches the rest of the editor. The native
+             <select> / <datalist> we used to render here showed up as a
+             dark unstyled OS popup — visually inconsistent and unsearchable. */
+          <Select
+            value={f.value}
+            onChange={(v) => onUpdate({ value: v })}
+            options={distinctVals.map((v) => ({ value: v, label: v }))}
+            placeholder="— pick a value —"
+            height={24}
+            clearable
+            style={{ fontSize: 11 }}
+          />
+        ) : (
+          /* No distinct list (or the op is contains/numeric) → free text */
+          <input
+            value={f.value}
+            onChange={(e) => onUpdate({ value: e.target.value })}
+            placeholder="value…"
+            style={{
+              width: '100%', height: 24, padding: '0 6px',
+              border: '1px solid #E2E8F0', borderRadius: 4,
+              fontSize: 11, color: '#0D1117', backgroundColor: '#fff',
+              boxSizing: 'border-box',
+            }}
+          />
         )
       )}
 
@@ -925,6 +927,10 @@ const FilterRow: React.FC<{
           fontSize: 10, color: '#2563EB', backgroundColor: '#EFF6FF',
           border: '1px solid #BFDBFE', borderRadius: 3, padding: '2px 6px',
           fontFamily: 'var(--font-mono)',
+          // Long values (e.g. ISO timestamps) used to push the card wider
+          // than the 252px panel; truncate with an ellipsis instead.
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          minWidth: 0,
         }}>
           {f.field} {opDef(f.operator)?.label} {noVal ? '' : `"${f.value.slice(0, 20)}"`}
         </div>
