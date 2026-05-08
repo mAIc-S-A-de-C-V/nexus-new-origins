@@ -1655,13 +1655,34 @@ Return ONLY valid JSON. No markdown, no explanation."""
         LLM cannot guess wrong, and includes worked examples covering the most
         common patterns (aggregate→write, list→classify→write, scheduled report).
         """
+        # Build the catalog summaries OUTSIDE the f-string. Embedding dict
+        # literals inside an f-string substitution is a footgun — `{{ "k": v }}`
+        # there parses as `{ { "k": v } }` (a set containing a dict), which
+        # raises "unhashable type: 'dict'" at evaluation time. Stage them here.
+        _object_types_brief = json.dumps(
+            [
+                {
+                    "id": ot.get("id"),
+                    "name": ot.get("name") or ot.get("displayName"),
+                    "displayName": ot.get("displayName"),
+                    "properties": [p.get("name") for p in ot.get("properties", [])][:30],
+                }
+                for ot in object_types
+            ],
+            indent=2,
+        )
+        _existing_functions_brief = json.dumps(
+            [{"id": f.get("id"), "name": f.get("name")} for f in existing_functions],
+            indent=2,
+        )
+
         prompt = f"""You are generating a Logic Function for the Nexus platform. The function MUST be runnable as soon as it's saved — every block's operational fields must be populated. Empty placeholders are unacceptable.
 
 Available object types in this tenant:
-{json.dumps([{{ "id": ot.get("id"), "name": ot.get("name") or ot.get("displayName"), "displayName": ot.get("displayName"), "properties": [p.get("name") for p in ot.get("properties", [])][:30] }} for ot in object_types], indent=2)}
+{_object_types_brief}
 
 Existing logic functions you can reference:
-{json.dumps([{{ "id": f.get("id"), "name": f.get("name") }} for f in existing_functions], indent=2)}
+{_existing_functions_brief}
 
 User request:
 {description}
@@ -1954,12 +1975,19 @@ Now generate the function for the user's request. Return ONLY the JSON object �
                 f"(status: {n.get('status','unknown')})"
             )
 
+        # Same f-string-set-of-dict footgun fix as in create_logic_function:
+        # build the dict list outside the f-string.
+        _nodes_brief = json.dumps(
+            [{"type": n["type"], "label": n["label"], "status": n.get("status")} for n in nodes],
+            indent=2,
+        )
+
         prompt = f"""You are a data lineage expert for Nexus platform. Analyze this data lineage graph and explain it clearly.
 
 Lineage Graph ({len(nodes)} nodes, {len(edges)} edges):
 {chr(10).join(graph_lines) or 'No edges — isolated nodes only'}
 
-All nodes: {json.dumps([{{'type': n['type'], 'label': n['label'], 'status': n.get('status')}} for n in nodes], indent=2)}
+All nodes: {_nodes_brief}
 {focus_info}
 
 Provide:
