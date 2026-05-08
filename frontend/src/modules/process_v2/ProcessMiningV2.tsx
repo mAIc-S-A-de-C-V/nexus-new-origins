@@ -17,6 +17,7 @@ import {
   listProcesses, createProcess, updateProcess, deleteProcess, autoDiscover, backfillProcess,
   getStats, getCases, getVariants, getTransitions, getBottlenecks, getCaseTimeline,
 } from './api';
+import { MapChat } from './MapChat';
 import { useOntologyStore } from '../../store/ontologyStore';
 
 const PROCESS_API = import.meta.env.VITE_PROCESS_ENGINE_URL || 'http://localhost:8009';
@@ -86,20 +87,31 @@ const ActivityNode: React.FC<NodeProps> = ({ data }) => {
   const opacity = d.dimmed ? 0.18 : 1;
   const ring = d.highlighted
     ? `0 0 0 2.5px ${accent}33, 0 2px 8px ${accent}33`
-    : '0 1px 4px rgba(0,0,0,0.06)';
+    : d.isEntry
+      ? `0 0 0 2px ${T.accent}33, 0 2px 8px rgba(0,0,0,0.06)`
+      : d.isExit
+        ? `0 0 0 2px ${T.brand}33, 0 2px 8px rgba(0,0,0,0.06)`
+        : '0 1px 4px rgba(0,0,0,0.06)';
 
   return (
     <div style={{
       width: 168, background: T.surface,
-      border: `1.5px solid ${d.highlighted ? accent : T.border}`,
+      border: `1.5px solid ${d.highlighted ? accent : (d.isEntry ? T.accent : d.isExit ? T.brand : T.border)}`,
       borderRadius: 8, fontFamily: 'var(--font-interface)', overflow: 'hidden',
       boxShadow: ring, position: 'relative', opacity,
       transition: 'opacity 0.15s, box-shadow 0.15s',
     }}>
       <Handle type="target" position={Position.Left} style={{ background: accent, width: 6, height: 6, border: 'none' }} />
       <Handle type="source" position={Position.Right} style={{ background: accent, width: 6, height: 6, border: 'none' }} />
+      {/* Vertical stripe for Start/End so it reads at any zoom */}
+      {d.isEntry && (
+        <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: T.accent }} />
+      )}
+      {d.isExit && (
+        <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 4, background: T.brand }} />
+      )}
       <div style={{ height: 3, background: accent }} />
-      <div style={{ padding: '8px 10px 10px' }}>
+      <div style={{ padding: '8px 10px 10px', paddingLeft: d.isEntry ? 12 : 10, paddingRight: d.isExit ? 12 : 10 }}>
         {d.highlighted && (
           <div style={{ fontSize: 9, fontWeight: 600, color: accent, marginBottom: 4 }}>
             {d.highlighted === 'selected' ? 'Selected' : d.highlighted === 'incoming' ? '← Inflow' : 'Outflow →'}
@@ -120,9 +132,21 @@ const ActivityNode: React.FC<NodeProps> = ({ data }) => {
         <div style={{ fontSize: 10, color: T.textSubtle, marginTop: 2 }}>
           avg {fmtH(d.avgHours)} here
         </div>
-        <div style={{ display: 'flex', gap: 4, marginTop: 5, flexWrap: 'wrap' }}>
-          {d.isEntry && <span style={{ ...badge, background: T.accentDim, color: T.accentText }}>Start</span>}
-          {d.isExit && <span style={{ ...badge, background: T.brandDim, color: T.brandText }}>End</span>}
+        <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
+          {d.isEntry && (
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 3,
+              background: T.accent, color: '#fff', letterSpacing: 0.4,
+              display: 'inline-flex', alignItems: 'center', gap: 3,
+            }}>▶ START</span>
+          )}
+          {d.isExit && (
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 3,
+              background: T.brand, color: '#fff', letterSpacing: 0.4,
+              display: 'inline-flex', alignItems: 'center', gap: 3,
+            }}>END ■</span>
+          )}
         </div>
       </div>
     </div>
@@ -650,6 +674,8 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [edgePopup, setEdgePopup] = useState<ProcessTransition | null>(null);
+  const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -755,8 +781,21 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
         },
       }));
     }
+    if (hoverEdgeId) {
+      const e = edges.find((x) => x.id === hoverEdgeId);
+      if (e) {
+        return nodes.map((n) => ({
+          ...n,
+          data: {
+            ...n.data,
+            highlighted: n.id === e.source ? 'incoming' as const : n.id === e.target ? 'outgoing' as const : undefined,
+            dimmed: n.id !== e.source && n.id !== e.target,
+          },
+        }));
+      }
+    }
     return nodes.map((n) => ({ ...n, data: { ...n.data, highlighted: undefined, dimmed: false } }));
-  }, [nodes, edges, selectedId, focusId, focusReachable]);
+  }, [nodes, edges, selectedId, focusId, focusReachable, hoverEdgeId]);
 
   const displayEdges = useMemo(() => {
     if (focusReachable) {
@@ -771,8 +810,15 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
         return { ...e, label: '', style: { ...(e.style || {}), opacity: 0.08 } };
       });
     }
+    if (hoverEdgeId) {
+      return edges.map((e) =>
+        e.id === hoverEdgeId
+          ? { ...e, animated: true, style: { ...(e.style || {}), strokeWidth: Math.max(3, ((e.style as any)?.strokeWidth ?? 2) + 1), opacity: 1 } }
+          : { ...e, label: '', style: { ...(e.style || {}), opacity: 0.08 } }
+      );
+    }
     return edges;
-  }, [edges, selectedId, focusReachable]);
+  }, [edges, selectedId, focusReachable, hoverEdgeId]);
 
   const onNodeClick = useCallback((_evt: any, node: Node) => {
     if (focusId) return;
@@ -836,6 +882,19 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
           ))}
           {ots.length > 1 && <span style={{ fontSize: 10, color: T.textSubtle }}>· dashed = cross-object</span>}
         </div>
+        <button
+          onClick={() => setChatOpen((v) => !v)}
+          style={{
+            ...btnGhost,
+            background: chatOpen ? T.accentDim : T.surface,
+            color: chatOpen ? T.accentText : T.textMuted,
+            borderColor: chatOpen ? T.accent : T.border,
+            fontWeight: 500,
+          }}
+          title="Ask about this process"
+        >
+          {chatOpen ? 'Close chat' : 'Ask about map'}
+        </button>
       </div>
 
       <div style={{ fontSize: 11, color: T.textMuted, padding: '0 4px', display: 'flex', justifyContent: 'space-between' }}>
@@ -856,6 +915,8 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onNodeClick={onNodeClick} onNodeDoubleClick={onNodeDoubleClick}
           onEdgeClick={onEdgeClick} onPaneClick={onPaneClick}
+          onEdgeMouseEnter={(_, e) => setHoverEdgeId(e.id)}
+          onEdgeMouseLeave={() => setHoverEdgeId(null)}
           fitView proOptions={{ hideAttribution: true }}
           minZoom={0.1} maxZoom={2}
         >
@@ -917,8 +978,21 @@ const MapPaneInner: React.FC<{ process: Process; otName: (id: string | null | un
           );
         })()}
 
+        {chatOpen && (
+          <MapChat
+            process={process}
+            stats={stats}
+            transitions={transitions}
+            variants={variants}
+            totalCases={totalCases}
+            filter={filterCtx?.filter || []}
+            otName={otName}
+            onClose={() => setChatOpen(false)}
+          />
+        )}
+
         {edgePopup && (
-          <div style={{ position: 'absolute', top: 12, right: 12, background: T.surface, border: `1px solid ${T.border}`, padding: 12, borderRadius: 6, fontSize: 11, width: 280, boxShadow: '0 10px 30px rgba(0,0,0,0.12)' }}>
+          <div style={{ position: 'absolute', top: 12, right: chatOpen ? 392 : 12, background: T.surface, border: `1px solid ${T.border}`, padding: 12, borderRadius: 6, fontSize: 11, width: 280, boxShadow: '0 10px 30px rgba(0,0,0,0.12)' }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: T.accentText, marginBottom: 8 }}>Transition details</div>
             <div style={{ marginBottom: 8 }}>
               <div style={{ fontSize: 11, color: T.textMuted }}>{otName(edgePopup.from_object_type_id)}</div>
@@ -1872,41 +1946,182 @@ const CaseDetail: React.FC<{
     getCaseTimeline(processId, caseId).then((r) => setEvents(r.events)).finally(() => setLoading(false));
   }, [processId, caseId]);
 
+  // Pull the most recent record_snapshot we have for this case. The ingest path
+  // stuffs the full record under attributes.record_snapshot — that's the
+  // ontology view of this case, surfaced here as a key/value table.
+  const latestSnapshot = useMemo<Record<string, unknown> | null>(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const a = events[i].attributes as Record<string, unknown> | undefined;
+      const snap = a?.record_snapshot;
+      if (snap && typeof snap === 'object') return snap as Record<string, unknown>;
+    }
+    return null;
+  }, [events]);
+
+  const snapshotEntries = useMemo(() => {
+    if (!latestSnapshot) return [] as [string, string][];
+    // Hide internal pipeline-stamped fields and obviously empty ones.
+    const HIDE = new Set(['_pipeline_id', '_pipeline_run_at']);
+    return Object.entries(latestSnapshot)
+      .filter(([k, v]) => !HIDE.has(k) && v !== null && v !== undefined && v !== '')
+      .map<[string, string]>(([k, v]) => {
+        let str = typeof v === 'string' ? v : JSON.stringify(v);
+        if (str.length > 280) str = str.slice(0, 280) + '…';
+        return [k, str];
+      })
+      .sort((a, b) => a[0].localeCompare(b[0]));
+  }, [latestSnapshot]);
+
+  const activityCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of events) m.set(e.activity, (m.get(e.activity) || 0) + 1);
+    return Array.from(m.entries())
+      .map(([activity, count]) => ({ activity, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [events]);
+
+  const objectTypeCounts = useMemo(() => {
+    const m = new Map<string | null, number>();
+    for (const e of events) m.set(e.object_type_id, (m.get(e.object_type_id) || 0) + 1);
+    return Array.from(m.entries()).map(([otId, count]) => ({
+      otId, name: otName(otId) || '(none)', count,
+      color: colorForObjectType(otId, ots),
+    }));
+  }, [events, ots, otName]);
+
+  const totalDurationDays = useMemo(() => {
+    if (events.length < 2) return 0;
+    const first = new Date(events[0].timestamp).getTime();
+    const last = new Date(events[events.length - 1].timestamp).getTime();
+    return Math.round(((last - first) / (1000 * 60 * 60 * 24)) * 10) / 10;
+  }, [events]);
+
   return (
     <div style={overlay} onClick={onClose}>
-      <div style={modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 16px', borderBottom: `1px solid ${T.border}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Case <code>{caseId}</code> timeline</div>
+      <div
+        style={{ ...modal, width: 1240, display: 'flex', flexDirection: 'column', maxHeight: '90vh' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: `1px solid ${T.border}` }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              Case <code style={{ fontFamily: T.mono, color: T.accentText }}>{caseId}</code>
+            </div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>
+              {events.length} event{events.length === 1 ? '' : 's'} · {totalDurationDays}d total
+            </div>
+          </div>
           <button onClick={onClose} style={btnGhost}>Close</button>
         </div>
-        <div style={{ padding: 16, maxHeight: '70vh', overflow: 'auto' }}>
-          {loading ? <Loading /> : (
-            <table style={tableStyle}>
-              <thead>
-                <tr>
-                  <th style={th}>#</th>
-                  <th style={th}>Activity</th>
-                  <th style={th}>Object</th>
-                  <th style={th}>Timestamp</th>
-                  <th style={thNum}>Δh</th>
-                </tr>
-              </thead>
-              <tbody>
-                {events.map((e, i) => (
-                  <tr key={e.id}>
-                    <td style={td}>{i + 1}</td>
-                    <td style={td}>{e.activity}</td>
-                    <td style={td}>
-                      <span style={{ ...chip, background: colorForObjectType(e.object_type_id, ots) + '22', color: colorForObjectType(e.object_type_id, ots) }}>{otName(e.object_type_id)}</span>
-                    </td>
-                    <td style={td}>{new Date(e.timestamp).toLocaleString()}</td>
-                    <td style={tdNum}>{e.duration_since_prev_hours ?? '—'}</td>
+
+        {loading ? (
+          <div style={{ padding: 24 }}><Loading /></div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 0, overflow: 'hidden', flex: 1 }}>
+            {/* LEFT: timeline + activity chart */}
+            <div style={{ overflow: 'auto', padding: 16, borderRight: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 8, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                Timeline
+              </div>
+              <table style={tableStyle}>
+                <thead>
+                  <tr>
+                    <th style={th}>#</th>
+                    <th style={th}>Activity</th>
+                    <th style={th}>Object</th>
+                    <th style={th}>Timestamp</th>
+                    <th style={thNum}>Δh</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+                </thead>
+                <tbody>
+                  {events.map((e, i) => (
+                    <tr key={e.id}>
+                      <td style={td}>{i + 1}</td>
+                      <td style={td}>{e.activity}</td>
+                      <td style={td}>
+                        <span style={{ ...chip, background: colorForObjectType(e.object_type_id, ots) + '22', color: colorForObjectType(e.object_type_id, ots) }}>{otName(e.object_type_id) || '—'}</span>
+                      </td>
+                      <td style={td}>{new Date(e.timestamp).toLocaleString()}</td>
+                      <td style={tdNum}>{e.duration_since_prev_hours ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {activityCounts.length > 0 && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, margin: '20px 0 8px', letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                    Events by activity
+                  </div>
+                  <div style={{ height: Math.max(140, activityCounts.length * 26), background: T.surfaceHi, border: `1px solid ${T.border}`, borderRadius: 4, padding: 8 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={activityCounts} layout="vertical" margin={{ left: 30, right: 16, top: 4, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={T.border} horizontal={false} />
+                        <XAxis type="number" tick={{ fontSize: 10, fill: T.textMuted, fontFamily: T.mono }} stroke={T.border} allowDecimals={false} />
+                        <YAxis type="category" dataKey="activity" tick={{ fontSize: 10, fill: T.textMuted, fontFamily: T.mono }} stroke={T.border} width={100} />
+                        <Tooltip wrapperStyle={{ fontSize: 11 }} contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 2 }} formatter={(v: any) => v.toLocaleString()} />
+                        <Bar dataKey="count" fill={T.accent} radius={[0, 3, 3, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* RIGHT: ontology snapshot + object-type donut */}
+            <div style={{ overflow: 'auto', padding: 16, background: T.surfaceHi }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, marginBottom: 8, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                Ontology record (latest snapshot)
+              </div>
+              {snapshotEntries.length === 0 ? (
+                <div style={{ ...mutedNote, padding: 12 }}>
+                  No record_snapshot on this case's events. Re-ingest the source connector — events emitted before the snapshot fix don't carry record data.
+                </div>
+              ) : (
+                <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden' }}>
+                  <table style={{ ...tableStyle, fontSize: 11 }}>
+                    <tbody>
+                      {snapshotEntries.map(([k, v]) => (
+                        <tr key={k}>
+                          <td style={{ ...td, fontFamily: T.mono, color: T.textMuted, width: 140, verticalAlign: 'top', fontSize: 11 }}>{k}</td>
+                          <td style={{ ...td, color: T.text, fontSize: 11, wordBreak: 'break-word' }}>{v}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {objectTypeCounts.length > 0 && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, margin: '20px 0 8px', letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                    Events by object type
+                  </div>
+                  <div style={{ height: 220, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 4, padding: 8 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={objectTypeCounts}
+                          dataKey="count"
+                          nameKey="name"
+                          innerRadius={42}
+                          outerRadius={72}
+                          paddingAngle={1}
+                        >
+                          {objectTypeCounts.map((d, i) => (
+                            <Cell key={i} fill={d.color} stroke={T.surface} />
+                          ))}
+                        </Pie>
+                        <Tooltip wrapperStyle={{ fontSize: 11 }} contentStyle={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 2 }} formatter={(v: any) => v.toLocaleString()} />
+                        <Legend verticalAlign="bottom" height={32} wrapperStyle={{ fontSize: 10 }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
