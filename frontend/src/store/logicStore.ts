@@ -45,6 +45,9 @@ export interface Block {
   field?: string;
   value?: string;
   template?: string;
+  // transform.map_fields
+  mappings?: Record<string, string>;
+  keep_unmapped?: boolean;
   // utility_call
   utility_id?: string;
   utility_params?: Record<string, string>;

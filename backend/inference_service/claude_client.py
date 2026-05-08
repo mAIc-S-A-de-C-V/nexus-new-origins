@@ -1738,14 +1738,21 @@ BLOCK TYPE CATALOG — you MUST use exactly these type strings and these field p
 
 6) transform — pure-Python data shaping. TOP-LEVEL fields. Operations are STRICT — only these:
    `pass` (return source as-is), `extract_field` (pluck one key from a dict),
-   `format_string` (interpolate a template), `filter_list` (keep items where field == value).
-   For complex JS logic, use http_call to a utility instead.
+   `format_string` (interpolate a template), `filter_list` (keep items where field == value),
+   `map_fields` (per-row remap: produce {{out_key: template}} dicts; reference the current row as `row.*`),
+   `pluck` (list-of-dicts → list of one field's values), `first`, `last`, `length`, `to_json`.
      {{ "id": "b6", "type": "transform", "label": "...",
-        "operation": "pass|extract_field|format_string|filter_list",
+        "operation": "pass|extract_field|format_string|filter_list|map_fields|pluck|first|last|length|to_json",
         "source": "b1.result.rows",      // block reference (no curly braces inside `source`)
-        "field":  "<field>",             // for extract_field / filter_list
+        "field":  "<field>",             // for extract_field / filter_list / pluck
         "value":  "<expected value>",    // for filter_list
-        "template": "Hello {{inputs.name}}, you have {{b1.result.count}} items"  // for format_string
+        "template": "Hello {{inputs.name}}, you have {{b1.result.count}} items",  // for format_string
+        "mappings": {{                     // for map_fields
+          "pk":     "{{row.device}}:{{row.time}}",
+          "device": "{{row.device}}",
+          "samples":"{{row.sample_count}}"
+        }},
+        "keep_unmapped": false           // optional, for map_fields
      }}
 
 7) send_email — SMTP send (env-configured server). TOP-LEVEL fields.

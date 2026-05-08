@@ -461,29 +461,108 @@ async def _run_utility_call(block: dict, context: dict, tenant_id: str) -> Any:
 
 
 def _run_transform(block: dict, context: dict) -> Any:
-    """Simple in-memory data transformation."""
+    """In-memory data transformation.
+
+    Operations:
+      - pass            return source as-is
+      - extract_field   pluck one key from a dict
+      - format_string   interpolate a template string against the context
+      - filter_list     keep list items where item[field] == value
+      - map_fields      per-row remap: for each row in `source` (must be a list),
+                        produce a new dict from `mappings: {out_key: template}`.
+                        Templates are resolved with the row exposed as `row.*`
+                        in addition to the outer context. Missing mappings are
+                        omitted. If `keep_unmapped: true`, original keys not
+                        listed in `mappings` are passed through.
+                        Example: {"mappings": {"pk": "{row.device}:{row.time}",
+                                               "device": "{row.device}",
+                                               "avg_temp": "{row.avg_temp}"}}
+      - pluck           list-of-dicts → list of one field's values
+                        Example: {"field": "id"}
+      - first / last    list → first or last item
+      - length          list/string → integer length
+      - to_json         any → JSON string
+    """
     operation = block.get("operation", "pass")
     source = block.get("source", "")
     source_data = _resolve(f"{{{source}}}", context) if source else context
 
     if operation == "pass":
         return source_data
-    elif operation == "extract_field":
+
+    if operation == "extract_field":
         field = block.get("field", "")
         if isinstance(source_data, dict):
             return source_data.get(field)
         return None
-    elif operation == "format_string":
+
+    if operation == "format_string":
         template = block.get("template", "")
         return _resolve(template, context)
-    elif operation == "filter_list":
+
+    if operation == "filter_list":
         field = block.get("field", "")
         value = _resolve(block.get("value", ""), context)
         if isinstance(source_data, list):
             return [item for item in source_data if str(item.get(field, "")) == str(value)]
         return source_data
-    else:
-        return source_data
+
+    if operation == "map_fields":
+        mappings = block.get("mappings") or {}
+        keep_unmapped = bool(block.get("keep_unmapped", False))
+        if not isinstance(source_data, list):
+            # Treat single dict as a 1-row list, then unwrap
+            single = source_data if isinstance(source_data, dict) else {}
+            source_list = [single]
+            return_single = True
+        else:
+            source_list = source_data
+            return_single = False
+
+        out_rows: list[dict] = []
+        for row in source_list:
+            row_dict = row if isinstance(row, dict) else {"value": row}
+            out: dict[str, Any] = {}
+            if keep_unmapped:
+                out.update({k: v for k, v in row_dict.items() if k not in mappings})
+            sub_ctx = {**context, "row": row_dict}
+            for out_key, tpl in mappings.items():
+                if isinstance(tpl, str):
+                    val = _resolve(tpl, sub_ctx)
+                else:
+                    val = _resolve(tpl, sub_ctx)
+                out[out_key] = val
+            out_rows.append(out)
+        return out_rows[0] if return_single else out_rows
+
+    if operation == "pluck":
+        field = block.get("field", "")
+        if isinstance(source_data, list):
+            return [item.get(field) if isinstance(item, dict) else None for item in source_data]
+        return []
+
+    if operation == "first":
+        if isinstance(source_data, list) and source_data:
+            return source_data[0]
+        return None
+
+    if operation == "last":
+        if isinstance(source_data, list) and source_data:
+            return source_data[-1]
+        return None
+
+    if operation == "length":
+        if isinstance(source_data, (list, str, dict)):
+            return len(source_data)
+        return 0
+
+    if operation == "to_json":
+        try:
+            return json.dumps(source_data, default=str)
+        except Exception:
+            return str(source_data)
+
+    return source_data
 
 
 async def _run_http_call(config: dict, context: dict) -> Any:

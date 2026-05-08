@@ -62,7 +62,7 @@ The runner only knows these eight block types — **do NOT generate `llm`, `cond
 | `llm_call` | top-level on `block` | `prompt_template`, `system_prompt`, `model`, `max_tokens`, `output_schema?` |
 | `action` | top-level | `action_name`, `params`, `reasoning` — calls `ontology /actions/{name}/execute` |
 | `ontology_update` | nested in `block.config` | `object_type_id`, `match_field`, `match_value`, `fields: {...}` — upserts via `/records/ingest` |
-| `transform` | top-level | `operation: pass\|extract_field\|format_string\|filter_list`, `source` (block ref), `field?`, `value?`, `template?` |
+| `transform` | top-level | `operation`, `source` (block ref), plus operation-specific fields. Operations: `pass` / `extract_field` (`field`) / `format_string` (`template`) / `filter_list` (`field`, `value`) / **`map_fields`** (`mappings: {out: tpl}`, `keep_unmapped?`) / `pluck` (`field`) / `first` / `last` / `length` / `to_json`. |
 | `send_email` | top-level | `to`, `subject`, `body`, `from_name?`, `bcc?` — supports list-of-dicts in `to` for batches |
 | `utility_call` | top-level | `utility_id`, `utility_params` — calls utility-service |
 | `http_call` | nested in `block.config` | `url`, `method`, `headers?`, `body?`, `auth_type?`, `auth_config?`, `timeout_seconds?`. **Use ONLY for external services — never the platform's own ontology/aggregate endpoints.** |

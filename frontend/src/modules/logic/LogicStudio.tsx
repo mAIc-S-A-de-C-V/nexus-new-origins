@@ -4,6 +4,7 @@ import { useLogicStore, LogicFunction, Block } from '../../store/logicStore';
 import { useUtilityStore } from '../../store/utilityStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { Plus, Play, Save, Trash2, ChevronRight, CheckCircle, XCircle, Loader, BookOpen, Clock, Wrench, GitBranch, Repeat2, FlaskConical } from 'lucide-react';
+import { Select } from '../../design-system/components/Select';
 
 // ── Colour palette (light) ────────────────────────────────────────────────────
 const C = {
@@ -106,19 +107,23 @@ const FilterBuilder: React.FC<{
             )}
 
             {/* Field */}
-            <select style={{ ...sel, flex: 1, minWidth: 120 }} value={f.field}
-              onChange={(e) => updateFilter(i, { field: e.target.value, value: '' })}>
-              <option value="">— field —</option>
-              {properties.map((p) => (
-                <option key={p.name} value={p.name}>{p.display_name || p.name}</option>
-              ))}
-            </select>
+            <div style={{ flex: 1, minWidth: 120 }}>
+              <Select
+                value={f.field}
+                onChange={(v) => updateFilter(i, { field: v, value: '' })}
+                placeholder="— field —"
+                options={properties.map((p) => ({ value: p.name, label: p.display_name || p.name, hint: p.display_name && p.display_name !== p.name ? p.name : undefined }))}
+              />
+            </div>
 
             {/* Operator */}
-            <select style={{ ...sel, minWidth: 140 }} value={f.op}
-              onChange={(e) => updateFilter(i, { op: e.target.value })}>
-              {OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
+            <div style={{ minWidth: 140 }}>
+              <Select
+                value={f.op}
+                onChange={(v) => updateFilter(i, { op: v })}
+                options={OPS.map((o) => ({ value: o.value, label: o.label, hint: o.value }))}
+              />
+            </div>
 
             {/* Value */}
             {!noVal && !isCustom && hasOptions && (
@@ -297,16 +302,16 @@ const BlockEditor: React.FC<{
           <>
             <div>
               <label style={labelStyle}>Object Type</label>
-              <select
-                style={{ ...inputStyle, fontFamily: 'system-ui' }}
+              <Select
                 value={(block.config?.object_type as string) || ''}
-                onChange={(e) => u({ config: { ...block.config, object_type: e.target.value, filters: [] } })}
-              >
-                <option value="">— select an object type —</option>
-                {objectTypes.map((ot) => (
-                  <option key={ot.id} value={ot.name}>{ot.display_name || ot.displayName || ot.name}</option>
-                ))}
-              </select>
+                onChange={(v) => u({ config: { ...block.config, object_type: v, filters: [] } })}
+                placeholder="— select an object type —"
+                options={objectTypes.map((ot) => ({
+                  value: ot.name,
+                  label: ot.display_name || ot.displayName || ot.name,
+                  hint: ot.name !== (ot.display_name || ot.displayName) ? ot.name : undefined,
+                }))}
+              />
             </div>
 
             <div>
@@ -372,28 +377,34 @@ const BlockEditor: React.FC<{
                     <>
                       <div>
                         <label style={labelStyle}>Group by (optional)</label>
-                        <select style={{ ...inputStyle }} value={(agg.group_by as string) || ''}
-                          onChange={(e) => setAgg({ group_by: e.target.value || undefined })}>
-                          <option value="">— none —</option>
-                          {otProperties.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-                        </select>
+                        <Select
+                          value={(agg.group_by as string) || ''}
+                          onChange={(v) => setAgg({ group_by: v || undefined })}
+                          placeholder="— none —"
+                          clearable
+                          options={otProperties.map((p) => ({ value: p.name, label: p.name }))}
+                        />
                       </div>
 
                       <div style={{ display: 'flex', gap: 6 }}>
                         <div style={{ flex: 1 }}>
                           <label style={labelStyle}>Time bucket field (optional)</label>
-                          <select style={{ ...inputStyle }} value={tb?.field || ''}
-                            onChange={(e) => setAgg({ time_bucket: e.target.value ? { field: e.target.value, interval: tb?.interval || 'hour' } : undefined })}>
-                            <option value="">— none —</option>
-                            {otProperties.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-                          </select>
+                          <Select
+                            value={tb?.field || ''}
+                            onChange={(v) => setAgg({ time_bucket: v ? { field: v, interval: tb?.interval || 'hour' } : undefined })}
+                            placeholder="— none —"
+                            clearable
+                            options={otProperties.map((p) => ({ value: p.name, label: p.name }))}
+                          />
                         </div>
                         <div style={{ width: 130 }}>
                           <label style={labelStyle}>Interval</label>
-                          <select style={{ ...inputStyle }} value={tb?.interval || 'hour'} disabled={!tb?.field}
-                            onChange={(e) => setAgg({ time_bucket: { field: tb!.field!, interval: e.target.value } })}>
-                            {['hour', 'day', 'week', 'month', 'quarter', 'year'].map((i) => <option key={i} value={i}>{i}</option>)}
-                          </select>
+                          <Select
+                            value={tb?.interval || 'hour'}
+                            onChange={(v) => setAgg({ time_bucket: { field: tb!.field!, interval: v } })}
+                            disabled={!tb?.field}
+                            options={['hour', 'day', 'week', 'month', 'quarter', 'year']}
+                          />
                         </div>
                       </div>
 
@@ -402,21 +413,28 @@ const BlockEditor: React.FC<{
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                           {aggregations.map((a, i) => (
                             <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                              <select style={{ ...inputStyle, width: 80 }} value={a.method}
-                                onChange={(e) => {
-                                  const next = [...aggregations]; next[i] = { ...a, method: e.target.value };
-                                  setAgg({ aggregations: next });
-                                }}>
-                                {['count', 'avg', 'sum', 'min', 'max'].map((m) => <option key={m} value={m}>{m}</option>)}
-                              </select>
-                              <select style={{ ...inputStyle, flex: 1 }} value={a.field || ''} disabled={a.method === 'count'}
-                                onChange={(e) => {
-                                  const next = [...aggregations]; next[i] = { ...a, field: e.target.value || undefined };
-                                  setAgg({ aggregations: next });
-                                }}>
-                                <option value="">{a.method === 'count' ? '(rows)' : '— select field —'}</option>
-                                {otProperties.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-                              </select>
+                              <div style={{ width: 90 }}>
+                                <Select
+                                  value={a.method}
+                                  onChange={(v) => {
+                                    const next = [...aggregations]; next[i] = { ...a, method: v };
+                                    setAgg({ aggregations: next });
+                                  }}
+                                  options={['count', 'avg', 'sum', 'min', 'max']}
+                                />
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <Select
+                                  value={a.field || ''}
+                                  onChange={(v) => {
+                                    const next = [...aggregations]; next[i] = { ...a, field: v || undefined };
+                                    setAgg({ aggregations: next });
+                                  }}
+                                  placeholder={a.method === 'count' ? '(rows)' : '— select field —'}
+                                  disabled={a.method === 'count'}
+                                  options={otProperties.map((p) => ({ value: p.name, label: p.name }))}
+                                />
+                              </div>
                               <input style={{ ...inputStyle, width: 130 }} placeholder="alias" value={a.alias || ''}
                                 onChange={(e) => {
                                   const next = [...aggregations]; next[i] = { ...a, alias: e.target.value || undefined };
@@ -476,12 +494,15 @@ const BlockEditor: React.FC<{
             <div style={{ display: 'flex', gap: 8 }}>
               <div style={{ flex: 1 }}>
                 <label style={labelStyle}>model</label>
-                <select style={{ ...inputStyle }} value={block.model || 'claude-haiku-4-5-20251001'}
-                  onChange={(e) => u({ model: e.target.value })}>
-                  <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-                  <option value="claude-sonnet-4-6">Sonnet 4.6</option>
-                  <option value="claude-opus-4-6">Opus 4.6</option>
-                </select>
+                <Select
+                  value={block.model || 'claude-haiku-4-5-20251001'}
+                  onChange={(v) => u({ model: v })}
+                  options={[
+                    { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5',  hint: 'fast / cheap' },
+                    { value: 'claude-sonnet-4-6',         label: 'Sonnet 4.6', hint: 'balanced' },
+                    { value: 'claude-opus-4-6',           label: 'Opus 4.6',   hint: 'best quality' },
+                  ]}
+                />
               </div>
               <div>
                 <label style={labelStyle}>max_tokens</label>
@@ -606,35 +627,93 @@ const BlockEditor: React.FC<{
           <>
             <div>
               <label style={labelStyle}>operation</label>
-              <select style={inputStyle} value={block.operation || 'pass'} onChange={(e) => u({ operation: e.target.value })}>
-                <option value="pass">pass</option>
-                <option value="extract_field">extract_field</option>
-                <option value="format_string">format_string</option>
-                <option value="filter_list">filter_list</option>
-              </select>
+              <Select
+                value={(block.operation as string) || 'pass'}
+                onChange={(v) => u({ operation: v })}
+                options={[
+                  { value: 'pass',          label: 'pass',          hint: 'return source as-is' },
+                  { value: 'map_fields',    label: 'map_fields',    hint: 'per-row remap with templates' },
+                  { value: 'extract_field', label: 'extract_field', hint: 'pluck one key from a dict' },
+                  { value: 'format_string', label: 'format_string', hint: 'interpolate a template string' },
+                  { value: 'filter_list',   label: 'filter_list',   hint: 'keep items where field == value' },
+                  { value: 'pluck',         label: 'pluck',         hint: 'list-of-dicts → list of one field’s values' },
+                  { value: 'first',         label: 'first',         hint: 'first item of a list' },
+                  { value: 'last',          label: 'last',          hint: 'last item of a list' },
+                  { value: 'length',        label: 'length',        hint: 'count items' },
+                  { value: 'to_json',       label: 'to_json',       hint: 'serialize to JSON string' },
+                ]}
+              />
             </div>
             <div>
               <label style={labelStyle}>source (e.g. b1.result)</label>
-              <input style={inputStyle} value={block.source || ''} onChange={(e) => u({ source: e.target.value })} />
+              <input style={inputStyle} value={(block as { source?: string }).source || ''} onChange={(e) => u({ source: e.target.value })} />
             </div>
-            {(block.operation === 'extract_field' || block.operation === 'filter_list') && (
+            {(block.operation === 'extract_field' || block.operation === 'filter_list' || block.operation === 'pluck') && (
               <div>
                 <label style={labelStyle}>field</label>
-                <input style={inputStyle} value={block.field || ''} onChange={(e) => u({ field: e.target.value })} />
+                <input style={inputStyle} value={(block as { field?: string }).field || ''} onChange={(e) => u({ field: e.target.value })} />
               </div>
             )}
             {block.operation === 'filter_list' && (
               <div>
                 <label style={labelStyle}>value</label>
-                <input style={inputStyle} value={block.value || ''} onChange={(e) => u({ value: e.target.value })} />
+                <input style={inputStyle} value={(block as { value?: string }).value || ''} onChange={(e) => u({ value: e.target.value })} />
               </div>
             )}
             {block.operation === 'format_string' && (
               <div>
                 <label style={labelStyle}>template</label>
-                <input style={inputStyle} value={block.template || ''} onChange={(e) => u({ template: e.target.value })} />
+                <input style={inputStyle} value={(block as { template?: string }).template || ''} onChange={(e) => u({ template: e.target.value })} />
               </div>
             )}
+            {block.operation === 'map_fields' && (() => {
+              const mappings = ((block as { mappings?: Record<string, string> }).mappings) || {};
+              const setMappings = (next: Record<string, string>) => u({ mappings: next });
+              const entries = Object.entries(mappings);
+              return (
+                <>
+                  <div style={{ fontSize: 11, color: C.muted, padding: '4px 0' }}>
+                    For each row in <code>source</code>, build a new dict from these mappings.
+                    Use <code>{'{row.field}'}</code> to reference the current row,
+                    <code>{'{b1.result}'}</code> for prior blocks, and <code>{'{inputs.x}'}</code> for inputs.
+                  </div>
+                  <div>
+                    <label style={labelStyle}>mappings</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {entries.map(([k, v], i) => (
+                        <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <input style={{ ...inputStyle, width: 150 }} placeholder="output key" value={k}
+                            onChange={(e) => {
+                              const next = { ...mappings };
+                              delete next[k];
+                              next[e.target.value] = v;
+                              setMappings(next);
+                            }} />
+                          <span style={{ color: C.muted, fontSize: 11 }}>=</span>
+                          <input style={{ ...inputStyle, flex: 1 }} placeholder="{row.field} or static value" value={v}
+                            onChange={(e) => setMappings({ ...mappings, [k]: e.target.value })} />
+                          <button type="button" onClick={() => {
+                            const next = { ...mappings }; delete next[k]; setMappings(next);
+                          }} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: 2, lineHeight: 0 }}>
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button"
+                        onClick={() => setMappings({ ...mappings, '': '' })}
+                        style={{ alignSelf: 'flex-start', padding: '3px 8px', fontSize: 11, color: C.accent, backgroundColor: C.accentDim, border: 'none', borderRadius: 3, cursor: 'pointer' }}>
+                        + add mapping
+                      </button>
+                    </div>
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.text, paddingTop: 4 }}>
+                    <input type="checkbox" checked={!!(block as { keep_unmapped?: boolean }).keep_unmapped}
+                      onChange={(e) => u({ keep_unmapped: e.target.checked })} />
+                    Pass through original keys not listed above
+                  </label>
+                </>
+              );
+            })()}
           </>
         )}
 
