@@ -1,7 +1,9 @@
 import os
+import logging
+import traceback
 from fastapi import FastAPI, Depends
 from fastapi import Request as _Request
-from fastapi.responses import Response as _Response
+from fastapi.responses import Response as _Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from routers import functions, runs, schedules
 from database import init_db
@@ -10,6 +12,7 @@ from auth_middleware import require_auth
 from nexus_logging import configure_logging
 
 configure_logging()
+log = logging.getLogger("logic_service")
 
 # CORS
 _raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
@@ -58,6 +61,30 @@ async def security_headers(request: _Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
+
+
+# Return JSON with the actual exception class + message instead of the
+# default "Internal Server Error" text body. Lets the frontend surface a
+# real error and lets users diagnose without shelling into containers for
+# logs. Stack trace still goes to logs at ERROR level.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: _Request, exc: Exception) -> JSONResponse:
+    tb = traceback.format_exc()
+    log.error(
+        "unhandled exception on %s %s: %s\n%s",
+        request.method, request.url.path, exc, tb,
+    )
+    payload = {
+        "detail": str(exc),
+        "type": type(exc).__name__,
+        "path": request.url.path,
+        "method": request.method,
+    }
+    # Only include the traceback in dev (when SKIP_AUTH is true — that's
+    # already the dev-mode signal). Avoids leaking internals in prod.
+    if os.environ.get("SKIP_AUTH", "true").lower() == "true":
+        payload["traceback"] = tb.splitlines()[-12:]
+    return JSONResponse(status_code=500, content=payload)
 
 
 @app.on_event("startup")
