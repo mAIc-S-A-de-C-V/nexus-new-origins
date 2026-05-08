@@ -241,31 +241,42 @@ async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> An
                 data = r2.json()
                 raw_rows = data.get("rows", [])
 
-                # Remap agg_N → alias and grp/series → friendly key names.
-                # Server returns rows with `series` (group_by value) when both
-                # group_by AND time_bucket are set, `grp` (time bucket) when
-                # only time_bucket, and `group` when only group_by.
+                # Remap agg_N → alias and the server's row shape into friendly
+                # keys. Server's serialized response per row is:
+                #   - "group"  (SQL alias `grp`) — holds the TIME bucket when
+                #     time_bucket is set, otherwise the group_by value, or
+                #     "_total" when neither is set.
+                #   - "series" — present ONLY when BOTH group_by AND time_bucket
+                #     are set; holds the group_by value.
+                #   - "agg_0", "agg_1", ... — one per aggregation, in input
+                #     order.
+                # Crucial: the response key is "group", NOT "grp" — older code
+                # in this remapper looked for "grp" and silently fell through
+                # to a path that overwrote the device with the timestamp.
                 aliases = [a.get("alias") or f"agg_{i}" for i, a in enumerate(aggregations)]
                 bucket_key = (time_bucket or {}).get("field") if time_bucket else None
+                has_time = bool(bucket_key)
+                has_group = bool(group_by)
                 friendly_rows: list[dict] = []
                 for raw in raw_rows:
                     row: dict[str, Any] = {}
-                    # Map group / time fields
-                    if "series" in raw and group_by:
-                        row[group_by] = raw["series"]
-                    if "grp" in raw:
-                        if bucket_key and not group_by:
-                            row[bucket_key] = raw["grp"]
-                        elif bucket_key and group_by:
-                            # When both are set, server uses `series` for the
-                            # group and `grp` for the time bucket.
-                            row[bucket_key] = raw["grp"]
-                        else:
-                            # No time_bucket → `grp` here is actually the group_by value
-                            if group_by:
-                                row[group_by] = raw["grp"]
-                    if "group" in raw and group_by:
-                        row[group_by] = raw["group"]
+                    if has_time and has_group:
+                        # raw.group = time bucket, raw.series = group_by value
+                        if "group" in raw:
+                            row[bucket_key] = raw["group"]
+                        if "series" in raw:
+                            row[group_by] = raw["series"]
+                    elif has_time:
+                        # raw.group = time bucket
+                        if "group" in raw:
+                            row[bucket_key] = raw["group"]
+                    elif has_group:
+                        # raw.group = group_by value
+                        if "group" in raw:
+                            row[group_by] = raw["group"]
+                    else:
+                        # Pure aggregate ("_total") — no group dimension
+                        pass
                     # Map agg_N → alias
                     for i, alias in enumerate(aliases):
                         key = f"agg_{i}"
