@@ -110,18 +110,26 @@ def _build_jsonb_filters(filter_json: str) -> list:
                 elif op == "neq":
                     conditions.append(text(f"{accessor} != :{param}"))
                     bind_params[param] = str(op_val)
-                elif op == "gt":
-                    conditions.append(text(f"({accessor})::float > :{param}"))
-                    bind_params[param] = float(op_val)
-                elif op == "gte":
-                    conditions.append(text(f"({accessor})::float >= :{param}"))
-                    bind_params[param] = float(op_val)
-                elif op == "lt":
-                    conditions.append(text(f"({accessor})::float < :{param}"))
-                    bind_params[param] = float(op_val)
-                elif op == "lte":
-                    conditions.append(text(f"({accessor})::float <= :{param}"))
-                    bind_params[param] = float(op_val)
+                elif op in ("gt", "gte", "lt", "lte"):
+                    # Detect ISO datetime / date strings and use timestamptz
+                    # comparison instead of ::float (which would crash on
+                    # strings like "2026-02-07T16:00:00Z"). Falls back to
+                    # numeric comparison for everything that isn't a date.
+                    sql_op = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
+                    if isinstance(op_val, str) and re.match(r'^\d{4}-\d{2}-\d{2}', op_val):
+                        conditions.append(text(
+                            f"NULLIF({accessor}, '')::timestamptz {sql_op} :{param}::timestamptz"
+                        ))
+                        bind_params[param] = str(op_val)
+                    else:
+                        try:
+                            cast_val = float(op_val)
+                            conditions.append(text(f"({accessor})::float {sql_op} :{param}"))
+                            bind_params[param] = cast_val
+                        except (TypeError, ValueError):
+                            # Non-numeric, non-date — fall back to text comparison
+                            conditions.append(text(f"{accessor} {sql_op} :{param}"))
+                            bind_params[param] = str(op_val)
                 elif op == "in":
                     # op_val should be a list
                     if isinstance(op_val, list):

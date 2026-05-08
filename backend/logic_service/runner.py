@@ -164,7 +164,12 @@ async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> An
     filters_raw: list[dict] = config.get("filters", [])
     legacy_filter: str = config.get("filter", "")
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    # 30s is fine for list mode (small payload, capped at 200 rows). Aggregate
+    # mode can scan multi-million-row tables on cold caches and easily exceed
+    # 30s on the first run. Use a longer timeout for aggregate so we get a
+    # real result instead of an empty TimeoutException.
+    timeout_s = 120 if (config.get("aggregate") or {}).get("aggregations") else 30
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
         try:
             # Resolve OT id from name/displayName (one place, both modes)
             r = await client.get(
@@ -186,16 +191,31 @@ async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> An
                 group_by = _resolve(aggregate_cfg.get("group_by", ""), context) or None
                 time_bucket = _resolve(aggregate_cfg.get("time_bucket"), context) if aggregate_cfg.get("time_bucket") else None
 
-                # Build server-side filter dict from filters_raw if present
+                # Build server-side filter dict from filters_raw if present.
+                # The aggregate endpoint's _build_jsonb_filters expects each
+                # field's value to be either a primitive (simple eq) OR a
+                # dict whose KEYS are operator names with a "$" prefix:
+                #   {"field": {"$gte": "2026-02-07T..."}}
+                # NOT {"field": {"op": "gte", "value": ...}} — that is a
+                # totally different shape and the parser silently ignores it.
                 server_filter = {}
                 for f in filters_raw or []:
                     field = _resolve(f.get("field", ""), context)
                     op = f.get("op", "==")
                     val = _resolve(f.get("value", ""), context)
                     if field and val != "":
-                        # Map common UI ops to the JSONB filter DSL
-                        op_map = {"==": "eq", "!=": "neq", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte", "contains": "contains"}
-                        server_filter[field] = {"op": op_map.get(op, op), "value": val}
+                        op_map = {
+                            "==": "eq", "!=": "neq",
+                            ">": "gt", ">=": "gte", "<": "lt", "<=": "lte",
+                            "contains": "contains", "in": "in",
+                            "is_empty": "is_null", "is_not_empty": "is_not_null",
+                        }
+                        op_keyword = op_map.get(op, op)
+                        if op_keyword in ("is_null", "is_not_null"):
+                            # No value on these
+                            server_filter[field] = {f"${op_keyword}": True}
+                        else:
+                            server_filter[field] = {f"${op_keyword}": val}
 
                 body: dict[str, Any] = {
                     "aggregations": [{k: v for k, v in a.items() if k != "alias"} for a in aggregations],
@@ -289,8 +309,17 @@ async def _run_ontology_query(config: dict, context: dict, tenant_id: str) -> An
                     records = [rec for rec in records if str(rec.get(field, "")).lower() == value.lower()]
 
             return {"records": records[:limit], "count": len(records), "total_before_filter": total_before_filter}
+        except httpx.TimeoutException:
+            return {
+                "error": f"Ontology query timed out after {timeout_s}s. "
+                         f"Aggregate over a very large object type — try adding a tighter time filter, "
+                         f"or rerun (results are cached server-side after the first hit).",
+                "records": [], "rows": [], "timeout_seconds": timeout_s,
+            }
         except Exception as e:
-            return {"error": str(e), "records": [], "rows": []}
+            # str(e) can be empty for some exceptions; fall back to the class
+            msg = str(e) or f"{type(e).__name__} (no message)"
+            return {"error": msg, "exception_type": type(e).__name__, "records": [], "rows": []}
 
 
 async def _run_llm_call(block: dict, context: dict, tenant_id: str = "unknown") -> Any:
