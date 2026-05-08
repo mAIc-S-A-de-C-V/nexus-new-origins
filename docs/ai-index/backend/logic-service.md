@@ -61,7 +61,7 @@ The runner only knows these eight block types — **do NOT generate `llm`, `cond
 | `ontology_query` | nested in `block.config` | `object_type` (NAME), `filters: [{field, op, value}]`, `limit`, **`aggregate?: {group_by?, time_bucket?:{field,interval}, aggregations:[{method,field?,alias?}], limit?, sort_by?, sort_dir?}`** |
 | `llm_call` | top-level on `block` | `prompt_template`, `system_prompt`, `model`, `max_tokens`, `output_schema?` |
 | `action` | top-level | `action_name`, `params`, `reasoning` — calls `ontology /actions/{name}/execute` |
-| `ontology_update` | nested in `block.config` | `object_type_id`, `match_field`, `match_value`, `fields: {...}` — upserts via `/records/ingest` |
+| `ontology_update` | nested in `block.config` | `object_type_id`, `match_field`, `match_value`, `fields: {...}`, optional `for_each` (path to a list — exposes `{item.field}` in templates). `[*]` auto-iter: any `{X[*].field}` ref auto-detects list `X` and writes one record per item. Batched in chunks of 500 to `/records/ingest` upsert. |
 | `transform` | top-level | `operation`, `source` (block ref), plus operation-specific fields. Operations: `pass` / `extract_field` (`field`) / `format_string` (`template`) / `filter_list` (`field`, `value`) / **`map_fields`** (`mappings: {out: tpl}`, `keep_unmapped?`) / `pluck` (`field`) / `first` / `last` / `length` / `to_json`. |
 | `send_email` | top-level | `to`, `subject`, `body`, `from_name?`, `bcc?` — supports list-of-dicts in `to` for batches |
 | `utility_call` | top-level | `utility_id`, `utility_params` — calls utility-service |

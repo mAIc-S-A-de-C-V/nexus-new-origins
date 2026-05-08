@@ -648,60 +648,253 @@ async def _run_http_call(config: dict, context: dict) -> Any:
         return {"error": str(e), "status_code": None, "elapsed_ms": elapsed_ms}
 
 
+_ITER_TOKEN_RE = re.compile(r'\{([a-zA-Z_][a-zA-Z0-9_.]*)\[\*\](\.[a-zA-Z_][a-zA-Z0-9_.]*)?\}')
+
+
+def _get_path(context: dict, path: str) -> Any:
+    """Resolve a dotted path against context and return the RAW value (not
+    stringified). Supports `[N]` indexing inside segments. Returns None if
+    any step is missing.
+    """
+    if not path:
+        return None
+    parts: list[tuple[str, int | None]] = []
+    for segment in path.split("."):
+        idx_match = re.match(r'^(\w+)\[(\d+)\]$', segment)
+        if idx_match:
+            parts.append((idx_match.group(1), int(idx_match.group(2))))
+        else:
+            parts.append((segment, None))
+    val: Any = context
+    for key, idx in parts:
+        if isinstance(val, dict):
+            val = val.get(key)
+        else:
+            return None
+        if val is None:
+            return None
+        if idx is not None:
+            if isinstance(val, list) and idx < len(val):
+                val = val[idx]
+            else:
+                return None
+    return val
+
+
+def _resolve_iter(template: Any, item: Any, item_path: str, context: dict) -> Any:
+    """Resolve a template against a context where `<item_path>[*]` references
+    iterate over the current `item`.
+
+    Replaces every `{<item_path>[*].<field>}` occurrence with `item.<field>`,
+    then runs the regular `_resolve()` so other `{ref}` paths still work.
+    """
+    if isinstance(template, str):
+        def repl(m: re.Match) -> str:
+            list_path = m.group(1)
+            tail = (m.group(2) or "").lstrip(".")
+            if list_path != item_path:
+                return m.group(0)  # different list path — leave alone
+            val: Any = item
+            if tail:
+                for part in tail.split("."):
+                    idx_match = re.match(r'^(\w+)\[(\d+)\]$', part)
+                    if idx_match:
+                        key, idx = idx_match.group(1), int(idx_match.group(2))
+                        if isinstance(val, dict):
+                            val = val.get(key)
+                        if isinstance(val, list) and idx < len(val):
+                            val = val[idx]
+                        else:
+                            return ""
+                    else:
+                        if isinstance(val, dict):
+                            val = val.get(part)
+                        else:
+                            return ""
+                    if val is None:
+                        return ""
+            if val is None:
+                return ""
+            return str(val) if not isinstance(val, (dict, list)) else json.dumps(val)
+        rewritten = _ITER_TOKEN_RE.sub(repl, template)
+        return _resolve(rewritten, context)
+    if isinstance(template, dict):
+        return {k: _resolve_iter(v, item, item_path, context) for k, v in template.items()}
+    if isinstance(template, list):
+        return [_resolve_iter(v, item, item_path, context) for v in template]
+    return template
+
+
+def _detect_iter_path(values: list[Any]) -> str | None:
+    """Scan a flat list of strings/dicts/lists for the first `{<path>[*]...}`
+    occurrence. Returns the dotted path before `[*]`, or None.
+    """
+    def scan(v: Any) -> str | None:
+        if isinstance(v, str):
+            m = _ITER_TOKEN_RE.search(v)
+            return m.group(1) if m else None
+        if isinstance(v, dict):
+            for x in v.values():
+                p = scan(x)
+                if p:
+                    return p
+        if isinstance(v, list):
+            for x in v:
+                p = scan(x)
+                if p:
+                    return p
+        return None
+    for v in values:
+        p = scan(v)
+        if p:
+            return p
+    return None
+
+
 async def _run_ontology_update(block: dict, context: dict, tenant_id: str) -> Any:
     """
-    Write one or more field values back to an ontology object type record.
+    Write one or more records into an ontology object type.
 
-    Config fields (all support template references):
+    Config fields (all support template references and {now}, {now_minus_*} vars):
       object_type_id  — the object type to update
-      match_field     — field used to identify which record to update (e.g. "borrower_id")
+      match_field     — field used to identify the record (e.g. "pk")
       match_value     — value of match_field to find the target record
       fields          — dict of field_name → new_value to set on the record
+      for_each        — OPTIONAL. Path to a list (e.g. "b1.result.rows"). When
+                        set, the block iterates the list and writes one record
+                        per item. Inside templates, reference the current item
+                        as {item.field}.
+      [*] auto-iter   — if any template in match_value/fields uses {X[*].field},
+                        the runner detects the underlying list at X and
+                        iterates automatically (no for_each needed). All [*]
+                        refs in the same block must share the same list path.
 
-    Example block config:
+    Single-record example:
       {
         "object_type_id": "abc-123",
         "match_field": "borrower_id",
-        "match_value": "{bidi1q6d.result.records[0].borrower_id}",
+        "match_value": "{b1.result.records[0].borrower_id}",
+        "fields": {"risk_score": "{b2.result.risk_score}"}
+      }
+
+    [*] auto-iter example:
+      {
+        "object_type_id": "...",
+        "match_field": "pk",
+        "match_value": "{b1.result.rows[*].device}:{b1.result.rows[*].time}",
         "fields": {
-          "risk_score": "{btayt8l5.result.risk_score}",
-          "risk_category": "{btayt8l5.result.risk_category}"
+          "pk":      "{b1.result.rows[*].device}:{b1.result.rows[*].time}",
+          "device":  "{b1.result.rows[*].device}",
+          "samples": "{b1.result.rows[*].sample_count}"
         }
       }
+
+    for_each example:
+      {
+        "object_type_id": "...",
+        "match_field": "pk",
+        "for_each": "b1.result.rows",
+        "match_value": "{item.device}:{item.time}",
+        "fields": {"pk": "{item.device}:{item.time}", "device": "{item.device}"}
+      }
     """
-    cfg = _resolve(block.get("config", {}), context)
-    ot_id = cfg.get("object_type_id") or cfg.get("objectTypeId")
-    match_field = cfg.get("match_field") or cfg.get("matchField")
-    match_value = cfg.get("match_value") or cfg.get("matchValue")
-    fields = cfg.get("fields", {})
+    raw_cfg = block.get("config", {}) or {}
+    ot_id = raw_cfg.get("object_type_id") or raw_cfg.get("objectTypeId")
+    match_field = raw_cfg.get("match_field") or raw_cfg.get("matchField")
+    match_value_tpl = raw_cfg.get("match_value") if "match_value" in raw_cfg else raw_cfg.get("matchValue")
+    fields_tpl = raw_cfg.get("fields", {}) or {}
+    for_each_path = raw_cfg.get("for_each") or raw_cfg.get("forEach")
 
     if not ot_id:
         return {"error": "object_type_id is required"}
-    if not fields:
+    if not fields_tpl:
         return {"error": "fields dict is required"}
 
-    # Build a single record that merges match key + new fields
-    record = dict(fields)
-    if match_field and match_value is not None:
-        record[match_field] = match_value
+    # Decide iteration mode:
+    #   1. explicit `for_each` config → iterate that list, expose `item.*`
+    #   2. implicit `[*]` in any template → detect the list path, iterate
+    #   3. otherwise → single record (legacy behavior)
+    iter_path: str | None = None
+    iter_alias: str = "item"
+    if for_each_path:
+        iter_path = for_each_path.lstrip("{").rstrip("}").strip()
+        iter_alias = "item"
+    else:
+        iter_path = _detect_iter_path([match_value_tpl, fields_tpl])
+        iter_alias = iter_path  # so {<list>[*].field} keeps working
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    records: list[dict] = []
+
+    if iter_path:
+        # Resolve the list at the raw path (not stringified — _resolve serializes
+        # lists/dicts when used as a string interpolation, so we use _get_path).
+        items = _get_path(context, iter_path)
+        if not isinstance(items, list):
+            return {
+                "error": f"for_each / [*] target '{iter_path}' did not resolve to a list "
+                         f"(got {type(items).__name__}); check that the previous block emits rows."
+            }
+        if for_each_path:
+            # Inject `item` into the context for each iteration
+            for item in items:
+                sub_ctx = {**context, "item": item}
+                rec_fields = _resolve(fields_tpl, sub_ctx)
+                rec = dict(rec_fields) if isinstance(rec_fields, dict) else {}
+                if match_field and match_value_tpl is not None:
+                    rec[match_field] = _resolve(match_value_tpl, sub_ctx)
+                records.append(rec)
+        else:
+            # [*] auto-iter — substitute via _resolve_iter
+            for item in items:
+                rec_fields = _resolve_iter(fields_tpl, item, iter_path, context)
+                rec = dict(rec_fields) if isinstance(rec_fields, dict) else {}
+                if match_field and match_value_tpl is not None:
+                    rec[match_field] = _resolve_iter(match_value_tpl, item, iter_path, context)
+                records.append(rec)
+    else:
+        # Single-record mode (existing behaviour).
+        rec_fields = _resolve(fields_tpl, context)
+        rec = dict(rec_fields) if isinstance(rec_fields, dict) else {}
+        if match_field and match_value_tpl is not None:
+            rec[match_field] = _resolve(match_value_tpl, context)
+        records.append(rec)
+
+    if not records:
+        return {"updated": 0, "records": [], "note": "list was empty"}
+
+    # Batch ingest in chunks so an hour with 10k+ rows still fits.
+    CHUNK = 500
+    total = 0
+    last_resp = None
+    async with httpx.AsyncClient(timeout=60) as client:
         try:
-            r = await client.post(
-                f"{ONTOLOGY_URL}/object-types/{ot_id}/records/ingest",
-                json={
-                    "records": [record],
-                    "merge_key": match_field,
-                    "write_mode": "upsert",
-                    "on_conflict": "overwrite",
-                },
-                headers={"x-tenant-id": tenant_id, "Content-Type": "application/json"},
-            )
-            if r.is_success:
-                return {"updated": 1, "record": record}
-            return {"error": r.text}
+            for i in range(0, len(records), CHUNK):
+                batch = records[i:i + CHUNK]
+                r = await client.post(
+                    f"{ONTOLOGY_URL}/object-types/{ot_id}/records/ingest",
+                    json={
+                        "records": batch,
+                        "merge_key": match_field,
+                        "write_mode": "upsert",
+                        "on_conflict": "overwrite",
+                    },
+                    headers={"x-tenant-id": tenant_id, "Content-Type": "application/json"},
+                )
+                if not r.is_success:
+                    return {
+                        "error": f"ingest failed at batch {i}-{i+len(batch)}: {r.status_code} {r.text[:300]}",
+                        "updated": total,
+                    }
+                last_resp = r.json() if r.headers.get("content-type", "").startswith("application/json") else None
+                total += len(batch)
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "updated": total}
+
+    return {
+        "updated": total,
+        "records_sample": records[:3],
+        "ingest_response": last_resp,
+    }
 
 
 async def execute_function(
