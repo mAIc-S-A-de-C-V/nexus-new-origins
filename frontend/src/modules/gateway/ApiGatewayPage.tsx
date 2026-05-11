@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Copy, Eye, EyeOff, Globe, Key, RefreshCw, Activity, BarChart3, AlertTriangle } from 'lucide-react';
-import { getTenantId } from '../../store/authStore';
+import { getTenantId, getAccessToken } from '../../store/authStore';
 
 const GW_API = import.meta.env.VITE_API_GATEWAY_URL || `${window.location.protocol}//${window.location.hostname}:8021`;
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || `${window.location.protocol}//${window.location.hostname}:8004`;
@@ -79,18 +79,51 @@ const ApiGatewayPage: React.FC = () => {
   const [newEpType, setNewEpType] = useState<'records' | 'events'>('records');
 
   const [loading, setLoading] = useState(false);
+  // Surface fetch failures so admins can see *why* a key isn't appearing
+  // (previously silent — POST returned 401/500 and the UI just sat there).
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const h = { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() };
+  const h = (): Record<string, string> => {
+    const token = getAccessToken();
+    return {
+      'Content-Type': 'application/json',
+      'x-tenant-id': getTenantId(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+  };
+
+  // Extract a useful error message from a non-ok Response — works for the
+  // FastAPI {detail: ...} shape and bare text bodies.
+  const explainFailure = async (resp: Response, action: string): Promise<string> => {
+    let detail: unknown;
+    try { detail = await resp.json(); } catch {
+      try { detail = await resp.text(); } catch { detail = ''; }
+    }
+    const body = typeof detail === 'string'
+      ? detail
+      : (detail && typeof detail === 'object' && 'detail' in detail)
+        ? (detail as { detail: unknown }).detail
+        : JSON.stringify(detail);
+    return `${action} failed (${resp.status} ${resp.statusText}): ${typeof body === 'string' ? body : JSON.stringify(body)}`;
+  };
 
   const loadAll = async () => {
     setLoading(true);
+    setErrorMessage(null);
     try {
       const [keysRes, epRes, otRes] = await Promise.all([
-        fetch(`${GW_API}/gateway/keys`, { headers: h }),
-        fetch(`${GW_API}/gateway/manage`, { headers: h }),
-        fetch(`${ONTOLOGY_API}/object-types`, { headers: h }),
+        fetch(`${GW_API}/gateway/keys`, { headers: h() }).catch((e) => new Response(null, { status: 0, statusText: e.message })),
+        fetch(`${GW_API}/gateway/manage`, { headers: h() }).catch((e) => new Response(null, { status: 0, statusText: e.message })),
+        fetch(`${ONTOLOGY_API}/object-types`, { headers: h() }).catch((e) => new Response(null, { status: 0, statusText: e.message })),
       ]);
-      if (keysRes.ok) setKeys(await keysRes.json());
+
+      if (keysRes.ok) {
+        setKeys(await keysRes.json());
+      } else if (keysRes.status === 0) {
+        setErrorMessage(`Cannot reach gateway service at ${GW_API}. Check that VITE_API_GATEWAY_URL is set and the service is reachable. (${keysRes.statusText})`);
+      } else {
+        setErrorMessage(await explainFailure(keysRes, 'list API keys'));
+      }
       if (epRes.ok) setEndpoints(await epRes.json());
       if (otRes.ok) {
         const data = await otRes.json();
@@ -100,12 +133,12 @@ const ApiGatewayPage: React.FC = () => {
   };
 
   const loadUsage = async () => {
-    const r = await fetch(`${GW_API}/gateway/usage/summary?range=${range}`, { headers: h });
+    const r = await fetch(`${GW_API}/gateway/usage/summary?range=${range}`, { headers: h() });
     if (r.ok) setUsage(await r.json());
   };
 
   const loadKeyDetail = async (keyId: string) => {
-    const r = await fetch(`${GW_API}/gateway/usage/keys/${keyId}?range=${range}`, { headers: h });
+    const r = await fetch(`${GW_API}/gateway/usage/keys/${keyId}?range=${range}`, { headers: h() });
     if (r.ok) setDetailKey(await r.json());
   };
 
@@ -114,28 +147,37 @@ const ApiGatewayPage: React.FC = () => {
 
   const createKey = async () => {
     if (!newKeyName.trim()) return;
-    const res = await fetch(`${GW_API}/gateway/keys`, {
-      method: 'POST', headers: h,
-      body: JSON.stringify({ name: newKeyName.trim(), scopes: newKeyScopes, rate_limit_per_min: newKeyRate }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setCreatedKey(data.key);
-      setNewKeyName('');
-      setNewKeyScopes(['read:records']);
-      setNewKeyRate(60);
-      await loadAll();
+    setErrorMessage(null);
+    let res: Response;
+    try {
+      res = await fetch(`${GW_API}/gateway/keys`, {
+        method: 'POST', headers: h(),
+        body: JSON.stringify({ name: newKeyName.trim(), scopes: newKeyScopes, rate_limit_per_min: newKeyRate }),
+      });
+    } catch (e) {
+      setErrorMessage(`Network error reaching gateway at ${GW_API}: ${(e as Error).message}`);
+      return;
     }
+    if (!res.ok) {
+      setErrorMessage(await explainFailure(res, 'Create API key'));
+      return;
+    }
+    const data = await res.json();
+    setCreatedKey(data.key);
+    setNewKeyName('');
+    setNewKeyScopes(['read:records']);
+    setNewKeyRate(60);
+    await loadAll();
   };
 
   const deleteKey = async (id: string) => {
     if (!confirm('Delete this API key? Consumers using it will immediately lose access.')) return;
-    await fetch(`${GW_API}/gateway/keys/${id}`, { method: 'DELETE', headers: h });
+    await fetch(`${GW_API}/gateway/keys/${id}`, { method: 'DELETE', headers: h() });
     await loadAll();
   };
 
   const toggleKey = async (id: string) => {
-    await fetch(`${GW_API}/gateway/keys/${id}/toggle`, { method: 'PATCH', headers: h });
+    await fetch(`${GW_API}/gateway/keys/${id}/toggle`, { method: 'PATCH', headers: h() });
     await loadAll();
   };
 
@@ -149,13 +191,13 @@ const ApiGatewayPage: React.FC = () => {
       resource_type: newEpType,
     };
     const res = await fetch(`${GW_API}/gateway/manage`, {
-      method: 'POST', headers: h, body: JSON.stringify(body),
+      method: 'POST', headers: h(), body: JSON.stringify(body),
     });
     if (res.ok) { setNewEpOtId(''); setNewEpSlug(''); setNewEpType('records'); await loadAll(); }
   };
 
   const deleteEndpoint = async (id: string) => {
-    await fetch(`${GW_API}/gateway/manage/${id}`, { method: 'DELETE', headers: h });
+    await fetch(`${GW_API}/gateway/manage/${id}`, { method: 'DELETE', headers: h() });
     await loadAll();
   };
 
@@ -287,7 +329,7 @@ const ApiGatewayPage: React.FC = () => {
               <button
                 onClick={async () => {
                   try {
-                    const r = await fetch(`${baseUrl}/v1/openapi.json`, { headers: h });
+                    const r = await fetch(`${baseUrl}/v1/openapi.json`, { headers: h() });
                     if (!r.ok) { alert(`Failed: ${r.status}`); return; }
                     const blob = new Blob([await r.text()], { type: 'application/json' });
                     const url = URL.createObjectURL(blob);
@@ -315,6 +357,16 @@ const ApiGatewayPage: React.FC = () => {
 
         {tab === 'keys' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {errorMessage && (
+              <div style={{
+                padding: '10px 14px', backgroundColor: C.errorDim, border: `1px solid ${C.error}`, borderRadius: 6,
+                color: C.error, fontSize: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
+              }}>
+                <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ flex: 1, whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace,monospace' }}>{errorMessage}</div>
+                <button onClick={() => setErrorMessage(null)} style={{ background: 'none', border: 'none', color: C.error, cursor: 'pointer', fontSize: 16, padding: 0, lineHeight: 1 }}>×</button>
+              </div>
+            )}
             <div style={{ padding: '14px 16px', backgroundColor: C.panel, border: `1px solid ${C.border}`, borderRadius: 8 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 10 }}>Create API Key</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

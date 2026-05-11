@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import secrets
 from typing import Optional
 from uuid import uuid4
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from database import get_pool
 
 router = APIRouter()
+log = logging.getLogger("api_gateway.keys")
 
 
 VALID_SCOPES = {"read:records", "read:events", "read:all"}
@@ -72,24 +74,46 @@ async def list_keys(x_tenant_id: Optional[str] = Header(None)):
 @router.post("", status_code=201)
 async def create_key(body: KeyCreate, x_tenant_id: Optional[str] = Header(None)):
     tenant_id = x_tenant_id or "tenant-001"
+    if not body.name or not body.name.strip():
+        raise HTTPException(status_code=400, detail="Key name is required")
     scopes = _validate_scopes(body.scopes)
     pool = await get_pool()
     raw = f"nxk_{secrets.token_urlsafe(32)}"
     key_hash = _hash_key(raw)
     key_prefix = raw[:12]
     key_id = str(uuid4())
-    await pool.execute(
-        """
-        INSERT INTO api_keys (id, tenant_id, name, key_hash, key_prefix, scopes, enabled, rate_limit_per_min, ip_allowlist, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, NOW())
-        """,
-        key_id, tenant_id, body.name, key_hash, key_prefix, scopes, body.rate_limit_per_min, body.ip_allowlist,
-    )
+    try:
+        await pool.execute(
+            """
+            INSERT INTO api_keys (id, tenant_id, name, key_hash, key_prefix, scopes, enabled, rate_limit_per_min, ip_allowlist, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, NOW())
+            """,
+            key_id, tenant_id, body.name.strip(), key_hash, key_prefix, scopes,
+            body.rate_limit_per_min, body.ip_allowlist,
+        )
+    except asyncpg.exceptions.UndefinedColumnError as e:
+        # Migration didn't run / partially applied. Surface concretely so the
+        # admin sees "rate_limit_per_min does not exist" instead of a silent
+        # 500. The INIT_SQL runs on the next get_pool() — recovering on its
+        # own — but right now we have to fail loudly.
+        log.error("api_keys schema is missing a column: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"api_keys table is missing a column ({e}). Restart api-gateway-service to re-run migrations.",
+        )
+    except asyncpg.exceptions.UniqueViolationError as e:
+        # Practically impossible (random token collision) but explicit > generic.
+        log.error("api_keys uniqueness violation: %s", e)
+        raise HTTPException(status_code=500, detail="Internal key collision — try again.")
+    except Exception as e:
+        log.exception("INSERT into api_keys failed")
+        raise HTTPException(status_code=500, detail=f"Could not save API key: {type(e).__name__}: {e}")
+
     return {
         "id": key_id,
         "key": raw,
         "key_prefix": key_prefix,
-        "name": body.name,
+        "name": body.name.strip(),
         "scopes": scopes,
         "rate_limit_per_min": body.rate_limit_per_min,
         "ip_allowlist": body.ip_allowlist,

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import asyncpg
 
@@ -7,6 +8,7 @@ DATABASE_URL = os.environ.get(
 )
 
 _pool: asyncpg.Pool | None = None
+_pool_lock = asyncio.Lock()
 
 INIT_SQL = """
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -63,11 +65,23 @@ CREATE INDEX IF NOT EXISTS idx_usage_slug_ts ON api_key_usage_log(endpoint_slug,
 
 
 async def get_pool() -> asyncpg.Pool:
+    """
+    Lazily initialise the asyncpg pool + run the schema migrations once.
+    Concurrent first calls used to race here — both saw `_pool is None`,
+    both tried to create_pool, and one of the INIT_SQL passes lost. That
+    could leave the ALTER TABLE ADD COLUMN steps half-applied, which then
+    made every subsequent INSERT fail because the column the code referenced
+    didn't exist. Lock + double-check fixes it.
+    """
     global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
-        async with _pool.acquire() as conn:
-            await conn.execute(INIT_SQL)
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:
+        if _pool is None:
+            pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+            async with pool.acquire() as conn:
+                await conn.execute(INIT_SQL)
+            _pool = pool
     return _pool
 
 
