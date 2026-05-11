@@ -102,7 +102,49 @@
 		reverse_proxy finance-service:9001
 	}
 
-	# Fallback: anything else goes to frontend (SPA routes like /apps, /pipelines, etc.)
+	# ── Pluggable apps platform ──────────────────────────────────────────
+	# apps-service serves several root-level paths because they're literal
+	# URLs in the install.sh / CLI / SDK / manifest entry. Rewriting them
+	# later would invalidate every published manifest's `entry` URL, so we
+	# accept that the platform owns these top-level routes.
+	#
+	# /apps/external/* is intentionally NOT here — it's a SPA deep link
+	# handled by the frontend (ExternalAppsPage).
+	handle /cli/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /sdk/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /app-registry/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /app-installs/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /apps-for-tenant/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /app-studio/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /apps/rpc {
+		reverse_proxy apps-service:8028
+	}
+	handle /apps/bundles/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /apps/scopes/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /apps/functions/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /apps/events/* {
+		reverse_proxy apps-service:8028
+	}
+
+	# Fallback: anything else goes to frontend (SPA routes like /apps, /apps/external, /pipelines, etc.)
 	handle {
 		reverse_proxy frontend:3000
 	}
