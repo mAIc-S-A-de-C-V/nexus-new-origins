@@ -84,9 +84,18 @@ function resolveCreds() {
   };
 }
 
+// Optional tenant impersonation. Only honoured by apps-service when the
+// authenticated user is a superadmin; other roles get a silent no-op
+// and operate in their home tenant.
+function impersonateTenant() {
+  return process.env.NEXUS_IMPERSONATE_TENANT || argFlag("as-tenant") || "";
+}
+
 function authHeaders(creds) {
   const h = { "x-tenant-id": creds.tenant_id };
   if (creds.token) h["Authorization"] = "Bearer " + creds.token;
+  const imp = impersonateTenant();
+  if (imp) h["x-impersonate-tenant"] = imp;
   return h;
 }
 
@@ -365,9 +374,17 @@ const commands = {
 };
 
 if (!commands[cmd]) {
-  console.log("Usage: nexus-app <command>");
+  console.log("Usage: nexus-app <command> [--as-tenant=<tenant_id>]");
   console.log("Commands: " + Object.keys(commands).join(", "));
+  console.log("");
+  console.log("Global flags:");
+  console.log("  --as-tenant=<id>   Operate as a different tenant (superadmin only).");
+  console.log("                     Or set NEXUS_IMPERSONATE_TENANT in your env.");
   process.exit(cmd ? 1 : 0);
 }
+
+// Heads-up message when impersonation is active so it's never a surprise.
+const _imp = impersonateTenant();
+if (_imp) console.error(`[impersonating tenant: ${_imp}]`);
 
 commands[cmd]().catch((e) => die(e.message));

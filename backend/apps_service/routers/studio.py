@@ -25,7 +25,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.auth_middleware import require_auth, AuthUser
+from shared.auth_middleware import AuthUser
+from auth_dep import require_apps_auth as require_auth
 from database import (
     ExternalAppRow, ExternalAppVersionRow, ExternalAppInstallRow,
     ExternalAppFunctionRow, get_session,

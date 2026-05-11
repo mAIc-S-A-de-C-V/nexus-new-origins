@@ -21,7 +21,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
-from shared.auth_middleware import require_auth, AuthUser
+from shared.auth_middleware import AuthUser
+from auth_dep import require_apps_auth as require_auth
 
 
 SDK_DIST_ROOT = Path(os.environ.get("SDK_DIST_PATH", "/opt/sdk-dist"))

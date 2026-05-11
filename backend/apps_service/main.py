@@ -30,7 +30,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from shared.nexus_logging import configure_logging
-from shared.auth_middleware import require_auth
 
 from database import init_db
 from routers import registry, installs, rpc as rpc_router, functions as functions_router, studio as studio_router, sdk_dist as sdk_dist_router

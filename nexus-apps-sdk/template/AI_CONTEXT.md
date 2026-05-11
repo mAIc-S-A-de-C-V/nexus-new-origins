@@ -264,6 +264,29 @@ What's on you:
 - Catch `ScopeDeniedError` and degrade gracefully (hide UI, show hint, etc).
 - Validate inputs you pass to `actions.propose` — the platform passes them through.
 
+### 9.1 Superadmin tenant impersonation
+
+apps-service honours an `x-impersonate-tenant` header on every endpoint
+(`/app-registry/*`, `/app-installs/*`, `/app-studio/*`, `/cli/*`,
+`/sdk/*`, `/apps/scopes/*`, `/apps/functions/*`). When the
+authenticated user is a **superadmin** and the header carries a
+different tenant id than their home tenant, the request is processed
+as if the caller belonged to that tenant — they see that tenant's
+catalog, installs, brief overlay, audit log, etc.
+
+Non-superadmins get a silent no-op (the header is ignored, not 403).
+That way honest clients can always include the header without breaking
+when they're not authorised.
+
+Every audit row written while impersonating still records the real
+caller's `user_id` and the impersonated tenant in `tenant_id` — the
+trail shows both halves cleanly.
+
+The CLI exposes this via `--as-tenant=<id>` on any command, or
+`NEXUS_IMPERSONATE_TENANT=<id>` in the environment. When active, the
+CLI prints `[impersonating tenant: <id>]` to stderr so it's never
+silent.
+
 ## 10. <!--TENANT-LIVE--> Available object types in this tenant
 
 ```

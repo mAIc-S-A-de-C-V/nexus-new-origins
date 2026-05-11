@@ -516,6 +516,19 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <li>Validating inputs inside <code>actions.propose</code> — the platform passes them through.</li>
             <li>Versioning your manifest accurately so admins can audit upgrades.</li>
           </ul>
+
+          <h3 style={{ fontSize: 12, fontWeight: 700, marginTop: 18, marginBottom: 6, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Superadmin tenant impersonation</h3>
+          <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.7 }}>
+            Apps-service honours an <code>x-impersonate-tenant</code> header on every endpoint. When the authenticated user is a <strong>superadmin</strong>, the request is processed as if the caller belonged to the impersonated tenant — they see that tenant's catalog, installs, brief, audit log. Non-superadmins get a silent no-op (the header is ignored, not 403). Every audit row records the real caller's <code>user_id</code> + the impersonated <code>tenant_id</code>, so the trail captures both halves.
+            <Code>{`# CLI flag — wraps the header onto every outgoing request
+nexus-app brief    --as-tenant=tenant-mjsp-sv
+nexus-app versions hello-nexus --as-tenant=tenant-2e382f99
+nexus-app publish  --as-tenant=tenant-2e382f99
+
+# Or set once in your shell
+export NEXUS_IMPERSONATE_TENANT=tenant-mjsp-sv
+nexus-app brief      # prints [impersonating tenant: tenant-mjsp-sv] to stderr`}</Code>
+          </div>
         </Section>
 
         {/* Troubleshooting */}
