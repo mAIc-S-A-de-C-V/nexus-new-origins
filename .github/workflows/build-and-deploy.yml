@@ -371,14 +371,27 @@ jobs:
             # Caddy uses the stock image and reads its config from a mounted
             # file. `docker-compose up -d` only restarts containers whose
             # image changed, so Caddyfile edits never take effect by
-            # themselves. Force a reload — preserves the cert store + active
-            # connections, just rereads the Caddyfile.
-            echo "── Reloading Caddy config ──"
+            # themselves.
+            #
+            # We previously tried `caddy reload` for a hot reload, but the
+            # admin-api reload sometimes silently no-ops on route-table
+            # changes — the reload subprocess parses the new Caddyfile and
+            # exits 0 but the running daemon doesn't swap its mux. A
+            # restart of the container is the simple, deterministic fix:
+            # the new file is re-read fresh at startup. Connection drop is
+            # ~200ms (Caddy boots quickly) which is acceptable for a deploy.
+            echo "── Restarting Caddy to apply Caddyfile changes ──"
+            sudo --preserve-env=IMAGE_TAG docker-compose \
+              -f docker-compose.yml -f docker-compose.deploy.yml \
+              restart caddy
+            # Verify the new config actually loaded — show the first 5
+            # routes Caddy is currently serving.
+            sleep 3
+            echo "── Caddy server config (top of routes) ──"
             sudo docker exec nexus-new-origins-caddy-1 \
-              caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
-              || sudo --preserve-env=IMAGE_TAG docker-compose \
-                   -f docker-compose.yml -f docker-compose.deploy.yml \
-                   restart caddy
+              wget -qO- http://localhost:2019/config/apps/http/servers/srv0/routes 2>/dev/null \
+              | head -c 600 || echo "(admin API not reachable — non-fatal)"
+            echo ""
 
             # Drop dangling images from the previous deploy to keep disk lean
             sudo docker image prune -f
