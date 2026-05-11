@@ -48,8 +48,21 @@ RUN cd /opt/nexus-apps-sdk \
         const h=p.createHash('sha256').update(tgz).digest('hex'); \
         fs.writeFileSync('/opt/sdk-dist/v'+v+'/manifest.json', JSON.stringify({version:v,sha256:h,size:tgz.length,filename:'nexus-app-sdk.tgz'},null,2));"
 
-# Bake the CLI into /opt/cli so it can be served standalone.
-RUN mkdir -p /opt/cli && cp /opt/nexus-apps-sdk/cli/index.mjs /opt/cli/nexus-app
+# Bundle the CLI into a single self-contained file. The CLI imports `tar`
+# (an npm package) and would fail at runtime without node_modules next to
+# it — bundling inlines every dep so /opt/cli/nexus-app runs anywhere
+# Node 18+ is installed, no node_modules required. We output CJS so the
+# shebang-launched binary doesn't need a .mjs extension or a sibling
+# package.json with type=module.
+RUN mkdir -p /opt/cli \
+    && cd /opt/nexus-apps-sdk \
+    && npx --yes esbuild@0.21.5 cli/index.mjs \
+         --bundle \
+         --platform=node \
+         --target=node18 \
+         --format=cjs \
+         --outfile=/opt/cli/nexus-app \
+    && chmod +x /opt/cli/nexus-app
 
 COPY backend/shared /app/shared
 COPY backend/apps_service /app/

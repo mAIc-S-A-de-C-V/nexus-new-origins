@@ -26,6 +26,7 @@ from shared.auth_middleware import require_auth, AuthUser
 
 SDK_DIST_ROOT = Path(os.environ.get("SDK_DIST_PATH", "/opt/sdk-dist"))
 CLI_PATH = Path(os.environ.get("CLI_PATH", "/opt/cli/nexus-app"))
+TEMPLATE_ROOT = Path(os.environ.get("CLI_TEMPLATE_PATH", "/opt/nexus-apps-sdk/template"))
 
 
 router = APIRouter()
@@ -99,6 +100,28 @@ async def cli_script(user: AuthUser = Depends(require_auth)):
         raise HTTPException(500, "CLI binary not installed in image")
     content = CLI_PATH.read_text(encoding="utf-8")
     return Response(content, media_type="text/javascript")
+
+
+@router.get("/cli/template")
+async def cli_template(user: AuthUser = Depends(require_auth)):
+    """
+    Returns the SDK's project template as a JSON map of {path: content}.
+    Used by `nexus-app init` when the bundled binary doesn't have the
+    template files on disk next to it. Auth-only.
+    """
+    if not TEMPLATE_ROOT.exists():
+        raise HTTPException(500, f"template not found at {TEMPLATE_ROOT}")
+    files: dict[str, str] = {}
+    for p in TEMPLATE_ROOT.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(TEMPLATE_ROOT).as_posix()
+        try:
+            files[rel] = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Skip binaries — template should be all text but be defensive
+            continue
+    return {"files": files}
 
 
 _INSTALL_SH = """#!/bin/sh

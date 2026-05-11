@@ -21,7 +21,7 @@
  *   nexus-app brief                  Download AI context for the current tenant.
  */
 import {
-  existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, statSync,
+  existsSync, readFileSync, writeFileSync, mkdirSync, statSync,
   readdirSync, rmSync, chmodSync,
 } from "node:fs";
 import { resolve, join, dirname } from "node:path";
@@ -32,8 +32,19 @@ import * as readline from "node:readline";
 import { Writable } from "node:stream";
 import { create as tarCreate, extract as tarExtract } from "tar";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEMPLATE_DIR = resolve(__dirname, "..", "template");
+// Filesystem location of this script. In ESM-from-source `import.meta.url`
+// is the way; in esbuild's CJS bundle `__filename` is defined and
+// `import.meta.url` is undefined. Try both so the same source works in
+// both modes. (The CJS bundle's __filename points at the install dir,
+// e.g. ~/.nexus/bin/nexus-app — there's no sibling template/ there. The
+// template is fetched from the server at init time instead; see cmdInit.)
+const SELF_PATH = (() => {
+  if (typeof __filename !== "undefined") return __filename;
+  try { return fileURLToPath(import.meta.url); } catch { return process.argv[1] || ""; }
+})();
+const SELF_DIR = SELF_PATH ? dirname(SELF_PATH) : process.cwd();
+// Only valid when running from the SDK source repo (npm run dev / linked install).
+const TEMPLATE_DIR_LOCAL = resolve(SELF_DIR, "..", "template");
 
 const CREDS_DIR = join(homedir(), ".nexus");
 const CREDS_FILE = join(CREDS_DIR, "credentials.json");
@@ -202,8 +213,29 @@ async function cmdInit() {
   const target = resolve(process.cwd(), name);
   if (existsSync(target)) die(`${target} already exists`);
   mkdirSync(target, { recursive: true });
-  if (!existsSync(TEMPLATE_DIR)) die("template/ missing from CLI install");
-  cpSync(TEMPLATE_DIR, target, { recursive: true });
+
+  // Two ways to get the template files:
+  //   1. Local SDK source — only available when running from `node cli/index.mjs`
+  //      with the SDK repo nearby (dev mode).
+  //   2. apps-service `/cli/template` endpoint — for the standalone bundled
+  //      binary distributed via install.sh. Requires the user to be logged
+  //      in, which they are by definition (install.sh seeded the creds).
+  if (existsSync(TEMPLATE_DIR_LOCAL)) {
+    const { cpSync } = await import("node:fs");
+    cpSync(TEMPLATE_DIR_LOCAL, target, { recursive: true });
+  } else {
+    const creds = resolveCreds();
+    if (!creds.apps_url) die("not logged in and no local template/ found — run `nexus-app login` first");
+    console.log(`fetching template from ${creds.apps_url}…`);
+    const r = await fetch(`${creds.apps_url}/cli/template`, { headers: authHeaders(creds) });
+    if (!r.ok) die(`template fetch: ${r.status} ${await r.text().catch(() => "")}`);
+    const { files } = await r.json();
+    for (const [relPath, content] of Object.entries(files)) {
+      const out = join(target, relPath);
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(out, content, "utf8");
+    }
+  }
 
   for (const fn of ["package.json", "manifest.json", "index.html", "src/main.tsx", "AI_CONTEXT.md"]) {
     const f = join(target, fn);
