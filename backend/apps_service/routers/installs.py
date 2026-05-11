@@ -26,7 +26,7 @@ from database import (
     ExternalAppRow, ExternalAppVersionRow, ExternalAppInstallRow,
     ExternalAppKVRow, ExternalAppFunctionRow, ExternalAppAuditRow,
     get_session,
-)
+)  # noqa: F401  ExternalAppRow used for tenant allowlist check
 import audit as audit_helper
 import jwt_app
 
@@ -85,6 +85,17 @@ async def install_app(
 ):
     if not user.is_admin():
         raise HTTPException(403, "Only tenant admins can install apps")
+
+    # Enforce catalog-level tenant restrictions before anything else. Empty
+    # allowlist or unset = public; non-empty = only listed tenants may install.
+    catalog_row = (await db.execute(
+        select(ExternalAppRow).where(ExternalAppRow.app_id == body.app_id)
+    )).scalar_one_or_none()
+    if not catalog_row:
+        raise HTTPException(404, f"App '{body.app_id}' not found")
+    allow = list(catalog_row.tenant_allowlist or [])
+    if not user.is_superadmin() and allow and user.tenant_id not in allow:
+        raise HTTPException(403, f"App '{body.app_id}' is not available in this tenant")
 
     version_row = (await db.execute(
         select(ExternalAppVersionRow).where(

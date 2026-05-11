@@ -45,8 +45,27 @@ class AppCatalogEntry(BaseModel):
     homepage_url: Optional[str] = None
     latest_version: Optional[str] = None
     visibility: str
+    tenant_allowlist: list[str] = []
     created_at: datetime
     updated_at: datetime
+
+
+def _is_visible_to(app_row: ExternalAppRow, user) -> bool:
+    """Catalog visibility check.
+
+    - Superadmin sees everything (so they can manage the allowlist).
+    - Non-public visibility hides from everyone except superadmin.
+    - Empty allowlist = visible to every tenant (default).
+    - Non-empty allowlist = only listed tenants see it.
+    """
+    if user.is_superadmin():
+        return True
+    if (app_row.visibility or "public") != "public":
+        return False
+    allow = list(app_row.tenant_allowlist or [])
+    if not allow:
+        return True
+    return user.tenant_id in allow
 
 
 class AppVersionEntry(BaseModel):
@@ -73,7 +92,7 @@ async def list_catalog(
     db: AsyncSession = Depends(get_session),
 ):
     rows = (await db.execute(select(ExternalAppRow).order_by(ExternalAppRow.display_name))).scalars().all()
-    return rows
+    return [r for r in rows if _is_visible_to(r, user)]
 
 
 @router.get("/apps/{app_id}")
@@ -85,6 +104,9 @@ async def get_app_with_versions(
     app_row = (await db.execute(select(ExternalAppRow).where(ExternalAppRow.app_id == app_id))).scalar_one_or_none()
     if not app_row:
         raise HTTPException(404, f"App '{app_id}' not found")
+    if not _is_visible_to(app_row, user):
+        # Same response as not-found — don't leak existence to non-allowed tenants
+        raise HTTPException(404, f"App '{app_id}' not found")
     versions = (await db.execute(
         select(ExternalAppVersionRow).where(ExternalAppVersionRow.app_id == app_id)
         .order_by(desc(ExternalAppVersionRow.published_at))
@@ -93,6 +115,49 @@ async def get_app_with_versions(
         "app": AppCatalogEntry.model_validate(app_row),
         "versions": [AppVersionEntry.model_validate(v) for v in versions],
     }
+
+
+class AppPatchBody(BaseModel):
+    visibility: Optional[str] = None
+    tenant_allowlist: Optional[list[str]] = None
+
+
+@router.patch("/apps/{app_id}", response_model=AppCatalogEntry)
+async def patch_app(
+    app_id: str,
+    body: AppPatchBody,
+    user: AuthUser = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Manage who can see an app. Superadmin-only — this is a platform-level
+    decision, not a per-tenant one.
+
+    - visibility: "public" | "private" | "unlisted"
+    - tenant_allowlist: list of tenant_id strings. Empty = public to all.
+    """
+    if not user.is_superadmin():
+        raise HTTPException(403, "Only superadmins can change app visibility")
+    row = (await db.execute(select(ExternalAppRow).where(ExternalAppRow.app_id == app_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, f"App '{app_id}' not found")
+    if body.visibility is not None:
+        if body.visibility not in ("public", "private", "unlisted"):
+            raise HTTPException(400, "visibility must be public | private | unlisted")
+        row.visibility = body.visibility
+    if body.tenant_allowlist is not None:
+        # de-dupe + drop empty strings
+        cleaned = sorted({t.strip() for t in body.tenant_allowlist if t and t.strip()})
+        row.tenant_allowlist = cleaned
+    await db.commit()
+    await db.refresh(row)
+
+    await audit_helper.write_audit(
+        db, tenant_id="platform", install_id=None, app_id=app_id,
+        user_id=user.id, event_type="catalog.patch", status="ok",
+        extras={"visibility": row.visibility, "tenant_allowlist": row.tenant_allowlist},
+    )
+    return row
 
 
 @router.post("/publish")

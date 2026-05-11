@@ -48,6 +48,11 @@ class ExternalAppRow(Base):
     homepage_url = Column(String, nullable=True)
     latest_version = Column(String, nullable=True)         # pointer to current "head"
     visibility = Column(String, nullable=False, default="public")  # public | private | unlisted
+    # Empty list = no restriction (visible/installable by every tenant).
+    # Non-empty list = only those tenant_ids can see + install it. The
+    # catalog filter and the install guard both respect this; existing
+    # installs in non-listed tenants are preserved (we just stop new ones).
+    tenant_allowlist = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -191,8 +196,16 @@ class ExternalAppRunRow(Base):
 
 
 async def init_db():
+    from sqlalchemy import text
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent column additions for tables that pre-date the column.
+        # create_all only creates missing tables, never alters existing ones,
+        # so any column added after the first deploy needs an explicit ADD.
+        await conn.execute(text(
+            "ALTER TABLE external_apps "
+            "ADD COLUMN IF NOT EXISTS tenant_allowlist JSONB NOT NULL DEFAULT '[]'::jsonb"
+        ))
 
 
 async def get_session() -> AsyncSession:
