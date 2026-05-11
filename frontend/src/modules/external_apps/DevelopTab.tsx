@@ -19,6 +19,11 @@ const PURPLE = '#7C3AED';
 const BORDER = '#E2E8F0';
 const CARD_BG = '#FFFFFF';
 
+// Public origin of THIS deployment's apps-service — substituted into the
+// install.sh + curl examples so developers can copy-paste them verbatim.
+// Falls back to localhost in dev where the env isn't set at build time.
+const APPS_PUBLIC_URL = import.meta.env.VITE_APPS_SERVICE_URL || 'http://localhost:8028';
+
 const CopyButton: React.FC<{ text: string; label?: string }> = ({ text, label = 'Copy' }) => {
   const [done, setDone] = useState(false);
   return (
@@ -172,34 +177,68 @@ const DevelopTab: React.FC = () => {
         </div>
 
         {/* Quick start */}
-        <Section id="quickstart" title="Quick start" subtitle="From zero to a published app in under five minutes.">
-          <Step n={1} title="Scaffold the app">
-            Run from the repo root. Creates a Vite + React + TypeScript starter with the SDK pre-wired.
-            <Code>{`node nexus-apps-sdk/cli/index.mjs init my-first-app`}</Code>
-          </Step>
-          <Step n={2} title="Run it in dev mode (mock SDK)">
-            <Code>{`cd my-first-app
-npm install
-npm run dev   # opens http://localhost:5174 — iterate without a host`}</Code>
+        <Section id="quickstart" title="Quick start" subtitle="From a fresh laptop to a published app — no repo access needed.">
+          <div style={{ marginBottom: 14, padding: 12, background: '#F8F5FF', border: `1px solid ${BORDER}`, borderRadius: 4, fontSize: 12, color: '#475569' }}>
+            <strong style={{ color: '#0D1117' }}>Two paths.</strong> The Studio tab lets you build, edit, and publish entirely in the browser — no terminal at all. The steps below are for the CLI path, when you want a real local project, multi-file source, your own git history.
+          </div>
+
+          <Step n={1} title="Install the CLI (once per machine)">
+            One bootstrap script asks for your Nexus credentials, persists a token in <code>~/.nexus/credentials.json</code>, and downloads the CLI to <code>~/.nexus/bin/nexus-app</code>. The CLI and the SDK both live behind this platform's auth — neither one is on any public or private npm registry.
+            <Code>{`curl -fsSL ${APPS_PUBLIC_URL}/cli/install.sh | sh
+
+# Add to PATH (one line in ~/.zshrc or ~/.bashrc)
+export PATH="$HOME/.nexus/bin:$PATH"`}</Code>
             <div style={{ fontSize: 11, color: '#64748B', marginTop: -4 }}>
-              In dev mode the SDK auto-switches to mock mode: <code>useNexus()</code> returns a synthetic
-              client backed by in-memory data so you can iterate without round-tripping through the platform.
-              Provide your own seed via <code>{`<NexusProvider mockData={...}>`}</code>.
+              The installer prompts for your apps URL, tenant id, email, and password. Want to switch tenants later? Run <code>nexus-app logout</code> then <code>nexus-app login</code>.
             </div>
           </Step>
-          <Step n={3} title="Edit your code">
-            Open <code>src/main.tsx</code>. Call any SDK method — see the reference below.
-            Edit <code>manifest.json</code> to declare scopes, surfaces (where the app shows up), and optional server-side functions.
+
+          <Step n={2} title="Scaffold an app">
+            Creates a Vite + React + TypeScript starter and vendors the SDK from this apps-service into <code>vendor/nexus-app-sdk.tgz</code>. <code>npm install</code> resolves <code>@nexus/app-sdk</code> from that local tarball — no registry call.
+            <Code>{`nexus-app init my-first-app
+cd my-first-app
+npm install`}</Code>
+            <div style={{ fontSize: 11, color: '#64748B', marginTop: -4 }}>
+              <code>AI_CONTEXT.md</code> is dropped into the project root — paste it into Claude/Cursor/ChatGPT to generate your TSX. For a brief that includes <strong>your tenant's live</strong> object types, actions, and agents, run <code>nexus-app brief</code> from the project dir.
+            </div>
           </Step>
-          <Step n={4} title="Build and publish">
+
+          <Step n={3} title="Run it in dev mode (mock SDK)">
+            <Code>{`npm run dev   # opens http://localhost:5174 — iterate without a host`}</Code>
+            <div style={{ fontSize: 11, color: '#64748B', marginTop: -4 }}>
+              In dev mode the SDK auto-switches to mock mode: <code>useNexus()</code> returns a synthetic client backed by in-memory data so you can iterate without round-tripping through the platform. Provide your own seed via <code>{`<NexusProvider mockData={...}>`}</code>.
+            </div>
+          </Step>
+
+          <Step n={4} title="Edit your code">
+            Open <code>src/main.tsx</code>. Call any SDK method — see the reference below. Edit <code>manifest.json</code> to declare scopes, surfaces (where the app shows up), and optional server-side functions. Bump <code>version</code> every time you publish — versions are immutable once published.
+          </Step>
+
+          <Step n={5} title="Build and publish">
             <Code>{`npm run build
-NEXUS_APPS_URL=http://localhost:8028 NEXUS_TENANT_ID=tenant-001 \\
-  node ../nexus-apps-sdk/cli/index.mjs publish`}</Code>
-            The CLI tarballs <code>dist/</code>, uploads it to apps-service, and the version becomes available in the Catalog tab.
+nexus-app publish`}</Code>
+            The CLI tarballs <code>dist/</code>, uploads it to this apps-service (using your stored credentials), and the version becomes available in the Catalog tab. Ship a fix by bumping <code>version</code> and publishing again.
           </Step>
-          <Step n={5} title="Install and use">
-            Switch to <strong>Catalog</strong> → find your app → <strong>Install</strong> → review scopes →
-            land on the Installed tab with the iframe rendered.
+
+          <Step n={6} title="Install and use">
+            Switch to <strong>Catalog</strong> → find your app → <strong>Install</strong> → review scopes → land on the Installed tab with the iframe rendered. Or in one step from the CLI:
+            <Code>{`nexus-app install`}</Code>
+            <div style={{ fontSize: 11, color: '#64748B', marginTop: -4 }}>
+              The install lives in your tenant. Other tenants don't see your app unless a superadmin makes it public or adds them to the allowlist.
+            </div>
+          </Step>
+
+          <Step n={7} title="What's wired by default">
+            <ul style={{ paddingLeft: 18, lineHeight: 1.7, margin: 0 }}>
+              <li><code>nexus-app login</code> / <code>logout</code> / <code>whoami</code> — credential management</li>
+              <li><code>nexus-app init &lt;name&gt;</code> — scaffold + vendor SDK</li>
+              <li><code>nexus-app vendor</code> — re-pull the latest SDK into an existing project</li>
+              <li><code>nexus-app dev</code> / <code>build</code> — pass-through to npm</li>
+              <li><code>nexus-app publish</code> — tarball + upload to this apps-service</li>
+              <li><code>nexus-app install</code> — install the current project in your tenant</li>
+              <li><code>nexus-app versions &lt;app_id&gt;</code> — list published versions</li>
+              <li><code>nexus-app brief --out=AI_CONTEXT.md</code> — fresh tenant-live AI brief</li>
+            </ul>
           </Step>
         </Section>
 
@@ -294,8 +333,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   "icon":          "https://.../icon.svg",
   "homepage":      "https://...",
 
-  "entry":         "http://localhost:8028/apps/bundles/procurement-cockpit/1.0.0/index.html",
+  "entry":         "<APPS_BASE>/apps/bundles/procurement-cockpit/1.0.0/index.html",
                    // The URL the host iframes. apps-service serves your bundle here automatically.
+                   // <APPS_BASE> is this tenant's apps-service public URL. The CLI's 'nexus-app
+                   // publish' fills it in for you; you only have to set 'entry' manually if you
+                   // build the manifest by hand.
 
   "scopes": [
     "ontology:read:ordenes_de_compra",
@@ -469,7 +511,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         {/* Troubleshooting */}
         <Section id="troubleshoot" title="Troubleshooting" subtitle="Common pitfalls and how to fix them.">
           <ul style={{ fontSize: 12, color: '#475569', paddingLeft: 18, lineHeight: 1.7, margin: 0 }}>
-            <li><strong>Iframe is blank</strong> → open browser devtools console, look for "postMessage origin mismatch". Usually means <code>manifest.entry</code> doesn't match where apps-service serves it. Run <code>curl http://localhost:8028/app-registry/apps/&lt;your-app&gt;</code> and compare <code>entry_url</code> to the iframe's <code>src</code>.</li>
+            <li><strong>Iframe is blank</strong> → open browser devtools console, look for "postMessage origin mismatch". Usually means <code>manifest.entry</code> doesn't match where apps-service serves it. Run <code>curl {APPS_PUBLIC_URL}/app-registry/apps/&lt;your-app&gt;</code> and compare <code>entry_url</code> to the iframe's <code>src</code>.</li>
             <li><strong>RPC returns <code>scope_denied</code></strong> → admin didn't grant that scope on install. Go to Installed → your app → Scopes pane → tick it → Save.</li>
             <li><strong>RPC returns <code>rate_limited</code></strong> → you're calling too fast. Batch reads, increase <code>refetchInterval</code>, or coalesce.</li>
             <li><strong>Server function fails with <code>sandbox_violation</code></strong> → you used <code>import</code>, <code>__import__</code>, or a forbidden dunder. Stick to the curated builtins + <code>json</code>, <code>datetime</code>, and the <code>nexus</code> client.</li>
@@ -496,15 +538,16 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           </div>
         </Section>
 
-        {/* Footer pointers */}
+        {/* Footer pointers — what's available without the source repo */}
         <div style={{ marginTop: 32, padding: 16, background: '#F1F5F9', borderRadius: 6, fontSize: 12, color: '#475569' }}>
-          <div style={{ fontWeight: 600, color: '#0D1117', marginBottom: 6 }}>Reference reading inside the repo</div>
+          <div style={{ fontWeight: 600, color: '#0D1117', marginBottom: 6 }}>Where things live</div>
           <ul style={{ paddingLeft: 18, lineHeight: 1.7, margin: 0 }}>
-            <li><code>nexus-apps/hello-nexus/</code> — fully working reference app (all SDK surfaces exercised)</li>
-            <li><code>nexus-apps-sdk/src/client.ts</code> — SDK source if you want to see what the RPC envelope actually looks like</li>
-            <li><code>backend/apps_service/routers/rpc.py</code> — the host-side dispatcher (scope checks, rate limits, audit)</li>
-            <li><code>backend/apps_service/scopes.py</code> — the canonical scope catalog</li>
-            <li><code>backend/apps_service/smoke_test.py</code> — end-to-end test script you can crib from</li>
+            <li>This page — full SDK + manifest + scope + lifecycle reference.</li>
+            <li><code>AI_CONTEXT.md</code> in every scaffolded project — paste into Claude/Cursor/ChatGPT.</li>
+            <li>The <strong>Studio</strong> tab — build, validate, publish in the browser, no terminal.</li>
+            <li><code>nexus-app brief</code> — pulls the same document with your tenant's <em>live</em> ontology / actions / agents pre-filled.</li>
+            <li>The <strong>AUDIT</strong> sub-tab on any installed app — every RPC call with scope used, latency, outcome.</li>
+            <li><code>{APPS_PUBLIC_URL}/docs</code> — OpenAPI spec for the apps-service itself.</li>
           </ul>
         </div>
       </div>
