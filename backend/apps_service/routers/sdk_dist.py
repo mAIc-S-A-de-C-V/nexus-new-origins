@@ -107,87 +107,105 @@ _INSTALL_SH = """#!/bin/sh
 # Neither the CLI nor the SDK leaves the platform's auth boundary.
 set -eu
 
-# When invoked as `curl ... | sh`, sh's stdin is the pipe (the script
-# itself). Any subsequent `read` would consume more of the script as
-# input, producing nonsense URLs and broken prompts. Re-bind stdin to
-# the user's terminal so prompts actually wait for typed input.
-if [ -r /dev/tty ]; then
-  exec </dev/tty
-else
-  echo "error: this installer needs an interactive terminal." >&2
-  echo "try: curl -fsSL https://<your-nexus>/cli/install.sh -o install.sh && sh install.sh" >&2
-  exit 1
-fi
+# Why this whole script lives in a function:
+#
+# When invoked as `curl ... | sh`, sh reads its script from stdin (the
+# pipe) one chunk at a time. The moment we `exec </dev/tty` to rebind
+# stdin for user prompts, the REST of the script still queued in the
+# pipe is unreachable — sh tries to read the next command from /dev/tty
+# (the terminal, which has nothing buffered) and the script exits
+# silently.
+#
+# Wrapping everything in `main()` forces sh to buffer the full function
+# body in memory before running it. The function call is the LAST line
+# of the script; by then sh has fully parsed the file from stdin and
+# can safely swap stdin to /dev/tty inside main without losing anything.
+main() {
+  if [ -r /dev/tty ]; then
+    exec </dev/tty
+  else
+    echo "error: this installer needs an interactive terminal." >&2
+    echo "try: curl -fsSL https://<your-nexus>/cli/install.sh -o install.sh && sh install.sh" >&2
+    exit 1
+  fi
 
-# Single base URL — the platform's public host (e.g. https://app.maic.ai).
-# Both apps-service and auth-service live behind it via Caddy.
-if [ -z "${NEXUS_BASE_URL:-}" ]; then
-  printf "Nexus base URL (e.g. https://app.maic.ai): "
-  read NEXUS_BASE_URL
-fi
-# Trim trailing slashes
-NEXUS_BASE_URL="${NEXUS_BASE_URL%/}"
-# By convention apps-service is at the base URL; auth-service is proxied
-# at <base>/api/auth. Operators can override via env if their topology
-# is different.
-NEXUS_APPS_URL="${NEXUS_APPS_URL:-$NEXUS_BASE_URL}"
-NEXUS_AUTH_URL="${NEXUS_AUTH_URL:-$NEXUS_BASE_URL/api/auth}"
+  # Single base URL — the platform's public host (e.g. https://app.maic.ai).
+  # Both apps-service and auth-service live behind it via Caddy.
+  if [ -z "${NEXUS_BASE_URL:-}" ]; then
+    printf "Nexus base URL (e.g. https://app.maic.ai): "
+    read NEXUS_BASE_URL
+  fi
+  NEXUS_BASE_URL="${NEXUS_BASE_URL%/}"
+  NEXUS_APPS_URL="${NEXUS_APPS_URL:-$NEXUS_BASE_URL}"
+  NEXUS_AUTH_URL="${NEXUS_AUTH_URL:-$NEXUS_BASE_URL/api/auth}"
 
-if [ -z "${NEXUS_TENANT_ID:-}" ]; then
-  printf "Tenant id (e.g. tenant-001): "
-  read NEXUS_TENANT_ID
-fi
+  if [ -z "${NEXUS_TENANT_ID:-}" ]; then
+    printf "Tenant id (e.g. tenant-001): "
+    read NEXUS_TENANT_ID
+  fi
 
-printf "Email: "
-read EMAIL
-stty -echo
-printf "Password: "
-read PASSWORD
-stty echo
-printf "\\n"
+  if [ -z "${NEXUS_EMAIL:-}" ]; then
+    printf "Email: "
+    read NEXUS_EMAIL
+  fi
+  if [ -z "${NEXUS_PASSWORD:-}" ]; then
+    stty -echo 2>/dev/null || true
+    printf "Password: "
+    read NEXUS_PASSWORD
+    stty echo 2>/dev/null || true
+    printf "\\n"
+  fi
 
-LOGIN_BODY=$(printf '{"email":"%s","password":"%s","tenant_id":"%s"}' \
-              "$EMAIL" "$PASSWORD" "$NEXUS_TENANT_ID")
-LOGIN_RESPONSE=$(curl -fsS -X POST "$NEXUS_AUTH_URL/auth/login" \
-                  -H "Content-Type: application/json" -d "$LOGIN_BODY" 2>&1) || {
-  echo "" >&2
-  echo "login request failed:" >&2
-  echo "$LOGIN_RESPONSE" >&2
-  echo "" >&2
-  echo "Verify auth URL is correct (currently: $NEXUS_AUTH_URL)" >&2
-  exit 1
-}
-TOKEN=$(echo "$LOGIN_RESPONSE" | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
-if [ -z "$TOKEN" ]; then
-  echo "login succeeded HTTP-wise but no access_token in response:" >&2
-  echo "$LOGIN_RESPONSE" >&2
-  exit 1
-fi
+  LOGIN_BODY=$(printf '{"email":"%s","password":"%s","tenant_id":"%s"}' \
+                "$NEXUS_EMAIL" "$NEXUS_PASSWORD" "$NEXUS_TENANT_ID")
+  LOGIN_RESPONSE=$(curl -sS -X POST "$NEXUS_AUTH_URL/auth/login" \
+                    -H "Content-Type: application/json" -d "$LOGIN_BODY") || {
+    echo "" >&2
+    echo "login request failed (network or auth-service unreachable)" >&2
+    echo "tried: POST $NEXUS_AUTH_URL/auth/login" >&2
+    exit 1
+  }
+  TOKEN=$(echo "$LOGIN_RESPONSE" | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
+  if [ -z "$TOKEN" ]; then
+    echo "" >&2
+    echo "login failed — server response:" >&2
+    echo "$LOGIN_RESPONSE" >&2
+    echo "" >&2
+    echo "tried: POST $NEXUS_AUTH_URL/auth/login" >&2
+    echo "      tenant_id: $NEXUS_TENANT_ID" >&2
+    echo "      email:     $NEXUS_EMAIL" >&2
+    exit 1
+  fi
 
-INSTALL_DIR="${HOME}/.nexus/bin"
-mkdir -p "$INSTALL_DIR" "${HOME}/.nexus"
+  INSTALL_DIR="${HOME}/.nexus/bin"
+  mkdir -p "$INSTALL_DIR" "${HOME}/.nexus"
 
-# Persist credentials so the CLI can reuse them without prompting.
-cat > "${HOME}/.nexus/credentials.json" <<EOF
+  cat > "${HOME}/.nexus/credentials.json" <<EOF
 {
   "apps_url":  "$NEXUS_APPS_URL",
   "auth_url":  "$NEXUS_AUTH_URL",
   "tenant_id": "$NEXUS_TENANT_ID",
-  "email":     "$EMAIL",
+  "email":     "$NEXUS_EMAIL",
   "token":     "$TOKEN"
 }
 EOF
-chmod 600 "${HOME}/.nexus/credentials.json"
+  chmod 600 "${HOME}/.nexus/credentials.json"
 
-curl -fsS -H "Authorization: Bearer $TOKEN" \
-     "$NEXUS_APPS_URL/cli/nexus-app" -o "$INSTALL_DIR/nexus-app"
-chmod +x "$INSTALL_DIR/nexus-app"
+  curl -fsS -H "Authorization: Bearer $TOKEN" \
+       "$NEXUS_APPS_URL/cli/nexus-app" -o "$INSTALL_DIR/nexus-app"
+  chmod +x "$INSTALL_DIR/nexus-app"
 
-echo ""
-echo "Installed nexus-app to $INSTALL_DIR/nexus-app"
-echo "Add to PATH:  export PATH=\\"$INSTALL_DIR:\\$PATH\\""
-echo ""
-echo "Try it:  nexus-app whoami"
+  echo ""
+  echo "Installed nexus-app to $INSTALL_DIR/nexus-app"
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *) echo "Add to PATH:  export PATH=\\"$INSTALL_DIR:\\$PATH\\"" ;;
+  esac
+  echo ""
+  echo "Try it:  nexus-app whoami"
+}
+
+main "$@"
 """
 
 
