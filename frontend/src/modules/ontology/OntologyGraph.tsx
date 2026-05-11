@@ -15,6 +15,7 @@ import { PipelineFlowNode } from './PipelineFlowNode';
 import { PipelineStepNode } from './PipelineStepNode';
 import { ObjectTypePanel } from './ObjectTypePanel';
 import { Button } from '../../design-system/components/Button';
+import { Select } from '../../design-system/components/Select';
 import { useOntologyStore } from '../../store/ontologyStore';
 import { useConnectorStore } from '../../store/connectorStore';
 import { usePipelineStore } from '../../store/pipelineStore';
@@ -796,29 +797,27 @@ export const OntologyGraph: React.FC = () => {
             setCtxMenu({ x: e.clientX, y: e.clientY, ot: selectedObjectType });
           }}
         >
-          <select
+          <Select
             value={selectedObjectType?.id || ''}
-            onChange={(e) => {
-              const id = e.target.value;
+            onChange={(id) => {
               if (!id) { setSelectedObjectType(null); return; }
               const ot = objectTypes.find((o) => o.id === id);
               if (ot) setSelectedObjectType(ot);
             }}
+            options={[...objectTypes]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((ot) => ({ value: ot.id, label: ot.name }))}
+            placeholder={`All object types (${objectTypes.length})`}
+            clearable
+            width={220}
+            height={28}
             style={{
-              height: '28px', minWidth: 200, padding: '0 28px 0 10px', borderRadius: '4px',
+              fontSize: 12,
               border: `1px solid ${selectedObjectType ? '#2563EB' : '#E2E8F0'}`,
               backgroundColor: selectedObjectType ? '#EFF6FF' : '#FFFFFF',
               color: selectedObjectType ? '#1D4ED8' : '#64748B',
-              fontSize: '12px', cursor: 'pointer',
             }}
-          >
-            <option value="">All object types ({objectTypes.length})</option>
-            {[...objectTypes]
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((ot) => (
-                <option key={ot.id} value={ot.id}>{ot.name}</option>
-              ))}
-          </select>
+          />
         </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
