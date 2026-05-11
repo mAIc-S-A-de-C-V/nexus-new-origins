@@ -7,9 +7,12 @@ import {
 } from 'lucide-react';
 
 import { useAuth } from '../../shell/TenantContext';
-import { getTenantId } from '../../store/authStore';
+import { getTenantId, getAccessToken } from '../../store/authStore';
 import { useAlertStore, ChannelConfig } from '../../store/alertStore';
 import { uuid } from '../../lib/uuid';
+
+const GATEWAY_API = import.meta.env.VITE_API_GATEWAY_URL
+  || `${typeof window !== 'undefined' ? window.location.protocol : 'http:'}//${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:8021`;
 
 const AlertsPage         = React.lazy(() => import('../alerts/AlertsPage'));
 const ApiGatewayPage     = React.lazy(() => import('../gateway/ApiGatewayPage'));
@@ -308,36 +311,111 @@ const NotificationsTab: React.FC = () => {
 };
 
 // ── API Keys tab ───────────────────────────────────────────────────────────
+// The keys are persisted by api-gateway-service (table api_keys). This tab
+// used to mint a random string in JS, store it in component state, and
+// "show it once" — never reaching the backend. So on refresh, keys vanished,
+// and the strings issued couldn't be used to authenticate against
+// /gateway/v1/<slug>. This now wraps the real /gateway/keys endpoints.
+
+const gatewayHeaders = (): Record<string, string> => {
+  const token = getAccessToken();
+  return {
+    'Content-Type': 'application/json',
+    'x-tenant-id': getTenantId(),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+};
+
+const explainGwFailure = async (resp: Response, action: string): Promise<string> => {
+  let detail: unknown;
+  try { detail = await resp.json(); } catch { try { detail = await resp.text(); } catch { detail = ''; } }
+  const body = typeof detail === 'string'
+    ? detail
+    : (detail && typeof detail === 'object' && 'detail' in detail)
+      ? (detail as { detail: unknown }).detail
+      : JSON.stringify(detail);
+  return `${action} failed (${resp.status} ${resp.statusText}): ${typeof body === 'string' ? body : JSON.stringify(body)}`;
+};
 
 const ApiKeysTab: React.FC = () => {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [newKeyName, setNewKeyName] = useState('');
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const generateKey = () => {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz0123456789';
-    return 'nxs_' + Array.from({ length: 48 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  const reload = async () => {
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      const r = await fetch(`${GATEWAY_API}/gateway/keys`, { headers: gatewayHeaders() });
+      if (!r.ok) {
+        setErrorMessage(await explainGwFailure(r, 'Load API keys'));
+        setKeys([]);
+        return;
+      }
+      const data = await r.json();
+      setKeys(data.map((k: { id: string; name: string; key_prefix: string; created_at: string; last_used_at: string | null }) => ({
+        id: k.id,
+        name: k.name,
+        prefix: k.key_prefix,
+        created_at: k.created_at,
+        last_used_at: k.last_used_at || undefined,
+      })));
+    } catch (e) {
+      setErrorMessage(`Network error reaching gateway at ${GATEWAY_API}: ${(e as Error).message}`);
+      setKeys([]);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => { reload(); }, []);
 
   const createKey = async () => {
     if (!newKeyName.trim()) return;
     setCreating(true);
-    const key = generateKey();
-    await new Promise(r => setTimeout(r, 400));
-    const newK: ApiKey = {
-      id: uuid(),
-      name: newKeyName.trim(),
-      prefix: key.slice(0, 12) + '…',
-      created_at: new Date().toISOString(),
-    };
-    setKeys(prev => [newK, ...prev]);
-    setCreatedKey(key);
+    setErrorMessage(null);
+    setCreatedKey(null);
+    let resp: Response;
+    try {
+      resp = await fetch(`${GATEWAY_API}/gateway/keys`, {
+        method: 'POST',
+        headers: gatewayHeaders(),
+        body: JSON.stringify({ name: newKeyName.trim(), scopes: ['read:records'] }),
+      });
+    } catch (e) {
+      setErrorMessage(`Network error reaching gateway at ${GATEWAY_API}: ${(e as Error).message}`);
+      setCreating(false);
+      return;
+    }
+    if (!resp.ok) {
+      setErrorMessage(await explainGwFailure(resp, 'Create API key'));
+      setCreating(false);
+      return;
+    }
+    const data = await resp.json();
+    setCreatedKey(data.key);
     setNewKeyName('');
     setCreating(false);
+    await reload();
   };
 
-  const revokeKey = (id: string) => setKeys(prev => prev.filter(k => k.id !== id));
+  const revokeKey = async (id: string) => {
+    if (!confirm('Revoke this API key? Consumers using it will immediately lose access.')) return;
+    try {
+      const r = await fetch(`${GATEWAY_API}/gateway/keys/${id}`, { method: 'DELETE', headers: gatewayHeaders() });
+      if (!r.ok && r.status !== 204) {
+        setErrorMessage(await explainGwFailure(r, 'Revoke API key'));
+        return;
+      }
+    } catch (e) {
+      setErrorMessage(`Network error reaching gateway: ${(e as Error).message}`);
+      return;
+    }
+    await reload();
+  };
 
   return (
     <div style={{ maxWidth: 640 }}>
@@ -345,6 +423,18 @@ const ApiKeysTab: React.FC = () => {
         <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>API Keys</div>
         <div style={{ fontSize: 12, color: C.muted }}>Generate keys for external integrations. Keys are shown only once at creation.</div>
       </div>
+
+      {errorMessage && (
+        <div style={{
+          marginBottom: 16, padding: '10px 14px',
+          backgroundColor: '#FEE2E2', border: '1px solid #DC2626', borderRadius: 6,
+          color: '#B91C1C', fontSize: 12, display: 'flex', alignItems: 'flex-start', gap: 8,
+        }}>
+          <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div style={{ flex: 1, whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace,monospace' }}>{errorMessage}</div>
+          <button onClick={() => setErrorMessage(null)} style={{ background: 'none', border: 'none', color: '#B91C1C', cursor: 'pointer', fontSize: 16, padding: 0, lineHeight: 1 }}>×</button>
+        </div>
+      )}
 
       {/* Create new key */}
       <div style={{
@@ -399,7 +489,11 @@ const ApiKeysTab: React.FC = () => {
       )}
 
       {/* Key list */}
-      {keys.length === 0 ? (
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '32px 0', color: C.dim, fontSize: 13 }}>
+          Loading…
+        </div>
+      ) : keys.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '32px 0', color: C.dim, fontSize: 13 }}>
           No API keys yet. Generate one above.
         </div>
