@@ -40,7 +40,6 @@ services:
         VITE_API_GATEWAY_URL: ${VITE_API_GATEWAY_URL:-http://localhost:8021}
         VITE_ADMIN_SERVICE_URL: ${VITE_ADMIN_SERVICE_URL:-http://localhost:8022}
         VITE_KERNEL_SERVICE_URL: ${VITE_KERNEL_SERVICE_URL:-http://localhost:8026}
-        VITE_APPS_SERVICE_URL: ${VITE_APPS_SERVICE_URL:-http://localhost:8028}
     ports:
       - "3000:3000"
     mem_limit: 384m
@@ -551,43 +550,6 @@ services:
       - nexus-net
     command: uvicorn main:app --host 0.0.0.0 --port 8017 --reload
 
-  # ─── Pluggable Apps Platform (apps-service) ─────────────────────────────────
-  apps-service:
-    build:
-      context: .
-      dockerfile: backend/apps_service/Dockerfile
-    ports:
-      - "8028:8028"
-    mem_limit: 512m
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
-      - AUTH_SERVICE_URL=http://auth-service:8011
-      - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
-      - AGENT_SERVICE_URL=http://agent-service:8013
-      - LOGIC_SERVICE_URL=http://logic-service:8012
-      - EVENT_LOG_SERVICE_URL=http://event-log-service:8005
-      - SKIP_AUTH=${SKIP_AUTH:-true}
-      - APP_BUNDLE_ROOT=/data/apps/bundles
-      - APP_BUNDLE_PUBLIC_BASE=http://localhost:8028/apps/bundles
-      - APP_JWT_ISSUER=https://nexus.internal/apps
-      - APP_TOKEN_TTL_SECONDS=300
-      - APPS_RPC_RPS=100
-      - APPS_RPC_BURST=200
-      - APPS_RPC_MAX_PAYLOAD=1048576
-      - APPS_RPC_MAX_RESPONSE=5242880
-      - APPS_KV_MAX_VALUE=65536
-      - APPS_KV_MAX_TOTAL=10485760
-      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:5174,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
-    volumes:
-      - apps_bundles:/data/apps/bundles
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - nexus-net
-    command: uvicorn main:app --host 0.0.0.0 --port 8028 --reload
-    logging: *default-logging
-
   # ─── Nexus Apps ─────────────────────────────────────────────────────────────
   project-management-service:
     build:
@@ -863,7 +825,6 @@ volumes:
   minio_data:
   caddy_data:
   caddy_config:
-  apps_bundles:
 
 networks:
   nexus-net:
