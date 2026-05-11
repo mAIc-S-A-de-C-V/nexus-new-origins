@@ -103,26 +103,39 @@ async def cli_script(user: AuthUser = Depends(require_auth)):
 
 _INSTALL_SH = """#!/bin/sh
 # Nexus CLI bootstrap installer.
-# Authenticates against your tenant's apps-service and downloads the CLI.
-# The CLI itself (and the SDK it pulls) never leaves the platform's auth
-# boundary.
+# Authenticates against your tenant's Nexus and downloads the private CLI.
+# Neither the CLI nor the SDK leaves the platform's auth boundary.
 set -eu
 
-if [ -z "${NEXUS_APPS_URL:-}" ]; then
-  printf "Nexus apps URL (e.g. https://apps.your-nexus.example): "
-  read NEXUS_APPS_URL
+# When invoked as `curl ... | sh`, sh's stdin is the pipe (the script
+# itself). Any subsequent `read` would consume more of the script as
+# input, producing nonsense URLs and broken prompts. Re-bind stdin to
+# the user's terminal so prompts actually wait for typed input.
+if [ -r /dev/tty ]; then
+  exec </dev/tty
+else
+  echo "error: this installer needs an interactive terminal." >&2
+  echo "try: curl -fsSL https://<your-nexus>/cli/install.sh -o install.sh && sh install.sh" >&2
+  exit 1
 fi
+
+# Single base URL — the platform's public host (e.g. https://app.maic.ai).
+# Both apps-service and auth-service live behind it via Caddy.
+if [ -z "${NEXUS_BASE_URL:-}" ]; then
+  printf "Nexus base URL (e.g. https://app.maic.ai): "
+  read NEXUS_BASE_URL
+fi
+# Trim trailing slashes
+NEXUS_BASE_URL="${NEXUS_BASE_URL%/}"
+# By convention apps-service is at the base URL; auth-service is proxied
+# at <base>/api/auth. Operators can override via env if their topology
+# is different.
+NEXUS_APPS_URL="${NEXUS_APPS_URL:-$NEXUS_BASE_URL}"
+NEXUS_AUTH_URL="${NEXUS_AUTH_URL:-$NEXUS_BASE_URL/api/auth}"
+
 if [ -z "${NEXUS_TENANT_ID:-}" ]; then
   printf "Tenant id (e.g. tenant-001): "
   read NEXUS_TENANT_ID
-fi
-if [ -z "${NEXUS_AUTH_URL:-}" ]; then
-  NEXUS_AUTH_URL="${NEXUS_APPS_URL%%/apps*}"
-  # Heuristic: strip trailing /apps to find auth host. Fall back to ask.
-  case "$NEXUS_AUTH_URL" in *apps*)
-    printf "Nexus auth URL (e.g. https://auth.your-nexus.example): "
-    read NEXUS_AUTH_URL
-  ;; esac
 fi
 
 printf "Email: "
@@ -135,11 +148,20 @@ printf "\\n"
 
 LOGIN_BODY=$(printf '{"email":"%s","password":"%s","tenant_id":"%s"}' \
               "$EMAIL" "$PASSWORD" "$NEXUS_TENANT_ID")
-TOKEN=$(curl -fsS -X POST "$NEXUS_AUTH_URL/auth/login" \
-         -H "Content-Type: application/json" -d "$LOGIN_BODY" \
-         | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
+LOGIN_RESPONSE=$(curl -fsS -X POST "$NEXUS_AUTH_URL/auth/login" \
+                  -H "Content-Type: application/json" -d "$LOGIN_BODY" 2>&1) || {
+  echo "" >&2
+  echo "login request failed:" >&2
+  echo "$LOGIN_RESPONSE" >&2
+  echo "" >&2
+  echo "Verify auth URL is correct (currently: $NEXUS_AUTH_URL)" >&2
+  exit 1
+}
+TOKEN=$(echo "$LOGIN_RESPONSE" | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
 if [ -z "$TOKEN" ]; then
-  echo "login failed" >&2; exit 1
+  echo "login succeeded HTTP-wise but no access_token in response:" >&2
+  echo "$LOGIN_RESPONSE" >&2
+  exit 1
 fi
 
 INSTALL_DIR="${HOME}/.nexus/bin"
@@ -161,8 +183,11 @@ curl -fsS -H "Authorization: Bearer $TOKEN" \
      "$NEXUS_APPS_URL/cli/nexus-app" -o "$INSTALL_DIR/nexus-app"
 chmod +x "$INSTALL_DIR/nexus-app"
 
+echo ""
 echo "Installed nexus-app to $INSTALL_DIR/nexus-app"
 echo "Add to PATH:  export PATH=\\"$INSTALL_DIR:\\$PATH\\""
+echo ""
+echo "Try it:  nexus-app whoami"
 """
 
 

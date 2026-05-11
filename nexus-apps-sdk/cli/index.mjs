@@ -118,10 +118,14 @@ function loadManifest() {
 
 // ── login ──
 async function cmdLogin() {
-  const apps_url  = argFlag("apps-url")  || await prompt("Nexus apps URL (e.g. https://apps.your-nexus.example): ");
-  if (!apps_url) die("apps URL required");
-  const auth_url  = argFlag("auth-url")  || await prompt("Nexus auth URL (e.g. https://auth.your-nexus.example): ");
-  if (!auth_url) die("auth URL required");
+  // Single base URL — both apps and auth live behind it (apps at root,
+  // auth at /api/auth). Operators with a different topology can override
+  // either piece via --apps-url / --auth-url or env vars.
+  const base_url  = argFlag("base-url")  || await prompt("Nexus base URL (e.g. https://app.maic.ai): ");
+  if (!base_url) die("base URL required");
+  const trimmed   = base_url.replace(/\/+$/, "");
+  const apps_url  = argFlag("apps-url")  || trimmed;
+  const auth_url  = argFlag("auth-url")  || `${trimmed}/api/auth`;
   const tenant_id = argFlag("tenant")    || await prompt("Tenant id [tenant-001]: ") || "tenant-001";
   const email     = argFlag("email")     || await prompt("Email: ");
   if (!email) die("email required");
@@ -132,7 +136,7 @@ async function cmdLogin() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, tenant_id }),
   });
-  if (!res.ok) die(`login failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) die(`login failed: ${res.status} ${await res.text().catch(() => "")}\n(tried ${auth_url}/auth/login — override with --auth-url if your topology differs)`);
   const data = await res.json();
   if (!data.access_token) die("login response missing access_token");
 
