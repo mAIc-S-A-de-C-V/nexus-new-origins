@@ -1,0 +1,33 @@
+{
+  "id": "hello-nexus",
+  "version": "1.0.0",
+  "publisher_id": "nexus-platform",
+  "display_name": "Hello Nexus",
+  "description": "Reference app demonstrating the @nexus/app-sdk surface: ontology query, KV storage, action proposal, server-side function.",
+  "entry": "http://localhost:8028/apps/bundles/hello-nexus/1.0.0/index.html",
+  "icon": "https://api.iconify.design/lucide:sparkles.svg",
+  "scopes": [
+    "ontology:list_types",
+    "ontology:read:*",
+    "actions:list",
+    "actions:propose:*",
+    "storage:kv:read",
+    "storage:kv:write",
+    "host:config:read",
+    "host:refresh"
+  ],
+  "surfaces": [
+    { "type": "page",          "path": "/hello-nexus", "title": "Hello Nexus", "icon": "sparkles" },
+    { "type": "widget",        "id": "hello_widget",   "title": "Hello widget", "size": "md" }
+  ],
+  "functions": [
+    {
+      "name": "nightly_summary",
+      "description": "Run nightly. Counts records per object type and stores the result in KV.",
+      "trigger": { "type": "schedule", "cron": "0 2 * * *" },
+      "timeout_ms": 30000,
+      "code": "async def handler(nexus, inputs, event):\n    types = await nexus.list_types()\n    counts = {}\n    for t in types or []:\n        name = t.get('name') or t.get('display_name')\n        try:\n            res = await nexus.query(object_type=name, limit=1)\n            counts[name] = (res or {}).get('total') or (res or {}).get('count') or len((res or {}).get('records') or [])\n        except Exception as e:\n            counts[name] = 'error'\n    snapshot = {'when': datetime.datetime.utcnow().isoformat(), 'counts': counts}\n    await nexus.kv_set('latest_summary', snapshot)\n    return snapshot\n"
+    }
+  ],
+  "event_subscriptions": []
+}

@@ -1,0 +1,32 @@
+{
+  "id": "novedad-viewer",
+  "version": "1.2.0",
+  "publisher_id": "maic-platform",
+  "display_name": "Novedades · Tablero",
+  "description": "Tablero operativo de novedades policiales: KPIs, prioridad, categoría, geografía, incidentes, acciones, reportes y tabla con detalle.",
+  "entry": "http://localhost:8028/apps/bundles/novedad-viewer/1.2.0/index.html",
+  "scopes": [
+    "ontology:read:*",
+    "ontology:list_types",
+    "host:config:read"
+  ],
+  "surfaces": [
+    { "type": "page", "title": "Novedades", "icon": "list" }
+  ],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "api_base_url": {
+        "type": "string",
+        "title": "External Nexus gateway base URL",
+        "description": "If set, the app calls this URL with the api_key. Leave blank to read from the local host SDK.",
+        "default": ""
+      },
+      "api_key":      { "type": "string", "title": "Bearer API key (gateway)", "default": "" },
+      "object_slug":  { "type": "string", "title": "Endpoint slug / object_type", "default": "novedad" },
+      "page_size":    { "type": "integer", "title": "Rows per page", "default": 50, "minimum": 1, "maximum": 200 }
+    }
+  },
+  "functions": [],
+  "event_subscriptions": []
+}

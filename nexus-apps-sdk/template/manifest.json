@@ -1,0 +1,18 @@
+{
+  "id": "{{slug}}",
+  "version": "0.1.0",
+  "publisher_id": "your-team",
+  "display_name": "{{name}}",
+  "description": "An app built on the Nexus platform.",
+  "entry": "http://localhost:5174/",
+  "scopes": [
+    "ontology:list_types",
+    "storage:kv:read",
+    "storage:kv:write"
+  ],
+  "surfaces": [
+    { "type": "page", "path": "/{{slug}}", "title": "{{name}}", "icon": "box" }
+  ],
+  "functions": [],
+  "event_subscriptions": []
+}

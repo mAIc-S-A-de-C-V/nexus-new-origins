@@ -29,6 +29,7 @@ const ProcessMiningV2 = lazy(() => import('./modules/process_v2/ProcessMiningV2'
 const OperationsModule = lazy(() => import('./modules/operations/OperationsModule'));
 const SharePage       = lazy(() => import('./modules/share/SharePage'));
 const ScenariosPage   = lazy(() => import('./modules/scenarios/ScenariosPage'));
+const ExternalAppsPage = lazy(() => import('./modules/external_apps/ExternalAppsPage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -75,6 +76,14 @@ const renderPage = (page: string): React.ReactNode => {
     return (
       <Suspense fallback={<LoadingSpinner message="Loading app..." />}>
         <AppsPage />
+      </Suspense>
+    );
+  }
+  if (page === 'external-apps' || page.startsWith('external-app:')) {
+    const installId = page.startsWith('external-app:') ? page.slice('external-app:'.length) : undefined;
+    return (
+      <Suspense fallback={<LoadingSpinner message="Loading external apps..." />}>
+        <ExternalAppsPage initialInstallId={installId} />
       </Suspense>
     );
   }
@@ -151,6 +160,16 @@ const AuthGate: React.FC = () => {
 
   if (!isAuthenticated) return <LoginPage />;
   if (currentUser?.mustChangePassword) return <ChangePasswordPage />;
+
+  // Deep links to external apps: /apps/external/<install_id>
+  if (window.location.pathname.startsWith('/apps/external/')) {
+    const installId = window.location.pathname.split('/apps/external/')[1]?.split(/[/?]/)[0];
+    return (
+      <Suspense fallback={<LoadingSpinner message="Loading external app..." />}>
+        <ExternalAppsPage initialInstallId={installId} />
+      </Suspense>
+    );
+  }
 
   // Hidden route: object-centric process mining v2. Not linked from nav —
   // accessible only by typing /pminingv2 in the URL bar.
