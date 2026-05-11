@@ -11,8 +11,20 @@ from rate_limit import close_client
 
 logger = logging.getLogger("api_gateway")
 
-_raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
-ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+# The API gateway is the platform's PUBLIC integration surface — third-party
+# scripts, dashboards, iframed apps, CI pipelines all hit it from arbitrary
+# origins. Auth is per-request via Bearer API key (Authorization header), not
+# session cookies, so opening CORS to any origin is the correct posture: it
+# doesn't change the auth model and removes friction for legitimate
+# integrators.
+#
+# Operator can still pin to a specific allowlist by setting ALLOWED_ORIGINS
+# to a comma-separated list, e.g.
+#   ALLOWED_ORIGINS=https://app.maic.ai,https://apps.maic.ai
+# Default is "*".
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "*").strip()
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+_OPEN_CORS = "*" in ALLOWED_ORIGINS
 
 app = FastAPI(
     title="Nexus API Gateway",
@@ -20,12 +32,17 @@ app = FastAPI(
     version="1.1.0",
 )
 
+# allow_credentials=True is incompatible with allow_origins=["*"]: the browser
+# refuses any response with `Access-Control-Allow-Origin: *` if credentials
+# are claimed. Since API key auth uses the Authorization header (which is
+# unaffected by the credentials flag), drop credentials when we open up.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"] if _OPEN_CORS else ALLOWED_ORIGINS,
+    allow_credentials=not _OPEN_CORS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-RateLimit-Remaining", "Retry-After"],
 )
 
 
