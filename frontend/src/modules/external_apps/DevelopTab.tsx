@@ -21,8 +21,18 @@ const CARD_BG = '#FFFFFF';
 
 // Public origin of THIS deployment's apps-service — substituted into the
 // install.sh + curl examples so developers can copy-paste them verbatim.
-// Falls back to localhost in dev where the env isn't set at build time.
-const APPS_PUBLIC_URL = import.meta.env.VITE_APPS_SERVICE_URL || 'http://localhost:8028';
+//
+// Resolution order:
+//   1. VITE_APPS_SERVICE_URL (baked at build time, e.g. localhost:8028 in dev)
+//   2. window.location.origin (so prod auto-detects without needing the
+//      build var set — same-domain deploys "just work")
+//   3. literal localhost (SSR / pre-mount fallback only)
+const APPS_PUBLIC_URL = (() => {
+  const fromEnv = import.meta.env.VITE_APPS_SERVICE_URL;
+  if (fromEnv) return fromEnv;
+  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
+  return 'http://localhost:8028';
+})();
 
 const CopyButton: React.FC<{ text: string; label?: string }> = ({ text, label = 'Copy' }) => {
   const [done, setDone] = useState(false);

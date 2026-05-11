@@ -11,7 +11,16 @@ import type {
   TenantSurface, ScopeCatalogEntry, AuditEntry,
 } from './types';
 
-const APPS_API = import.meta.env.VITE_APPS_SERVICE_URL || 'http://localhost:8028';
+// Resolution order matches DevelopTab: env var > current window origin >
+// literal localhost. The window-origin fallback lets prod builds that
+// don't bake VITE_APPS_SERVICE_URL talk to apps-service on the same domain
+// without breaking dev (where the env var is always set explicitly).
+const APPS_API: string = (() => {
+  const fromEnv = import.meta.env.VITE_APPS_SERVICE_URL;
+  if (fromEnv) return fromEnv as string;
+  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
+  return 'http://localhost:8028';
+})();
 
 function headers(json = true): Record<string, string> {
   const h: Record<string, string> = { 'x-tenant-id': getTenantId() };
