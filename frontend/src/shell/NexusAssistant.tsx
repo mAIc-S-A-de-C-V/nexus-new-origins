@@ -93,15 +93,27 @@ async function fetchLiveContext(currentPage: string) {
     })
   );
 
+  // Fetch sample records for the 8 largest object types only (token budget),
+  // but keep every object type in the context so the model knows they exist.
+  // Previously this sliced `object_types` itself, which silently dropped 11+
+  // OTs and made the assistant claim they didn't exist.
+  const recordsFetchLimit = 8;
+  const sampledIds = new Set(
+    [...object_types]
+      .sort((a: any, b: any) => (b.total_records || 0) - (a.total_records || 0))
+      .slice(0, recordsFetchLimit)
+      .map((ot: any) => ot.id),
+  );
   const objectTypesWithRecords = await Promise.all(
-    object_types.slice(0, 8).map(async (ot: any) => {
+    object_types.map(async (ot: any) => {
+      if (!sampledIds.has(ot.id)) return { ...ot, recent_records: [], total_records: ot.total_records || 0 };
       try {
         const r = await fetchWithTimeout(
           `${ONTOLOGY_URL}/object-types/${ot.id}/records?limit=25`,
           opt, 8000
         );
         return { ...ot, recent_records: (r.records || []).slice(0, 25), total_records: r.total || 0 };
-      } catch { return ot; }
+      } catch { return { ...ot, recent_records: [], total_records: ot.total_records || 0 }; }
     })
   );
 
