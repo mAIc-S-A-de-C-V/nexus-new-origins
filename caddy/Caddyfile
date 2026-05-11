@@ -116,7 +116,17 @@
 	handle /sdk/* {
 		reverse_proxy apps-service:8028
 	}
+	# Caddy quirk: `handle /x/*` matches /x/y but NOT bare /x. We need
+	# both the prefix path (for collection POSTs like create-install)
+	# and the prefix+rest (for per-item routes). Same for any other
+	# endpoint where the list and detail URLs differ only by suffix.
+	handle /app-registry {
+		reverse_proxy apps-service:8028
+	}
 	handle /app-registry/* {
+		reverse_proxy apps-service:8028
+	}
+	handle /app-installs {
 		reverse_proxy apps-service:8028
 	}
 	handle /app-installs/* {
