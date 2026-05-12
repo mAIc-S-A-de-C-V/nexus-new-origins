@@ -101,6 +101,19 @@ async def install_app(
     if not bypass_visibility and allow and user.tenant_id not in allow:
         raise HTTPException(403, f"App '{body.app_id}' is not available in this tenant")
 
+    # Tier quota check. Superadmin in home tenant bypasses (so platform
+    # ops aren't blocked by their own free-tier defaults); impersonating
+    # superadmin gets enforced like a normal tenant admin.
+    if not bypass_visibility:
+        try:
+            from quotas import check_install_quota
+            await check_install_quota(db, user.tenant_id)
+        except Exception as e:
+            from quotas import QuotaExceeded
+            if isinstance(e, QuotaExceeded):
+                raise HTTPException(402, str(e))
+            raise
+
     version_row = (await db.execute(
         select(ExternalAppVersionRow).where(
             ExternalAppVersionRow.app_id == body.app_id,

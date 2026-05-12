@@ -241,13 +241,39 @@ async def publish_version(
         storage.delete_bundle(rel_path)
         raise HTTPException(400, "bundle must contain index.html at root")
 
-    entry_url = manifest["entry"]
+    # Always set entry to the canonical bundle URL apps-service will
+    # actually serve. The uploaded manifest's `entry` is whatever the
+    # developer happened to have in their local manifest.json — often
+    # something like http://localhost:5174/ from a Vite dev session.
+    # That URL is unreachable from the platform iframe, so we overwrite
+    # it server-side to the published bundle's stable address.
+    canonical_entry = f"{storage.BUNDLE_PUBLIC_BASE.rstrip('/')}/{app_id}/{version}/index.html"
+    manifest["entry"] = canonical_entry
+    entry_url = canonical_entry
 
     # Upsert the catalog row.
     # First publish: visibility defaults to "private" (only the publisher's
     # effective tenant + any explicit extra_allowed_tenants can see it).
     # Republish: don't touch visibility — admins manage it via PATCH.
     app_row = (await db.execute(select(ExternalAppRow).where(ExternalAppRow.app_id == app_id))).scalar_one_or_none()
+    is_new_app = app_row is None
+
+    # Tier publish quota — only first publish of a new app counts.
+    # Superadmin in home tenant bypasses; impersonating gets enforced.
+    is_impersonating_publish = bool(getattr(user, "impersonated_from", None))
+    if not (user.is_superadmin() and not is_impersonating_publish):
+        try:
+            from quotas import check_publish_quota
+            await check_publish_quota(db, user.tenant_id, is_new_app)
+        except Exception as e:
+            from quotas import QuotaExceeded
+            if isinstance(e, QuotaExceeded):
+                # Cleanup the bundle we just persisted before bailing —
+                # we don't want orphaned tarballs when the publish fails.
+                storage.delete_bundle(rel_path)
+                raise HTTPException(402, str(e))
+            raise
+
     if not app_row:
         allowlist: list[str] = []
         if visibility == "private":

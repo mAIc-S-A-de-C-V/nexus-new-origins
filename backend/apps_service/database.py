@@ -172,6 +172,25 @@ class ExternalAppFunctionRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class TenantAppQuotaRow(Base):
+    """
+    Per-tenant tier + install/publish caps for the apps platform.
+
+    Lazily upserted on first read (any tenant without a row defaults to
+    the "free" tier — 3 installs, 1 published app — until a superadmin
+    bumps it). max_* of -1 means unlimited.
+    """
+    __tablename__ = "tenant_app_quotas"
+
+    tenant_id          = Column(String, primary_key=True)
+    tier               = Column(String, nullable=False, default="free")
+    max_apps_installed = Column(Integer, nullable=False, default=3)
+    max_apps_published = Column(Integer, nullable=False, default=1)
+    notes              = Column(Text, nullable=True)
+    updated_at         = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by         = Column(String, nullable=True)
+
+
 class ExternalAppRunRow(Base):
     """Invocation record for a server-side function."""
     __tablename__ = "external_app_runs"

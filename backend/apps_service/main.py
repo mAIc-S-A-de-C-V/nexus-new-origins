@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse, Response
 from shared.nexus_logging import configure_logging
 
 from database import init_db
-from routers import registry, installs, rpc as rpc_router, functions as functions_router, studio as studio_router, sdk_dist as sdk_dist_router
+from routers import registry, installs, rpc as rpc_router, functions as functions_router, studio as studio_router, sdk_dist as sdk_dist_router, quotas_api as quotas_router
 from scheduler_runtime import get_scheduler, load_all_schedules
 
 configure_logging()
@@ -72,6 +72,7 @@ app.include_router(rpc_router.router, prefix="/apps", tags=["rpc"])
 app.include_router(functions_router.router, prefix="/apps", tags=["functions"])
 app.include_router(studio_router.router, prefix="/app-studio", tags=["studio"])
 app.include_router(sdk_dist_router.router, prefix="", tags=["sdk-dist"])
+app.include_router(quotas_router.router, prefix="/app-quotas", tags=["quotas"])
 
 
 MAX_BODY_SIZE = int(os.environ.get("MAX_BODY_SIZE_MB", "25")) * 1024 * 1024

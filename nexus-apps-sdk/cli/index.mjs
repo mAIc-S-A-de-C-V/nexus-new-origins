@@ -429,11 +429,61 @@ async function cmdBrief() {
   console.log(`wrote ${out}`);
 }
 
+// ── quota ──
+async function cmdQuota() {
+  const sub = argv[1];
+
+  // `nexus-app quota set [--tier=X] [--max-installed=N] [--max-published=N]`
+  if (sub === "set") {
+    const tier = argFlag("tier");
+    const maxInstalled = argFlag("max-installed");
+    const maxPublished = argFlag("max-published");
+    const tenant = argFlag("tenant") || resolveCreds().tenant_id;
+    const body = {};
+    if (tier) body.tier = tier;
+    if (maxInstalled !== undefined) body.max_apps_installed = parseInt(maxInstalled, 10);
+    if (maxPublished !== undefined) body.max_apps_published = parseInt(maxPublished, 10);
+    if (Object.keys(body).length === 0) die("nothing to set — pass --tier=X or --max-installed=N");
+    const r = await apiFetch(`/app-quotas/${tenant}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    console.log(`updated quota for ${r.tenant_id}`);
+    console.log(`  tier:               ${r.tier}`);
+    console.log(`  max_apps_installed: ${r.max_apps_installed === -1 ? "unlimited" : r.max_apps_installed}`);
+    console.log(`  max_apps_published: ${r.max_apps_published === -1 ? "unlimited" : r.max_apps_published}`);
+    return;
+  }
+
+  if (sub === "tiers") {
+    const r = await apiFetch("/app-quotas/tiers");
+    for (const [name, preset] of Object.entries(r)) {
+      const mi = preset.max_apps_installed === -1 ? "unlimited" : preset.max_apps_installed;
+      const mp = preset.max_apps_published === -1 ? "unlimited" : preset.max_apps_published;
+      console.log(`  ${name.padEnd(14)}  installed=${mi}  published=${mp}`);
+    }
+    return;
+  }
+
+  // default: print my-tenant or specified
+  const path = sub ? `/app-quotas/${sub}` : "/app-quotas/me";
+  const r = await apiFetch(path);
+  const fmt = (n) => n === -1 ? "unlimited" : String(n);
+  console.log(`${r.tenant_id}`);
+  console.log(`  tier:           ${r.tier}`);
+  console.log(`  apps installed: ${r.apps_installed} / ${fmt(r.max_apps_installed)}`);
+  console.log(`  apps published: ${r.apps_published} / ${fmt(r.max_apps_published)}`);
+  if (r.notes) console.log(`  notes:          ${r.notes}`);
+}
+
+
 const commands = {
   login: cmdLogin, logout: cmdLogout, whoami: cmdWhoami,
   init: cmdInit, vendor: cmdVendor,
   dev: cmdDev, build: cmdBuild, publish: cmdPublish, install: cmdInstall,
   versions: cmdVersions, brief: cmdBrief, visibility: cmdVisibility,
+  quota: cmdQuota,
 };
 
 if (!commands[cmd]) {

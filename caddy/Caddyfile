@@ -132,6 +132,12 @@
 	handle /app-installs/* {
 		reverse_proxy apps-service:8028
 	}
+	handle /app-quotas {
+		reverse_proxy apps-service:8028
+	}
+	handle /app-quotas/* {
+		reverse_proxy apps-service:8028
+	}
 	handle /apps-for-tenant/* {
 		reverse_proxy apps-service:8028
 	}
