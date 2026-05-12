@@ -5,6 +5,8 @@ import LoginPage from './pages/LoginPage';
 import ChangePasswordPage from './pages/ChangePasswordPage';
 import SSOCallbackPage from './pages/SSOCallbackPage';
 import { useUiStore } from './store/uiStore';
+import { useNavigationStore } from './store/navigationStore';
+import { usePinnedAppsStore } from './store/pinnedAppsStore';
 import { SearchModal } from './shell/SearchModal';
 
 const ConnectorGrid   = lazy(() => import('./modules/connectors/ConnectorGrid'));
@@ -151,7 +153,26 @@ const ThemeSync: React.FC = () => {
 // ── Auth gate ──────────────────────────────────────────────────────────────
 
 const AuthGate: React.FC = () => {
-  const { isAuthenticated, currentUser } = useAuth();
+  const { isAuthenticated, currentUser, tenant } = useAuth();
+  const setTenant = usePinnedAppsStore((s) => s.setTenant);
+  const navigateTo = useNavigationStore((s) => s.navigateTo);
+
+  // Once authenticated, set the pinned-apps store's tenant context, then
+  // if this tenant has a home install configured, route to it. Only runs
+  // when isAuthenticated flips — not on every render, and only when no
+  // deep link in the URL is overriding the destination.
+  useEffect(() => {
+    if (!isAuthenticated || !tenant?.id) return;
+    setTenant(tenant.id);
+
+    const path = window.location.pathname;
+    const hasDeepLink = path !== '/' && path !== '/index.html';
+    if (hasDeepLink) return;
+
+    const home = usePinnedAppsStore.getState().home;
+    if (home) navigateTo('external-app:' + home);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, tenant?.id]);
 
   // Handle SSO callback URL (/auth/callback?token=...)
   if (window.location.pathname === '/auth/callback') {

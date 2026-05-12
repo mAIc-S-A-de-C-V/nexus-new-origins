@@ -21,6 +21,8 @@ import {
 import ExternalApp from './ExternalApp';
 import DevelopTab from './DevelopTab';
 import Studio from './Studio';
+import { usePinnedAppsStore } from '../../store/pinnedAppsStore';
+import { useAuth } from '../../shell/TenantContext';
 
 type Tab = 'catalog' | 'installed' | 'function-runs' | 'studio' | 'develop';
 
@@ -38,6 +40,18 @@ const ExternalAppsPage: React.FC<{ initialInstallId?: string }> = ({ initialInst
   const [refreshTick, setRefreshTick] = useState(0);
 
   const refresh = () => setRefreshTick((t) => t + 1);
+
+  // Wire pinnedAppsStore to the active tenant + prune orphans whenever
+  // installs change (so unpinning an uninstalled app happens automatically).
+  const { tenant } = useAuth();
+  const setTenant = usePinnedAppsStore((s) => s.setTenant);
+  const pruneAgainst = usePinnedAppsStore((s) => s.pruneAgainst);
+  useEffect(() => {
+    if (tenant?.id) setTenant(tenant.id);
+  }, [tenant?.id, setTenant]);
+  useEffect(() => {
+    if (installs.length > 0) pruneAgainst(installs.map((i) => i.id));
+  }, [installs, pruneAgainst]);
 
   useEffect(() => {
     listCatalog().then(setCatalog).catch(() => setCatalog([]));
@@ -325,6 +339,13 @@ const InstallDetail: React.FC<{ install: AppInstallEntry; scopes: ScopeCatalogEn
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [pane, setPane] = useState<'app' | 'audit' | 'scopes'>('app');
 
+  // Subscribe to home + pinned so the toggle buttons reflect current state
+  // without re-rendering the whole ExternalAppsPage.
+  const isPinned = usePinnedAppsStore((s) => s.pinned.includes(install.id));
+  const isHome = usePinnedAppsStore((s) => s.home === install.id);
+  const togglePinned = usePinnedAppsStore((s) => s.togglePinned);
+  const setHome = usePinnedAppsStore((s) => s.setHome);
+
   useEffect(() => {
     if (pane === 'audit') installAudit(install.id, { limit: 50 }).then(setAudit);
   }, [pane, install.id]);
@@ -341,6 +362,30 @@ const InstallDetail: React.FC<{ install: AppInstallEntry; scopes: ScopeCatalogEn
           }}>{p}</button>
         ))}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => togglePinned(install.id)}
+            title={isPinned ? 'Quitar de la sección Dashboards' : 'Mostrar este app como tarjeta en la sección Dashboards'}
+            style={{
+              padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+              background: isPinned ? '#EDE9FE' : '#fff',
+              color: isPinned ? PURPLE : '#475569',
+              border: `1px solid ${isPinned ? PURPLE : BORDER}`,
+              fontWeight: isPinned ? 600 : 500,
+            }}>
+            {isPinned ? 'Pinned to Dashboards' : 'Pin to Dashboards'}
+          </button>
+          <button
+            onClick={() => setHome(isHome ? null : install.id)}
+            title={isHome ? 'Quitar como página de inicio' : 'Mostrar este app al iniciar sesión (sustituye Dashboards como home)'}
+            style={{
+              padding: '4px 10px', fontSize: 11, cursor: 'pointer',
+              background: isHome ? PURPLE : '#fff',
+              color: isHome ? '#fff' : '#475569',
+              border: `1px solid ${isHome ? PURPLE : BORDER}`,
+              fontWeight: isHome ? 600 : 500,
+            }}>
+            {isHome ? 'Home ✓' : 'Set as Home'}
+          </button>
           <button
             onClick={async () => { await patchInstall(install.id, { enabled: !install.enabled }); onChange(); }}
             style={{ padding: '4px 10px', fontSize: 11, background: '#fff', border: `1px solid ${BORDER}`, cursor: 'pointer' }}>

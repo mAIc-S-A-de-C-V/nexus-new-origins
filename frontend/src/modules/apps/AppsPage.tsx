@@ -8,6 +8,7 @@ import { getTenantId } from '../../store/authStore';
 import AppEditor from './AppEditor';
 import AppCanvas from './AppCanvas';
 import { uuid as genId } from '../../lib/uuid';
+import PinnedExternalAppsRow from '../external_apps/PinnedExternalAppsRow';
 
 const ONTOLOGY_API_BASE = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
@@ -941,6 +942,10 @@ const AppsPageInner: React.FC = () => {
 
       {/* Content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+        {/* Pinned external apps (Dashboards section only). Renders nothing
+            when no installs are pinned/home, so non-users see no impact. */}
+        {kind === 'dashboard' && <PinnedExternalAppsRow />}
+
         {/* Phase J — system dashboard rendered at the top of the section. */}
         {systemDashboard && (
           <div style={{
