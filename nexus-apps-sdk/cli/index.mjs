@@ -315,9 +315,16 @@ async function cmdPublish() {
   const creds = resolveCreds();
   if (!creds.apps_url) die("not logged in — run `nexus-app login`");
 
+  // Visibility defaults to "private" — only the publisher's effective
+  // tenant sees + can install. --public flips it for first publish.
+  // Republish ignores this — change visibility via `nexus-app visibility`.
+  const isPublic = argv.includes("--public");
+  const extraTenants = argFlag("allow-tenants") || ""; // comma-separated
   const form = new FormData();
   form.append("manifest_json", JSON.stringify(manifest));
   form.append("bundle", new Blob([readFileSync(tarball)]), `${manifest.id}-${manifest.version}.tar.gz`);
+  form.append("visibility", isPublic ? "public" : "private");
+  if (extraTenants) form.append("extra_allowed_tenants", extraTenants);
 
   const res = await fetch(creds.apps_url + "/app-registry/publish", {
     method: "POST",
@@ -329,7 +336,63 @@ async function cmdPublish() {
   console.log(`published ${manifest.id} v${manifest.version}`);
   console.log(`  sha256:    ${body.sha256}`);
   console.log(`  bundle_url ${body.bundle_url}`);
+  if (isPublic) {
+    console.log(`  visibility public — every tenant can see + install this app`);
+  } else {
+    const effectiveTenant = impersonateTenant() || creds.tenant_id;
+    console.log(`  visibility private — only ${effectiveTenant}${extraTenants ? ` + ${extraTenants}` : ""} can see + install`);
+    console.log(`  to broaden later:   nexus-app visibility ${manifest.id} --public`);
+    console.log(`  or add specific:    nexus-app visibility ${manifest.id} --add-tenant=<id>`);
+  }
   try { rmSync(tarball); } catch {}
+}
+
+// ── visibility ──
+async function cmdVisibility() {
+  const appId = argv[1];
+  if (!appId) die("usage: nexus-app visibility <app_id> [--public | --private | --add-tenant=<id> | --remove-tenant=<id>]");
+
+  // First read current state so we can do delta operations.
+  const current = await apiFetch(`/app-registry/apps/${appId}`).catch((e) => {
+    die("could not read current state: " + e.message);
+  });
+  const cur = current.app;
+  let allow = Array.isArray(cur.tenant_allowlist) ? [...cur.tenant_allowlist] : [];
+
+  const wantPublic = argv.includes("--public");
+  const wantPrivate = argv.includes("--private");
+  const addTenant = argFlag("add-tenant");
+  const removeTenant = argFlag("remove-tenant");
+
+  if (wantPublic && wantPrivate) die("--public and --private are mutually exclusive");
+  if (wantPublic) {
+    allow = [];
+  } else if (wantPrivate) {
+    if (allow.length === 0) {
+      const creds = resolveCreds();
+      const t = impersonateTenant() || creds.tenant_id;
+      allow = [t];
+      console.log(`(empty allowlist would be public — restricting to ${t})`);
+    }
+  }
+  if (addTenant && !allow.includes(addTenant)) allow.push(addTenant);
+  if (removeTenant) allow = allow.filter((t) => t !== removeTenant);
+
+  // If no flags were given, just print the current state.
+  if (!wantPublic && !wantPrivate && !addTenant && !removeTenant) {
+    console.log(`${appId}`);
+    console.log(`  visibility:        ${cur.visibility}`);
+    console.log(`  tenant_allowlist:  ${cur.tenant_allowlist?.length ? cur.tenant_allowlist.join(", ") : "(empty → public to all)"}`);
+    return;
+  }
+
+  const updated = await apiFetch(`/app-registry/apps/${appId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tenant_allowlist: allow }),
+  });
+  console.log(`updated ${appId}`);
+  console.log(`  tenant_allowlist:  ${updated.tenant_allowlist?.length ? updated.tenant_allowlist.join(", ") : "(empty → public to all)"}`);
 }
 
 // ── install ──
@@ -370,7 +433,7 @@ const commands = {
   login: cmdLogin, logout: cmdLogout, whoami: cmdWhoami,
   init: cmdInit, vendor: cmdVendor,
   dev: cmdDev, build: cmdBuild, publish: cmdPublish, install: cmdInstall,
-  versions: cmdVersions, brief: cmdBrief,
+  versions: cmdVersions, brief: cmdBrief, visibility: cmdVisibility,
 };
 
 if (!commands[cmd]) {

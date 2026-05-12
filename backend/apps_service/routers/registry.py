@@ -166,6 +166,8 @@ async def publish_version(
     request: Request,
     manifest_json: str = Form(...),
     bundle: UploadFile = File(...),
+    visibility: str = Form("private"),
+    extra_allowed_tenants: str = Form(""),
     user: AuthUser = Depends(require_auth),
     db: AsyncSession = Depends(get_session),
 ):
@@ -173,11 +175,29 @@ async def publish_version(
     Publish a new immutable version. Caller must be admin or superadmin.
 
     Form fields:
-      manifest_json — the full app manifest as a JSON string
-      bundle        — gzipped tarball of the built app (index.html + assets)
+      manifest_json           — the full app manifest as a JSON string
+      bundle                  — gzipped tarball of the app (index.html + assets)
+      visibility              — "private" (default) or "public". Private =
+                                only the caller's effective tenant (after
+                                impersonation) can see + install. Public =
+                                every tenant. Republishing an existing app
+                                ignores this — visibility, once set, is
+                                changed via PATCH /app-registry/apps/{id}.
+      extra_allowed_tenants   — comma-separated tenant_ids to add to the
+                                allowlist for a brand-new app. Useful for
+                                "publish to MJSP AND sandbox tenant"
+                                without a follow-up PATCH. Ignored on
+                                republish.
+
+    The first-publish visibility default is "private" because the
+    overwhelmingly common case is "I'm publishing for my tenant; other
+    tenants shouldn't see it." Superadmins can flip to public explicitly
+    via --public on the CLI or PATCH after the fact.
     """
     if not user.is_admin():
         raise HTTPException(403, "Only platform admins can publish apps")
+    if visibility not in ("public", "private"):
+        raise HTTPException(400, "visibility must be 'public' or 'private'")
 
     try:
         manifest = json.loads(manifest_json)
@@ -220,9 +240,23 @@ async def publish_version(
 
     entry_url = manifest["entry"]
 
-    # Upsert the catalog row
+    # Upsert the catalog row.
+    # First publish: visibility defaults to "private" (only the publisher's
+    # effective tenant + any explicit extra_allowed_tenants can see it).
+    # Republish: don't touch visibility — admins manage it via PATCH.
     app_row = (await db.execute(select(ExternalAppRow).where(ExternalAppRow.app_id == app_id))).scalar_one_or_none()
     if not app_row:
+        allowlist: list[str] = []
+        if visibility == "private":
+            # The caller's tenant is their EFFECTIVE tenant after
+            # impersonation — so `nexus-app publish --as-tenant=X`
+            # ends up with allowlist=[X], which matches intuition.
+            allowlist = [user.tenant_id]
+        if extra_allowed_tenants:
+            for t in extra_allowed_tenants.split(","):
+                t = t.strip()
+                if t and t not in allowlist:
+                    allowlist.append(t)
         app_row = ExternalAppRow(
             app_id=app_id,
             publisher_id=publisher_id,
@@ -231,7 +265,8 @@ async def publish_version(
             icon_url=manifest.get("icon"),
             homepage_url=manifest.get("homepage"),
             latest_version=version,
-            visibility="public",
+            visibility="public",  # used for "exists in catalog" — see _is_visible_to
+            tenant_allowlist=allowlist,
         )
         db.add(app_row)
     else:
