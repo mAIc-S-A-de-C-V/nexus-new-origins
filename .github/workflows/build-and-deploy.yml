@@ -357,11 +357,14 @@ jobs:
             #
             # The bind-mount in docker-compose.deploy.yml ALWAYS expects
             # ./secrets/jwt_private_key.pem to exist as a regular file
-            # on the host — otherwise Docker auto-creates a directory at
-            # that path, which jwt_utils.py rejects (now gracefully —
-            # falls back to ephemeral instead of crashing). Touch the
-            # file unconditionally so the bind mount always resolves to
-            # a file, then write the secret over it if it's set.
+            # on the host — otherwise Docker auto-creates a DIRECTORY
+            # at that path (because the source for a missing bind-mount
+            # defaults to a 0755 root-owned dir). On the next deploy,
+            # `touch` on that directory fails with "Permission denied"
+            # because the SSH user can't update timestamps on a root-
+            # owned dir. Hence: nuke the path first (with sudo because
+            # the directory is root-owned), THEN create a fresh file.
+            sudo rm -rf ./secrets/jwt_private_key.pem
             mkdir -p ./secrets
             touch ./secrets/jwt_private_key.pem
             chmod 600 ./secrets/jwt_private_key.pem
