@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 
@@ -156,12 +157,22 @@ def _encode_cursor(created_at, row_id) -> str:
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
-def _decode_cursor(cursor: str) -> tuple[str, str] | None:
+def _decode_cursor(cursor: str) -> tuple[datetime, str] | None:
+    """
+    Decode the opaque cursor back into (created_at, id).
+
+    Returns a real datetime, NOT a string. asyncpg refuses to bind a string
+    to a timestamptz parameter (even when the SQL has an explicit
+    `$N::timestamptz` cast — that cast is server-side, but asyncpg's
+    parameter-type check runs before send) and surfaces the failure as a
+    generic 500. So we parse the ISO string into a datetime at decode time
+    and let asyncpg bind it natively.
+    """
     try:
         pad = "=" * (-len(cursor) % 4)
         raw = base64.urlsafe_b64decode(cursor + pad).decode()
         data = json.loads(raw)
-        return data["c"], data["i"]
+        return datetime.fromisoformat(data["c"]), data["i"]
     except Exception:
         return None
 
