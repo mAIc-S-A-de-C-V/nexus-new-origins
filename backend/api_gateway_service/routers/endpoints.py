@@ -3,6 +3,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 from typing import Optional
 from uuid import uuid4
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 from database import get_pool
 from rate_limit import check_and_consume
 
+logger = logging.getLogger("api_gateway.endpoints")
 router = APIRouter()
 
 EVENT_LOG_URL = os.environ.get("EVENT_LOG_URL", "http://event-log-service:8005")
@@ -211,11 +213,17 @@ async def get_records(
         decoded = _decode_cursor(cursor)
         if decoded:
             c_ts, c_id = decoded
-            # Both sides of a row-constructor comparison need explicit types
-            # — without ::text on the id parameter, Postgres can't infer the
-            # type of the right-hand-side row constructor (the timestamptz
-            # cast on the sibling doesn't propagate) and the query 500s.
-            cursor_clause = f" AND (created_at, id) < (${p_idx}::timestamptz, ${p_idx + 1}::text)"
+            # Avoid Postgres row constructors here. With asyncpg, parameter
+            # types inside `(a, b) < ($N::ts, $M)` aren't always inferred
+            # correctly (the cast on $N doesn't propagate to its sibling),
+            # which can throw inside the prepared-statement planner and
+            # surface as a generic 500. Expand to plain boolean form +
+            # explicit ::text on the id parameter so the planner has every
+            # type it needs.
+            cursor_clause = (
+                f" AND (created_at < ${p_idx}::timestamptz"
+                f" OR (created_at = ${p_idx}::timestamptz AND id < ${p_idx + 1}::text))"
+            )
             params.extend([c_ts, c_id])
             p_idx += 2
 
@@ -225,7 +233,14 @@ async def get_records(
         f"ORDER BY created_at DESC, id DESC LIMIT ${p_idx}"
     )
     params.append(limit)
-    rows = await pool.fetch(sql, *params)
+    try:
+        rows = await pool.fetch(sql, *params)
+    except Exception:
+        # Log the SQL + params shape (not values, in case they're PII) so a
+        # repeat 500 is debuggable from prod logs without a redeploy.
+        logger.exception("records query failed slug=%s param_count=%d sql=%r",
+                         slug, len(params), sql)
+        raise
 
     total = None
     if not cursor:
