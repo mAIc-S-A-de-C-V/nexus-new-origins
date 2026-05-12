@@ -127,5 +127,46 @@ def extract_dir_for(app_id: str, version: str, sha256: str) -> Path:
     if extracted.exists():
         shutil.rmtree(extracted)
     extract_bundle_to(f"{app_id}/{version}/{sha256}.tar.gz", extracted)
+    _normalize_index_html_paths(extracted)
     marker.write_text(sha256)
     return extracted
+
+
+def _normalize_index_html_paths(extracted: Path) -> None:
+    """
+    Rewrite root-absolute asset paths in index.html to relative paths.
+
+    Vite's default `base: "/"` emits `<script src="/assets/foo.js">`,
+    which the browser resolves against the iframe's *origin* (e.g.
+    https://app.maic.ai/assets/foo.js) rather than the bundle's path
+    (https://app.maic.ai/apps/bundles/<app>/<version>/assets/foo.js).
+    Result: 404 from the host's catch-all, blank iframe.
+
+    Vite's `base: "./"` produces the right relative form. We document
+    this in the template, but a single missed config in user-generated
+    code shouldn't break the entire bundle. So we defensively rewrite
+    `/assets/...` and `/<sha>.svg` style root-absolute references to
+    relative form on extract.
+
+    Only touches the literal byte sequences in HTML — does NOT walk
+    arbitrary URLs in JS code, which would be unsafe.
+    """
+    import re
+    index_html = extracted / "index.html"
+    if not index_html.exists():
+        return
+    try:
+        html = index_html.read_text(encoding="utf-8")
+    except Exception:
+        return
+    # Match src="/..." and href="/..." (but skip schemes like /api or //cdn).
+    # Vite's output is always `/assets/<hash>.ext` or `/vite.svg` style.
+    # Anchor on `/assets/` specifically + a handful of common static-asset
+    # extensions at root.
+    patched = re.sub(
+        r'((?:src|href)\s*=\s*["\'])/(assets/[^"\']+|[^"\'/]+\.(?:svg|png|ico|webp|jpg|jpeg|gif|css|js))(["\'])',
+        r'\1./\2\3',
+        html,
+    )
+    if patched != html:
+        index_html.write_text(patched, encoding="utf-8")
