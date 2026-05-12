@@ -211,7 +211,11 @@ async def get_records(
         decoded = _decode_cursor(cursor)
         if decoded:
             c_ts, c_id = decoded
-            cursor_clause = f" AND (created_at, id) < (${p_idx}::timestamptz, ${p_idx + 1})"
+            # Both sides of a row-constructor comparison need explicit types
+            # — without ::text on the id parameter, Postgres can't infer the
+            # type of the right-hand-side row constructor (the timestamptz
+            # cast on the sibling doesn't propagate) and the query 500s.
+            cursor_clause = f" AND (created_at, id) < (${p_idx}::timestamptz, ${p_idx + 1}::text)"
             params.extend([c_ts, c_id])
             p_idx += 2
 
