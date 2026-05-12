@@ -51,9 +51,18 @@ const CREDS_FILE = join(CREDS_DIR, "credentials.json");
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
+// Accept both `--name value` and `--name=value`. The `=` form is what
+// shells autocomplete and what `argparse`-style users expect; before this
+// it silently parsed as no-op which was the source of "I passed --as-tenant
+// but my call still ran against my home tenant" bugs.
 const argFlag = (name) => {
-  const i = argv.indexOf("--" + name);
-  return i >= 0 ? argv[i + 1] : undefined;
+  const exact = "--" + name;
+  const prefix = exact + "=";
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === exact && i + 1 < argv.length) return argv[i + 1];
+    if (argv[i].startsWith(prefix)) return argv[i].slice(prefix.length);
+  }
+  return undefined;
 };
 
 function die(msg, code = 1) {
@@ -336,14 +345,20 @@ async function cmdPublish() {
   console.log(`published ${manifest.id} v${manifest.version}`);
   console.log(`  sha256:    ${body.sha256}`);
   console.log(`  bundle_url ${body.bundle_url}`);
-  if (isPublic) {
-    console.log(`  visibility public — every tenant can see + install this app`);
-  } else {
-    const effectiveTenant = impersonateTenant() || creds.tenant_id;
-    console.log(`  visibility private — only ${effectiveTenant}${extraTenants ? ` + ${extraTenants}` : ""} can see + install`);
-    console.log(`  to broaden later:   nexus-app visibility ${manifest.id} --public`);
-    console.log(`  or add specific:    nexus-app visibility ${manifest.id} --add-tenant=<id>`);
-  }
+  // Don't print speculative visibility text — it was misleading when
+  // republishing an existing app (visibility is fixed at first publish
+  // and isn't touched on republish). Read the actual catalog state
+  // back from the server so the message reflects reality.
+  try {
+    const detail = await apiFetch(`/app-registry/apps/${manifest.id}`);
+    const allow = detail.app?.tenant_allowlist || [];
+    if (allow.length === 0) {
+      console.log(`  visibility: public — every tenant can see + install`);
+    } else {
+      console.log(`  visibility: private — only [${allow.join(", ")}] can see + install`);
+    }
+    console.log(`  change with: nexus-app visibility ${manifest.id} --public | --private | --add-tenant=<id> | --remove-tenant=<id>`);
+  } catch { /* non-fatal: publish succeeded, just couldn't read back */ }
   try { rmSync(tarball); } catch {}
 }
 
@@ -396,18 +411,99 @@ async function cmdVisibility() {
 }
 
 // ── install ──
+// Upserts: if the app is already installed in the caller's effective
+// tenant, PATCH the existing install to the new version (preserves
+// install_id, config, and any scope grants the admin customised);
+// otherwise create a fresh install row. Same end state regardless of
+// whether you're a first-time installer or iterating on versions.
 async function cmdInstall() {
   const manifest = loadManifest();
-  const body = await apiFetch("/app-installs", {
+  const installPayload = {
+    app_id: manifest.id,
+    version: manifest.version,
+    scopes_granted: manifest.scopes || [],
+    config: {},
+  };
+
+  // Try POST first.
+  const creds = resolveCreds();
+  if (!creds.apps_url) die("not logged in — run `nexus-app login`");
+  const res = await fetch(`${creds.apps_url}/app-installs`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      app_id: manifest.id, version: manifest.version,
-      scopes_granted: manifest.scopes || [], config: {},
-    }),
+    headers: { ...authHeaders(creds), "Content-Type": "application/json" },
+    body: JSON.stringify(installPayload),
   });
-  console.log(`installed ${manifest.id} v${manifest.version}`);
-  console.log(`  install_id: ${body.id}`);
+
+  if (res.status === 201 || res.status === 200) {
+    const body = await res.json();
+    console.log(`installed ${manifest.id} v${manifest.version}`);
+    console.log(`  install_id: ${body.id}`);
+    return;
+  }
+
+  if (res.status === 409) {
+    // Already installed — find it and PATCH to the new version.
+    const list = await apiFetch("/app-installs");
+    const existing = list.find((i) => i.app_id === manifest.id);
+    if (!existing) {
+      die("server says installed (409) but no matching install on /app-installs — possible tenant mismatch");
+    }
+    if (existing.version_pinned === manifest.version) {
+      console.log(`${manifest.id} v${manifest.version} is already installed (no-op)`);
+      console.log(`  install_id: ${existing.id}`);
+      return;
+    }
+    const updated = await apiFetch(`/app-installs/${existing.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version: manifest.version }),
+    });
+    console.log(`upgraded ${manifest.id} ${existing.version_pinned} → ${updated.version_pinned}`);
+    console.log(`  install_id: ${updated.id}`);
+    return;
+  }
+
+  let body = "";
+  try { body = JSON.stringify(await res.json()); } catch { body = await res.text().catch(() => ""); }
+  die(`install failed: ${res.status} ${body}`);
+}
+
+// ── uninstall ──
+// Convenience for cleaning up. Cascade-deletes the install row, its KV
+// data, audit history, and any scheduled server-side functions.
+async function cmdUninstall() {
+  const manifest = (() => {
+    try { return loadManifest(); } catch { return null; }
+  })();
+  // Two modes:
+  //   nexus-app uninstall                  uninstall the current project's app
+  //   nexus-app uninstall <install_id>     uninstall by id (useful when
+  //                                        you're not in the project dir)
+  let installId = argv[1];
+  if (!installId && manifest) {
+    const list = await apiFetch("/app-installs");
+    const match = list.find((i) => i.app_id === manifest.id);
+    if (!match) die(`no install of ${manifest.id} in this tenant`);
+    installId = match.id;
+  }
+  if (!installId) die("usage: nexus-app uninstall [<install_id>]   (run from project dir or pass id)");
+
+  if (argv.indexOf("--force") < 0) {
+    console.log(`about to uninstall ${installId}.`);
+    console.log("this cascade-deletes the install + its KV data + audit history.");
+    console.log("re-run with --force to confirm.");
+    return;
+  }
+
+  const creds = resolveCreds();
+  const res = await fetch(`${creds.apps_url}/app-installs/${installId}`, {
+    method: "DELETE",
+    headers: authHeaders(creds),
+  });
+  if (!res.ok && res.status !== 204) {
+    die(`uninstall failed: ${res.status} ${await res.text().catch(() => "")}`);
+  }
+  console.log(`uninstalled ${installId}`);
 }
 
 // ── versions ──
@@ -481,7 +577,8 @@ async function cmdQuota() {
 const commands = {
   login: cmdLogin, logout: cmdLogout, whoami: cmdWhoami,
   init: cmdInit, vendor: cmdVendor,
-  dev: cmdDev, build: cmdBuild, publish: cmdPublish, install: cmdInstall,
+  dev: cmdDev, build: cmdBuild, publish: cmdPublish,
+  install: cmdInstall, uninstall: cmdUninstall,
   versions: cmdVersions, brief: cmdBrief, visibility: cmdVisibility,
   quota: cmdQuota,
 };
