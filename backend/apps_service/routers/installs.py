@@ -87,15 +87,18 @@ async def install_app(
     if not user.is_admin():
         raise HTTPException(403, "Only tenant admins can install apps")
 
-    # Enforce catalog-level tenant restrictions before anything else. Empty
-    # allowlist or unset = public; non-empty = only listed tenants may install.
+    # Enforce catalog-level tenant restrictions before anything else.
+    # Superadmin in their home tenant bypasses (management) — but when
+    # impersonating they're restricted normally, so visibility is testable.
     catalog_row = (await db.execute(
         select(ExternalAppRow).where(ExternalAppRow.app_id == body.app_id)
     )).scalar_one_or_none()
     if not catalog_row:
         raise HTTPException(404, f"App '{body.app_id}' not found")
     allow = list(catalog_row.tenant_allowlist or [])
-    if not user.is_superadmin() and allow and user.tenant_id not in allow:
+    is_impersonating = bool(getattr(user, "impersonated_from", None))
+    bypass_visibility = user.is_superadmin() and not is_impersonating
+    if not bypass_visibility and allow and user.tenant_id not in allow:
         raise HTTPException(403, f"App '{body.app_id}' is not available in this tenant")
 
     version_row = (await db.execute(

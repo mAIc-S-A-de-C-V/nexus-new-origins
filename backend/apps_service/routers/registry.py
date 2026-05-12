@@ -54,12 +54,15 @@ class AppCatalogEntry(BaseModel):
 def _is_visible_to(app_row: ExternalAppRow, user) -> bool:
     """Catalog visibility check.
 
-    - Superadmin sees everything (so they can manage the allowlist).
-    - Non-public visibility hides from everyone except superadmin.
+    - Superadmin in their HOME tenant: sees everything (management view).
+    - Superadmin IMPERSONATING another tenant: sees what that tenant
+      sees (so visibility is testable from the superadmin account).
+    - Anyone else: standard tenant_allowlist semantics.
     - Empty allowlist = visible to every tenant (default).
     - Non-empty allowlist = only listed tenants see it.
     """
-    if user.is_superadmin():
+    is_impersonating = bool(getattr(user, "impersonated_from", None))
+    if user.is_superadmin() and not is_impersonating:
         return True
     if (app_row.visibility or "public") != "public":
         return False
