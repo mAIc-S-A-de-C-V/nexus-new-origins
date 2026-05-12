@@ -37,6 +37,14 @@ services:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-alert-engine-service:${IMAGE_TAG:-latest}
   auth-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-auth-service:${IMAGE_TAG:-latest}
+    volumes:
+      # CI's deploy step writes the JWT signing key to this host path
+      # before `docker-compose up -d`. Bind-mounting it into the
+      # container so jwt_utils.py reads it via JWT_PRIVATE_KEY_FILE
+      # (already set in the base compose's env). The key survives
+      # container recreation, which means session tokens survive
+      # deploys. Without this, every deploy log out every user.
+      - ./secrets/jwt_private_key.pem:/run/secrets/jwt_private_key.pem:ro
   logic-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-logic-service:${IMAGE_TAG:-latest}
   agent-service:

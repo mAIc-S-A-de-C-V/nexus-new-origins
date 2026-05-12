@@ -48,3 +48,4 @@ nexus-apps-sdk/dist/
 nexus-apps-sdk/node_modules/
 nexus-apps/*/dist/
 nexus-apps/*/node_modules/
+secrets/

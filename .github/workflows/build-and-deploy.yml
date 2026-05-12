@@ -348,6 +348,27 @@ jobs:
               echo "IMAGE_TAG=$IMAGE_TAG"
             } > .env
 
+            # Persist auth-service's JWT signing key across deploys.
+            # Without this, auth-service generates an ephemeral RSA key
+            # on every container restart, and every session token issued
+            # by the previous container fails signature verification —
+            # silently logging out every user (and breaking the apps-
+            # service token chain) on every push.
+            #
+            # The PEM goes to a file (docker-compose .env can't carry
+            # multi-line values cleanly), and the auth-service compose
+            # entry mounts it via JWT_PRIVATE_KEY_FILE. Already supported
+            # in jwt_utils.py:35-39 — no code change needed.
+            mkdir -p ./secrets
+            if [ -n "${{ secrets.JWT_PRIVATE_KEY_PEM }}" ]; then
+              printf '%s\n' "${{ secrets.JWT_PRIVATE_KEY_PEM }}" > ./secrets/jwt_private_key.pem
+              chmod 600 ./secrets/jwt_private_key.pem
+              echo "JWT signing key persisted to ./secrets/jwt_private_key.pem"
+            else
+              echo "WARNING: JWT_PRIVATE_KEY_PEM secret not set — auth-service will" \
+                   "generate an ephemeral key and log everyone out on every deploy."
+            fi
+
             # Authenticate to GHCR. Prefers GHCR_PULL_TOKEN (read-only PAT,
             # principle of least privilege on the EC2 box). Falls back to
             # GHCR_PUSH_TOKEN since a write token includes read. If neither
