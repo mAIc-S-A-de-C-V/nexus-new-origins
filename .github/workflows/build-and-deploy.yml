@@ -346,6 +346,16 @@ jobs:
               echo "DOMAIN=${{ secrets.APP_DOMAIN }}"
               echo "ALLOWED_ORIGIN_EC2=https://${{ secrets.APP_DOMAIN }},http://${{ secrets.EC2_HOST }}:3000"
               echo "IMAGE_TAG=$IMAGE_TAG"
+              # apps-service uses this to construct the iframe entry URL
+              # that gets baked into each published manifest. Default is
+              # localhost; for prod it must point at the actual public
+              # bundle path Caddy serves to.
+              echo "APP_BUNDLE_PUBLIC_BASE=https://${{ secrets.APP_DOMAIN }}/apps/bundles"
+              # Disable apps-service auth bypass on prod — the env var
+              # the compose entry reads (APPS_SKIP_AUTH) defaults to
+              # false, but make it explicit here so future operator
+              # changes to compose don't silently re-enable it.
+              echo "APPS_SKIP_AUTH=false"
             } > .env
 
             # Persist auth-service's JWT signing key across deploys.
