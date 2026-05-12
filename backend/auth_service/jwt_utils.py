@@ -31,12 +31,31 @@ def _load_or_generate_key():
         _log.info("JWT key loaded from JWT_PRIVATE_KEY_PEM env var")
         return serialization.load_pem_private_key(pem_env.encode(), password=None)
 
-    # 2. Try key file
+    # 2. Try key file. Defensive: the path may resolve to a directory
+    # (if docker-compose bind-mounted a missing host file → it auto-
+    # creates a directory), or to an empty file (if the deploy pipeline
+    # touched the path but the secret value was unset). Both of those
+    # used to crash the import; now they fall through to the ephemeral
+    # path with a clear log line.
     key_file = os.environ.get("JWT_PRIVATE_KEY_FILE", "")
-    if key_file and os.path.exists(key_file):
-        with open(key_file, "rb") as f:
-            _log.info(f"JWT key loaded from file: {key_file}")
-            return serialization.load_pem_private_key(f.read(), password=None)
+    if key_file and os.path.isfile(key_file):
+        try:
+            with open(key_file, "rb") as f:
+                data = f.read()
+            if data.strip():
+                _log.info(f"JWT key loaded from file: {key_file}")
+                return serialization.load_pem_private_key(data, password=None)
+            _log.warning(
+                f"JWT_PRIVATE_KEY_FILE ({key_file}) is empty — falling through to ephemeral. "
+                "Set the JWT_PRIVATE_KEY_PEM repo secret in CI to populate it."
+            )
+        except Exception as e:
+            _log.error(f"Failed to load JWT key from {key_file}: {e}. Falling through to ephemeral.")
+    elif key_file and os.path.exists(key_file):
+        _log.warning(
+            f"JWT_PRIVATE_KEY_FILE ({key_file}) is not a regular file "
+            "(docker bind-mount likely created a directory). Falling through to ephemeral."
+        )
 
     # 3. Generate ephemeral key (dev mode)
     _log.warning(

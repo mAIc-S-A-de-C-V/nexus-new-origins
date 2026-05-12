@@ -355,11 +355,16 @@ jobs:
             # silently logging out every user (and breaking the apps-
             # service token chain) on every push.
             #
-            # The PEM goes to a file (docker-compose .env can't carry
-            # multi-line values cleanly), and the auth-service compose
-            # entry mounts it via JWT_PRIVATE_KEY_FILE. Already supported
-            # in jwt_utils.py:35-39 — no code change needed.
+            # The bind-mount in docker-compose.deploy.yml ALWAYS expects
+            # ./secrets/jwt_private_key.pem to exist as a regular file
+            # on the host — otherwise Docker auto-creates a directory at
+            # that path, which jwt_utils.py rejects (now gracefully —
+            # falls back to ephemeral instead of crashing). Touch the
+            # file unconditionally so the bind mount always resolves to
+            # a file, then write the secret over it if it's set.
             mkdir -p ./secrets
+            touch ./secrets/jwt_private_key.pem
+            chmod 600 ./secrets/jwt_private_key.pem
             if [ -n "${{ secrets.JWT_PRIVATE_KEY_PEM }}" ]; then
               printf '%s\n' "${{ secrets.JWT_PRIVATE_KEY_PEM }}" > ./secrets/jwt_private_key.pem
               chmod 600 ./secrets/jwt_private_key.pem
