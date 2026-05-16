@@ -4733,7 +4733,16 @@ const AppCanvas: React.FC<Props> = ({ app: rawApp, drilldownContext }) => {
             padding: 24,
             alignItems: 'start',
           }}>
-            {app.components.map((comp) => {
+            {/* Sort by saved drag positions so View mode honors what the editor laid out.
+                Falls back to document order when gridY/gridX are absent. */}
+            {[...app.components]
+              .sort((a, b) => {
+                const ay = a.gridY ?? 999;
+                const by = b.gridY ?? 999;
+                if (ay !== by) return ay - by;
+                return (a.gridX ?? 0) - (b.gridX ?? 0);
+              })
+              .map((comp) => {
               const defaultMin = comp.type === 'data-table' || comp.type === 'object-table' ? 320 : comp.type === 'bar-chart' ? 280 : comp.type === 'chat-widget' ? 400 : 140;
               const fixedH = comp.gridH ? comp.gridH * 60 : undefined;
               return (
