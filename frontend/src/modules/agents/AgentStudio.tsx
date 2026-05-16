@@ -9,6 +9,7 @@ import {
   Plus, Send, Trash2, Bot, Loader, Wrench, MessageCircle, MessageSquare, Database, Filter, X,
   Search, List, Zap, ShieldCheck, ListChecks, Network, CheckCircle, Clock, Play,
   Activity, Shield, RefreshCw, ChevronRight, Hash, Globe, Link2, Workflow, Plug,
+  History, FileText,
 } from 'lucide-react';
 import { CommentsPanel } from '../../components/CommentsPanel';
 
@@ -27,6 +28,8 @@ const TOOL_META: Record<string, { label: string; desc: string; icon: React.React
   query_records:      { label: 'Query Records',      desc: 'Server-side structured query — filters, aggregation, group-by',             icon: <Database size={14} />,   color: '#2563EB' },
   count_records:      { label: 'Count Records',      desc: 'Return total count with optional filters — never loads data into context',  icon: <Hash size={14} />,       color: '#0891B2' },
   logic_function_run: { label: 'Run Logic Function', desc: 'Execute a pre-built Logic Function workflow with inputs',                   icon: <Zap size={14} />,        color: '#F59E0B' },
+  list_logic_runs:    { label: 'List Logic Runs',    desc: 'List recent Operations runs (status, started_at, error preview) — diagnose what happened',  icon: <History size={14} />, color: '#F59E0B' },
+  get_logic_run:      { label: 'Get Logic Run',      desc: 'Fetch one run’s full per-block trace — inputs, outputs, errors, timings', icon: <FileText size={14} />, color: '#F59E0B' },
   action_propose:     { label: 'Propose Action',     desc: 'Propose a write operation — goes to Human Actions queue',                  icon: <ShieldCheck size={14} />, color: '#EF4444' },
   list_actions:       { label: 'List Actions',       desc: 'Discover available write actions and their input schemas',                  icon: <ListChecks size={14} />, color: '#10B981' },
   agent_call:         { label: 'Call Sub-Agent',     desc: 'Delegate a subtask to another configured agent by name',                   icon: <Network size={14} />,    color: '#7C3AED' },

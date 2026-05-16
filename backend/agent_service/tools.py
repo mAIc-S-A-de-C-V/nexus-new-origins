@@ -707,7 +707,89 @@ TOOL_DEFINITIONS = {
     },
     "update_logic_function": {
         "name": "update_logic_function",
-        "description": "Update a logic function's blocks, name, description, or input schema. Increments version.",
+        "description": (
+            "Update a logic function's blocks, name, description, or input schema. Increments version.\n"
+            "\n"
+            "Every block MUST be fully populated and runnable. Empty fields make the Builder show "
+            "placeholder dropdowns and break execution. Use EXACTLY these type strings and field paths.\n"
+            "\n"
+            "BLOCK CATALOG (note which fields are nested under `config` vs. top-level):\n"
+            "\n"
+            "1) ontology_query — read or aggregate records. Fields nested under `config`.\n"
+            "   List mode:\n"
+            "     {\"id\":\"b1\",\"type\":\"ontology_query\",\"label\":\"…\",\n"
+            "      \"config\":{\"object_type\":\"<NAME from list_object_types — the `name` field, NOT id, NOT displayName>\",\n"
+            "                 \"filters\":[{\"field\":\"<field>\",\"op\":\"==|!=|>|>=|<|<=|contains\",\"value\":\"<v or {inputs.x}>\"}],\n"
+            "                 \"limit\":100}}\n"
+            "   Aggregate mode (counts/sums/avg/group-by/time-bucket):\n"
+            "     {\"id\":\"b1\",\"type\":\"ontology_query\",\"label\":\"…\",\n"
+            "      \"config\":{\"object_type\":\"<NAME>\",\"filters\":[…],\n"
+            "                 \"aggregate\":{\"group_by\":\"<field>\",\n"
+            "                              \"time_bucket\":{\"field\":\"<datetime field>\",\"interval\":\"hour|day|week|month|quarter|year\"},\n"
+            "                              \"aggregations\":[{\"method\":\"count\",\"alias\":\"<name>\"},\n"
+            "                                              {\"method\":\"avg|min|max|sum\",\"field\":\"<numeric field>\",\"alias\":\"<name>\"}],\n"
+            "                              \"limit\":5000}}}\n"
+            "\n"
+            "2) llm_call — call Claude. Fields are TOP-LEVEL on the block, NOT under `config`.\n"
+            "     {\"id\":\"b2\",\"type\":\"llm_call\",\"label\":\"…\",\n"
+            "      \"prompt_template\":\"Analyze {b1.result.records} …\",\n"
+            "      \"system_prompt\":\"You are a …\",\"model\":\"claude-haiku-4-5-20251001\",\"max_tokens\":1024,\n"
+            "      \"output_schema\":{\"category\":\"string\",\"priority\":\"low|medium|high|critical\"}}\n"
+            "\n"
+            "3) action — invoke an ontology Action by name. TOP-LEVEL fields.\n"
+            "     {\"id\":\"b3\",\"type\":\"action\",\"label\":\"…\",\"action_name\":\"<exact action name>\",\n"
+            "      \"params\":{\"<field>\":\"{b2.result.category}\"},\"reasoning\":\"…\"}\n"
+            "\n"
+            "4) ontology_update — write fields back to ONE record. NESTED in `config`.\n"
+            "   NOTE: this one wants `object_type_id` (UUID), not `object_type` (name).\n"
+            "     {\"id\":\"b4\",\"type\":\"ontology_update\",\"label\":\"…\",\n"
+            "      \"config\":{\"object_type_id\":\"<UUID from list_object_types>\",\n"
+            "                 \"match_field\":\"<pk field name>\",\"match_value\":\"{b1.result.records[0].id}\",\n"
+            "                 \"fields\":{\"<field>\":\"{b2.result.score}\"}}}\n"
+            "\n"
+            "5) http_call — generic HTTP. NESTED in `config`. ONLY for EXTERNAL services.\n"
+            "   Never use http_call for ontology operations (use ontology_query/ontology_update/action instead).\n"
+            "     {\"id\":\"b5\",\"type\":\"http_call\",\"label\":\"…\",\n"
+            "      \"config\":{\"url\":\"https://api.example.com/x\",\"method\":\"GET|POST|PUT|PATCH|DELETE\",\n"
+            "                 \"headers\":{\"Authorization\":\"Bearer …\"},\"body\":{…},\n"
+            "                 \"auth_type\":\"none|bearer|basic|api_key\",\"auth_config\":{…},\"timeout_seconds\":30}}\n"
+            "\n"
+            "6) transform — pure-Python data shaping. TOP-LEVEL fields. Strict operations only:\n"
+            "   `pass`, `extract_field`, `format_string`, `filter_list`, `map_fields`, `pluck`, `first`, `last`, `length`, `to_json`.\n"
+            "     {\"id\":\"b6\",\"type\":\"transform\",\"label\":\"…\",\"operation\":\"pass|extract_field|…\",\n"
+            "      \"source\":\"b1.result.rows\",      # block ref, NO curly braces inside `source`\n"
+            "      \"field\":\"<field>\",              # for extract_field/filter_list/pluck\n"
+            "      \"value\":\"<expected>\",           # for filter_list\n"
+            "      \"template\":\"Hello {inputs.name} …\",  # for format_string\n"
+            "      \"mappings\":{\"pk\":\"{row.device}:{row.time}\",\"device\":\"{row.device}\"},  # for map_fields\n"
+            "      \"keep_unmapped\":false}\n"
+            "\n"
+            "7) send_email — SMTP send. TOP-LEVEL fields.\n"
+            "     {\"id\":\"b7\",\"type\":\"send_email\",\"label\":\"…\",\n"
+            "      \"to\":\"user@example.com\",          # or {b2.result.email}, or a list of {to,subject,body}\n"
+            "      \"subject\":\"Subject with {inputs.x}\",\"body\":\"Plain-text body\",\n"
+            "      \"from_name\":\"Nexus\",\"bcc\":\"audit@example.com\"}\n"
+            "\n"
+            "8) utility_call — invoke a utility (PDF extract, OCR, scrape, geocode, …). TOP-LEVEL fields.\n"
+            "     {\"id\":\"b8\",\"type\":\"utility_call\",\"label\":\"…\",\"utility_id\":\"<id>\",\"utility_params\":{…}}\n"
+            "\n"
+            "VARIABLE RESOLUTION:\n"
+            "  {inputs.<name>}              function input parameter\n"
+            "  {<block_id>.result}          full result of a previous block\n"
+            "  {<block_id>.result.<field>}  nested field\n"
+            "  {<block_id>.result[0].<field>}  first item of a list result\n"
+            "  {now}, {now_minus_1d|3d|7d|14d|30d|90d}  built-in ISO timestamps\n"
+            "\n"
+            "HARD RULES (violations produce non-runnable functions):\n"
+            "  - Use exactly the type strings above. NEVER `llm` (→`llm_call`), `condition` (unsupported), `http_request` (→`http_call`), `notification` (→`send_email`).\n"
+            "  - For ontology aggregations, ALWAYS use ontology_query+aggregate, NEVER http_call.\n"
+            "  - For writes, prefer ontology_update or action over raw http_call.\n"
+            "  - Every config field MUST be present with a real value — no `<id>`, `TODO`, or empty strings.\n"
+            "  - ontology_query.config.object_type is the NAME from list_object_types (e.g. \"DeviceTelemetry\"); ontology_update.config.object_type_id is the UUID. Calling list_object_types first is the safe way to get exact name + id.\n"
+            "  - Block IDs MUST match ^[a-z][a-z0-9_]*$ (e.g. `b1`, `agg`, `classify`).\n"
+            "  - `output_block` at the function root MUST be the id of the LAST meaningful block.\n"
+            "  - Patches replace the blocks array — include EVERY block you want to keep, not just the ones you're changing."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -764,6 +846,40 @@ TOOL_DEFINITIONS = {
                 "schedule_id": {"type": "string"},
             },
             "required": ["function_id", "schedule_id"],
+        },
+    },
+    "list_logic_runs": {
+        "name": "list_logic_runs",
+        "description": (
+            "List recent runs of logic functions in this tenant (Operations history). "
+            "Use this to diagnose failures, see what a scheduled function did last, or surface "
+            "the most recent run_id to pass to get_logic_run for a full trace. "
+            "Returns runs newest-first with id, function_id, status (queued/running/succeeded/failed), "
+            "started_at, finished_at, triggered_by, and a short error preview when failed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function_id": {"type": "string", "description": "Optional — filter to one function."},
+                "status": {"type": "string", "description": "Optional — filter (e.g. 'failed', 'succeeded', 'running')."},
+                "limit": {"type": "integer", "default": 20, "description": "Max runs to return (1-200)."},
+            },
+            "required": [],
+        },
+    },
+    "get_logic_run": {
+        "name": "get_logic_run",
+        "description": (
+            "Fetch the full record for one logic function run, including the per-block trace "
+            "(inputs, outputs, errors, timings). Use this to pinpoint which block in a function failed "
+            "and why. Get the run_id from list_logic_runs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+            },
+            "required": ["run_id"],
         },
     },
 
@@ -1661,6 +1777,41 @@ TOOL_DEFINITIONS = {
             "required": ["comment_id"],
         },
     },
+    "web_search": {
+        "name": "web_search",
+        "description": (
+            "Search the public web (DuckDuckGo HTML) for a query and return up to "
+            "`max_results` results, each {url, title, snippet}. Use this to find "
+            "supplier / catalog / vendor pages for a manufacturer part number. "
+            "Pair with scrape_url on the most credible URLs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {"type": "integer", "default": 5, "description": "How many results to return (max 10)"},
+            },
+            "required": ["query"],
+        },
+    },
+    "scrape_url": {
+        "name": "scrape_url",
+        "description": (
+            "Fetch a single URL and return {title, text, selected, links}. "
+            "Pass use_stealth=true to retry with a headless-browser fetcher if a "
+            "normal fetch returns a Cloudflare challenge or empty body. "
+            "Use this AFTER web_search to pull supplier price / lead time / MOQ from page bodies."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full URL to fetch"},
+                "use_stealth": {"type": "boolean", "default": False, "description": "Retry with stealthy headless browser"},
+                "extract_text": {"type": "boolean", "default": True},
+            },
+            "required": ["url"],
+        },
+    },
 }
 
 
@@ -2517,6 +2668,37 @@ async def execute_tool(
                 r = await client.delete(f"{LOGIC_URL}/logic/functions/{fid}/schedules/{sid}", headers=headers)
                 return {"success": r.is_success, "status": r.status_code}
 
+            elif tool_name == "list_logic_runs":
+                params: dict[str, Any] = {"limit": max(1, min(int(tool_input.get("limit", 20)), 200))}
+                if tool_input.get("function_id"): params["function_id"] = tool_input["function_id"]
+                if tool_input.get("status"): params["status"] = tool_input["status"]
+                r = await client.get(f"{LOGIC_URL}/logic/runs", headers=headers, params=params)
+                if not r.is_success:
+                    return {"error": f"list_logic_runs: {r.text[:300]}"}
+                runs = r.json()
+                # Trim each run to a digestible summary — full trace is huge and
+                # the agent should call get_logic_run for the details it needs.
+                summary = [
+                    {
+                        "id": run.get("id"),
+                        "function_id": run.get("function_id"),
+                        "function_version": run.get("function_version"),
+                        "status": run.get("status"),
+                        "triggered_by": run.get("triggered_by"),
+                        "started_at": run.get("started_at"),
+                        "finished_at": run.get("finished_at"),
+                        "error_preview": (run.get("error") or "")[:200] if run.get("error") else None,
+                    }
+                    for run in runs
+                ]
+                return {"runs": summary, "count": len(summary)}
+
+            elif tool_name == "get_logic_run":
+                rid = tool_input.get("run_id")
+                if not rid: return {"error": "run_id is required"}
+                r = await client.get(f"{LOGIC_URL}/logic/runs/{rid}", headers=headers)
+                return r.json() if r.is_success else {"error": f"get_logic_run: {r.status_code} {r.text[:300]}"}
+
             # ── Agents ────────────────────────────────────────────────────────
             elif tool_name == "list_agents":
                 r = await client.get(f"{AGENT_URL}/agents", headers=headers)
@@ -3049,6 +3231,30 @@ async def execute_tool(
                 if not cid: return {"error": "comment_id is required"}
                 r = await client.patch(f"{COLL_URL}/comments/{cid}", json={"resolved": True}, headers=headers)
                 return r.json() if r.is_success else {"error": f"resolve_comment: {r.text[:300]}"}
+
+            elif tool_name == "web_search":
+                query = tool_input.get("query", "").strip()
+                if not query:
+                    return {"error": "query is required"}
+                max_results = min(int(tool_input.get("max_results", 5) or 5), 10)
+                r = await client.post(
+                    f"{SCRAPING_URL}/search",
+                    json={"query": query, "max_results": max_results},
+                    timeout=20,
+                )
+                return r.json() if r.is_success else {"error": f"web_search: {r.text[:300]}"}
+
+            elif tool_name == "scrape_url":
+                url = tool_input.get("url", "").strip()
+                if not url:
+                    return {"error": "url is required"}
+                body = {
+                    "url": url,
+                    "use_stealth": bool(tool_input.get("use_stealth", False)),
+                    "extract_text": bool(tool_input.get("extract_text", True)),
+                }
+                r = await client.post(f"{SCRAPING_URL}/scrape", json=body, timeout=30)
+                return r.json() if r.is_success else {"error": f"scrape_url: {r.text[:300]}"}
 
             else:
                 return {"error": f"Unknown tool: {tool_name}"}

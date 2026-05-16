@@ -19,6 +19,8 @@ AVAILABLE_TOOLS = [
     "query_records",
     "count_records",
     "logic_function_run",
+    "list_logic_runs",
+    "get_logic_run",
     "action_propose",
     "list_actions",
     "agent_call",

@@ -671,6 +671,22 @@ def build_help_system(context: dict) -> str:
                         sv = str(v)
                         compact[k] = sv[:150] + "..." if len(sv) > 150 else v
                     ctx_lines.append(f"  - Record {i+1}: `{json.dumps(compact, ensure_ascii=False, default=str)[:500]}`")
+    if context.get("logic_runs"):
+        runs = context["logic_runs"]
+        # Map function_id → name for readability
+        fn_name_by_id = {fn.get("id"): fn.get("name") for fn in (context.get("functions") or [])}
+        ctx_lines.append(f"\n## Recent Operations Runs ({len(runs)} most recent)")
+        for r in runs[:20]:
+            fid = r.get("function_id")
+            fn_label = fn_name_by_id.get(fid) or fid or "<unknown>"
+            status = r.get("status", "?")
+            started = r.get("started_at") or "?"
+            finished = r.get("finished_at") or "(unfinished)"
+            trig = r.get("triggered_by") or "?"
+            line = f"- **{fn_label}** — status: {status} — started: {started} — finished: {finished} — by: {trig} — run_id: `{r.get('id')}`"
+            if r.get("error_preview"):
+                line += f"\n  - error: `{r['error_preview']}`"
+            ctx_lines.append(line)
     if context.get("selected_function"):
         sf = context["selected_function"]
         ctx_lines.append(f"\n## Currently Selected Function: {sf['name']}")

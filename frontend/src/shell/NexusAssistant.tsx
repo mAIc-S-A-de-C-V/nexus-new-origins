@@ -42,12 +42,13 @@ async function fetchLiveContext(currentPage: string) {
   const h = { 'x-tenant-id': tenantId };
   const opt = { headers: h };
 
-  const [fnsRes, otsRes, connRes, pipRes, mpRes] = await Promise.allSettled([
+  const [fnsRes, otsRes, connRes, pipRes, mpRes, runsRes] = await Promise.allSettled([
     fetchWithTimeout(`${LOGIC_URL}/logic/functions`, opt),
     fetchWithTimeout(`${ONTOLOGY_URL}/object-types`, opt),
     fetchWithTimeout(`${CONNECTOR_URL}/connectors`,  opt),
     fetchWithTimeout(`${PIPELINE_URL}/pipelines`,    opt),
     fetchWithTimeout(`${AGENT_URL}/model-providers`, opt),
+    fetchWithTimeout(`${LOGIC_URL}/logic/runs?limit=20`, opt),
   ]);
 
   const functions: any[]    = fnsRes.status  === 'fulfilled' ? (fnsRes.value  || []) : [];
@@ -55,6 +56,19 @@ async function fetchLiveContext(currentPage: string) {
   const rawConnectors: any[] = connRes.status === 'fulfilled' ? (connRes.value || []) : [];
   const pipelines: any[]    = pipRes.status  === 'fulfilled' ? (pipRes.value  || []) : [];
   const rawProviders: any[] = mpRes.status   === 'fulfilled' ? (mpRes.value   || []) : [];
+  const rawRuns: any[]      = runsRes.status === 'fulfilled' ? (runsRes.value || []) : [];
+
+  // Trim each run to a digestible summary — full trace is huge.
+  const logic_runs = rawRuns.map((r: any) => ({
+    id: r.id,
+    function_id: r.function_id,
+    function_version: r.function_version,
+    status: r.status,
+    triggered_by: r.triggered_by,
+    started_at: r.started_at,
+    finished_at: r.finished_at,
+    error_preview: r.error ? String(r.error).slice(0, 200) : null,
+  }));
 
   const model_providers = rawProviders.map((p: any) => ({
     id: p.id,
@@ -124,6 +138,7 @@ async function fetchLiveContext(currentPage: string) {
     connectors,
     pipelines,
     model_providers,
+    logic_runs,
   };
 }
 
