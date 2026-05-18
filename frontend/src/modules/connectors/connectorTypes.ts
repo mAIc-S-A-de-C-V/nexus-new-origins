@@ -170,6 +170,14 @@ export const CONNECTOR_TYPES: ConnectorTypeDefinition[] = [
     iconName: 'Activity',
     color: '#F46800',
   },
+  {
+    type: 'SHAREPOINT',
+    displayName: 'SharePoint',
+    description: 'Browse and sync files from Microsoft SharePoint document libraries via Graph API. Per-tenant Azure AD app — your Nexus tenant supplies its own client_id/secret. OAuth2 + refresh tokens.',
+    category: 'Doc',
+    iconName: 'FolderTree',
+    color: '#0078D4',
+  },
 ];
 
 export const getConnectorTypeDef = (type: string): ConnectorTypeDefinition | undefined =>

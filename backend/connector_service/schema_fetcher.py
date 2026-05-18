@@ -118,6 +118,9 @@ async def fetch_schema(connector_type: str, base_url: Optional[str], credentials
             return await _email_schema(creds, cfg)
         if connector_type == "GRAFANA_INFLUX":
             return await _grafana_influx_schema(base_url, creds, cfg)
+        if connector_type == "SHAREPOINT":
+            from sharepoint_connector import fetch_schema as _sp_fetch_schema
+            return await _sp_fetch_schema(creds, cfg, db=db, last_sync=last_sync)
         if connector_type in ("RELATIONAL_DB", "MONGODB", "DATA_WAREHOUSE"):
             return {}, [], "Schema preview not supported for database connectors — connect directly via your DB client."
         return {}, [], f"Schema fetch not yet supported for {connector_type}."
@@ -368,6 +371,9 @@ async def test_credentials(connector_type: str, base_url: Optional[str], credent
             return await imap_test(creds, cfg)
         elif connector_type == "GRAFANA_INFLUX":
             ok, msg = await _grafana_influx_test(base_url, creds, cfg)
+        elif connector_type == "SHAREPOINT":
+            from sharepoint_connector import test_connection as _sp_test
+            ok, msg = await _sp_test(creds, cfg)
         elif connector_type == "REST_API":
             ok, msg = await _rest_api_test(base_url, creds, cfg, db=db)
         else:

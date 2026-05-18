@@ -4,7 +4,7 @@ from fastapi import FastAPI, Depends
 from fastapi import Request as _Request
 from fastapi.responses import Response as _Response
 from fastapi.middleware.cors import CORSMiddleware
-from routers import connectors, webhooks
+from routers import connectors, webhooks, sharepoint as sharepoint_router
 from database import init_db
 from auth_middleware import require_auth
 
@@ -36,6 +36,8 @@ app.add_middleware(
 )
 
 app.include_router(connectors.router, prefix="/connectors", tags=["connectors"], dependencies=[Depends(require_auth)])
+app.include_router(sharepoint_router.router, prefix="/connectors", tags=["sharepoint"], dependencies=[Depends(require_auth)])
+app.include_router(sharepoint_router.public_router, prefix="/sharepoint", tags=["sharepoint-public"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 
 from fastapi import Request as _RequestSize
