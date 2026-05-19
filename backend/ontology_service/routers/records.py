@@ -1317,6 +1317,13 @@ async def aggregate_records(
         "sort_by": body.sort_by or "",
         "sort_dir": body.sort_dir or "desc",
         "limit": body.limit,
+        # computed_fields and joins materially change the result set.
+        # Omitting them from the cache key meant editing an expression
+        # silently returned the previously-cached result — the divide-by-30
+        # was correctly applied in SQL but never reached the client. Same
+        # bug for changing a join's source/target field. Include both.
+        "computed_fields": [cf.model_dump() for cf in body.computed_fields],
+        "joins": [j.model_dump() for j in body.joins],
     }
     query_hash = query_cache.canonical_query_hash(cache_payload)
     cache_key = query_cache.aggregate_cache_key(tenant_id, ot_id, query_hash)
