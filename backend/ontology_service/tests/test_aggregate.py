@@ -906,3 +906,192 @@ def test_duplicate_computed_field_name_rejected():
     with pytest.raises(HTTPException) as exc:
         build_aggregate_sql(body, "t", "o")
     assert "Duplicate" in exc.value.detail
+
+
+# ── Joins ─────────────────────────────────────────────────────────────────
+
+
+def test_join_emits_left_join_clause_with_aliased_base():
+    """Project Assignment LEFT JOIN Employee on employee_id."""
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(
+            alias="emp",
+            target_object_type_id="employee-ot-id",
+            on=JoinOn(source_field="employee_id", target_field="id"),
+        )],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    # FROM clause is aliased
+    assert "FROM object_records base" in sql
+    # JOIN clause emitted
+    assert "LEFT JOIN object_records emp" in sql
+    # Tenant + target OT scoped
+    assert "emp.tenant_id = base.tenant_id" in sql
+    assert "emp.object_type_id =" in sql
+    # The target object type id is bind-parameterized, not interpolated
+    assert "employee-ot-id" in params.values()
+    # Base WHERE uses the alias
+    assert "base.tenant_id = :tid" in sql
+    assert "base.object_type_id = :otid" in sql
+
+
+def test_joined_field_referenced_via_dot_notation():
+    """SELECT emp.full_name AS grp, COUNT(*) ... GROUP BY emp.full_name."""
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        group_by="emp.full_name",
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(
+            alias="emp",
+            target_object_type_id="employee-ot-id",
+            on=JoinOn(source_field="employee_id", target_field="id"),
+        )],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "emp.data->>'full_name' AS grp" in sql
+    # Group BY uses the alias 'grp' in the actual GROUP BY clause
+    assert "GROUP BY grp" in sql
+
+
+def test_inner_join_type():
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(
+            alias="emp", type="inner",
+            target_object_type_id="emp-id",
+            on=JoinOn(source_field="employee_id", target_field="id"),
+        )],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "INNER JOIN object_records emp" in sql
+
+
+def test_invalid_join_type_rejected():
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(
+            alias="emp", type="cross",  # not supported
+            target_object_type_id="emp-id",
+            on=JoinOn(source_field="x", target_field="y"),
+        )],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "left" in exc.value.detail or "inner" in exc.value.detail
+
+
+def test_join_without_on_or_link_id_rejected():
+    from routers.records import JoinSpec
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(alias="emp", target_object_type_id="emp-id")],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "on" in exc.value.detail or "link_id" in exc.value.detail
+
+
+def test_unknown_alias_in_dot_reference_rejected():
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        group_by="proj.name",  # 'proj' not declared
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(
+            alias="emp",
+            target_object_type_id="emp-id",
+            on=JoinOn(source_field="employee_id", target_field="id"),
+        )],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "Unknown join alias" in exc.value.detail
+
+
+def test_duplicate_alias_rejected():
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[
+            JoinSpec(alias="emp", target_object_type_id="emp-1",
+                     on=JoinOn(source_field="employee_id", target_field="id")),
+            JoinSpec(alias="emp", target_object_type_id="emp-2",
+                     on=JoinOn(source_field="employee_id", target_field="id")),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "Duplicate" in exc.value.detail
+
+
+def test_reserved_alias_rejected():
+    """`base` is reserved for the main table."""
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(alias="base", target_object_type_id="emp-id",
+                       on=JoinOn(source_field="x", target_field="y"))],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "reserved" in exc.value.detail
+
+
+def test_join_combined_with_computed_field_in_agg():
+    """Computed field (cost_per_assignment) using a joined column (emp.monthly_salary)."""
+    from routers.records import JoinSpec, JoinOn, ComputedField
+    body = AggregateRequest(
+        group_by="project_id",
+        aggregations=[AggregationSpec(field="daily_cost", method="sum")],
+        joins=[JoinSpec(
+            alias="emp",
+            target_object_type_id="employee-ot-id",
+            on=JoinOn(source_field="employee_id", target_field="id"),
+        )],
+        computed_fields=[ComputedField(
+            name="daily_cost",
+            expression={
+                "type": "op", "op": "mul",
+                "left": {"type": "op", "op": "div",
+                         "left": {"type": "field", "name": "emp.monthly_salary"},
+                         "right": {"type": "lit", "value": 30}},
+                "right": {"type": "op", "op": "div",
+                          "left": {"type": "field", "name": "allocation_pct"},
+                          "right": {"type": "lit", "value": 100}},
+            },
+        )],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # Joined field reference in expression
+    assert "emp.data->>'monthly_salary'" in sql
+    # Base field is qualified
+    assert "base.data->>'allocation_pct'" in sql
+    # And the LEFT JOIN is there
+    assert "LEFT JOIN object_records emp" in sql
+
+
+def test_runtime_with_joins_rejected():
+    """runtime + joins is a v1 limitation."""
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(field="status", method="runtime", ts_field="time")],
+        joins=[JoinSpec(alias="x", target_object_type_id="x-id",
+                       on=JoinOn(source_field="a", target_field="b"))],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "runtime" in exc.value.detail
+
+
+def test_no_joins_keeps_legacy_sql_shape():
+    """Existing widgets — no joins, no aliasing of the base table."""
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(field="amount", method="sum")],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "FROM object_records base" not in sql
+    assert "base.tenant_id" not in sql
+    assert "data->>'amount'" in sql

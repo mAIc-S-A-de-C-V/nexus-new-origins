@@ -355,6 +355,30 @@ class ComputedField(BaseModel):
     expression: Expr
 
 
+class JoinOn(BaseModel):
+    source_field: str   # field on the base object type that holds the FK
+    target_field: str = "id"  # field on the target object type to match against
+
+
+class JoinSpec(BaseModel):
+    """A query-time LEFT/INNER JOIN against another object type.
+
+    When at least one join is declared, every base-table field reference
+    in the query is automatically qualified with the `base` alias so
+    `alias.field` references unambiguously resolve to the joined table.
+
+    Cardinality assumption: joins are many-to-one (the base record links
+    to a single target record). Joining a one-to-many relationship will
+    multiply row counts; the v1 builder does not check this — author
+    your link metadata accordingly.
+    """
+    alias: str                                  # SQL alias for the joined table
+    target_object_type_id: str                  # which OT to join against
+    on: Optional[JoinOn] = None                 # explicit join keys
+    link_id: Optional[str] = None               # OR: use a declared ontology link
+    type: str = "left"                          # "left" | "inner"
+
+
 class AggregateRequest(BaseModel):
     filters: Optional[str] = None
     group_by: Optional[str] = None
@@ -369,6 +393,10 @@ class AggregateRequest(BaseModel):
     timezone: Optional[str] = None
     # Virtual columns evaluated for this query only. See ComputedField.
     computed_fields: list[ComputedField] = []
+    # Query-time joins against other object types. Each declared alias can
+    # then be referenced as `alias.field` in agg.field / group_by / filters /
+    # computed_field expressions.
+    joins: list[JoinSpec] = []
 
 
 # IANA TZ names use [A-Za-z0-9_+/-]. Anything else is rejected, since the
@@ -483,6 +511,40 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             )
         computed_map[cf.name] = cf
 
+    # Join validation. Aliases must be unique, identifier-safe, and not
+    # collide with reserved names (`base`, `data`, dimension words).
+    joins_map: dict[str, JoinSpec] = {}
+    _RESERVED_JOIN_ALIASES = {"base", "data", "grp", "series", "object_records"}
+    for j in body.joins:
+        if not _FIELD_NAME_RE.match(j.alias):
+            raise HTTPException(
+                status_code=400, detail=f"Invalid join alias: {j.alias!r}"
+            )
+        if j.alias in _RESERVED_JOIN_ALIASES:
+            raise HTTPException(
+                status_code=400, detail=f"Join alias {j.alias!r} is reserved"
+            )
+        if j.alias in joins_map:
+            raise HTTPException(
+                status_code=400, detail=f"Duplicate join alias: {j.alias!r}"
+            )
+        if j.type not in {"left", "inner"}:
+            raise HTTPException(
+                status_code=400, detail=f"join.type must be 'left' or 'inner': {j.type!r}"
+            )
+        if j.on is None and not j.link_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Join {j.alias!r} requires either `on` or `link_id`",
+            )
+        if j.on is not None:
+            _safe_field(j.on.source_field)
+            _safe_field(j.on.target_field)
+        joins_map[j.alias] = j
+
+    has_joins = bool(joins_map)
+    base_qual = "base." if has_joins else ""
+
     has_runtime = False
     has_window = False
     for agg in body.aggregations:
@@ -577,6 +639,21 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                 status_code=400,
                 detail=f"Cycle in computed_fields involving {name!r}",
             )
+        # Joined-field reference: "alias.field". Only meaningful when at
+        # least one join is declared and `alias` matches a declared one.
+        if "." in name and has_joins:
+            alias, field = name.split(".", 1)
+            if "." in field:
+                raise HTTPException(
+                    status_code=400, detail=f"Nested alias not supported: {name!r}"
+                )
+            if alias not in joins_map:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown join alias {alias!r} (declared aliases: {sorted(joins_map.keys())})",
+                )
+            _safe_field(field)
+            return f"{alias}.data->>'{field}'"
         if name in computed_map:
             visiting = visiting | {name}
             cf = computed_map[name]
@@ -588,9 +665,9 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                 bind_prefix=prefix,
             )
             return f"({emit_sql(cf.expression, ctx)})"
-        # Raw JSONB column — validate identifier whitelist.
+        # Raw JSONB column on the base table — validate identifier whitelist.
         _safe_field(name)
-        return f"data->>'{name}'"
+        return f"{base_qual}data->>'{name}'"
 
     # ── Grouping dimensions ─────────────────────────────────────────────────
     # Three modes:
@@ -746,7 +823,15 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             sql_fn = agg.method.upper()
             select_parts.append(f"{sql_fn}({value_expr}) AS {alias}")
 
-    where_parts = ["tenant_id = :tid", "object_type_id = :otid"]
+    # Reject runtime + joins for now — the runtime CTE wraps the table
+    # before the join can fire, which produces incorrect partitions.
+    if has_runtime and has_joins:
+        raise HTTPException(
+            status_code=400,
+            detail="runtime aggregation cannot be combined with joins (v1 limitation)",
+        )
+
+    where_parts = [f"{base_qual}tenant_id = :tid", f"{base_qual}object_type_id = :otid"]
     if body.filters:
         try:
             parsed = json.loads(body.filters) if body.filters else {}
@@ -881,6 +966,36 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     if series_clause:
         where_sql += f" AND {series_clause} IS NOT NULL"
 
+    # ── Build JOIN clauses ─────────────────────────────────────────────────
+    # Each declared join becomes either LEFT or INNER JOIN object_records
+    # aliased to j.alias. Multi-tenant safe: every join condition restricts
+    # to the same tenant_id and to the declared target object_type_id.
+    join_sql = ""
+    if has_joins:
+        join_clauses: list[str] = []
+        for j in body.joins:
+            on = j.on
+            if on is None:
+                # link_id resolution — defer to a future commit. For now,
+                # require explicit `on`.
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Join {j.alias!r}: link_id resolution not yet implemented; "
+                    f"provide explicit `on`",
+                )
+            src_f = _safe_field(on.source_field)
+            tgt_f = _safe_field(on.target_field)
+            kind = "INNER JOIN" if j.type == "inner" else "LEFT JOIN"
+            tgt_bind = f"join_{j.alias}_otid"
+            bind_params[tgt_bind] = j.target_object_type_id
+            join_clauses.append(
+                f"{kind} object_records {j.alias} "
+                f"ON {j.alias}.tenant_id = base.tenant_id "
+                f"AND {j.alias}.object_type_id = :{tgt_bind} "
+                f"AND {j.alias}.data->>'{tgt_f}' = base.data->>'{src_f}'"
+            )
+        join_sql = " " + " ".join(join_clauses)
+
     order_sql = ""
     if body.sort_by:
         sb = body.sort_by
@@ -906,6 +1021,11 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         group_by_cols.append("grp")
     if series_clause:
         group_by_cols.append("series")
+
+    # When joins are present, the base table needs to be aliased explicitly
+    # so its columns can be qualified ("base.data"). The accessor already
+    # emits `base.data->>'...'`; here we make the FROM clause match.
+    base_from = "object_records base" if has_joins else "object_records"
 
     # ── Build final SQL, wrapping in a CTE when runtime agg is present ─────
     if runtime_cte_parts:
@@ -951,7 +1071,7 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     elif group_by_cols:
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM object_records "
+            f"FROM {base_from}{join_sql} "
             f"WHERE {where_sql} "
             f"GROUP BY {', '.join(group_by_cols)} "
             f"{order_sql} "
@@ -960,7 +1080,7 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     else:
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM object_records "
+            f"FROM {base_from}{join_sql} "
             f"WHERE {where_sql}"
         )
 
