@@ -30,6 +30,7 @@ import { useAppStore } from '../../store/appStore';
 import { getTenantId } from '../../store/authStore';
 import AppCanvas from './AppCanvas';
 import ShareManagerModal from './ShareManagerModal';
+import { AdvancedSection } from './widgets/AdvancedSection';
 
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
@@ -2565,6 +2566,13 @@ const ConfigPanel: React.FC<{
             objectTypes={objectTypes}
           />
         )}
+
+        {/* Advanced — joins / computed fields / window function */}
+        <AdvancedSection
+          comp={comp}
+          objectTypes={objectTypes}
+          onChange={(patch) => set(patch)}
+        />
 
         {/* JSON preview for this widget */}
         <div style={{ marginTop: 8, borderTop: '1px solid #F1F5F9', paddingTop: 10 }}>
