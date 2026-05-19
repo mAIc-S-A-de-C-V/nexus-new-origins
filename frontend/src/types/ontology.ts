@@ -38,6 +38,14 @@ export interface ObjectProperty {
   description?: string;
   sampleValues?: string[];
   inferenceConfidence?: number;
+  // OT-level computed (virtual) column. When present, this property is
+  // derived from other properties at query time — /aggregate auto-merges
+  // these into every request's computed_fields. The expression is the
+  // same JSON AST that widget-level computed_fields use; matches the
+  // shape of `Expr` in types/app.ts.
+  computed?: {
+    expression: unknown;  // Expr — kept loose here to avoid a circular import
+  };
 }
 
 export interface OntologyLink {

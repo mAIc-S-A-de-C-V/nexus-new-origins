@@ -105,6 +105,46 @@ describe('parseExpression — functions', () => {
   });
 });
 
+describe('parseExpression — numeric helpers', () => {
+  it('parses round(x)', () => {
+    expect(parseExpression('round(amount)')).toEqual({
+      type: 'func', func: 'round',
+      args: [{ type: 'field', name: 'amount' }],
+    });
+  });
+
+  it('parses round(x, 2)', () => {
+    expect(parseExpression('round(amount, 2)')).toEqual({
+      type: 'func', func: 'round',
+      args: [
+        { type: 'field', name: 'amount' },
+        { type: 'lit', value: 2 },
+      ],
+    });
+  });
+
+  it('parses abs / floor / ceil', () => {
+    for (const fn of ['abs', 'floor', 'ceil'] as const) {
+      const ast = parseExpression(`${fn}(x)`);
+      expect(ast).toEqual({ type: 'func', func: fn, args: [{ type: 'field', name: 'x' }] });
+    }
+  });
+
+  it('parses pow(base, exp)', () => {
+    expect(parseExpression('pow(x, 2)')).toEqual({
+      type: 'func', func: 'pow',
+      args: [{ type: 'field', name: 'x' }, { type: 'lit', value: 2 }],
+    });
+  });
+
+  it('parses length(name)', () => {
+    expect(parseExpression('length(name)')).toEqual({
+      type: 'func', func: 'length',
+      args: [{ type: 'field', name: 'name' }],
+    });
+  });
+});
+
 describe('parseExpression — comparison and logical', () => {
   it('parses a > b and c < d', () => {
     const expr = parseExpression('a > b and c < d');

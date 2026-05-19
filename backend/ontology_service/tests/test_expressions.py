@@ -338,3 +338,48 @@ def test_wire_format_dict_round_trip():
     sql = emit_sql(parsed, ctx)
     assert "monthly_salary" in sql
     assert "allocation_pct" in sql
+
+
+# ── v2 numeric helpers ─────────────────────────────────────────────────────
+
+
+def test_round_one_arg_emits_ROUND():
+    ctx, _ = _ctx()
+    sql = emit_sql(FuncCall(func="round", args=[FieldRef(name="amount")]), ctx)
+    assert "ROUND(" in sql
+    assert "::numeric" in sql
+
+
+def test_round_two_args_emits_digits():
+    ctx, _ = _ctx()
+    sql = emit_sql(FuncCall(func="round", args=[FieldRef(name="amount"), LiteralExpr(value=2)]), ctx)
+    assert "ROUND(" in sql
+    assert "::int" in sql
+
+
+def test_abs_floor_ceil():
+    for fn, sqlfn in [("abs", "ABS"), ("floor", "FLOOR"), ("ceil", "CEIL")]:
+        ctx, _ = _ctx()
+        sql = emit_sql(FuncCall(func=fn, args=[FieldRef(name="x")]), ctx)
+        assert sqlfn in sql
+
+
+def test_pow_emits_POWER():
+    ctx, _ = _ctx()
+    sql = emit_sql(FuncCall(func="pow", args=[FieldRef(name="base"), LiteralExpr(value=2)]), ctx)
+    assert "POWER(" in sql
+
+
+def test_length_emits_CHAR_LENGTH():
+    ctx, _ = _ctx()
+    sql = emit_sql(FuncCall(func="length", args=[FieldRef(name="name")]), ctx)
+    assert "CHAR_LENGTH(" in sql
+
+
+def test_arity_enforced_for_numeric_helpers():
+    with pytest.raises(HTTPException):
+        FuncCall(func="abs", args=[])
+    with pytest.raises(HTTPException):
+        FuncCall(func="pow", args=[LiteralExpr(value=1)])  # expects 2
+    with pytest.raises(HTTPException):
+        FuncCall(func="length", args=[])

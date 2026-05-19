@@ -85,6 +85,8 @@ _FUNCTIONS = {
     "date_diff", "date_trunc", "now",
     "to_number", "to_date", "to_text",
     "if",
+    # Numeric helpers — added in the v2 expression set.
+    "round", "abs", "floor", "ceil", "pow", "length",
 }
 
 # Date units allowed in date_diff / date_trunc. Matches Postgres' built-in
@@ -178,6 +180,11 @@ def _func_arity(name: str) -> Optional[int]:
         "date_diff": 3, "date_trunc": 2, "now": 0,
         "to_number": 1, "to_date": 1, "to_text": 1,
         "if": 3,
+        # round(x) or round(x, digits) — handled specially below for variadic.
+        "round": None,
+        "abs": 1, "floor": 1, "ceil": 1,
+        "pow": 2,
+        "length": 1,
     }.get(name)
 
 
@@ -308,6 +315,28 @@ def _emit_func(call: FuncCall, ctx: SqlEmitContext) -> str:
         return f"({args[0]})::text"
     if f == "if":
         return f"(CASE WHEN {args[0]} THEN {args[1]} ELSE {args[2]} END)"
+    if f == "round":
+        # round(x) or round(x, digits). The first arg is the value, the
+        # second (optional) is the precision.
+        if len(args) == 1:
+            return f"ROUND({_as_numeric(args[0])})"
+        if len(args) == 2:
+            return f"ROUND({_as_numeric(args[0])}, {_as_numeric(args[1])}::int)"
+        raise HTTPException(status_code=400, detail="round() takes 1 or 2 args")
+    if f == "abs":
+        return f"ABS({_as_numeric(args[0])})"
+    if f == "floor":
+        return f"FLOOR({_as_numeric(args[0])})"
+    if f == "ceil":
+        return f"CEIL({_as_numeric(args[0])})"
+    if f == "pow":
+        return f"POWER({_as_numeric(args[0])}, {_as_numeric(args[1])})"
+    if f == "length":
+        # Works for strings (returns char count) and arrays (returns 0 here —
+        # JSONB arrays would need jsonb_array_length, callers should use the
+        # native ontology API for array-shaped fields). For plain text values
+        # CHAR_LENGTH is what every analyst expects from LEN().
+        return f"CHAR_LENGTH({args[0]}::text)"
     raise HTTPException(status_code=500, detail=f"Function not implemented: {f!r}")
 
 

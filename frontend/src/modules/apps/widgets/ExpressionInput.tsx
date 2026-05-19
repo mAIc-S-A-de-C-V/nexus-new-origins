@@ -124,7 +124,8 @@ export const ExpressionInput: React.FC<Props> = ({
           <div><strong>Strings:</strong> double-quoted, e.g. <code>"active"</code></div>
           <div><strong>Functions:</strong> <code>concat, lower, upper, coalesce,</code></div>
           <div style={{ marginLeft: 12 }}><code>date_diff("day", a, b), date_trunc("month", ts), now(),</code></div>
-          <div style={{ marginLeft: 12 }}><code>to_number(x), to_date(x), to_text(x), if(cond, a, b)</code></div>
+          <div style={{ marginLeft: 12 }}><code>to_number(x), to_date(x), to_text(x), if(cond, a, b),</code></div>
+          <div style={{ marginLeft: 12 }}><code>round(x[, digits]), abs(x), floor(x), ceil(x), pow(b, e), length(s)</code></div>
           <div><strong>Joined fields:</strong> use dot syntax — <code>emp.full_name</code></div>
         </div>
       </details>

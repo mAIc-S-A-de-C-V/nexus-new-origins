@@ -31,7 +31,8 @@ export type Expr =
   | { type: 'func';
       func: 'concat' | 'lower' | 'upper' | 'coalesce' |
             'date_diff' | 'date_trunc' | 'now' |
-            'to_number' | 'to_date' | 'to_text' | 'if';
+            'to_number' | 'to_date' | 'to_text' | 'if' |
+            'round' | 'abs' | 'floor' | 'ceil' | 'pow' | 'length';
       args: Expr[] };
 
 // Widget-level computed column. Referenced by `name` from valueField,

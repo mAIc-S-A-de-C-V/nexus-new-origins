@@ -5,6 +5,7 @@ import { useGraphStore } from '../../store/graphStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { ObjectType, ObjectTypeVersion, SchemaDiff, OntologyLink, SemanticType } from '../../types/ontology';
 import { PropertyList } from './PropertyList';
+import { PropertyComputedEditor } from './PropertyComputedEditor';
 import { SchemaDiffViewer } from './SchemaDiffViewer';
 import { Badge } from '../../design-system/components/Badge';
 import { useOntologyStore } from '../../store/ontologyStore';
@@ -871,28 +872,52 @@ const PropertiesTab: React.FC<{
 
       {objectType.properties.map((prop) => {
         const badge = TYPE_BADGE[prop.dataType] || { bg: '#F1F5F9', text: '#475569' };
+        const siblingNames = objectType.properties.map((p) => p.name);
         return (
           <div key={prop.id} style={{
-            display: 'flex', alignItems: 'center', gap: 8,
             padding: '7px 16px', borderBottom: '1px solid #F1F5F9',
           }}>
-            <span style={{ flex: 1, fontSize: 12, fontFamily: 'var(--font-mono)', color: '#0D1117', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {prop.name}
-            </span>
-            <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 3, backgroundColor: badge.bg, color: badge.text, flexShrink: 0, letterSpacing: '0.03em' }}>
-              {prop.dataType === 'string' && prop.semanticType === 'DATETIME' ? 'DateTime' : prop.dataType}
-            </span>
-            <span style={{ fontSize: 10, color: '#94A3B8', flexShrink: 0 }}>{prop.semanticType}</span>
-            <button
-              onClick={() => handleDelete(prop.id)}
-              disabled={deleting === prop.id}
-              title="Remove property"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#E2E8F0', padding: 2, flexShrink: 0 }}
-              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = '#DC2626')}
-              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = '#E2E8F0')}
-            >
-              <Trash2 size={12} />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ flex: 1, fontSize: 12, fontFamily: 'var(--font-mono)', color: '#0D1117', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {prop.name}
+                {prop.computed && (
+                  <span title="Computed property" style={{
+                    marginLeft: 6, fontSize: 9, fontWeight: 600,
+                    padding: '1px 5px', borderRadius: 3,
+                    backgroundColor: '#EDE9FE', color: '#5B21B6',
+                  }}>
+                    ƒx
+                  </span>
+                )}
+              </span>
+              <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 3, backgroundColor: badge.bg, color: badge.text, flexShrink: 0, letterSpacing: '0.03em' }}>
+                {prop.dataType === 'string' && prop.semanticType === 'DATETIME' ? 'DateTime' : prop.dataType}
+              </span>
+              <span style={{ fontSize: 10, color: '#94A3B8', flexShrink: 0 }}>{prop.semanticType}</span>
+              <button
+                onClick={() => handleDelete(prop.id)}
+                disabled={deleting === prop.id}
+                title="Remove property"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#E2E8F0', padding: 2, flexShrink: 0 }}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.color = '#DC2626')}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.color = '#E2E8F0')}
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <PropertyComputedEditor
+              property={prop}
+              siblingFieldNames={siblingNames}
+              onChange={(patch) => {
+                // Patch the property in place and save. We do an inline save
+                // since the panel doesn't have a dirty/save-button flow for
+                // per-property edits.
+                const nextProps = objectType.properties.map((p) =>
+                  p.id === prop.id ? { ...p, ...patch } : p,
+                );
+                updateObjectType(objectType.id, { properties: nextProps });
+              }}
+            />
           </div>
         );
       })}
