@@ -269,16 +269,22 @@ def emit_sql(expr: Expr, ctx: SqlEmitContext) -> str:
         right = emit_sql(expr.right, ctx)
         sql_op = _SQL_BINOP[expr.op]
         if expr.op in _ARITHMETIC_OPS:
-            # Cast both sides to numeric so JSONB text fields work transparently
-            # in arithmetic. CASE-guarded so non-numeric rows produce NULL
-            # instead of crashing the whole query.
-            return f"({_as_numeric(left)} {sql_op} {_as_numeric(right)})"
+            # Only wrap operands in the regex-guarded numeric cast when they
+            # could be non-numeric text (i.e. JSONB field accessors). Bare
+            # numeric literals, nested arithmetic, and numeric-returning
+            # functions are statically known to be numeric — wrapping them
+            # in the regex check produces `integer ~ unknown` errors because
+            # Postgres has no implicit cast from numeric to text in regex
+            # context. Static type inference avoids that whole problem.
+            l_sql = left if _produces_numeric(expr.left) else _as_numeric(left)
+            r_sql = right if _produces_numeric(expr.right) else _as_numeric(right)
+            return f"({l_sql} {sql_op} {r_sql})"
         return f"({left} {sql_op} {right})"
 
     if isinstance(expr, UnaryOp):
         arg = emit_sql(expr.arg, ctx)
         if expr.op == "neg":
-            return f"(-{_as_numeric(arg)})"
+            return f"(-{arg if _produces_numeric(expr.arg) else _as_numeric(arg)})"
         if expr.op == "not":
             return f"(NOT {arg})"
         raise HTTPException(status_code=400, detail=f"Unexpected unary op: {expr.op!r}")
@@ -297,9 +303,40 @@ def _as_numeric(sql: str) -> str:
     evaluation, NULL for junk.
     """
     return (
-        f"(CASE WHEN ({sql}) ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+        f"(CASE WHEN ({sql})::text ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
         f"THEN ({sql})::numeric ELSE NULL END)"
     )
+
+
+# ── Static type inference ──────────────────────────────────────────────────
+
+
+_NUMERIC_FUNCS = {
+    "round", "abs", "floor", "ceil", "pow", "length",
+    "to_number", "date_diff",
+}
+
+
+def _produces_numeric(expr: Expr) -> bool:
+    """True iff this AST node statically produces a SQL numeric value.
+
+    Used by the arithmetic emitter to skip the regex-guarded numeric cast
+    when the operand is already numeric — wrapping a numeric in a regex
+    check trips Postgres' lack of implicit numeric→text cast in `~` context
+    (`operator does not exist: integer ~ unknown`).
+    """
+    if isinstance(expr, LiteralExpr):
+        if isinstance(expr.value, bool):
+            return False
+        return isinstance(expr.value, (int, float))
+    if isinstance(expr, BinaryOp):
+        return expr.op in _ARITHMETIC_OPS
+    if isinstance(expr, UnaryOp):
+        return expr.op == "neg"
+    if isinstance(expr, FuncCall):
+        return expr.func in _NUMERIC_FUNCS
+    # FieldRef and everything else — assume JSONB text.
+    return False
 
 
 def _emit_func(call: FuncCall, ctx: SqlEmitContext) -> str:

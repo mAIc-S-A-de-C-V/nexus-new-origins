@@ -414,3 +414,57 @@ def test_arity_enforced_for_numeric_helpers():
         FuncCall(func="pow", args=[LiteralExpr(value=1)])  # expects 2
     with pytest.raises(HTTPException):
         FuncCall(func="length", args=[])
+
+
+# ── Numeric-operand regex skip (regression for "integer ~ unknown") ────
+
+
+def test_arithmetic_with_literal_skips_regex_on_literal():
+    """`monthly_salary * 10` should NOT wrap the literal 10 in a regex
+    check — Postgres has no `integer ~ text` operator and the query would
+    fail with "operator does not exist: integer ~ unknown".
+    """
+    ctx, _ = _ctx()
+    sql = emit_sql(
+        BinaryOp(op="mul",
+                 left=FieldRef(name="monthly_salary"),
+                 right=LiteralExpr(value=10)),
+        ctx,
+    )
+    # The literal '10' must appear naked (no surrounding regex CASE).
+    # The field accessor still gets the regex guard.
+    # Cheap test: extract the right operand from the multiplication. With
+    # our emitter it's just `10` (inline numeric literal, no wrap).
+    assert " * 10)" in sql
+    # Sanity: the field side is still regex-guarded.
+    assert "data->>'monthly_salary'" in sql
+    assert "::text ~" in sql
+
+
+def test_arithmetic_two_literals_both_skip():
+    ctx, _ = _ctx()
+    sql = emit_sql(
+        BinaryOp(op="add", left=LiteralExpr(value=2), right=LiteralExpr(value=3)),
+        ctx,
+    )
+    # No regex CASE at all when both sides are literals.
+    assert "CASE WHEN" not in sql
+    assert sql == "(2 + 3)"
+
+
+def test_arithmetic_nested_inner_op_skips_wrap():
+    """`(a / 30) * 100` — the inner arithmetic produces numeric, so the
+    outer mul should not re-wrap it in _as_numeric."""
+    ctx, _ = _ctx()
+    sql = emit_sql(
+        BinaryOp(
+            op="mul",
+            left=BinaryOp(op="div",
+                          left=FieldRef(name="a"),
+                          right=LiteralExpr(value=30)),
+            right=LiteralExpr(value=100),
+        ),
+        ctx,
+    )
+    # The CASE WHEN guard should appear exactly once — only on `a`.
+    assert sql.count("CASE WHEN") == 1
