@@ -547,3 +547,214 @@ def test_buckets_constant():
         "hour", "day", "week", "month", "quarter", "year",
     }
     assert expected == _BUCKETS
+
+
+# ── Window functions ──────────────────────────────────────────────────────
+
+
+def test_cumulative_sum_wraps_in_subquery():
+    """Running total: SUM(amount) by day, plus a SUM(agg_0) OVER (... cumulative) line."""
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[
+            AggregationSpec(field="amount", method="sum"),
+            AggregationSpec(
+                method="sum",
+                field="agg_0",
+                window=WindowSpec(
+                    order_by=[OrderBySpec(field="grp", dir="asc")],
+                    frame_mode="cumulative",
+                ),
+            ),
+        ],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # Inner subquery exists
+    assert "FROM (" in sql and ") _base" in sql
+    # Window function emitted in outer SELECT
+    assert "SUM((agg_0)::numeric) OVER (" in sql
+    assert "ORDER BY grp ASC" in sql
+    assert "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" in sql
+
+
+def test_cumulative_sum_partitioned_by_series():
+    """Multi-series cumulative: one running total per project."""
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        group_by="project_id",
+        time_bucket=TimeBucketSpec(field="date", interval="day"),
+        aggregations=[
+            AggregationSpec(field="daily_cost", method="sum"),
+            AggregationSpec(
+                method="sum",
+                field="agg_0",
+                window=WindowSpec(
+                    partition_by=["series"],
+                    order_by=[OrderBySpec(field="grp", dir="asc")],
+                    frame_mode="cumulative",
+                ),
+            ),
+        ],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "PARTITION BY series" in sql
+    assert "ORDER BY grp ASC" in sql
+    assert "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" in sql
+
+
+def test_rolling_avg_emits_n_preceding_frame():
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[
+            AggregationSpec(field="amount", method="sum"),
+            AggregationSpec(
+                method="avg",
+                field="agg_0",
+                window=WindowSpec(
+                    order_by=[OrderBySpec(field="grp", dir="asc")],
+                    frame_mode="rolling",
+                    frame_rows=7,
+                ),
+            ),
+        ],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "AVG((agg_0)::numeric) OVER (" in sql
+    assert "ROWS BETWEEN 7 PRECEDING AND CURRENT ROW" in sql
+
+
+def test_rolling_requires_frame_rows():
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[
+            AggregationSpec(field="amount", method="sum"),
+            AggregationSpec(
+                method="avg",
+                field="agg_0",
+                window=WindowSpec(
+                    order_by=[OrderBySpec(field="grp", dir="asc")],
+                    frame_mode="rolling",
+                    # frame_rows omitted — must reject
+                ),
+            ),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "frame_rows" in exc.value.detail
+
+
+def test_lag_emits_lag_function():
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[
+            AggregationSpec(field="amount", method="sum"),
+            AggregationSpec(
+                method="lag",
+                field="agg_0",
+                window=WindowSpec(
+                    order_by=[OrderBySpec(field="grp", dir="asc")],
+                    frame_mode="all",
+                    offset=1,
+                ),
+            ),
+        ],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "LAG((agg_0)::numeric, 1)" in sql
+    # No ROWS frame for lag
+    assert "ROWS BETWEEN" not in sql.split("LAG", 1)[1]
+
+
+def test_rank_takes_no_value_arg():
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        group_by="project_id",
+        aggregations=[
+            AggregationSpec(field="amount", method="sum"),
+            AggregationSpec(
+                method="rank",
+                window=WindowSpec(
+                    order_by=[OrderBySpec(field="agg_0", dir="desc")],
+                    frame_mode="all",
+                ),
+            ),
+        ],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "RANK()" in sql
+    assert "ORDER BY agg_0 DESC" in sql
+
+
+def test_windowed_source_must_match_pattern():
+    """field='monthly_salary' is a raw column, not allowed as window source."""
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        time_bucket=TimeBucketSpec(field="created_at", interval="day"),
+        aggregations=[
+            AggregationSpec(
+                method="sum",
+                field="monthly_salary",  # not 'grp', 'series', or 'agg_N'
+                window=WindowSpec(
+                    order_by=[OrderBySpec(field="grp", dir="asc")],
+                    frame_mode="cumulative",
+                ),
+            ),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "grp" in exc.value.detail or "agg_N" in exc.value.detail
+
+
+def test_windowed_partition_by_must_match_pattern():
+    from routers.records import WindowSpec, OrderBySpec
+    body = AggregateRequest(
+        group_by="x",
+        aggregations=[
+            AggregationSpec(field="amount", method="sum"),
+            AggregationSpec(
+                method="sum",
+                field="agg_0",
+                window=WindowSpec(
+                    partition_by=["raw_field"],  # invalid
+                    order_by=[OrderBySpec(field="grp", dir="asc")],
+                    frame_mode="cumulative",
+                ),
+            ),
+        ],
+    )
+    with pytest.raises(HTTPException):
+        build_aggregate_sql(body, "t", "o")
+
+
+def test_non_windowable_method_rejected_with_window():
+    from routers.records import WindowSpec
+    body = AggregateRequest(
+        aggregations=[
+            AggregationSpec(field="amount", method="sum"),
+            AggregationSpec(
+                method="count_distinct",  # not in _WINDOWABLE_METHODS
+                field="agg_0",
+                window=WindowSpec(frame_mode="cumulative"),
+            ),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "cannot be windowed" in exc.value.detail or "Method" in exc.value.detail
+
+
+def test_unwindowed_path_unchanged():
+    """No window in body → SQL identical to legacy behavior (no subquery wrap)."""
+    body = AggregateRequest(
+        group_by="status",
+        aggregations=[AggregationSpec(field="amount", method="sum")],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert " FROM (" not in sql  # no subquery wrap
+    assert "_base" not in sql

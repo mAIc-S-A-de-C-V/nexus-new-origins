@@ -250,6 +250,23 @@ async def list_records(
 _FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _AGG_METHODS = {"count", "sum", "avg", "min", "max", "count_distinct", "runtime"}
 
+# Window-only methods — only valid when AggregationSpec.window is set.
+# Composable methods (sum/avg/etc.) are still in _AGG_METHODS and the SQL
+# emitter decides between SUM(...) and SUM(...) OVER (...) based on .window.
+_WINDOW_ONLY_METHODS = {
+    "lag", "lead", "rank", "dense_rank", "row_number", "first_value", "last_value",
+}
+# All methods that can be windowed. Composable + window-only.
+_WINDOWABLE_METHODS = {"sum", "avg", "min", "max", "count"} | _WINDOW_ONLY_METHODS
+
+# Postgres window functions that don't take a value argument (rank, etc.).
+_VALUELESS_WINDOW_FUNCS = {"rank", "dense_rank", "row_number"}
+
+# Methods accepted as inner-query "source" references for windowed aggs.
+# Source must be either "grp" / "series" (the dimension columns) or "agg_N"
+# (an alias from a non-windowed AggregationSpec earlier in the list).
+_SOURCE_REF_RE = re.compile(r"^(grp|series|agg_\d+)$")
+
 # Semaphore that caps concurrent /aggregate queries per service instance.
 # A dashboard fans out one /aggregate per widget; without this guard, 5–10
 # heavy aggregations hit Postgres simultaneously, each allocating work_mem,
@@ -294,6 +311,30 @@ class AggregationSpec(BaseModel):
     # booked as runtime on whichever bucket holds the last event before
     # the silence. 600s ≈ 10 min, ~100× the typical 1–5s telemetry cadence.
     max_gap_seconds: Optional[int] = 600
+    # When `window` is set, this aggregation is rendered as a window
+    # function over the inner (grouped) resultset, not as a regular
+    # group aggregation. `field` is then re-interpreted as a "source"
+    # reference — typically the alias of an earlier non-windowed agg
+    # ("agg_0") or one of the dimension columns ("grp" / "series").
+    window: Optional["WindowSpec"] = None
+
+
+class OrderBySpec(BaseModel):
+    field: str               # inner column: "grp", "series", or "agg_N"
+    dir: str = "asc"         # "asc" or "desc"
+
+
+class WindowSpec(BaseModel):
+    partition_by: list[str] = []         # inner columns to partition over
+    order_by: list[OrderBySpec] = []     # ORDER BY for the window
+    # frame_mode controls the ROWS clause:
+    #   "cumulative" (default) → ROWS UNBOUNDED PRECEDING ... CURRENT ROW
+    #   "rolling"              → ROWS BETWEEN frame_rows PRECEDING AND CURRENT ROW
+    #                            (requires frame_rows ≥ 1)
+    #   "all"                  → no ROWS clause (default for rank/lag/lead)
+    frame_mode: str = "cumulative"
+    frame_rows: Optional[int] = None     # required when frame_mode == "rolling"
+    offset: int = 1                      # lag/lead offset (must be ≥ 1)
 
 
 class TimeBucketSpec(BaseModel):
@@ -331,6 +372,78 @@ def _safe_timezone(tz: Optional[str]) -> Optional[str]:
     return tz
 
 
+def _emit_window_agg(agg: "AggregationSpec", alias: str) -> str:
+    """Emit a window-function SQL fragment for the outer SELECT.
+
+    Assumes the AggregationSpec has already been validated in the caller.
+    `field` (when meaningful) refers to an inner column ("grp", "series",
+    or "agg_N") — those names are emitted verbatim because the inner
+    subquery already aliased them safely.
+    """
+    w = agg.window
+    assert w is not None  # checked in caller
+    method = agg.method
+
+    # SQL function dispatch
+    if method in {"sum", "avg", "min", "max"}:
+        fn = method.upper()
+        # field references the inner alias; cast to numeric to be safe
+        # (inner aggs already returned numeric, but grp/series wouldn't).
+        # We trust the source ref here because _SOURCE_REF_RE matched it.
+        src = agg.field or "agg_0"
+        body = f"({src})::numeric"
+        head = f"{fn}({body})"
+    elif method == "count":
+        head = "COUNT(*)"
+    elif method == "lag":
+        src = agg.field
+        head = f"LAG(({src})::numeric, {int(w.offset)})"
+    elif method == "lead":
+        src = agg.field
+        head = f"LEAD(({src})::numeric, {int(w.offset)})"
+    elif method == "rank":
+        head = "RANK()"
+    elif method == "dense_rank":
+        head = "DENSE_RANK()"
+    elif method == "row_number":
+        head = "ROW_NUMBER()"
+    elif method == "first_value":
+        src = agg.field
+        head = f"FIRST_VALUE({src})"
+    elif method == "last_value":
+        src = agg.field
+        head = f"LAST_VALUE({src})"
+    else:
+        # Should be unreachable because of upstream validation.
+        raise HTTPException(status_code=500, detail=f"Unhandled windowed method: {method!r}")
+
+    # PARTITION BY clause
+    part = ""
+    if w.partition_by:
+        part = "PARTITION BY " + ", ".join(w.partition_by) + " "
+
+    # ORDER BY clause (always emit if user provided one; required for most
+    # ranking / cumulative functions, optional for FIRST/LAST_VALUE).
+    order = ""
+    if w.order_by:
+        ob_parts = [f"{ob.field} {'DESC' if ob.dir.lower() == 'desc' else 'ASC'}" for ob in w.order_by]
+        order = "ORDER BY " + ", ".join(ob_parts) + " "
+
+    # ROWS frame
+    frame = ""
+    if w.frame_mode == "cumulative":
+        # Standard running total: from start of partition up to current row.
+        if w.order_by:  # frame only meaningful with ORDER BY
+            frame = "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+    elif w.frame_mode == "rolling":
+        n = int(w.frame_rows or 1)
+        frame = f"ROWS BETWEEN {n} PRECEDING AND CURRENT ROW"
+    # "all" → no frame clause
+
+    over = f"OVER ({part}{order}{frame})".rstrip().replace("  ", " ")
+    return f"{head} {over} AS {alias}"
+
+
 def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> tuple[str, dict[str, Any]]:
     """Pure SQL builder for /aggregate. Returns (sql_string, bind_params).
     Raises HTTPException on validation errors. Kept side-effect-free for testability.
@@ -342,7 +455,70 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(_BUCKETS)}")
 
     has_runtime = False
+    has_window = False
     for agg in body.aggregations:
+        if agg.window is not None:
+            # Windowed aggregation. method must be in the windowable set;
+            # field (when present) refers to an inner alias / dimension.
+            has_window = True
+            if agg.method not in _WINDOWABLE_METHODS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Method '{agg.method}' cannot be windowed. "
+                    f"Use one of {sorted(_WINDOWABLE_METHODS)}",
+                )
+            needs_source = (
+                agg.method not in _VALUELESS_WINDOW_FUNCS and agg.method != "count"
+            )
+            if needs_source:
+                if not agg.field:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Windowed '{agg.method}' requires a `field` "
+                        f"referencing an inner column (grp, series, or agg_N).",
+                    )
+                if not _SOURCE_REF_RE.match(agg.field):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Window source must match 'grp', 'series', or 'agg_N': {agg.field!r}",
+                    )
+            # Validate frame
+            if agg.window.frame_mode not in {"cumulative", "rolling", "all"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"window.frame_mode must be 'cumulative' | 'rolling' | 'all'",
+                )
+            if agg.window.frame_mode == "rolling":
+                if not agg.window.frame_rows or agg.window.frame_rows < 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="window.frame_rows must be >= 1 when frame_mode is 'rolling'",
+                    )
+            # Validate partition_by and order_by references
+            for p in agg.window.partition_by:
+                if not _SOURCE_REF_RE.match(p):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"window.partition_by must reference grp/series/agg_N: {p!r}",
+                    )
+            for ob in agg.window.order_by:
+                if not _SOURCE_REF_RE.match(ob.field):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"window.order_by.field must reference grp/series/agg_N: {ob.field!r}",
+                    )
+                if ob.dir.lower() not in {"asc", "desc"}:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"window.order_by.dir must be 'asc' or 'desc': {ob.dir!r}",
+                    )
+            # lag/lead need an offset
+            if agg.method in {"lag", "lead"} and agg.window.offset < 1:
+                raise HTTPException(
+                    status_code=400, detail="lag/lead offset must be >= 1"
+                )
+            continue
+        # Non-windowed path — same as before.
         if agg.method not in _AGG_METHODS:
             raise HTTPException(status_code=400, detail=f"Unknown aggregation method: {agg.method}")
         if agg.method != "count" and not agg.field:
@@ -434,8 +610,17 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     # Tuple shape: (index, status_expr, ts_safe, max_gap_seconds)
     runtime_cte_parts: list[tuple[int, str, str, int]] = []
 
+    # Windowed aggregations are deferred — they wrap the inner GROUP BY
+    # result in an outer SELECT. Stash them with their alias so the outer
+    # wrapper can emit them later. Inner select_parts for windowed aggs
+    # are skipped entirely (the inner subquery only computes base aggs).
+    window_outer_parts: list[str] = []  # SQL fragments for outer SELECT
+
     for i, agg in enumerate(body.aggregations):
         alias = f"agg_{i}"
+        if agg.window is not None:
+            window_outer_parts.append(_emit_window_agg(agg, alias))
+            continue
         if agg.method == "runtime":
             f = _safe_field(agg.field)  # type: ignore[arg-type]
             ts_f = _safe_field(agg.ts_field)  # type: ignore[arg-type]
@@ -712,6 +897,34 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             f"FROM object_records "
             f"WHERE {where_sql}"
         )
+
+    # ── Wrap with windowed aggs when any are present ──────────────────────
+    # The inner `sql` above computes only the base (non-windowed) aggs,
+    # grouped by dimension(s). Window functions run on top of that result.
+    if window_outer_parts:
+        # Project the inner columns that exist (grp / series / agg_N) plus
+        # the windowed expressions. We can't introspect `sql` here, so
+        # rebuild the column list from what the inner emitted: dimensions
+        # + agg_N for each non-windowed aggregation.
+        inner_cols: list[str] = []
+        if group_clause:
+            inner_cols.append("grp")
+        if series_clause:
+            inner_cols.append("series")
+        if not group_clause and not series_clause:
+            # The no-dimension branch emits "'_total' AS grp" — still 'grp'.
+            inner_cols.append("grp")
+        for i, agg in enumerate(body.aggregations):
+            if agg.window is None:
+                inner_cols.append(f"agg_{i}")
+        outer_select = ", ".join(inner_cols + window_outer_parts)
+        sql = f"SELECT {outer_select} FROM ({sql}) _base"
+        # Re-apply ORDER BY / LIMIT on the outer query — the inner ones got
+        # captured into the subquery and don't constrain the outer result.
+        # The existing order_sql may reference agg_N which is still in scope.
+        if order_sql:
+            sql = f"{sql} {order_sql}"
+        sql = f"{sql} LIMIT {safe_limit}"
 
     return sql, bind_params
 
