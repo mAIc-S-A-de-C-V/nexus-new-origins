@@ -1051,14 +1051,61 @@ async def create_logic(
 ):
     """Generate and optionally persist a logic function from a natural language description."""
     client.tenant_id = x_tenant_id
+
+    # The chat assistant often passes display names ("Project Assignment") where
+    # the catalog expects canonical names ("project_assignment"). The frontend
+    # block editor only highlights the dropdown when `block.config.object_type`
+    # equals the canonical `name` — so the displayed dropdown reads as empty
+    # even though every other field is populated. We fix it in two places:
+    #
+    #   1. Override the input catalog by looking up the live ontology by ID,
+    #      so the generator sees the actual canonical name.
+    #   2. Post-process the generated blocks, swapping any object_type value
+    #      that matches a known display_name back to its canonical name.
+    canonical_by_id: dict[str, str] = {}
+    display_to_canonical: dict[str, str] = {}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as hc:
+            r = await hc.get(
+                f"{ONTOLOGY_SERVICE_URL}/object-types",
+                headers={"x-tenant-id": x_tenant_id},
+            )
+            if r.is_success:
+                for ot in r.json():
+                    cn = ot.get("name")
+                    dn = ot.get("display_name") or ot.get("displayName")
+                    if ot.get("id") and cn:
+                        canonical_by_id[ot["id"]] = cn
+                    if dn and cn and dn != cn:
+                        display_to_canonical[dn] = cn
+    except Exception:
+        # Best-effort — fall through to the legacy behavior if ontology is down.
+        pass
+
+    normalized_object_types = []
+    for ot in req.object_types:
+        ot_id = ot.get("id")
+        if ot_id and ot_id in canonical_by_id:
+            ot = {**ot, "name": canonical_by_id[ot_id]}
+        normalized_object_types.append(ot)
+
     try:
         logic_config = await client.create_logic_function(
             description=req.description,
-            object_types=req.object_types,
+            object_types=normalized_object_types,
             existing_functions=req.existing_functions,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Logic function generation failed: {e}")
+
+    # Defense-in-depth: if the LLM ignored the catalog and still emitted a
+    # display name, remap it to canonical.
+    for blk in logic_config.get("blocks", []):
+        cfg = blk.get("config") or {}
+        ot_value = cfg.get("object_type")
+        if isinstance(ot_value, str) and ot_value in display_to_canonical:
+            cfg["object_type"] = display_to_canonical[ot_value]
+            blk["config"] = cfg
 
     function_name = logic_config.get("name", "Untitled Function")
     blocks_count = len(logic_config.get("blocks", []))
