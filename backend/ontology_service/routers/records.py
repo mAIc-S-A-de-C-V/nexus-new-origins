@@ -230,6 +230,12 @@ async def list_records(
     rows = result.scalars().all()
     raw_records = [r.data for r in rows]
     masked_records = _mask_pii(raw_records, properties, user.role)
+    # Re-attach row identifiers stripped by the `r.data` projection so callers
+    # (e.g. record-select dropdowns) have a stable id to bind to.
+    masked_records = [
+        {**m, "id": r.id, "source_id": r.source_id}
+        for m, r in zip(masked_records, rows)
+    ]
     return {
         "records": masked_records,
         "total": total,
@@ -1382,6 +1388,10 @@ async def traverse_link(
 
     raw_records = [r.data for r in rows]
     masked_records = _mask_pii(raw_records, target_props, user.role)
+    masked_records = [
+        {**m, "id": r.id, "source_id": r.source_id}
+        for m, r in zip(masked_records, rows)
+    ]
 
     return {
         "records": masked_records,
