@@ -758,3 +758,151 @@ def test_unwindowed_path_unchanged():
     sql, _ = build_aggregate_sql(body, "t", "o")
     assert " FROM (" not in sql  # no subquery wrap
     assert "_base" not in sql
+
+
+# ── Computed fields ───────────────────────────────────────────────────────
+
+
+def test_computed_field_inlined_in_sum_value():
+    """daily_cost = (monthly_salary/30) * (allocation_pct/100); SUM(daily_cost)."""
+    from routers.records import ComputedField
+    daily_cost_expr = {
+        "type": "op", "op": "mul",
+        "left": {"type": "op", "op": "div",
+                 "left": {"type": "field", "name": "monthly_salary"},
+                 "right": {"type": "lit", "value": 30}},
+        "right": {"type": "op", "op": "div",
+                  "left": {"type": "field", "name": "allocation_pct"},
+                  "right": {"type": "lit", "value": 100}},
+    }
+    body = AggregateRequest(
+        group_by="project_id",
+        aggregations=[AggregationSpec(field="daily_cost", method="sum")],
+        computed_fields=[ComputedField(name="daily_cost", expression=daily_cost_expr)],
+    )
+    sql, params = build_aggregate_sql(body, "t", "o")
+    # The agg should reference the inlined expression, not data->>'daily_cost'.
+    assert "data->>'daily_cost'" not in sql
+    assert "data->>'monthly_salary'" in sql
+    assert "data->>'allocation_pct'" in sql
+    # Bind params for the literals 30 and 100 should be present.
+    literal_values = set(params.values())
+    assert 30 in literal_values
+    assert 100 in literal_values
+
+
+def test_computed_field_can_be_group_by():
+    """labelField = concat(first_name, ' ', last_name) — group by composite."""
+    from routers.records import ComputedField
+    full_name_expr = {
+        "type": "func", "func": "concat",
+        "args": [
+            {"type": "field", "name": "first_name"},
+            {"type": "lit", "value": " "},
+            {"type": "field", "name": "last_name"},
+        ],
+    }
+    body = AggregateRequest(
+        group_by="full_name",
+        aggregations=[AggregationSpec(method="count")],
+        computed_fields=[ComputedField(name="full_name", expression=full_name_expr)],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # group_by is computed — expression must be inlined
+    assert "data->>'full_name'" not in sql
+    assert "COALESCE(data->>'first_name', '')" in sql
+    assert "data->>'last_name'" in sql
+
+
+def test_computed_field_can_chain():
+    """A computed field can reference another computed field."""
+    from routers.records import ComputedField
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(field="hourly_cost", method="sum")],
+        computed_fields=[
+            ComputedField(
+                name="daily_cost",
+                expression={"type": "op", "op": "div",
+                            "left": {"type": "field", "name": "monthly_salary"},
+                            "right": {"type": "lit", "value": 30}},
+            ),
+            ComputedField(
+                name="hourly_cost",
+                expression={"type": "op", "op": "div",
+                            "left": {"type": "field", "name": "daily_cost"},
+                            "right": {"type": "lit", "value": 24}},
+            ),
+        ],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # hourly_cost → daily_cost → monthly_salary; both intermediate fields
+    # should be replaced, only the raw column remains.
+    assert "data->>'hourly_cost'" not in sql
+    assert "data->>'daily_cost'" not in sql
+    assert "data->>'monthly_salary'" in sql
+
+
+def test_computed_field_cycle_rejected():
+    """a → b → a — must reject, not infinite-loop."""
+    from routers.records import ComputedField
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(field="a", method="sum")],
+        computed_fields=[
+            ComputedField(name="a", expression={"type": "field", "name": "b"}),
+            ComputedField(name="b", expression={"type": "field", "name": "a"}),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "Cycle" in exc.value.detail or "cycle" in exc.value.detail
+
+
+def test_computed_field_in_filter():
+    """Filters can reference computed fields."""
+    from routers.records import ComputedField
+    body = AggregateRequest(
+        filters='{"high_value": {"$eq": "true"}}',
+        aggregations=[AggregationSpec(method="count")],
+        computed_fields=[
+            ComputedField(
+                name="high_value",
+                expression={
+                    "type": "op", "op": "gt",
+                    "left": {"type": "field", "name": "amount"},
+                    "right": {"type": "lit", "value": 1000},
+                },
+            ),
+        ],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # The filter accessor should be the inlined expression, not data->>'high_value'.
+    assert "data->>'high_value'" not in sql
+    assert "data->>'amount'" in sql
+    assert " > " in sql  # the gt comparison
+
+
+def test_invalid_computed_field_name_rejected():
+    from routers.records import ComputedField
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        computed_fields=[
+            ComputedField(name="has space", expression={"type": "lit", "value": 1}),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "Invalid computed_field name" in exc.value.detail
+
+
+def test_duplicate_computed_field_name_rejected():
+    from routers.records import ComputedField
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        computed_fields=[
+            ComputedField(name="x", expression={"type": "lit", "value": 1}),
+            ComputedField(name="x", expression={"type": "lit", "value": 2}),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        build_aggregate_sql(body, "t", "o")
+    assert "Duplicate" in exc.value.detail

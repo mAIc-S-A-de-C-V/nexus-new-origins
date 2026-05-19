@@ -28,6 +28,7 @@ from database import get_session, ObjectTypeRow, ObjectRecordRow, OntologyLinkRo
 from shared.auth_middleware import require_auth, AuthUser
 from shared import query_cache, index_advisor, rollup_promoter
 from event_emit import emit_record_event, emit_record_event_batch
+from expressions import Expr, SqlEmitContext, emit_sql, referenced_fields
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,18 @@ class TimeBucketSpec(BaseModel):
     interval: str = "day"
 
 
+class ComputedField(BaseModel):
+    """A virtual column evaluated in the SELECT clause of this query only.
+
+    Anywhere a widget config takes a `field` (valueField, labelField,
+    filter.field, agg.field), the SQL builder first checks computed_fields
+    by name; if a match exists, the expression AST is inlined. Otherwise
+    the standard data->>'name' accessor is used.
+    """
+    name: str
+    expression: Expr
+
+
 class AggregateRequest(BaseModel):
     filters: Optional[str] = None
     group_by: Optional[str] = None
@@ -354,6 +367,8 @@ class AggregateRequest(BaseModel):
     # buckets (date_trunc) align to midnight in this zone instead of UTC,
     # so a "day" bucket actually means a local-day for the user.
     timezone: Optional[str] = None
+    # Virtual columns evaluated for this query only. See ComputedField.
+    computed_fields: list[ComputedField] = []
 
 
 # IANA TZ names use [A-Za-z0-9_+/-]. Anything else is rejected, since the
@@ -454,6 +469,20 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     if body.time_bucket and body.time_bucket.interval not in _BUCKETS:
         raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(_BUCKETS)}")
 
+    # Computed-field lookup. Names are validated against _FIELD_NAME_RE so
+    # they can be safely referenced by their alias from other config sites.
+    computed_map: dict[str, ComputedField] = {}
+    for cf in body.computed_fields:
+        if not _FIELD_NAME_RE.match(cf.name):
+            raise HTTPException(
+                status_code=400, detail=f"Invalid computed_field name: {cf.name!r}"
+            )
+        if cf.name in computed_map:
+            raise HTTPException(
+                status_code=400, detail=f"Duplicate computed_field name: {cf.name!r}"
+            )
+        computed_map[cf.name] = cf
+
     has_runtime = False
     has_window = False
     for agg in body.aggregations:
@@ -534,6 +563,35 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     select_parts: list[str] = []
     bind_params: dict[str, Any] = {"tid": tenant_id, "otid": ot_id}
 
+    # ── Field accessor resolver ────────────────────────────────────────────
+    # Resolves a field name to a SQL expression. Computed fields are inlined
+    # via the expression emitter; raw fields become `data->>'name'`.
+    # Counter ensures bind names are unique across multiple accessor calls
+    # within the same query (each call may generate several bind params).
+    _accessor_counter = [0]
+
+    def _accessor(name: str, _visiting: Optional[set[str]] = None) -> str:
+        visiting = _visiting or set()
+        if name in visiting:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cycle in computed_fields involving {name!r}",
+            )
+        if name in computed_map:
+            visiting = visiting | {name}
+            cf = computed_map[name]
+            _accessor_counter[0] += 1
+            prefix = f"cf{_accessor_counter[0]}_"
+            ctx = SqlEmitContext(
+                bind_params,
+                lambda n: _accessor(n, visiting),
+                bind_prefix=prefix,
+            )
+            return f"({emit_sql(cf.expression, ctx)})"
+        # Raw JSONB column — validate identifier whitelist.
+        _safe_field(name)
+        return f"data->>'{name}'"
+
     # ── Grouping dimensions ─────────────────────────────────────────────────
     # Three modes:
     #   (1) group_by alone           — categorical breakdown (bar/pie)
@@ -547,7 +605,13 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
     has_group = bool(body.group_by)
 
     if has_time:
-        tb_field = _safe_field(body.time_bucket.field)
+        tb_field_name = body.time_bucket.field
+        # Allow computed fields here too — a date_diff / coalesce expression
+        # is a legit bucketing source. _accessor validates / inlines.
+        tb_accessor = _accessor(tb_field_name)
+        # We still want a short identifier for error messages and ts_safe
+        # regex matching; tb_field is the *name*, the actual SQL uses tb_accessor.
+        tb_field = tb_field_name if _FIELD_NAME_RE.match(tb_field_name) else "_expr"
         interval = body.time_bucket.interval
         tz_name = _safe_timezone(body.timezone)
         # Coarse (date_trunc) vs. fine (date_bin) bucketing. date_trunc handles
@@ -560,9 +624,9 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         # with/without offset, with/without ms) — we just gate the cast
         # on the leading shape.
         ts_safe = (
-            f"(CASE WHEN data->>'{tb_field}' ~ "
+            f"(CASE WHEN {tb_accessor} ~ "
             f"'^[[:digit:]]{{4}}-[[:digit:]]{{2}}-[[:digit:]]{{2}}' "
-            f"THEN NULLIF(data->>'{tb_field}', '')::timestamptz "
+            f"THEN NULLIF({tb_accessor}, '')::timestamptz "
             f"ELSE NULL END)"
         )
         if interval in _BIN_BUCKETS:
@@ -594,14 +658,14 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         group_clause = bucket_expr
 
     if has_group:
-        gb = _safe_field(body.group_by)
+        gb_acc = _accessor(body.group_by)
         if has_time:
             # Multi-series: time bucket is `grp`, group_by becomes `series`
-            select_parts.append(f"data->>'{gb}' AS series")
-            series_clause = f"data->>'{gb}'"
+            select_parts.append(f"{gb_acc} AS series")
+            series_clause = gb_acc
         else:
-            select_parts.append(f"data->>'{gb}' AS grp")
-            group_clause = f"data->>'{gb}'"
+            select_parts.append(f"{gb_acc} AS grp")
+            group_clause = gb_acc
 
     if not has_time and not has_group:
         select_parts.append("'_total' AS grp")
@@ -661,10 +725,10 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         elif agg.method == "count":
             select_parts.append(f"COUNT(*) AS {alias}")
         elif agg.method == "count_distinct":
-            f = _safe_field(agg.field)  # type: ignore[arg-type]
-            select_parts.append(f"COUNT(DISTINCT data->>'{f}') AS {alias}")
+            acc = _accessor(agg.field)  # type: ignore[arg-type]
+            select_parts.append(f"COUNT(DISTINCT {acc}) AS {alias}")
         else:
-            f = _safe_field(agg.field)  # type: ignore[arg-type]
+            acc = _accessor(agg.field)  # type: ignore[arg-type]
             # Safe numeric cast: only attempt the cast on rows whose value
             # actually looks like a number. JSONB columns frequently mix
             # types within one column (e.g. {value: "1500"} for an RPM event
@@ -676,8 +740,8 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             # a literal dot) avoids backslash escaping pitfalls between
             # Python f-strings, SQLAlchemy text(), and the asyncpg driver.
             value_expr = (
-                f"CASE WHEN data->>'{f}' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
-                f"THEN (data->>'{f}')::numeric ELSE NULL END"
+                f"CASE WHEN {acc} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                f"THEN ({acc})::numeric ELSE NULL END"
             )
             sql_fn = agg.method.upper()
             select_parts.append(f"{sql_fn}({value_expr}) AS {alias}")
@@ -802,8 +866,10 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
                     bind_params[pname] = str(value)
 
             for field, value in parsed.items():
-                fkey = field.replace("'", "''")
-                accessor = f"data->>'{fkey}'"
+                # Computed fields can be referenced in filters too. _accessor
+                # validates the name and either inlines the expression or
+                # returns the standard data->>'name' form.
+                accessor = _accessor(field)
                 _emit_constraint(accessor, value)
 
     where_sql = " AND ".join(where_parts)
