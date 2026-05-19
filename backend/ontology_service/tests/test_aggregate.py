@@ -782,15 +782,14 @@ def test_computed_field_inlined_in_sum_value():
         aggregations=[AggregationSpec(field="daily_cost", method="sum")],
         computed_fields=[ComputedField(name="daily_cost", expression=daily_cost_expr)],
     )
-    sql, params = build_aggregate_sql(body, "t", "o")
+    sql, _params = build_aggregate_sql(body, "t", "o")
     # The agg should reference the inlined expression, not data->>'daily_cost'.
     assert "data->>'daily_cost'" not in sql
     assert "data->>'monthly_salary'" in sql
     assert "data->>'allocation_pct'" in sql
-    # Bind params for the literals 30 and 100 should be present.
-    literal_values = set(params.values())
-    assert 30 in literal_values
-    assert 100 in literal_values
+    # Numeric literals 30 and 100 are inlined into the SQL string.
+    assert "30" in sql
+    assert "100" in sql
 
 
 def test_computed_field_can_be_group_by():

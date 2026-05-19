@@ -58,11 +58,27 @@ def test_field_ref_rejects_injection():
 # ── Literals ──────────────────────────────────────────────────────────────
 
 
-def test_literal_int_uses_bind_param():
+def test_literal_int_is_inlined():
+    """Numeric literals go into the SQL string, not bind params — see
+    expressions.py for the asyncpg type-inference reasoning."""
     ctx, binds = _ctx()
     sql = emit_sql(LiteralExpr(value=30), ctx)
-    assert sql == ":expr0"
-    assert binds == {"expr0": 30}
+    assert sql == "30"
+    assert binds == {}
+
+
+def test_literal_float_is_inlined():
+    ctx, binds = _ctx()
+    sql = emit_sql(LiteralExpr(value=2.5), ctx)
+    assert sql == "2.5"
+    assert binds == {}
+
+
+def test_literal_nan_rejected():
+    from fastapi import HTTPException
+    ctx, _ = _ctx()
+    with pytest.raises(HTTPException):
+        emit_sql(LiteralExpr(value=float("nan")), ctx)
 
 
 def test_literal_string_uses_bind_param():
@@ -70,6 +86,16 @@ def test_literal_string_uses_bind_param():
     sql = emit_sql(LiteralExpr(value="open"), ctx)
     assert sql.startswith(":")
     assert "open" in binds.values()
+
+
+def test_literal_bool_is_inlined():
+    """Bool is a subclass of int so it must be handled specially —
+    TRUE/FALSE are SQL keywords, not the integers 1 / 0."""
+    ctx, binds = _ctx()
+    assert emit_sql(LiteralExpr(value=True), ctx) == "TRUE"
+    ctx2, _ = _ctx()
+    assert emit_sql(LiteralExpr(value=False), ctx2) == "FALSE"
+    assert binds == {}
 
 
 def test_literal_null_inlines():
@@ -94,7 +120,9 @@ def test_arithmetic_wraps_both_sides_in_numeric_cast():
     assert "::numeric" in sql
     assert "/" in sql
     assert "data->>'monthly_salary'" in sql
-    assert binds == {"expr0": 30}
+    # Numeric literal '30' is inlined into the SQL, not bound.
+    assert "30" in sql
+    assert binds == {}
 
 
 def test_nested_arithmetic_for_daily_cost():
@@ -116,7 +144,10 @@ def test_nested_arithmetic_for_daily_cost():
     sql = emit_sql(expr, ctx)
     assert sql.count("*") >= 1
     assert sql.count("/") >= 2
-    assert binds == {"expr0": 30, "expr1": 100}
+    # Numeric literals are inlined, not bound.
+    assert "30" in sql
+    assert "100" in sql
+    assert binds == {}
 
 
 def test_arithmetic_rejects_unknown_op():

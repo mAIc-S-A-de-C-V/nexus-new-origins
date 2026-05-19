@@ -36,6 +36,7 @@ Supported functions:
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Annotated, Any, Literal, Optional, Union
 
@@ -241,7 +242,26 @@ def emit_sql(expr: Expr, ctx: SqlEmitContext) -> str:
     if isinstance(expr, LiteralExpr):
         if expr.value is None:
             return "NULL"
-        # Literals always go through bind params — never inline-rendered.
+        # Numeric literals are inlined into the SQL string, not bound as
+        # parameters. Why: when an arithmetic operand is bound via
+        # asyncpg, the surrounding regex-cast guard (`($1) ~ '...'`)
+        # forces the parameter into a text type — asyncpg then refuses
+        # the Python int, raising DataError. We can't bind it as text
+        # either, because comparison contexts elsewhere need numeric
+        # comparison semantics. Inlining sidesteps the whole type-
+        # inference dance — the value has already passed Pydantic
+        # validation (int | float | str | bool | None) and we explicitly
+        # reject NaN/Inf, so no injection surface exists.
+        if isinstance(expr.value, bool):
+            # Bool must be checked before int because bool is a subclass of int.
+            return "TRUE" if expr.value else "FALSE"
+        if isinstance(expr.value, (int, float)):
+            if math.isnan(expr.value) or math.isinf(expr.value):
+                raise HTTPException(
+                    status_code=400, detail="NaN/Inf not allowed in expression literals"
+                )
+            return repr(expr.value)  # produces a safe numeric SQL literal
+        # Strings: still bind-parameterized.
         return ctx.next_bind(expr.value)
 
     if isinstance(expr, BinaryOp):
