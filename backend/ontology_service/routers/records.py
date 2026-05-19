@@ -1183,6 +1183,54 @@ async def aggregate_records(
         for j in body.joins:
             joined_pii_by_alias[j.alias] = await _high_pii_fields(j.target_object_type_id)
 
+    # ── Auto-inject OT-level computed properties ──────────────────────────
+    # Properties declared with `computed: {expression: ...}` on the
+    # ObjectType act as virtual columns visible to every widget that
+    # queries this OT. Merge them into body.computed_fields so the
+    # expression resolver picks them up automatically; per-widget
+    # computed_fields override OT-level ones of the same name (the
+    # widget can shadow a schema-level definition).
+    async def _ot_computed_fields(target_ot_id: str) -> list[ComputedField]:
+        ot_q = await db.execute(
+            select(ObjectTypeRow).where(
+                ObjectTypeRow.id == target_ot_id,
+                ObjectTypeRow.tenant_id == tenant_id,
+            )
+        )
+        ot_row = ot_q.scalar_one_or_none()
+        if not (ot_row and ot_row.data):
+            return []
+        out: list[ComputedField] = []
+        for p in (ot_row.data.get("properties") or []):
+            cdef = p.get("computed")
+            if not cdef:
+                continue
+            expr_dict = cdef.get("expression") if isinstance(cdef, dict) else None
+            if not expr_dict:
+                continue
+            try:
+                cf = ComputedField.model_validate(
+                    {"name": p.get("name"), "expression": expr_dict}
+                )
+                out.append(cf)
+            except Exception as e:
+                logger.warning(
+                    "Skipping invalid OT-level computed property %s on %s: %s",
+                    p.get("name"), target_ot_id, e,
+                )
+        return out
+
+    ot_level_cfs = await _ot_computed_fields(ot_id)
+    if ot_level_cfs:
+        # Widget-level computed_fields take precedence over OT-level ones of
+        # the same name (shadowing). Build the override set first, then
+        # extend with non-shadowed OT-level fields.
+        existing_names = {cf.name for cf in body.computed_fields}
+        merged = list(body.computed_fields) + [
+            cf for cf in ot_level_cfs if cf.name not in existing_names
+        ]
+        body = body.model_copy(update={"computed_fields": merged})
+
     def _is_pii_dim(field_ref: Optional[str]) -> bool:
         """Return True iff field_ref (which may be 'alias.field') is HIGH PII."""
         if not field_ref:

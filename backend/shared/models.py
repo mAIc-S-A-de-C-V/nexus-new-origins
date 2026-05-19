@@ -100,6 +100,12 @@ class ObjectProperty(BaseModel):
     description: Optional[str] = None
     sample_values: list[str] = Field(default_factory=list)
     inference_confidence: Optional[float] = None
+    # When set, this property is a computed (virtual) column derived from
+    # other properties at query time. The expression follows the wire
+    # format defined in ontology_service/expressions.py. /aggregate
+    # auto-injects this into the request's computed_fields list so the
+    # column is queryable without restating the formula per-widget.
+    computed: Optional[dict[str, Any]] = None
 
 
 class OntologyLink(BaseModel):
