@@ -30,7 +30,13 @@ CATALOG: list[ScopeDef] = [
     ScopeDef("ontology:list_types",        "List which object types exist"),
     ScopeDef("ontology:aggregate:*",       "Run aggregate queries (any type)",       sensitive=True),
     ScopeDef("ontology:aggregate:<type>",  "Run aggregate queries (one type)"),
-    # Ontology — write (always via actions; no direct row write)
+    # Ontology — write (direct row write via apps RPC; or via actions for workflows)
+    ScopeDef("ontology:create:*",          "Create records of any object type",      sensitive=True),
+    ScopeDef("ontology:create:<type>",     "Create records of one object type"),
+    ScopeDef("ontology:update:*",          "Update records of any object type",      sensitive=True),
+    ScopeDef("ontology:update:<type>",     "Update records of one object type"),
+    ScopeDef("ontology:delete:*",          "Delete records of any object type",      sensitive=True),
+    ScopeDef("ontology:delete:<type>",     "Delete records of one object type"),
     ScopeDef("actions:list",               "See which actions exist"),
     ScopeDef("actions:propose:*",          "Propose execution of any action",        sensitive=True),
     ScopeDef("actions:propose:<name>",     "Propose execution of one action"),
@@ -109,6 +115,9 @@ METHOD_SCOPES: dict[str, str] = {
     "ontology.get":          "ontology:read:*",     # type-specific check at dispatch time
     "ontology.query":        "ontology:read:*",     # ditto
     "ontology.aggregate":    "ontology:aggregate:*",
+    "ontology.create":       "ontology:create:*",
+    "ontology.update":       "ontology:update:*",
+    "ontology.delete":       "ontology:delete:*",
     # Actions
     "actions.list":          "actions:list",
     "actions.propose":       "actions:propose:*",

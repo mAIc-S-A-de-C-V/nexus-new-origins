@@ -36,6 +36,9 @@ Always wrap the app root in `<NexusProvider>`. Gate UI with `useNexusReady` befo
 | `nexus.ontology.query({ object_type, filter?, limit?, offset?, order_by?, search? })` | → `{ records, count, total }` | `ontology:read:<type>` or `ontology:read:*` | Paginated query. |
 | `nexus.ontology.get(object_type, record_id)` | → record \| null | `ontology:read:<type>` | Fetch one by id. |
 | `nexus.ontology.aggregate({ object_type, group_by?, time_bucket?, aggregations, filters?, limit? })` | → `{ rows, total_groups }` | `ontology:aggregate:<type>` | Server-side GROUP BY / time bucket. |
+| `nexus.ontology.create({ object_type, data, pk_field? })` | → `{ ok, record_id, ingested }` | `ontology:create:<type>` | Upsert one record. If `data.id` is set it becomes the record_id. Use this instead of `actions.propose` for plain CRUD; reserve actions for workflows with approval. |
+| `nexus.ontology.update({ object_type, record_id, fields })` | → `{ ok, record_id }` | `ontology:update:<type>` | Merge `fields` into an existing record. Errors if not found. |
+| `nexus.ontology.delete({ object_type, record_id })` | → `{ ok, record_id }` | `ontology:delete:<type>` | Delete by id. |
 | `nexus.actions.list()` | → `{ name, description, input_schema, requires_confirmation }[]` | `actions:list` | All available action definitions. |
 | `nexus.actions.propose({ action_name, inputs, reasoning? })` | → `{ execution_id, status }` | `actions:propose:<name>` | **Proposes**; admin confirms if `requires_confirmation`. |
 | `nexus.agents.list()` | → `{ name, description }[]` | `agents:list` | |
