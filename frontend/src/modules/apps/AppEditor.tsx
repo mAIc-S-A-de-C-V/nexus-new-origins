@@ -1480,7 +1480,9 @@ const ConfigPanel: React.FC<{
   // user's data model is visually prioritised; system/runtime extras follow.
   const sampleRecords = useRecordsForFilter(comp.objectTypeId);
   const fields = React.useMemo(() => {
-    if (declaredFields.length === 0 && !sampleRecords.length) return [] as string[];
+    if (declaredFields.length === 0 && !sampleRecords.length && !(comp.computedFields?.length) && !(comp.joins?.length)) {
+      return [] as string[];
+    }
     const declaredSet = new Set(declaredFields);
     const extras: string[] = [];
     const seenExtras = new Set<string>();
@@ -1498,8 +1500,24 @@ const ConfigPanel: React.FC<{
       if (aSys !== bSys) return aSys ? 1 : -1;
       return a.localeCompare(b);
     });
-    return [...declaredFields, ...extras];
-  }, [declaredFields, sampleRecords]);
+    // Widget-level computed fields are referenceable everywhere a field name
+    // is expected — surface them in the dropdown so analysts don't have to
+    // memorize the alias they typed in the Advanced panel.
+    const computedNames = (comp.computedFields ?? [])
+      .map((cf) => cf.name)
+      .filter((n) => !!n);
+    // Joined fields: alias.field for every joined OT × its properties.
+    const joinedFields: string[] = [];
+    for (const j of (comp.joins ?? [])) {
+      if (!j.alias || !j.target_object_type_id) continue;
+      const tgt = objectTypes.find((o) => o.id === j.target_object_type_id);
+      for (const p of (tgt?.properties ?? [])) {
+        if (p.name.endsWith('[]')) continue;
+        joinedFields.push(`${j.alias}.${p.name}`);
+      }
+    }
+    return [...declaredFields, ...extras, ...computedNames, ...joinedFields];
+  }, [declaredFields, sampleRecords, comp.computedFields, comp.joins, objectTypes]);
 
   // EAV / long-format detection on the loaded sample. When present, the
   // editor surfaces a friendly "Metric" picker that auto-creates the

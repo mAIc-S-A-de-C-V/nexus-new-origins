@@ -976,23 +976,35 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
         for j in body.joins:
             on = j.on
             if on is None:
-                # link_id resolution — defer to a future commit. For now,
-                # require explicit `on`.
+                # link_id resolution happens earlier in the route handler.
+                # If we reach here without `on`, the link wasn't resolvable.
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Join {j.alias!r}: link_id resolution not yet implemented; "
-                    f"provide explicit `on`",
+                    detail=f"Join {j.alias!r}: `on` is unset and link_id did not resolve",
                 )
             src_f = _safe_field(on.source_field)
             tgt_f = _safe_field(on.target_field)
             kind = "INNER JOIN" if j.type == "inner" else "LEFT JOIN"
             tgt_bind = f"join_{j.alias}_otid"
             bind_params[tgt_bind] = j.target_object_type_id
+
+            # "id" and "source_id" on either side resolve to the row column
+            # rather than the JSONB key. Most ontology records don't store
+            # their canonical id inside the data blob — the row PK lives in
+            # the columns. Falling back to data->>'id' silently produces
+            # empty joins, which is exactly the dropdown-was-empty bug we
+            # hit on the records endpoint before. Treat the two well-known
+            # identifier names as column references here.
+            def _ref(side_alias: str, field: str) -> str:
+                if field in ("id", "source_id"):
+                    return f"{side_alias}.source_id"
+                return f"{side_alias}.data->>'{field}'"
+
             join_clauses.append(
                 f"{kind} object_records {j.alias} "
                 f"ON {j.alias}.tenant_id = base.tenant_id "
                 f"AND {j.alias}.object_type_id = :{tgt_bind} "
-                f"AND {j.alias}.data->>'{tgt_f}' = base.data->>'{src_f}'"
+                f"AND {_ref(j.alias, tgt_f)} = {_ref('base', src_f)}"
             )
         join_sql = " " + " ".join(join_clauses)
 

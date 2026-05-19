@@ -1095,3 +1095,40 @@ def test_no_joins_keeps_legacy_sql_shape():
     assert "FROM object_records base" not in sql
     assert "base.tenant_id" not in sql
     assert "data->>'amount'" in sql
+
+
+def test_join_target_field_id_resolves_to_source_id_column():
+    """target_field='id' joins on the row PK column, not data->>'id'.
+
+    Many records' JSONB blobs don't contain an 'id' key — the canonical
+    identifier lives in the row's source_id column. Joining on the JSON
+    key would silently produce empty results.
+    """
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(
+            alias="emp",
+            target_object_type_id="employee-ot-id",
+            on=JoinOn(source_field="employee_id", target_field="id"),
+        )],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "emp.source_id = base.data->>'employee_id'" in sql
+    # Sanity: we DON'T fall back to the JSON accessor for 'id'
+    assert "emp.data->>'id'" not in sql
+
+
+def test_join_source_field_id_resolves_to_source_id_column():
+    """source_field='id' on the base side also uses base.source_id."""
+    from routers.records import JoinSpec, JoinOn
+    body = AggregateRequest(
+        aggregations=[AggregationSpec(method="count")],
+        joins=[JoinSpec(
+            alias="ev",
+            target_object_type_id="event-ot-id",
+            on=JoinOn(source_field="id", target_field="record_id"),
+        )],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    assert "ev.data->>'record_id' = base.source_id" in sql

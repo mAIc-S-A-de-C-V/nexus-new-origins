@@ -28,6 +28,10 @@ interface Props {
 export const JoinPicker: React.FC<Props> = ({ comp, onChange, objectTypes }) => {
   const joins = comp.joins ?? [];
 
+  // Base OT properties — used as the source_field dropdown for every join.
+  const baseOt = objectTypes.find((ot) => ot.id === comp.objectTypeId);
+  const baseFieldNames = (baseOt?.properties ?? []).map((p) => p.name);
+
   const update = (idx: number, patch: Partial<JoinSpec>) => {
     const next = joins.map((j, i) => (i === idx ? { ...j, ...patch } : j));
     onChange(next);
@@ -109,23 +113,34 @@ export const JoinPicker: React.FC<Props> = ({ comp, onChange, objectTypes }) => 
             <div style={{ display: 'flex', gap: 6 }}>
               <div style={{ flex: 1 }}>
                 <label style={labelStyle}>Source field (on this OT)</label>
-                <input
-                  type="text"
+                <select
                   value={j.on?.source_field ?? ''}
                   onChange={(e) => update(i, { on: { source_field: e.target.value, target_field: j.on?.target_field ?? 'id' } })}
-                  placeholder="employee_id"
                   style={{ ...textStyle, fontFamily: 'monospace' }}
-                />
+                >
+                  <option value="">— pick —</option>
+                  {baseFieldNames.map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
               </div>
               <div style={{ flex: 1 }}>
                 <label style={labelStyle}>Target field (on {targetOt?.displayName || targetOt?.name || 'joined'})</label>
-                <input
-                  type="text"
+                <select
                   value={j.on?.target_field ?? 'id'}
                   onChange={(e) => update(i, { on: { source_field: j.on?.source_field ?? '', target_field: e.target.value } })}
-                  placeholder="id"
                   style={{ ...textStyle, fontFamily: 'monospace' }}
-                />
+                  disabled={!targetOt}
+                >
+                  {targetOt
+                    ? [
+                        <option key="__id" value="id">id (record id)</option>,
+                        ...(targetOt.properties ?? []).map((p) => (
+                          <option key={p.name} value={p.name}>{p.name}</option>
+                        )),
+                      ]
+                    : <option value="id">id</option>}
+                </select>
               </div>
             </div>
 
