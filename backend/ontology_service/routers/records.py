@@ -1154,6 +1154,97 @@ async def aggregate_records(
     """
     tenant_id = x_tenant_id or "tenant-001"
 
+    # ── Collect HIGH-PII field sets for response masking ──────────────────
+    # Aggregation responses include dimension values (group / series) that
+    # can echo raw field contents. If those source fields are HIGH-PII and
+    # the caller is not admin/analyst, we must redact them post-fetch. Same
+    # treatment applies to joined OT fields referenced via `alias.field`.
+    # Loaded here once, used after _execute returns.
+    async def _high_pii_fields(target_ot_id: str) -> set[str]:
+        ot_q = await db.execute(
+            select(ObjectTypeRow).where(
+                ObjectTypeRow.id == target_ot_id,
+                ObjectTypeRow.tenant_id == tenant_id,
+            )
+        )
+        ot_row = ot_q.scalar_one_or_none()
+        if not (ot_row and ot_row.data):
+            return set()
+        return {
+            (p.get("name") or p.get("canonical_name", ""))
+            for p in (ot_row.data.get("properties") or [])
+            if p.get("pii_level") in ("HIGH", "PiiLevel.HIGH")
+        }
+
+    base_pii: set[str] = set()
+    joined_pii_by_alias: dict[str, set[str]] = {}
+    if user.role not in ("admin", "analyst"):
+        base_pii = await _high_pii_fields(ot_id)
+        for j in body.joins:
+            joined_pii_by_alias[j.alias] = await _high_pii_fields(j.target_object_type_id)
+
+    def _is_pii_dim(field_ref: Optional[str]) -> bool:
+        """Return True iff field_ref (which may be 'alias.field') is HIGH PII."""
+        if not field_ref:
+            return False
+        if "." in field_ref:
+            alias, field = field_ref.split(".", 1)
+            return field in joined_pii_by_alias.get(alias, set())
+        return field_ref in base_pii
+
+    # Resolve link_id → explicit join keys. Joins declared via a link_id
+    # have their `on` populated from the OntologyLinkRow's join_keys[0].
+    # This means widget configs can say "join via this declared
+    # relationship" without restating the join condition.
+    if body.joins:
+        resolved_joins: list[JoinSpec] = []
+        for j in body.joins:
+            if j.link_id and j.on is None:
+                row = await db.execute(
+                    select(OntologyLinkRow).where(
+                        OntologyLinkRow.id == j.link_id,
+                        OntologyLinkRow.tenant_id == tenant_id,
+                    )
+                )
+                link_row = row.scalar_one_or_none()
+                if not link_row:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Join {j.alias!r}: link_id {j.link_id!r} not found",
+                    )
+                link_data = link_row.data or {}
+                join_keys = link_data.get("join_keys") or []
+                if not join_keys:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Join {j.alias!r}: link {j.link_id!r} has no join_keys",
+                    )
+                # Use the first join key. Multi-key joins are out of scope for v1.
+                jk = join_keys[0]
+                src = jk.get("source_field")
+                tgt = jk.get("target_field") or "id"
+                if not src:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Join {j.alias!r}: link source_field missing",
+                    )
+                # Also fill in target_object_type_id from the link if absent
+                # so the caller doesn't need to know it.
+                tgt_ot = j.target_object_type_id or link_data.get("target_object_type_id", "")
+                if not tgt_ot:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Join {j.alias!r}: target_object_type_id could not be resolved",
+                    )
+                j = JoinSpec(
+                    alias=j.alias,
+                    target_object_type_id=tgt_ot,
+                    on=JoinOn(source_field=src, target_field=tgt),
+                    type=j.type,
+                )
+            resolved_joins.append(j)
+        body = body.model_copy(update={"joins": resolved_joins})
+
     sql, bind_params = build_aggregate_sql(body, tenant_id, ot_id)
 
     # ── Cache + rollup promotion ───────────────────────────────────────────
@@ -1349,6 +1440,26 @@ async def aggregate_records(
 
     payload["from_cache"] = from_cache
     payload["promoted"] = rollup_promoter.is_promoted(cache_key)
+
+    # ── Post-cache PII masking ────────────────────────────────────────────
+    # Cache stores raw values so cached payloads can be reused across users
+    # of the same tenant. Masking is per-request, based on user.role and
+    # which fields the response dimensions came from. Only applies when
+    # the caller is not admin/analyst (those see raw values).
+    if user.role not in ("admin", "analyst"):
+        group_is_pii = (
+            _is_pii_dim(body.group_by) if body.group_by and not body.time_bucket else False
+        )
+        series_is_pii = (
+            _is_pii_dim(body.group_by) if body.group_by and body.time_bucket else False
+        )
+        if group_is_pii or series_is_pii:
+            for r in payload.get("rows", []):
+                if group_is_pii and r.get("group") is not None:
+                    r["group"] = "***REDACTED***"
+                if series_is_pii and r.get("series") is not None:
+                    r["series"] = "***REDACTED***"
+
     return payload
 
 

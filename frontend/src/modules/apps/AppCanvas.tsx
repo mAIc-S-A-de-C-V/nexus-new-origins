@@ -2623,10 +2623,14 @@ const ServerAggMetricCard: React.FC<{ comp: AppComponent; serverFilters?: Record
 const ServerAggKpiBanner: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const aggregations: AggregateSpec[] = [{ method: 'count' }];
   if (comp.field) aggregations.push({ field: comp.field, method: 'avg' });
+  // comp.window, if present, attaches to the primary metric (count).
+  if (comp.window) aggregations[0].window = comp.window;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     aggregations,
     filters: serverFilters,
     limit: 1,
+    computedFields: comp.computedFields,
+    joins: comp.joins,
   });
   if (loading) return <LoadingTile />;
   const r = rows[0] || {};
@@ -2638,10 +2642,13 @@ const ServerAggKpiBanner: React.FC<{ comp: AppComponent; serverFilters?: Record<
 const ServerAggStatCard: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const method = (comp.aggregation || 'count') as AggregateSpec['method'];
   const baseAgg: AggregateSpec = { field: method === 'count' ? undefined : comp.field, method };
+  if (comp.window) baseAgg.window = comp.window;
+  const advanced = { computedFields: comp.computedFields, joins: comp.joins };
   const { rows: currentRows, loading: l1 } = useAggregate(comp.objectTypeId, {
     aggregations: [baseAgg],
     filters: serverFilters,
     limit: 1,
+    ...advanced,
   });
 
   // Period comparison via comparisonField if configured
@@ -2657,11 +2664,11 @@ const ServerAggStatCard: React.FC<{ comp: AppComponent; serverFilters?: Record<s
 
   const { rows: recentRows, loading: l2 } = useAggregate(
     dateField ? comp.objectTypeId : undefined,
-    recentFilters ? { aggregations: [baseAgg], filters: recentFilters as Record<string, unknown>, limit: 1 } : null,
+    recentFilters ? { aggregations: [baseAgg], filters: recentFilters as Record<string, unknown>, limit: 1, ...advanced } : null,
   );
   const { rows: priorRows, loading: l3 } = useAggregate(
     dateField ? comp.objectTypeId : undefined,
-    priorFilters ? { aggregations: [baseAgg], filters: priorFilters as Record<string, unknown>, limit: 1 } : null,
+    priorFilters ? { aggregations: [baseAgg], filters: priorFilters as Record<string, unknown>, limit: 1, ...advanced } : null,
   );
 
   if (l1 || l2 || l3) return <LoadingTile />;
@@ -2712,13 +2719,17 @@ const ServerAggPieChart: React.FC<{ comp: AppComponent; serverFilters?: Record<s
   const labelField = pickLabelField(comp);
   const valueField = pickValueField(comp);
   const method = valueField ? 'sum' : 'count';
+  const aggSpec: AggregateSpec = { field: valueField, method };
+  if (comp.window) aggSpec.window = comp.window;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
-    aggregations: [{ field: valueField, method }],
+    aggregations: [aggSpec],
     filters: serverFilters,
     sortBy: 'agg_0',
     sortDir: 'desc',
     limit: 30,
+    computedFields: comp.computedFields,
+    joins: comp.joins,
   });
   if (loading) return <LoadingTile />;
   const serverRows = rows.map((r) => ({
@@ -2798,11 +2809,15 @@ const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   const mergedFilters = rangeFilter
     ? { ...(serverFilters || {}), ...rangeFilter }
     : serverFilters;
+  const aggSpec: AggregateSpec = { field: valueField, method: method as AggregateSpec['method'] };
+  if (comp.window) aggSpec.window = comp.window;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
     timeBucket: { field: xField, interval },
-    aggregations: [{ field: valueField, method: method as AggregateSpec['method'] }],
+    aggregations: [aggSpec],
     filters: mergedFilters,
+    computedFields: comp.computedFields,
+    joins: comp.joins,
     sortBy: 'group',
     sortDir: 'asc',
     limit: labelField ? 1000 : 200,
@@ -2831,7 +2846,14 @@ const ServerAggAreaChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
 const ServerAggFilterBar: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
   const filterField = comp.filterField || comp.columns?.[0] || '';
   const opts: AggregateOptions | null = filterField
-    ? { groupBy: filterField, aggregations: [{ method: 'count' }], sortBy: 'agg_0', sortDir: 'desc', filters: serverFilters, limit: 50 }
+    ? {
+        groupBy: filterField,
+        aggregations: [{ method: 'count' }],
+        sortBy: 'agg_0', sortDir: 'desc',
+        filters: serverFilters, limit: 50,
+        computedFields: comp.computedFields,
+        joins: comp.joins,
+      }
     : null;
   const { rows } = useAggregate(filterField ? comp.objectTypeId : undefined, opts);
   const values = rows.map((r) => String(r.group ?? '')).filter(Boolean);
@@ -3004,6 +3026,7 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
   const mergedFilters = rangeFilter ? { ...(serverFilters || {}), ...rangeFilter } : serverFilters;
   const aggSpec: AggregateSpec = { field: valueField, method: method as AggregateSpec['method'] };
   if (method === 'runtime' && comp.tsField) aggSpec.ts_field = comp.tsField;
+  if (comp.window) aggSpec.window = comp.window;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
     timeBucket: { field: xField, interval },
@@ -3012,6 +3035,8 @@ const ServerPivotTable: React.FC<{ comp: AppComponent; serverFilters?: Record<st
     sortBy: 'group',
     sortDir: 'asc',
     limit: 5000,
+    computedFields: comp.computedFields,
+    joins: comp.joins,
   });
 
   if (loading) return <LoadingTile />;
