@@ -2,11 +2,14 @@
 Actions Registry — typed, permissioned write operations that AI agents and Logic Functions
 can propose. Humans approve or reject proposals when requires_confirmation=True.
 """
+import asyncio
 import os
+import re
 import smtplib
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from types import SimpleNamespace
 from typing import Optional, Any
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -14,7 +17,17 @@ from fastapi import APIRouter, HTTPException, Header, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from database import ActionDefinitionRow, ActionExecutionRow, NotificationRow, get_session
+from sqlalchemy.orm.attributes import flag_modified
+from database import (
+    ActionDefinitionRow,
+    ActionExecutionRow,
+    NotificationRow,
+    ObjectRecordRow,
+    ObjectTypeRow,
+    get_session,
+)
+from event_emit import emit_record_event
+from shared import query_cache
 import workflow as wf
 import user_directory
 
@@ -61,6 +74,216 @@ def _send_approval_email(to: str, action_name: str, inputs: dict, confirmed_by: 
 router = APIRouter()
 
 
+# ── Payload templating + write execution ─────────────────────────────────────
+#
+# An action with writes_to_object_type set is a typed write into the ontology.
+# Inputs may include two control fields:
+#   "op": "create" | "update" | "merge" | "delete"   (default "create")
+#   "id": source_id to upsert/delete against         (auto-uuid for create)
+# An action may also declare `also_writes` — additional records to write into
+# other object types in the same transaction. Each entry supports
+# `payload_template` whose string values may contain `$inputs.<path>` tokens
+# resolved against the primary inputs (plus the just-generated `id`). This
+# lets a `crm_create_deal` action also stamp a `crm_event_log` row referencing
+# the new deal's id without a second RPC.
+
+_TOKEN_RE = re.compile(r"\$inputs\.([\w.]+)")
+
+
+def _get_path(d: Any, path: str) -> Any:
+    cur = d
+    for part in path.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+    return cur
+
+
+def _render_payload(node: Any, inputs: dict) -> Any:
+    """Substitute `$inputs.<path>` tokens against `inputs`.
+
+    A string that is *exactly* `$inputs.<path>` is replaced with the raw
+    value at that path (preserves type — int stays int, list stays list).
+    A string that contains the token as a substring gets string interpolation.
+    Dicts and lists are walked recursively; everything else passes through.
+    """
+    if isinstance(node, dict):
+        return {k: _render_payload(v, inputs) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_render_payload(v, inputs) for v in node]
+    if isinstance(node, str):
+        m = _TOKEN_RE.fullmatch(node)
+        if m:
+            return _get_path(inputs, m.group(1))
+        return _TOKEN_RE.sub(
+            lambda mm: "" if _get_path(inputs, mm.group(1)) is None else str(_get_path(inputs, mm.group(1))),
+            node,
+        )
+    return node
+
+
+async def _execute_writes(
+    db: AsyncSession,
+    tenant_id: str,
+    action_def: Any,  # ActionDefinitionRow or SimpleNamespace shim
+    inputs: dict,
+    actor_id: str = "system",
+    actor_role: str = "system",
+    _is_secondary: bool = False,
+) -> dict:
+    """Apply the writes declared by an action against the ontology.
+
+    Stages session mutations only — the caller is responsible for committing.
+    Returns a dict that includes a `_post_commit` list of fire-and-forget
+    callables (event emit, cache invalidate) the caller should run *after*
+    `db.commit()` succeeds. On failure, raises and leaves the session for
+    the caller's outer rollback / savepoint to clean up.
+    """
+    inputs = dict(inputs or {})
+    op = (inputs.pop("op", None) or "create").lower()
+    ot_id = getattr(action_def, "writes_to_object_type", None)
+    post_commit: list = []
+
+    if not ot_id:
+        return {"applied": inputs, "no_write": True, "_post_commit": post_commit}
+
+    ot_result = await db.execute(
+        select(ObjectTypeRow).where(
+            ObjectTypeRow.id == ot_id,
+            ObjectTypeRow.tenant_id == tenant_id,
+        )
+    )
+    ot_row = ot_result.scalar_one_or_none()
+    if not ot_row:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action writes_to_object_type='{ot_id}' but no such object type for tenant",
+        )
+    ot_name = ot_row.name
+
+    if op == "delete" and not inputs.get("id"):
+        raise HTTPException(status_code=400, detail="op='delete' requires inputs.id")
+
+    source_id = str(inputs.get("id") or uuid4())
+    data = {**inputs, "id": source_id}
+
+    existing = await db.execute(
+        select(ObjectRecordRow).where(
+            ObjectRecordRow.object_type_id == ot_id,
+            ObjectRecordRow.tenant_id == tenant_id,
+            ObjectRecordRow.source_id == source_id,
+        )
+    )
+    row = existing.scalar_one_or_none()
+
+    if op == "delete":
+        if not row:
+            raise HTTPException(status_code=404, detail=f"No record id='{source_id}' to delete")
+        before_state = dict(row.data or {})
+        await db.delete(row)
+        activity = f"{ot_name}.deleted"
+        before, after = before_state, None
+    elif row is None:
+        db.add(ObjectRecordRow(
+            id=str(uuid4()),
+            object_type_id=ot_id,
+            tenant_id=tenant_id,
+            source_id=source_id,
+            data=data,
+        ))
+        activity = f"{ot_name}.created"
+        before, after = None, data
+    elif op == "merge":
+        before = dict(row.data or {})
+        merged = {**before, **data}
+        row.data = merged
+        flag_modified(row, "data")
+        row.updated_at = datetime.now(timezone.utc)
+        activity = f"{ot_name}.updated"
+        after = merged
+    else:  # create/update on existing → replace
+        before = dict(row.data or {})
+        row.data = data
+        flag_modified(row, "data")
+        row.updated_at = datetime.now(timezone.utc)
+        activity = f"{ot_name}.updated"
+        after = data
+
+    # Snapshot args; the lambda would otherwise close over loop variables.
+    def _fire_event(
+        _tenant=tenant_id, _ot_id=ot_id, _ot_name=ot_name, _sid=source_id,
+        _activity=activity, _actor=actor_id, _role=actor_role,
+        _before=before, _after=after,
+    ):
+        emit_record_event(
+            tenant_id=_tenant,
+            object_type_id=_ot_id,
+            object_type_name=_ot_name,
+            record_id=_sid,
+            activity=_activity,
+            actor_id=_actor,
+            actor_role=_role,
+            before_state=_before,
+            after_state=_after,
+        )
+
+    post_commit.append(_fire_event)
+    post_commit.append(
+        lambda _t=tenant_id, _o=ot_id: asyncio.create_task(
+            query_cache.invalidate_object_type(_t, _o)
+        )
+    )
+
+    primary_result = {
+        "record_id": source_id,
+        "object_type_id": ot_id,
+        "op": op,
+        "applied": data,
+    }
+
+    # also_writes — secondary records. Only one level deep; the shim disables
+    # further recursion. Substitution context includes the resolved `id` so
+    # secondaries can reference the just-generated primary record.
+    secondary_results: list = []
+    if not _is_secondary:
+        also = getattr(action_def, "also_writes", None) or []
+        substitution_ctx = {**inputs, "id": source_id}
+        for entry in also:
+            target_ot = entry.get("object_type")
+            if not target_ot:
+                continue
+            template = entry.get("payload_template") or {}
+            static = entry.get("payload_static") or {}
+            rendered = _render_payload(template, substitution_ctx)
+            secondary_inputs = {**static, **(rendered if isinstance(rendered, dict) else {})}
+            secondary_inputs["op"] = entry.get("op") or "create"
+            shim = SimpleNamespace(writes_to_object_type=target_ot, also_writes=None)
+            sec_result = await _execute_writes(
+                db, tenant_id, shim, secondary_inputs,
+                actor_id=actor_id, actor_role=actor_role,
+                _is_secondary=True,
+            )
+            post_commit.extend(sec_result.pop("_post_commit", []))
+            secondary_results.append(sec_result)
+
+    return {**primary_result, "secondary_writes": secondary_results, "_post_commit": post_commit}
+
+
+def _format_error(e: Exception) -> str:
+    if isinstance(e, HTTPException):
+        return f"HTTP {e.status_code}: {e.detail}"
+    return f"{type(e).__name__}: {e}"
+
+
+def _fire_post_commit(callbacks: list) -> None:
+    for fn in callbacks:
+        try:
+            fn()
+        except Exception as ex:  # pragma: no cover - fire-and-forget
+            logger.warning(f"action post-commit hook failed: {ex}")
+
+
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
 class ActionDefinitionCreate(BaseModel):
@@ -70,6 +293,9 @@ class ActionDefinitionCreate(BaseModel):
     requires_confirmation: bool = True
     allowed_roles: list[str] = []
     writes_to_object_type: Optional[str] = None
+    # Secondary writes triggered alongside the primary writes_to_object_type.
+    # Each entry: {object_type, op?, payload_template?, payload_static?}.
+    also_writes: Optional[list[dict[str, Any]]] = None
     enabled: bool = True
     notify_email: Optional[str] = None   # email to notify when approved
     # Multi-stage workflow definition. None or [] = legacy single-pending behavior.
@@ -109,6 +335,7 @@ def _def_to_dict(row: ActionDefinitionRow) -> dict:
         "requires_confirmation": row.requires_confirmation,
         "allowed_roles": row.allowed_roles or [],
         "writes_to_object_type": row.writes_to_object_type,
+        "also_writes": getattr(row, "also_writes", None) or [],
         "enabled": row.enabled,
         "notify_email": row.notify_email,
         "workflow_stages": getattr(row, "workflow_stages", None) or [],
@@ -183,6 +410,8 @@ async def create_action(
     )
     if body.workflow_stages is not None:
         row.workflow_stages = body.workflow_stages
+    if body.also_writes is not None:
+        row.also_writes = body.also_writes
     db.add(row)
     await db.commit()
     return _def_to_dict(row)
@@ -233,6 +462,8 @@ async def update_action(
     row.notify_email = body.notify_email
     if body.workflow_stages is not None:
         row.workflow_stages = body.workflow_stages
+    if body.also_writes is not None:
+        row.also_writes = body.also_writes
     await db.commit()
     return _def_to_dict(row)
 
@@ -352,15 +583,35 @@ async def execute_action(
         await db.commit()
         return {**_exec_to_dict(exec_row), "requires_confirmation": True}
     else:
-        # Execute immediately — in a real system this would call the write logic
-        # For now we record it as completed with the inputs as result
+        # Immediate execution — apply the action's writes (primary +
+        # also_writes) inside a savepoint so a write failure rolls back the
+        # ontology mutations but still records a failed ActionExecutionRow
+        # for the audit trail.
+        post_commit: list = []
+        try:
+            async with db.begin_nested():
+                write_result = await _execute_writes(
+                    db, tenant_id, action_def, body.inputs or {},
+                    actor_id=body.executed_by or "system",
+                    actor_role=body.source or "system",
+                )
+            post_commit = write_result.pop("_post_commit", [])
+            status = "completed"
+            error = None
+            result_payload = {"action": action_name, **write_result}
+        except Exception as e:
+            status = "failed"
+            error = _format_error(e)
+            result_payload = None
+
         exec_row = ActionExecutionRow(
             id=exec_id,
             tenant_id=tenant_id,
             action_name=action_name,
             inputs=body.inputs,
-            status="completed",
-            result={"applied": body.inputs, "action": action_name},
+            status=status,
+            result=result_payload,
+            error=error,
             executed_by=body.executed_by,
             source=body.source,
             source_id=body.source_id,
@@ -368,6 +619,7 @@ async def execute_action(
         )
         db.add(exec_row)
         await db.commit()
+        _fire_post_commit(post_commit)
         return {**_exec_to_dict(exec_row), "requires_confirmation": False}
 
 
@@ -457,15 +709,9 @@ async def confirm_execution(
         raise HTTPException(status_code=400, detail=f"Cannot confirm execution in status '{row.status}'")
     action_name = row.action_name
     inputs = row.inputs or {}
-    row.status = "completed"
-    row.confirmed_by = body.confirmed_by
-    row.result = {"applied": inputs, "action": action_name, "confirmed_by": body.confirmed_by}
 
-    # Build response dict while row is still loaded (before commit expires it)
-    response = _exec_to_dict(row)
-    await db.commit()
-
-    # Send email notification if the action definition has one configured
+    # Load the definition up front so the helper has writes_to_object_type +
+    # also_writes available. We also reuse it for the notify_email send below.
     def_result = await db.execute(
         select(ActionDefinitionRow).where(
             ActionDefinitionRow.name == action_name,
@@ -473,7 +719,39 @@ async def confirm_execution(
         )
     )
     action_def = def_result.scalar_one_or_none()
-    if action_def and action_def.notify_email:
+
+    post_commit: list = []
+    try:
+        if action_def is not None:
+            async with db.begin_nested():
+                write_result = await _execute_writes(
+                    db, tenant_id, action_def, inputs,
+                    actor_id=body.confirmed_by,
+                    actor_role="user",
+                )
+            post_commit = write_result.pop("_post_commit", [])
+            row.status = "completed"
+            row.confirmed_by = body.confirmed_by
+            row.result = {"action": action_name, "confirmed_by": body.confirmed_by, **write_result}
+        else:
+            # Definition disappeared between proposal and approval. Record the
+            # confirmation against the proposal without attempting to write.
+            row.status = "completed"
+            row.confirmed_by = body.confirmed_by
+            row.result = {"applied": inputs, "action": action_name, "confirmed_by": body.confirmed_by}
+    except Exception as e:
+        row.status = "failed"
+        row.confirmed_by = body.confirmed_by
+        row.error = _format_error(e)
+        row.result = None
+
+    # Build response dict while row is still loaded (before commit expires it)
+    response = _exec_to_dict(row)
+    await db.commit()
+    _fire_post_commit(post_commit)
+
+    # Send email notification on a successful confirmation only.
+    if row.status == "completed" and action_def and action_def.notify_email:
         _send_approval_email(
             to=action_def.notify_email,
             action_name=action_name,

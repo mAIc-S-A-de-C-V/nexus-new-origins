@@ -3,11 +3,11 @@ import {
   CheckCircle, XCircle, Clock, Bot, User, AlertTriangle, AlertCircle,
   Plus, Trash2, Edit2, Shield, ToggleLeft, ToggleRight,
   Filter, RefreshCw, ChevronRight, Inbox, History, Settings,
-  ArrowUpCircle, Info, Layers, ExternalLink,
+  ArrowUpCircle, Info, Layers, ExternalLink, Play,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useHumanActionsStore, ActionExecution } from '../../store/humanActionsStore';
-import { getTenantId } from '../../store/authStore';
+import { getTenantId, getAccessToken } from '../../store/authStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { CheckpointGate } from '../audit/CheckpointGate';
 import WorkflowEditor from '../workflow/WorkflowEditor';
@@ -1089,11 +1089,250 @@ const ActionForm: React.FC<{
   );
 };
 
+// ── Run Action modal ──────────────────────────────────────────────────────
+//
+// Renders a form derived from the action's `input_schema` and POSTs the
+// values to /actions/{name}/execute. Two control fields are surfaced for
+// actions with a writes_to_object_type:
+//   · op  — create | update | merge | delete (default create)
+//   · id  — source_id; required for update/merge/delete, auto-uuid otherwise
+// The response is shown raw so the user can inspect record_id, status, and
+// any secondary_writes that came back from `also_writes` declarations.
+
+const RunActionModal: React.FC<{
+  def: ActionDefinition;
+  onClose: () => void;
+}> = ({ def, onClose }) => {
+  const schemaEntries = React.useMemo(
+    () => Object.entries(def.input_schema || {}),
+    [def.input_schema],
+  );
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [op, setOp] = useState<'create' | 'update' | 'merge' | 'delete'>('create');
+  const [recordId, setRecordId] = useState<string>('');
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<unknown>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const canWrite = !!def.writes_to_object_type;
+
+  const coerce = (raw: string, schemaType: unknown): unknown => {
+    if (raw === '') return null;
+    const t = String(schemaType).toLowerCase();
+    if (t === 'number' || t === 'integer') {
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : raw;
+    }
+    if (t === 'boolean') return raw === 'true' || raw === '1';
+    if (t === 'array' || t === 'object') {
+      try { return JSON.parse(raw); } catch { return raw; }
+    }
+    return raw;
+  };
+
+  const run = async () => {
+    setRunning(true);
+    setError(null);
+    setResult(null);
+    try {
+      const inputs: Record<string, unknown> = {};
+      for (const [key, schemaType] of schemaEntries) {
+        const raw = values[key];
+        if (raw !== undefined && raw !== '') inputs[key] = coerce(raw, schemaType);
+      }
+      if (canWrite) {
+        if (op !== 'create') inputs.op = op;
+        if (recordId) inputs.id = recordId;
+      }
+      const token = getAccessToken();
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-tenant-id': getTenantId(),
+      };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const r = await fetch(`${ONTOLOGY_API}/actions/${def.name}/execute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ inputs, executed_by: 'ui', source: 'manual' }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setError(typeof body?.detail === 'string' ? body.detail : `HTTP ${r.status}`);
+      } else {
+        setResult(body);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          backgroundColor: C.panel, border: `1px solid ${C.border}`, borderRadius: 8,
+          padding: 24, width: 560, maxHeight: '85vh', overflowY: 'auto',
+          boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.text, fontFamily: 'monospace' }}>{def.name}</div>
+            {def.description && (
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{def.description}</div>
+            )}
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 4 }}>
+              {def.requires_confirmation
+                ? 'requires_confirmation=true → execution will land in the approval queue'
+                : 'requires_confirmation=false → executes immediately'}
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', cursor: 'pointer', color: C.dim,
+            padding: 4, lineHeight: 0,
+          }} aria-label="Close">
+            <XCircle size={18} />
+          </button>
+        </div>
+
+        {canWrite && (
+          <div style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
+            <label style={{ flex: 1 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 4 }}>
+                Operation
+              </div>
+              <select
+                value={op}
+                onChange={(e) => setOp(e.target.value as typeof op)}
+                style={{
+                  width: '100%', padding: '6px 8px', fontSize: 12,
+                  border: `1px solid ${C.border}`, borderRadius: 4,
+                  backgroundColor: C.bg, color: C.text,
+                }}
+              >
+                <option value="create">create</option>
+                <option value="update">update (replace)</option>
+                <option value="merge">merge</option>
+                <option value="delete">delete</option>
+              </select>
+            </label>
+            <label style={{ flex: 2 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 4 }}>
+                Record id {op === 'create' ? '(optional — auto-uuid)' : '(required)'}
+              </div>
+              <input
+                value={recordId}
+                onChange={(e) => setRecordId(e.target.value)}
+                placeholder={op === 'create' ? 'leave blank to auto-generate' : 'existing source_id'}
+                style={{
+                  width: '100%', padding: '6px 8px', fontSize: 12, fontFamily: 'monospace',
+                  border: `1px solid ${C.border}`, borderRadius: 4,
+                  backgroundColor: C.bg, color: C.text, boxSizing: 'border-box',
+                }}
+              />
+            </label>
+          </div>
+        )}
+
+        {schemaEntries.length === 0 && (
+          <div style={{
+            fontSize: 12, color: C.dim, padding: '12px 14px', marginBottom: 14,
+            backgroundColor: C.bg, border: `1px dashed ${C.border}`, borderRadius: 4,
+          }}>
+            This action has no declared input_schema. It will run with empty inputs.
+          </div>
+        )}
+
+        {schemaEntries.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+            {schemaEntries.map(([key, schemaType]) => (
+              <label key={key}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 4 }}>
+                  {key}{' '}
+                  <span style={{ fontWeight: 400, color: C.dim, fontFamily: 'monospace' }}>
+                    : {String(schemaType)}
+                  </span>
+                </div>
+                <input
+                  value={values[key] ?? ''}
+                  onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+                  placeholder={String(schemaType) === 'array' || String(schemaType) === 'object'
+                    ? 'JSON literal, e.g. ["a","b"]'
+                    : ''}
+                  style={{
+                    width: '100%', padding: '6px 8px', fontSize: 12,
+                    border: `1px solid ${C.border}`, borderRadius: 4,
+                    backgroundColor: C.bg, color: C.text, boxSizing: 'border-box',
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+        )}
+
+        {error && (
+          <div style={{
+            fontSize: 12, color: C.error, padding: '8px 10px', marginBottom: 12,
+            backgroundColor: C.errorDim, border: `1px solid ${C.errorBorder}`, borderRadius: 4,
+          }}>
+            {error}
+          </div>
+        )}
+
+        {result != null && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 4 }}>
+              Response
+            </div>
+            <pre style={{
+              fontSize: 11, fontFamily: 'monospace', backgroundColor: C.bg,
+              border: `1px solid ${C.border}`, borderRadius: 4, padding: 10,
+              maxHeight: 240, overflow: 'auto', color: C.text, margin: 0,
+            }}>
+              {JSON.stringify(result, null, 2)}
+            </pre>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{
+            height: 32, padding: '0 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+            backgroundColor: 'transparent', border: `1px solid ${C.border}`,
+            color: C.muted, borderRadius: 4,
+          }}>
+            Close
+          </button>
+          <button onClick={run} disabled={running || !def.enabled} style={{
+            height: 32, padding: '0 16px', fontSize: 12.5, fontWeight: 600,
+            cursor: running || !def.enabled ? 'not-allowed' : 'pointer',
+            backgroundColor: C.accent, border: 'none', color: '#FFF', borderRadius: 4,
+            display: 'flex', alignItems: 'center', gap: 6,
+            opacity: running || !def.enabled ? 0.55 : 1,
+          }}>
+            <Play size={13} /> {running ? 'Running…' : 'Run'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
 // ── Actions catalog tab ───────────────────────────────────────────────────────
 
 const ActionsTab: React.FC = () => {
   const [defs, setDefs]         = useState<ActionDefinition[]>([]);
   const [editing, setEditing]   = useState<ActionDefinition | null | 'new'>(null);
+  const [running, setRunning]   = useState<ActionDefinition | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [loading, setLoading]   = useState(false);
 
@@ -1204,6 +1443,16 @@ const ActionsTab: React.FC = () => {
                   style={{ background: 'none', border: 'none', cursor: 'pointer', lineHeight: 0, color: def.enabled ? C.success : C.dim }}>
                   {def.enabled ? <ToggleRight size={22} /> : <ToggleLeft size={22} />}
                 </button>
+                <button onClick={() => setRunning(def)} disabled={!def.enabled}
+                  title={def.enabled ? 'Run' : 'Enable the action to run it'}
+                  style={{
+                    background: 'none', border: `1px solid ${C.accent}`, borderRadius: 4,
+                    cursor: def.enabled ? 'pointer' : 'not-allowed',
+                    color: C.accent, padding: '4px 8px', lineHeight: 0,
+                    opacity: def.enabled ? 1 : 0.45,
+                  }}>
+                  <Play size={13} />
+                </button>
                 <button onClick={() => setEditing(def)} title="Edit"
                   style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: 4,
                     cursor: 'pointer', color: C.muted, padding: '4px 8px', lineHeight: 0 }}>
@@ -1219,6 +1468,10 @@ const ActionsTab: React.FC = () => {
           )
         ))}
       </div>
+
+      {running && (
+        <RunActionModal def={running} onClose={() => { setRunning(null); load(); }} />
+      )}
     </div>
   );
 };

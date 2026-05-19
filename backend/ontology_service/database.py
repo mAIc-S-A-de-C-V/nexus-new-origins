@@ -198,6 +198,13 @@ class ActionDefinitionRow(Base):
     requires_confirmation = Column(Boolean, nullable=False, default=True)
     allowed_roles = Column(JSON, nullable=False, default=list)  # ["ADMIN", "DATA_ENGINEER"]
     writes_to_object_type = Column(String, nullable=True)
+    # Optional secondary writes triggered by the same action. Each entry:
+    # {object_type: <ot_id>, op?: "create"|"update"|"merge"|"delete",
+    #  payload_template?: dict with "$inputs.<path>" tokens substituted from
+    #  the primary inputs, payload_static?: dict merged on top}. Lets a single
+    # action propose, e.g., crm_create_deal that also writes a crm_event_log
+    # row in the same call without the client needing two RPCs.
+    also_writes = Column(JSON, nullable=True)
     enabled = Column(Boolean, nullable=False, default=True)
     notify_email = Column(String, nullable=True)   # email to notify when execution is approved
     # Multi-stage workflow definition. NULL/[] = legacy single-pending behavior.
@@ -455,6 +462,8 @@ async def init_db():
         # action_executions: stage state, history, options, requester/assignee
         for stmt in [
             "ALTER TABLE action_definitions ADD COLUMN IF NOT EXISTS workflow_stages JSON",
+            "ALTER TABLE action_definitions ADD COLUMN IF NOT EXISTS also_writes JSON",
+            "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS error TEXT",
             "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS current_stage VARCHAR",
             "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS stage_state JSON",
             "ALTER TABLE action_executions  ADD COLUMN IF NOT EXISTS stage_history JSON",
