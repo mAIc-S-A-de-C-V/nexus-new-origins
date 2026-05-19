@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   X, Plus, ArrowLeft, Send, Loader, Trash2, MessageSquare,
   Database, HelpCircle, GitBranch, Code, Network, AlertTriangle, BarChart2, Zap,
-  Check, XCircle, Play, Layers,
+  Check, XCircle, Play, Layers, Shield,
   type LucideIcon,
 } from 'lucide-react';
 import { useAssistantStore, useTenantConversations, AssistantMessage } from '../store/assistantStore';
@@ -214,6 +214,15 @@ const GENERIC_ACTION_REGISTRY: Record<string, ActionExecutor> = {
   create_pipeline_trigger:  { label: 'Create Pipeline Trigger',  icon: <Network size={14}/>, method: 'POST',   url: () => `${AGENT_URL}/triggers`,                                                        body: p => p },
   test_fire_trigger:        { label: 'Test-Fire Trigger',        icon: <Play size={14}/>,    method: 'POST',   url: p => `${AGENT_URL}/triggers/${p.trigger_id}/test-fire`,                              body: () => ({}) },
   delete_pipeline_trigger:  { label: 'Delete Trigger',           icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${AGENT_URL}/triggers/${p.trigger_id}` },
+
+  // ── Action Catalog (typed agent-proposable writes)
+  // Standalone actions in the Human Actions → Catalog. Distinct from
+  // `create_app_action` which binds a form action to a specific app: these
+  // are reusable across agents, logic functions, chat, and the catalog UI.
+  // `update_action` and `delete_action` key on `name` (the unique slug).
+  create_action:            { label: 'Create Action',            icon: <Shield size={14}/>,  method: 'POST',   url: () => `${ONTOLOGY_URL}/actions`,                                                       body: p => p },
+  update_action:            { label: 'Update Action',            icon: <Shield size={14}/>,  method: 'PUT',    url: p => `${ONTOLOGY_URL}/actions/${p.name}`,                                              body: p => p },
+  delete_action:            { label: 'Delete Action',            icon: <Trash2 size={14}/>,  method: 'DELETE', url: p => `${ONTOLOGY_URL}/actions/${p.name}` },
 
   // ── Eval suites
   create_eval_suite:        { label: 'Create Eval Suite',        icon: <BarChart2 size={14}/>, method: 'POST',  url: () => `${EVAL_URL}/suites`,                                                          body: p => p },

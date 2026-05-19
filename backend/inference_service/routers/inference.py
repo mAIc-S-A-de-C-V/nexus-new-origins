@@ -506,6 +506,17 @@ Supported action types:
   Registers a new LLM in Settings → AI Models so it appears in the LLM_CLASSIFY model dropdown. Use `provider_type: "openai"` for ANY OpenAI-compatible server (vLLM, LM Studio, Together, Fireworks, HF Router, ngrok-fronted self-hosted, etc.) — set `base_url` to the path before `/chat/completions`. Don't suggest a REST_API Connector for LLM endpoints; this action is the right path. Before proposing this, check `model_providers` in the live context — if a matching provider already exists, tell the user to pick its model from the LLM_CLASSIFY dropdown instead of creating a duplicate.
 - `create_app_action` — payload: `{"app_id":"<id>","action":{"id":"act-...","name":"...","kind":"createObject","objectTypeId":"<id>","fieldMappings":[{"formField":"x","targetProperty":"y","transform":"asNumber"|"asDate"|"asUuid"|"literal","literalValue":"..."}],"validations":[{"field":"x","rule":"required"|"regex"|"min"|"max","value":"...","message":"..."}],"confirmation":{"title":"...","body":"..."},"onSuccess":{"type":"refreshWidget","targetWidgetId":"..."},"onError":{...}}}`
   Adds a typed action (mutation) to an EXISTING app. The action becomes available for record-creator / object-editor / action-button widgets in that app. Use real `app_id` and `objectTypeId` from the live context.
+- `create_action` — Standalone, agent-proposable typed write that lives in the Action Catalog (Human Actions → Catalog). Different from `create_app_action`: `create_app_action` glues a form to a specific app and writes via `/records/ingest`; `create_action` defines a NAMED action that agents, logic functions, the chat, or a human via the catalog's ▶ button can invoke through `POST /actions/<name>/execute`. Pick this one when the same operation should be reusable across surfaces, requires human approval (`requires_confirmation:true`), or needs to touch multiple object types atomically (via `also_writes`).
+  Payload shape: `{"name":"snake_case_unique","description":"...","requires_confirmation":true|false,"writes_to_object_type":"<ot-id>","input_schema":{"field":"string|number|boolean|array|object", ...},"also_writes":[{"object_type":"<ot-id>","op":"create|update|merge|delete","payload_template":{"key":"$inputs.<path>"},"payload_static":{...}}],"notify_email":"...","enabled":true}`.
+  Inputs at execute time may include two control fields: `op` (create/update/merge/delete, default create) and `id` (source_id; required for update/merge/delete, auto-uuid for create). `also_writes` runs in the same DB transaction as the primary write — a failure rolls everything back. In `payload_template`, strings of the form `$inputs.<path>` are substituted from the primary inputs; in particular `"$inputs.id"` resolves to the just-created primary record's source_id, which is how you wire a secondary event-log row to reference the primary deal.
+  Example (single write, requires human approval):
+  ```nexus-action
+  {"type":"create_action","name":"Update Deal Stage","summary":["Lets agents propose a stage change on a Deal record","Requires human approval before applying","Writes back to the Deal object type"],"payload":{"name":"update_deal_stage","description":"Move a deal between pipeline stages — requires approval.","requires_confirmation":true,"writes_to_object_type":"<Deal-id>","input_schema":{"id":"string","stage":"string","reason":"string"},"enabled":true}}
+  ```
+  Example with also_writes (deal + event log in one call, no approval):
+  ```nexus-action
+  {"type":"create_action","name":"Create Deal","summary":["Create a Deal record","Also stamps a deal_created row in CRM Event Log referencing the new deal","No approval needed — fires immediately"],"payload":{"name":"crm_create_deal","description":"Create a deal and log the creation event in one transaction.","requires_confirmation":false,"writes_to_object_type":"<Deal-id>","input_schema":{"name":"string","amount":"number","stage":"string","owner_id":"string"},"also_writes":[{"object_type":"<CrmEventLog-id>","payload_template":{"kind":"deal_created","deal_id":"$inputs.id","owner":"$inputs.owner_id","label":"Created deal $inputs.name"},"payload_static":{"source":"crm_create_deal"}}],"enabled":true}}
+  ```
 
 ### Lifecycle (update / delete / test)
 Use these to operate on EXISTING resources. Always reference real IDs from the live context.
@@ -522,6 +533,8 @@ Use these to operate on EXISTING resources. Always reference real IDs from the l
 - `delete_logic_function` — payload: `{"function_id":"<id>"}`
 - `publish_logic_function` — payload: `{"function_id":"<id>"}` — promote current draft to production
 - `run_logic_function` — payload: `{"function_id":"<id>","inputs":{...}}`
+- `update_action` — payload: full ActionDefinition shape (`{"name":"<action_name>","description":"...","requires_confirmation":...,"writes_to_object_type":"...","input_schema":{...},"also_writes":[...],"enabled":...}`). Replaces the existing catalog entry; the action is keyed by `name`, not id.
+- `delete_action` — payload: `{"name":"<action_name>"}` — DESTRUCTIVE. Removes the action from the catalog. Pending or historical executions remain, but new proposals fail.
 
 ### Schedules (recurring runs)
 - `create_pipeline_schedule` — payload: `{"pipeline_id":"<id>","name":"...","cron_expression":"0 */6 * * *","enabled":true}` — standard 5-field cron
