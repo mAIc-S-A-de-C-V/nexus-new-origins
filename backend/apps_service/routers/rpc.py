@@ -83,6 +83,8 @@ def _target_for_method(method: str, args: dict) -> str | None:
         return args.get("object_type")
     if method == "ontology.aggregate":
         return args.get("object_type")
+    if method in ("ontology.create", "ontology.update", "ontology.delete"):
+        return args.get("object_type")
     if method == "actions.propose":
         return args.get("action_name")
     if method == "agents.run":
@@ -170,6 +172,86 @@ async def _do_ontology_aggregate(payload: dict, args: dict) -> Any:
             json=body, headers={"x-tenant-id": payload["tenant_id"]},
         )
         return r2.json() if r2.is_success else {"error": r2.text}
+
+
+async def _resolve_object_type(client: httpx.AsyncClient, tenant_id: str, object_type: str) -> dict | None:
+    """Look up an object type by display name or system name."""
+    r = await client.get(f"{ONTOLOGY_URL}/object-types", headers={"x-tenant-id": tenant_id})
+    if not r.is_success:
+        return None
+    ots = r.json() if r.is_success else []
+    return next((o for o in ots if o.get("name") == object_type or o.get("displayName") == object_type), None)
+
+
+async def _do_ontology_create(payload: dict, args: dict) -> Any:
+    """Create (upsert) a single record. Uses the ontology service's bulk-ingest endpoint
+    behind the scenes — apps don't see that detail. If `data.id` is present it becomes
+    the record's source_id; otherwise the ontology service generates one."""
+    object_type = args.get("object_type")
+    data = args.get("data")
+    if not object_type or not isinstance(data, dict):
+        return {"error": "object_type + data (object) required"}
+    pk_field = args.get("pk_field") or "id"
+    async with httpx.AsyncClient(timeout=30) as client:
+        ot = await _resolve_object_type(client, payload["tenant_id"], object_type)
+        if not ot:
+            return {"error": f"object_type '{object_type}' not found"}
+        r = await client.post(
+            f"{ONTOLOGY_URL}/object-types/{ot['id']}/records/ingest",
+            json={
+                "records": [data],
+                "pk_field": pk_field,
+                "pipeline_id": f"app:{payload['app_id']}",
+            },
+            headers={"x-tenant-id": payload["tenant_id"]},
+        )
+        if not r.is_success:
+            return {"error": r.text}
+        body = r.json()
+        # ingest returns counts + source_ids; flatten to a single-row response
+        new_ids = body.get("new_source_ids") or []
+        upd_ids = body.get("updated_source_ids") or []
+        rid = (new_ids + upd_ids + [data.get(pk_field)])[0]
+        return {"ok": True, "record_id": rid, "ingested": body.get("ingested", 0)}
+
+
+async def _do_ontology_update(payload: dict, args: dict) -> Any:
+    """Merge `fields` into an existing record's data. Errors if the record does not exist."""
+    object_type = args.get("object_type")
+    record_id = args.get("record_id")
+    fields = args.get("fields")
+    if not object_type or not record_id or not isinstance(fields, dict):
+        return {"error": "object_type + record_id + fields (object) required"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        ot = await _resolve_object_type(client, payload["tenant_id"], object_type)
+        if not ot:
+            return {"error": f"object_type '{object_type}' not found"}
+        r = await client.patch(
+            f"{ONTOLOGY_URL}/object-types/{ot['id']}/records/{record_id}",
+            json=fields,
+            headers={"x-tenant-id": payload["tenant_id"]},
+        )
+        if not r.is_success:
+            return {"error": r.text}
+        return {"ok": True, "record_id": record_id}
+
+
+async def _do_ontology_delete(payload: dict, args: dict) -> Any:
+    object_type = args.get("object_type")
+    record_id = args.get("record_id")
+    if not object_type or not record_id:
+        return {"error": "object_type + record_id required"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        ot = await _resolve_object_type(client, payload["tenant_id"], object_type)
+        if not ot:
+            return {"error": f"object_type '{object_type}' not found"}
+        r = await client.delete(
+            f"{ONTOLOGY_URL}/object-types/{ot['id']}/records/{record_id}",
+            headers={"x-tenant-id": payload["tenant_id"]},
+        )
+        if not r.is_success and r.status_code != 404:
+            return {"error": r.text}
+        return {"ok": True, "record_id": record_id}
 
 
 async def _do_actions_list(payload: dict, args: dict) -> Any:
@@ -351,6 +433,9 @@ DISPATCH = {
     "ontology.query":      lambda p, a, d: _do_ontology_query(p, a),
     "ontology.get":        lambda p, a, d: _do_ontology_get(p, a),
     "ontology.aggregate":  lambda p, a, d: _do_ontology_aggregate(p, a),
+    "ontology.create":     lambda p, a, d: _do_ontology_create(p, a),
+    "ontology.update":     lambda p, a, d: _do_ontology_update(p, a),
+    "ontology.delete":     lambda p, a, d: _do_ontology_delete(p, a),
     "actions.list":        lambda p, a, d: _do_actions_list(p, a),
     "actions.propose":     lambda p, a, d: _do_actions_propose(p, a),
     "agents.list":         lambda p, a, d: _do_agents_list(p, a),

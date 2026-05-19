@@ -115,6 +115,12 @@ export interface NexusClient {
     query<T = Record<string, unknown>>(args: OntologyQueryArgs): Promise<{ records: T[]; count?: number; total?: number }>;
     get<T = Record<string, unknown>>(object_type: string, record_id: string): Promise<T | null>;
     aggregate(args: { object_type: string; group_by?: string; time_bucket?: { field: string; interval: string }; aggregations: { method: string; field?: string; alias?: string }[]; filters?: string; limit?: number }): Promise<{ rows: Record<string, unknown>[]; total_groups?: number }>;
+    /** Create (upsert) a record. If `data.id` is set, it becomes the record_id. */
+    create(args: { object_type: string; data: Record<string, unknown>; pk_field?: string }): Promise<{ ok: true; record_id: string; ingested: number }>;
+    /** Merge `fields` into an existing record. */
+    update(args: { object_type: string; record_id: string; fields: Record<string, unknown> }): Promise<{ ok: true; record_id: string }>;
+    /** Delete a record by id. */
+    delete(args: { object_type: string; record_id: string }): Promise<{ ok: true; record_id: string }>;
   };
   actions: {
     list(): Promise<{ name: string; description?: string; input_schema?: Record<string, unknown>; requires_confirmation?: boolean }[]>;
@@ -240,6 +246,9 @@ function makeClient(state: InternalState, opts: { mock: boolean; mockData?: Mock
       query: (args) => rpc("ontology.query", args as unknown as Record<string, unknown>),
       get: (object_type, record_id) => rpc("ontology.get", { object_type, record_id }),
       aggregate: (args) => rpc("ontology.aggregate", args as unknown as Record<string, unknown>),
+      create: (args) => rpc("ontology.create", args as unknown as Record<string, unknown>),
+      update: (args) => rpc("ontology.update", args as unknown as Record<string, unknown>),
+      delete: (args) => rpc("ontology.delete", args as unknown as Record<string, unknown>),
     },
     actions: {
       list: () => rpc("actions.list"),
@@ -296,6 +305,35 @@ async function runMock(method: string, args: Record<string, unknown>, data: Mock
   if (method === "ontology.get") {
     const t = data.ontology?.[args.object_type as string];
     return t?.records.find((r: any) => r.id === args.record_id) ?? null;
+  }
+  if (method === "ontology.create") {
+    const ot = args.object_type as string;
+    const incoming = (args.data || {}) as Record<string, unknown>;
+    const pk = (args.pk_field as string) || "id";
+    const id = (incoming[pk] as string) || `mock-${Date.now().toString(36)}`;
+    const t = (data.ontology = data.ontology || {})[ot] = data.ontology![ot] || { records: [] };
+    const row = { ...incoming, [pk]: id };
+    const existing = t.records.findIndex((r: any) => r[pk] === id);
+    if (existing >= 0) t.records[existing] = row; else t.records.push(row);
+    return { ok: true, record_id: id, ingested: 1 };
+  }
+  if (method === "ontology.update") {
+    const ot = args.object_type as string;
+    const rid = args.record_id as string;
+    const fields = (args.fields || {}) as Record<string, unknown>;
+    const t = data.ontology?.[ot];
+    const idx = t?.records.findIndex((r: any) => r.id === rid) ?? -1;
+    if (!t || idx < 0) return { error: "record not found" };
+    t.records[idx] = { ...t.records[idx], ...fields };
+    return { ok: true, record_id: rid };
+  }
+  if (method === "ontology.delete") {
+    const ot = args.object_type as string;
+    const rid = args.record_id as string;
+    const t = data.ontology?.[ot];
+    if (!t) return { ok: true, record_id: rid };
+    t.records = t.records.filter((r: any) => r.id !== rid);
+    return { ok: true, record_id: rid };
   }
   if (method === "actions.list") return data.actions ?? [];
   if (method === "actions.propose") return { execution_id: "mock-" + Date.now(), status: "pending" };
