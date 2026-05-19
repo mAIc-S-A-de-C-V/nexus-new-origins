@@ -1115,6 +1115,65 @@ Filter operator notes:
    ONE filter row with operator "in" and value "rpm, running, temp". Do NOT
    create three separate eq filters — that's an impossible AND.
 
+═══════════════════════════════════════════════════════════════════════════
+ADVANCED — only emit these when the user's request explicitly needs them.
+Each replaces the need to materialize a new object type via a Logic Function.
+═══════════════════════════════════════════════════════════════════════════
+
+`computedFields` — virtual columns for THIS widget. Reference any field by
+its name in valueField, labelField, agg.field, or filter.field. Expression
+shape (JSON AST):
+  {"name":"daily_cost","expression":{
+     "type":"op","op":"mul",
+     "left":{"type":"op","op":"div",
+             "left":{"type":"field","name":"monthly_salary"},
+             "right":{"type":"lit","value":30}},
+     "right":{"type":"op","op":"div",
+              "left":{"type":"field","name":"allocation_pct"},
+              "right":{"type":"lit","value":100}}}}
+Operators: add/sub/mul/div/mod, eq/neq/lt/lte/gt/gte, and/or, unary neg/not.
+Functions: concat, lower, upper, coalesce, date_diff(unit,a,b),
+date_trunc(unit,ts), now(), to_number/to_date/to_text, if(cond,then,else).
+Unit literals (date_diff/date_trunc): "second"|"minute"|"hour"|"day"|"week"|
+"month"|"quarter"|"year".
+
+`joins` — query-time LEFT JOIN to another object type. Joined columns are
+reachable as `alias.field` everywhere a field name is expected (group_by,
+agg.field, filter.field, expression). Example:
+  [{"alias":"emp",
+    "target_object_type_id":"<Employee-id>",
+    "on":{"source_field":"employee_id","target_field":"id"},
+    "type":"left"}]
+Then valueField:"emp.full_name" or `{"type":"field","name":"emp.monthly_salary"}`
+inside an expression works.
+
+`window` (on an aggregation) — running totals, moving averages, rank, lag.
+Shape: aggregation has `window: {partition_by, order_by, frame_mode, frame_rows, offset}`.
+- For cumulative_sum-style running totals: method="sum", window={
+    "partition_by":["series"],  // when multi-series; else []
+    "order_by":[{"field":"grp","dir":"asc"}],
+    "frame_mode":"cumulative"
+  }. The agg `field` must reference an inner column: "grp", "series", or
+  "agg_N" where N is the index of an earlier non-windowed aggregation.
+- For 7-day moving average: method="avg", window={
+    order_by:[{field:"grp",dir:"asc"}], frame_mode:"rolling", frame_rows:7
+  }.
+- Window methods that don't take a value: "rank", "dense_rank", "row_number".
+
+When to use which (decision tree):
+- "show me X (a stored field)" → existing valueField / labelField. No computed/join.
+- "show the name not the ID" → joins. Add a join to the linked OT, then
+   reference `alias.<name_field>` as labelField.
+- "compute X from raw fields" (daily_cost = salary/30 * pct/100) → computedFields.
+   Declare the virtual column and reference it in valueField.
+- "running total / cumulative" / "moving average" / "rank by" → window
+   on the aggregation. Always combine with timeBucket for time series.
+- "show name AND running cost" → JOIN for the name + computed daily_cost +
+   cumulative window. All three in one widget config, ONE /aggregate call.
+
+Do NOT propose creating a new object type or a Logic Function when the
+above primitives can express the request.
+
 Only include keys relevant to the widget type. Omit null/empty keys entirely."""
 
         result = self._call(prompt)

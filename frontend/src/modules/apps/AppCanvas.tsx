@@ -194,6 +194,10 @@ function useAggregate(objectTypeId: string | undefined, opts: AggregateOptions |
       sort_dir: opts.sortDir ?? 'desc',
       limit: opts.limit ?? 200,
       timezone: opts.timezone || tz || null,
+      // New /aggregate features. Only included when the widget config
+      // declared them so legacy calls stay byte-identical.
+      computed_fields: opts.computedFields ?? [],
+      joins: opts.joins ?? [],
     };
     fetchAggregateWithRetry(
       `${ONTOLOGY_API}/object-types/${objectTypeId}/aggregate`,
@@ -2599,10 +2603,17 @@ const SERVER_AGG_TYPES = new Set([
 const SERVER_PAGINATED_TYPES = new Set(['data-table']);
 
 const ServerAggMetricCard: React.FC<{ comp: AppComponent; serverFilters?: Record<string, unknown> }> = ({ comp, serverFilters }) => {
+  const aggSpec: AggregateSpec = {
+    field: comp.aggregation === 'count' ? undefined : comp.field,
+    method: comp.aggregation || 'count',
+  };
+  if (comp.window) aggSpec.window = comp.window;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
-    aggregations: [{ field: comp.aggregation === 'count' ? undefined : comp.field, method: comp.aggregation || 'count' }],
+    aggregations: [aggSpec],
     filters: serverFilters,
     limit: 1,
+    computedFields: comp.computedFields,
+    joins: comp.joins,
   });
   if (loading) return <LoadingTile />;
   const v = rows[0]?.agg_0;
@@ -2677,6 +2688,7 @@ const ServerAggBarChart: React.FC<{ comp: AppComponent; serverFilters?: Record<s
   const method = (comp.aggregation || (valueField ? 'sum' : 'count')) as AggregateSpec['method'];
   const aggSpec: AggregateSpec = { field: method === 'count' ? undefined : valueField, method };
   if (method === 'runtime' && comp.tsField) aggSpec.ts_field = comp.tsField;
+  if (comp.window) aggSpec.window = comp.window;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
     aggregations: [aggSpec],
@@ -2684,6 +2696,8 @@ const ServerAggBarChart: React.FC<{ comp: AppComponent; serverFilters?: Record<s
     sortBy: 'agg_0',
     sortDir: 'desc',
     limit: 50,
+    computedFields: comp.computedFields,
+    joins: comp.joins,
   });
   if (loading) return <LoadingTile />;
   const serverRows = rows.map((r) => ({
@@ -2730,14 +2744,21 @@ const ServerAggLineChart: React.FC<{ comp: AppComponent; serverFilters?: Record<
   const mergedFilters = rangeFilter
     ? { ...(serverFilters || {}), ...rangeFilter }
     : serverFilters;
+  // Build the primary aggregation, applying comp.window if set. Windowed
+  // line charts (cumulative_sum, moving_avg) reference the inner alias
+  // 'agg_0' or dimension 'grp'/'series' — comp.window must do that itself.
+  const aggSpec: AggregateSpec = { field: valueField, method: method as AggregateSpec['method'] };
+  if (comp.window) aggSpec.window = comp.window;
   const { rows, loading } = useAggregate(comp.objectTypeId, {
     groupBy: labelField,
     timeBucket: { field: xField, interval },
-    aggregations: [{ field: valueField, method: method as AggregateSpec['method'] }],
+    aggregations: [aggSpec],
     filters: mergedFilters,
     sortBy: 'group',
     sortDir: 'asc',
     limit: labelField ? 1000 : 200,
+    computedFields: comp.computedFields,
+    joins: comp.joins,
   });
   if (loading) return <LoadingTile />;
 

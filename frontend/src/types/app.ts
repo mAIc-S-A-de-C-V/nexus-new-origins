@@ -15,6 +15,52 @@ export interface AppFilter {
 
 // ── Variable & Event system ──────────────────────────────────────────────
 
+// ── Expression language for computed_fields & join-aware filters ──────────
+// Discriminated union mirroring backend/ontology_service/expressions.py.
+// The wire format is JSON so it's safe to roundtrip through fetch/payloads.
+
+export type Expr =
+  | { type: 'field'; name: string }                           // 'monthly_salary' or 'emp.full_name'
+  | { type: 'lit'; value: number | string | boolean | null }
+  | { type: 'op';
+      op: 'add' | 'sub' | 'mul' | 'div' | 'mod' |
+          'eq'  | 'neq' | 'lt'  | 'lte' | 'gt' | 'gte' |
+          'and' | 'or';
+      left: Expr; right: Expr }
+  | { type: 'unary'; op: 'neg' | 'not'; arg: Expr }
+  | { type: 'func';
+      func: 'concat' | 'lower' | 'upper' | 'coalesce' |
+            'date_diff' | 'date_trunc' | 'now' |
+            'to_number' | 'to_date' | 'to_text' | 'if';
+      args: Expr[] };
+
+// Widget-level computed column. Referenced by `name` from valueField,
+// labelField, agg.field, filter.field, or another computed_field.
+export interface ComputedField {
+  name: string;
+  expression: Expr;
+}
+
+// Window function spec stacked onto an aggregation. The aggregation
+// `field` then refers to an inner column (grp, series, or agg_N).
+export interface WindowSpec {
+  partition_by?: string[];
+  order_by?: { field: string; dir?: 'asc' | 'desc' }[];
+  frame_mode?: 'cumulative' | 'rolling' | 'all';
+  frame_rows?: number;  // required when frame_mode === 'rolling'
+  offset?: number;      // lag / lead offset; defaults to 1
+}
+
+// Query-time join against another object type. The joined columns are
+// accessible as `alias.field` from any field-name slot in the widget.
+export interface JoinSpec {
+  alias: string;
+  target_object_type_id: string;
+  on?: { source_field: string; target_field?: string };  // 'id' if omitted
+  link_id?: string;     // alternative to `on`: use a declared ontology link
+  type?: 'left' | 'inner';
+}
+
 export interface AppVariable {
   id: string;
   name: string;
@@ -206,8 +252,21 @@ export interface AppComponent {
   widgetSourceIds?: string[];   // chat-widget: sibling widget IDs as context
   // metric-card / kpi-banner
   field?: string;
-  aggregation?: 'count' | 'sum' | 'avg' | 'max' | 'min' | 'runtime';
+  aggregation?:
+    | 'count' | 'sum' | 'avg' | 'max' | 'min' | 'runtime'
+    // Window-function aggregations (require `window` config below).
+    | 'lag' | 'lead' | 'rank' | 'dense_rank' | 'row_number'
+    | 'first_value' | 'last_value';
+  // When set, this widget's aggregation runs as a window function over
+  // the inner grouped result. See WindowSpec for the frame modes.
+  window?: WindowSpec;
   tsField?: string; // timestamp field for runtime aggregation
+  // Virtual columns evaluated per-query. Referenced by name from any
+  // field slot (valueField, labelField, agg.field, filter.field).
+  computedFields?: ComputedField[];
+  // Query-time joins against other object types. Joined columns are
+  // accessible as `alias.field` everywhere a field name is expected.
+  joins?: JoinSpec[];
   // data-table
   columns?: string[];
   maxRows?: number;

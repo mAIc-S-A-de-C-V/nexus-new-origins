@@ -4,7 +4,7 @@
  *
  * Kept side-effect-free and free of React so we can unit-test them.
  */
-import type { AppComponent, AppFilter } from '../../types/app';
+import type { AppComponent, AppFilter, ComputedField, JoinSpec, WindowSpec } from '../../types/app';
 import { tzMidnight, tzWeekStart, tzMonthStart } from '../../lib/timezone';
 
 export interface CrossFilter {
@@ -18,12 +18,20 @@ export type TimeBucket =
   | 'minute' | '5_minutes' | '15_minutes' | '30_minutes'
   | 'hour' | 'day' | 'week' | 'month' | 'quarter' | 'year';
 
-export type AggregateMethod = 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct' | 'runtime';
+export type AggregateMethod =
+  | 'count' | 'sum' | 'avg' | 'min' | 'max' | 'count_distinct' | 'runtime'
+  // Window-only methods. Require `window` to be set on the spec.
+  | 'lag' | 'lead' | 'rank' | 'dense_rank' | 'row_number'
+  | 'first_value' | 'last_value';
 
 export interface AggregateSpec {
   field?: string;
   method: AggregateMethod;
   ts_field?: string;
+  // When set, this aggregation renders as a window function over the
+  // inner grouped result. `field` then refers to an inner column
+  // (grp, series, or agg_N).
+  window?: WindowSpec;
 }
 
 export interface AggregateOptions {
@@ -37,6 +45,12 @@ export interface AggregateOptions {
   // IANA timezone — when set, server buckets calendar intervals
   // (date_trunc) at the boundaries of this zone instead of UTC.
   timezone?: string;
+  // Virtual columns evaluated per-query. Referenced by name anywhere a
+  // field is expected (valueField, labelField, agg.field, filter.field).
+  computedFields?: ComputedField[];
+  // Query-time joins against other object types. Joined columns are
+  // accessible as `alias.field` everywhere a field name is accepted.
+  joins?: JoinSpec[];
 }
 
 export interface AggregateRow {
