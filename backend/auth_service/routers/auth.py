@@ -170,7 +170,10 @@ async def login(request: Request, body: LoginRequest, response: Response, db: As
         secure=os.environ.get("COOKIE_SECURE", "false").lower() == "true",
         samesite="lax",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        path="/auth",
+        # Path="/" so the cookie is sent on any service that nginx proxies
+        # (e.g. /api/auth/refresh in prod). A narrower path like "/auth"
+        # silently drops the cookie when the deployed URL prefix differs.
+        path="/",
     )
 
     await _audit("login.success", u["id"], u["email"], u["tenant_id"], "session",
@@ -250,7 +253,7 @@ async def refresh(
         secure=os.environ.get("COOKIE_SECURE", "false").lower() == "true",
         samesite="lax",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
-        path="/auth",
+        path="/",
     )
 
     await _audit("token.refresh", r["user_id"], r["email"], r["tenant_id"], "session",
@@ -274,6 +277,9 @@ async def logout(request: Request, body: RefreshRequest, response: Response, db:
         )
         await db.commit()
 
+    # Delete both the new "/" path cookie and any leftover "/auth" path
+    # cookies from before the path fix, so a stale cookie can't outlive logout.
+    response.delete_cookie(key=COOKIE_NAME, path="/")
     response.delete_cookie(key=COOKIE_NAME, path="/auth")
     return {"ok": True}
 
