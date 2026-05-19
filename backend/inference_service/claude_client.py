@@ -1123,41 +1123,42 @@ Each replaces the need to materialize a new object type via a Logic Function.
 `computedFields` — virtual columns for THIS widget. Reference any field by
 its name in valueField, labelField, agg.field, or filter.field. Expression
 shape (JSON AST):
-  {"name":"daily_cost","expression":{
+  {{"name":"daily_cost","expression":{{
      "type":"op","op":"mul",
-     "left":{"type":"op","op":"div",
-             "left":{"type":"field","name":"monthly_salary"},
-             "right":{"type":"lit","value":30}},
-     "right":{"type":"op","op":"div",
-              "left":{"type":"field","name":"allocation_pct"},
-              "right":{"type":"lit","value":100}}}}
+     "left":{{"type":"op","op":"div",
+             "left":{{"type":"field","name":"monthly_salary"}},
+             "right":{{"type":"lit","value":30}}}},
+     "right":{{"type":"op","op":"div",
+              "left":{{"type":"field","name":"allocation_pct"}},
+              "right":{{"type":"lit","value":100}}}}}}}}
 Operators: add/sub/mul/div/mod, eq/neq/lt/lte/gt/gte, and/or, unary neg/not.
 Functions: concat, lower, upper, coalesce, date_diff(unit,a,b),
-date_trunc(unit,ts), now(), to_number/to_date/to_text, if(cond,then,else).
+date_trunc(unit,ts), now(), to_number/to_date/to_text, if(cond,then,else),
+round(x[,digits]), abs(x), floor(x), ceil(x), pow(b,e), length(s).
 Unit literals (date_diff/date_trunc): "second"|"minute"|"hour"|"day"|"week"|
 "month"|"quarter"|"year".
 
 `joins` — query-time LEFT JOIN to another object type. Joined columns are
 reachable as `alias.field` everywhere a field name is expected (group_by,
 agg.field, filter.field, expression). Example:
-  [{"alias":"emp",
+  [{{"alias":"emp",
     "target_object_type_id":"<Employee-id>",
-    "on":{"source_field":"employee_id","target_field":"id"},
-    "type":"left"}]
-Then valueField:"emp.full_name" or `{"type":"field","name":"emp.monthly_salary"}`
+    "on":{{"source_field":"employee_id","target_field":"id"}},
+    "type":"left"}}]
+Then valueField:"emp.full_name" or `{{"type":"field","name":"emp.monthly_salary"}}`
 inside an expression works.
 
 `window` (on an aggregation) — running totals, moving averages, rank, lag.
-Shape: aggregation has `window: {partition_by, order_by, frame_mode, frame_rows, offset}`.
-- For cumulative_sum-style running totals: method="sum", window={
-    "partition_by":["series"],  // when multi-series; else []
-    "order_by":[{"field":"grp","dir":"asc"}],
+Shape: aggregation has `window: {{partition_by, order_by, frame_mode, frame_rows, offset}}`.
+- For cumulative_sum-style running totals: method="sum", window={{
+    "partition_by":["series"],
+    "order_by":[{{"field":"grp","dir":"asc"}}],
     "frame_mode":"cumulative"
-  }. The agg `field` must reference an inner column: "grp", "series", or
+  }}. The agg `field` must reference an inner column: "grp", "series", or
   "agg_N" where N is the index of an earlier non-windowed aggregation.
-- For 7-day moving average: method="avg", window={
-    order_by:[{field:"grp",dir:"asc"}], frame_mode:"rolling", frame_rows:7
-  }.
+- For 7-day moving average: method="avg", window={{
+    order_by:[{{field:"grp",dir:"asc"}}], frame_mode:"rolling", frame_rows:7
+  }}.
 - Window methods that don't take a value: "rank", "dense_rank", "row_number".
 
 When to use which (decision tree):
