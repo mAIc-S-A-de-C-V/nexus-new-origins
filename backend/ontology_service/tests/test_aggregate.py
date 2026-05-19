@@ -184,8 +184,10 @@ def test_sum_emits_safe_numeric_cast_with_regex_guard():
         aggregations=[AggregationSpec(field="amount", method="sum")],
     )
     sql, _ = build_aggregate_sql(body, "t", "o")
-    # Regex-guarded numeric cast inside a CASE
-    assert "CASE WHEN data->>'amount' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$'" in sql
+    # Regex-guarded numeric cast inside a CASE. ::text cast on the LHS so
+    # computed expressions (which produce numeric) work without an
+    # "operator does not exist: numeric ~ unknown" error.
+    assert "(data->>'amount')::text ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$'" in sql
     assert "(data->>'amount')::numeric ELSE NULL END" in sql
     assert "SUM(" in sql
 
@@ -212,8 +214,8 @@ def test_multiple_aggregations_emit_separate_aliases():
     )
     sql, _ = build_aggregate_sql(body, "t", "o")
     assert "COUNT(*) AS agg_0" in sql
-    assert "SUM(CASE WHEN data->>'amount' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' THEN (data->>'amount')::numeric ELSE NULL END) AS agg_1" in sql
-    assert "AVG(CASE WHEN data->>'amount' ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' THEN (data->>'amount')::numeric ELSE NULL END) AS agg_2" in sql
+    assert "SUM(CASE WHEN (data->>'amount')::text ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' THEN (data->>'amount')::numeric ELSE NULL END) AS agg_1" in sql
+    assert "AVG(CASE WHEN (data->>'amount')::text ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' THEN (data->>'amount')::numeric ELSE NULL END) AS agg_2" in sql
 
 
 def test_count_distinct_uses_count_distinct():
@@ -1132,3 +1134,27 @@ def test_join_source_field_id_resolves_to_source_id_column():
     )
     sql, _ = build_aggregate_sql(body, "t", "o")
     assert "ev.data->>'record_id' = base.source_id" in sql
+
+
+def test_sum_of_computed_field_text_casts_before_regex():
+    """SUM(computed_field that produces numeric) — the regex guard must
+    operate on text, otherwise Postgres errors 'numeric ~ unknown'.
+    """
+    from routers.records import ComputedField
+    body = AggregateRequest(
+        group_by="project_id",
+        aggregations=[AggregationSpec(field="daily_cost", method="sum")],
+        computed_fields=[ComputedField(
+            name="daily_cost",
+            expression={
+                "type": "op", "op": "div",
+                "left": {"type": "field", "name": "monthly_salary"},
+                "right": {"type": "lit", "value": 30},
+            },
+        )],
+    )
+    sql, _ = build_aggregate_sql(body, "t", "o")
+    # The outer regex CASE must cast to text before the ~ operator.
+    assert "::text ~ '^-?[[:digit:]]+" in sql
+    # And the inlined expression is still present
+    assert "data->>'monthly_salary'" in sql

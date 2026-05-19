@@ -816,8 +816,14 @@ def build_aggregate_sql(body: AggregateRequest, tenant_id: str, ot_id: str) -> t
             # POSIX bracket notation [[:digit:]] and [.] (a 1-char class with
             # a literal dot) avoids backslash escaping pitfalls between
             # Python f-strings, SQLAlchemy text(), and the asyncpg driver.
+            #
+            # Cast to text BEFORE the regex match. Computed-field expressions
+            # produce numeric values (e.g. `monthly_salary / 30`), and the
+            # regex operator only accepts text — without the ::text cast,
+            # Postgres errors with "operator does not exist: numeric ~
+            # unknown" the moment a widget sums a computed expression.
             value_expr = (
-                f"CASE WHEN {acc} ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
+                f"CASE WHEN ({acc})::text ~ '^-?[[:digit:]]+([.][[:digit:]]+)?$' "
                 f"THEN ({acc})::numeric ELSE NULL END"
             )
             sql_fn = agg.method.upper()
