@@ -47,14 +47,21 @@
 	handle_path /api/audit/* {
 		reverse_proxy audit-service:8006
 	}
+	handle_path /api/schema-match/* {
+		reverse_proxy schema-match-engine:8008
+	}
+	# Deprecated alias — remove after frontend migration window
 	handle_path /api/correlation/* {
-		reverse_proxy correlation-engine:8008
+		reverse_proxy schema-match-engine:8008
 	}
 	handle_path /api/process/* {
 		reverse_proxy process-engine-service:8009
 	}
 	handle_path /api/alert/* {
 		reverse_proxy alert-engine-service:8010
+	}
+	handle_path /api/insights/* {
+		reverse_proxy insight-engine-service:8016
 	}
 	handle_path /api/auth/* {
 		reverse_proxy auth-service:8011

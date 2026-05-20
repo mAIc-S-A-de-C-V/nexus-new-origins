@@ -78,7 +78,7 @@ services:
       - SKIP_AUTH=false
       - AUTH_SERVICE_URL=http://auth-service:8011
 
-  correlation-engine:
+  schema-match-engine:
     ports: []
     environment:
       - SKIP_AUTH=false
@@ -86,6 +86,12 @@ services:
 
   process-engine-service:
     ports: []
+
+  insight-engine-service:
+    ports: []
+    environment:
+      - SKIP_AUTH=false
+      - AUTH_SERVICE_URL=http://auth-service:8011
 
   utility-service:
     ports: []

@@ -29,12 +29,14 @@ services:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-audit-service:${IMAGE_TAG:-latest}
   schema-registry:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-schema-registry:${IMAGE_TAG:-latest}
-  correlation-engine:
-    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-correlation-engine:${IMAGE_TAG:-latest}
+  schema-match-engine:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-schema-match-engine:${IMAGE_TAG:-latest}
   process-engine-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-process-engine-service:${IMAGE_TAG:-latest}
   alert-engine-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-alert-engine-service:${IMAGE_TAG:-latest}
+  insight-engine-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-insight-engine-service:${IMAGE_TAG:-latest}
   auth-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-auth-service:${IMAGE_TAG:-latest}
     volumes:

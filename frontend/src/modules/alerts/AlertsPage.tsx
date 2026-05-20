@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Bell, Plus, Trash2, ToggleLeft, ToggleRight, Zap, Clock, RefreshCw,
   ChevronDown, ChevronRight, Check, X, Link, AlertTriangle, AlertCircle,
-  Mail, Webhook, Radio,
+  Mail, Webhook, Radio, Activity, Sparkles, Waves,
 } from 'lucide-react';
 import { useAlertStore, AlertRule, RuleType, ChannelConfig } from '../../store/alertStore';
 import { useOperationsStore } from '../../store/operationsStore';
@@ -22,6 +22,9 @@ const RULE_TYPE_META: Record<RuleType, { label: string; color: string; bg: strin
   slow_transition:      { label: 'Slow Transition',     color: '#2563EB', bg: '#DBEAFE', icon: <ChevronRight size={14} />, desc: 'Fire when a step-to-step transition exceeds a threshold' },
   rework_spike:         { label: 'Rework Spike',        color: '#D97706', bg: '#FEF3C7', icon: <RefreshCw size={14} />,    desc: 'Fire when rework percentage spikes above a threshold' },
   case_volume_anomaly:  { label: 'Volume Anomaly',      color: '#DC2626', bg: '#FEE2E2', icon: <AlertTriangle size={14} />,desc: 'Fire when case volume drops sharply in a window' },
+  metric_deviation:     { label: 'Metric Deviation',    color: '#059669', bg: '#D1FAE5', icon: <Activity size={14} />,     desc: 'Fire when a metric deviates from baseline by N σ (optionally per day-of-week)' },
+  correlation_alert:    { label: 'Correlation Alert',   color: '#9333EA', bg: '#F3E8FF', icon: <Sparkles size={14} />,     desc: 'Fire when a promoted insight from the nightly run shifts past a threshold' },
+  streaming_anomaly:    { label: 'Streaming Anomaly',   color: '#0891B2', bg: '#CFFAFE', icon: <Waves size={14} />,        desc: 'Fire in near-real-time when EWMA / Holt-Winters baseline is exceeded' },
 };
 
 const inp: React.CSSProperties = {
@@ -75,6 +78,12 @@ const RulesTab: React.FC = () => {
       slow_transition:     { from_activity: '', to_activity: '', threshold_hours: 4, severity: 'warning' },
       rework_spike:        { threshold_pct: 20, min_cases: 10 },
       case_volume_anomaly: { drop_pct: 50, window_hours: 1 },
+      metric_deviation: {
+        metric: 'case_count', baseline_window_days: 28, recent_window_days: 7,
+        min_zscore: 2.5, direction: 'both', seasonality: 'dow', min_baseline_samples: 14,
+      },
+      correlation_alert:   { insight_id: '', threshold: 0.3 },
+      streaming_anomaly:   { metric: 'case_count', window_minutes: 15, min_zscore: 3.0, method: 'ewma', alpha: 0.3 },
     };
     setEdit(e => e ? { ...e, rule_type: t, config: defaults[t] } : e);
   };
@@ -167,7 +176,8 @@ const RulesTab: React.FC = () => {
             {testResult && (
               <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 6, backgroundColor: testResult.triggered ? C.criticalLight : '#F0FDF4', border: `1px solid ${testResult.triggered ? '#FECACA' : '#BBF7D0'}`, fontSize: 13 }}>
                 <span style={{ fontWeight: 600, color: testResult.triggered ? C.error : C.success }}>{testResult.triggered ? 'Would trigger' : 'Would not trigger'}</span>
-                <pre style={{ marginTop: 6, fontSize: 11, color: C.muted, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(testResult.result, null, 2)}</pre>
+                <MetricSparkline result={testResult.result as Record<string, unknown> | null} />
+                <pre style={{ marginTop: 6, fontSize: 11, color: C.muted, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 200, overflow: 'auto' }}>{JSON.stringify(testResult.result, null, 2)}</pre>
               </div>
             )}
 
@@ -209,6 +219,63 @@ const RulesTab: React.FC = () => {
                 <Row label="Drop %"><input type="number" min={0} max={100} value={Number(cfg.drop_pct ?? 50)} onChange={e => setConfig('drop_pct', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
                 <Row label="Window hours"><input type="number" value={Number(cfg.window_hours ?? 1)} onChange={e => setConfig('window_hours', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
               </>}
+              {edit.rule_type === 'metric_deviation' && <>
+                <Row label="Metric">
+                  <select value={String(cfg.metric ?? 'case_count')} onChange={e => setConfig('metric', e.target.value)} style={{ ...inp, width: 200 }}>
+                    <option value="case_count">Case count</option>
+                    <option value="cycle_hours_avg">Avg cycle (hours)</option>
+                    <option value="rework_pct">Rework %</option>
+                    <option value="transition_hours_avg">Transition avg hours</option>
+                  </select>
+                </Row>
+                {cfg.metric === 'transition_hours_avg' && <>
+                  <Row label="From activity"><input value={String(cfg.from_activity ?? '')} onChange={e => setConfig('from_activity', e.target.value)} style={{ ...inp, width: '100%' }} /></Row>
+                  <Row label="To activity"><input value={String(cfg.to_activity ?? '')} onChange={e => setConfig('to_activity', e.target.value)} style={{ ...inp, width: '100%' }} /></Row>
+                </>}
+                <Row label="Baseline window (days)"><input type="number" min={7} max={180} value={Number(cfg.baseline_window_days ?? 28)} onChange={e => setConfig('baseline_window_days', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
+                <Row label="Recent window (days)"><input type="number" min={1} max={30} value={Number(cfg.recent_window_days ?? 7)} onChange={e => setConfig('recent_window_days', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
+                <Row label="Min z-score"><input type="number" step="0.1" min={1} max={6} value={Number(cfg.min_zscore ?? 2.5)} onChange={e => setConfig('min_zscore', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
+                <Row label="Direction">
+                  <select value={String(cfg.direction ?? 'both')} onChange={e => setConfig('direction', e.target.value)} style={{ ...inp, width: 120 }}>
+                    <option value="both">Both</option>
+                    <option value="above">Above only</option>
+                    <option value="below">Below only</option>
+                  </select>
+                </Row>
+                <Row label="Day-of-week baseline">
+                  <input type="checkbox" checked={cfg.seasonality === 'dow'} onChange={e => setConfig('seasonality', e.target.checked ? 'dow' : 'none')} style={{ accentColor: C.accent }} />
+                </Row>
+                <Row label="Min baseline samples"><input type="number" min={7} max={90} value={Number(cfg.min_baseline_samples ?? 14)} onChange={e => setConfig('min_baseline_samples', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
+              </>}
+              {edit.rule_type === 'correlation_alert' && <>
+                <Row label="Insight id"><input value={String(cfg.insight_id ?? '')} onChange={e => setConfig('insight_id', e.target.value)} placeholder="UUID from /api/insights" style={{ ...inp, width: '100%', fontFamily: 'monospace' }} /></Row>
+                <Row label="Effect-shift threshold"><input type="number" step="0.05" min={0.05} max={1} value={Number(cfg.threshold ?? 0.3)} onChange={e => setConfig('threshold', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>This rule is normally created via the “Alert me on this” button on an insight card. Manual editing is supported for advanced users.</div>
+              </>}
+              {edit.rule_type === 'streaming_anomaly' && <>
+                <Row label="Metric">
+                  <select value={String(cfg.metric ?? 'case_count')} onChange={e => setConfig('metric', e.target.value)} style={{ ...inp, width: 200 }}>
+                    <option value="case_count">Case count</option>
+                    <option value="cycle_hours_avg">Avg cycle (hours)</option>
+                    <option value="rework_pct">Rework %</option>
+                  </select>
+                </Row>
+                <Row label="Window minutes">
+                  <select value={Number(cfg.window_minutes ?? 15)} onChange={e => setConfig('window_minutes', Number(e.target.value))} style={{ ...inp, width: 120 }}>
+                    <option value={5}>5 min</option>
+                    <option value={15}>15 min</option>
+                    <option value={60}>60 min</option>
+                  </select>
+                </Row>
+                <Row label="Method">
+                  <select value={String(cfg.method ?? 'ewma')} onChange={e => setConfig('method', e.target.value)} style={{ ...inp, width: 160 }}>
+                    <option value="ewma">EWMA</option>
+                    <option value="holt_winters">Holt-Winters</option>
+                  </select>
+                </Row>
+                <Row label="Alpha (smoothing)"><input type="number" step="0.05" min={0.05} max={0.95} value={Number(cfg.alpha ?? 0.3)} onChange={e => setConfig('alpha', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
+                <Row label="Min z-score"><input type="number" step="0.1" min={1} max={6} value={Number(cfg.min_zscore ?? 3.0)} onChange={e => setConfig('min_zscore', Number(e.target.value))} style={{ ...inp, width: 80 }} /></Row>
+              </>}
             </div>
 
             <div style={{ marginBottom: 20 }}>
@@ -246,6 +313,44 @@ const SeveritySelect: React.FC<{ value: string; onChange: (v: string) => void }>
     <option value="critical">Critical</option>
   </select>
 );
+
+// Renders details.series from a metric_deviation test result as a sparkline
+// with the baseline mean and ±z·σ band overlaid. Quietly renders nothing if
+// the result doesn't carry a series payload.
+const MetricSparkline: React.FC<{ result: Record<string, unknown> | null }> = ({ result }) => {
+  if (!result || !Array.isArray((result as { series?: unknown }).series)) return null;
+  const series = (result as { series: Array<{ day: string; value: number; baseline_mean: number; baseline_std: number; z: number }> }).series;
+  if (series.length === 0) return null;
+  const W = 360, H = 50, PAD = 4;
+  const minZ = Number((result as { min_zscore?: number }).min_zscore ?? 2.5);
+  const values = series.map(s => s.value);
+  const upper = series.map(s => s.baseline_mean + minZ * s.baseline_std);
+  const lower = series.map(s => s.baseline_mean - minZ * s.baseline_std);
+  const all = [...values, ...upper, ...lower];
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const span = Math.max(hi - lo, 1e-6);
+  const x = (i: number) => PAD + (i * (W - 2 * PAD)) / Math.max(series.length - 1, 1);
+  const y = (v: number) => PAD + (H - 2 * PAD) * (1 - (v - lo) / span);
+  const bandPath = [
+    `M ${x(0)} ${y(upper[0])}`,
+    ...upper.map((v, i) => `L ${x(i)} ${y(v)}`),
+    ...lower.slice().reverse().map((v, i) => `L ${x(lower.length - 1 - i)} ${y(v)}`),
+    'Z',
+  ].join(' ');
+  const linePath = values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(v)}`).join(' ');
+  const meanPath = series.map((s, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(s.baseline_mean)}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} style={{ marginTop: 8, marginBottom: 4 }}>
+      <path d={bandPath} fill="#7C3AED" fillOpacity={0.12} stroke="none" />
+      <path d={meanPath} stroke="#7C3AED" strokeWidth={1} strokeDasharray="3 3" fill="none" opacity={0.5} />
+      <path d={linePath} stroke="#0D1117" strokeWidth={1.5} fill="none" />
+      {series.map((s, i) => (
+        <circle key={i} cx={x(i)} cy={y(s.value)} r={Math.abs(s.z) >= minZ ? 3 : 1.6}
+                fill={Math.abs(s.z) >= minZ ? '#EF4444' : '#0D1117'} />
+      ))}
+    </svg>
+  );
+};
 
 // ── History Tab ──────────────────────────────────────────────────────────────
 

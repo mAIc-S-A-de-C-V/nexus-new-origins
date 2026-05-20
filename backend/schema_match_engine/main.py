@@ -12,8 +12,8 @@ _raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://l
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app = FastAPI(
-    title="Nexus Correlation Engine",
-    description="Computes semantic similarity between schemas and object types",
+    title="Nexus Schema Match Engine",
+    description="Computes semantic similarity between schemas and object types (formerly correlation_engine)",
     version="1.0.0",
 )
 
@@ -175,7 +175,7 @@ async def score_all(req: ScoreAllRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "correlation-engine"}
+    return {"status": "ok", "service": "schema-match-engine"}
 
 
 from fastapi import Request as _Req, Depends as _Dep

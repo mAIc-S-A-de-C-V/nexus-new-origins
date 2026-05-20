@@ -49,7 +49,7 @@ const healthConfig: Record<string, { label: string; bg: string; text: string }> 
 
 // ── Correlate Tab ──────────────────────────────────────────────────────────
 
-const CORRELATION_API = import.meta.env.VITE_CORRELATION_ENGINE_URL || 'http://localhost:8008';
+const SCHEMA_MATCH_API = import.meta.env.VITE_SCHEMA_MATCH_URL || import.meta.env.VITE_CORRELATION_ENGINE_URL || 'http://localhost:8008';
 
 interface CorrMatch {
   object_type_id: string;
@@ -106,7 +106,7 @@ const CorrelateTab: React.FC<{ objectType: ObjectType }> = ({ objectType }) => {
       };
 
       // 3. Call /score-all
-      const corrRes = await fetch(`${CORRELATION_API}/score-all`, {
+      const corrRes = await fetch(`${SCHEMA_MATCH_API}/score-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
         body: JSON.stringify({ schema_a: schemaA, object_types: allTypes }),

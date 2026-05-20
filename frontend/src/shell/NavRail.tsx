@@ -5,6 +5,7 @@ import {
   FolderKanban, Users, LogOut, DollarSign, Briefcase,
   BrainCircuit, Bot, MessageSquare, ShieldCheck, Wrench, Globe, FlaskConical,
   Database, Shield, TrendingUp, BookOpen, Clock, Radio, BarChart2, Boxes,
+  Sparkles,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTimezone, COMMON_TIMEZONES } from '../lib/timezone';
@@ -68,6 +69,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'value',         label: 'Value Monitor',i18nKey: 'nav.value',       icon: <TrendingUp size={16} />,      active: true, path: 'value' },
   { id: 'scenarios',     label: 'Scenarios',    i18nKey: 'nav.scenarios',   icon: <BarChart2 size={16} />,       active: true, path: 'scenarios' },
   { id: 'activity',      label: 'Activity',     i18nKey: 'nav.activity',    icon: <Activity size={16} />,        active: true, path: 'activity' },
+  { id: 'insights',      label: 'Insights',     i18nKey: 'nav.insights',    icon: <Sparkles size={16} />,        active: true, path: 'insights' },
   { id: 'operations',    label: 'Operations',   i18nKey: 'nav.operations',  icon: <Radio size={16} />,           active: true, path: 'operations', alwaysVisible: true },
   { id: 'utilities',     label: 'Utilities',    i18nKey: 'nav.utilities',   icon: <Wrench size={16} />,          active: true, path: 'utilities' },
   { id: 'human-actions', label: 'Actions',      i18nKey: 'nav.actions',     icon: <ShieldCheck size={16} />,     active: true, path: 'human-actions', alwaysVisible: true },

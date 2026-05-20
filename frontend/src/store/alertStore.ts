@@ -3,7 +3,14 @@ import { getTenantId } from './authStore';
 
 const ALERT_API = import.meta.env.VITE_ALERT_ENGINE_URL || 'http://localhost:8010';
 
-export type RuleType = 'stuck_case' | 'slow_transition' | 'rework_spike' | 'case_volume_anomaly';
+export type RuleType =
+  | 'stuck_case'
+  | 'slow_transition'
+  | 'rework_spike'
+  | 'case_volume_anomaly'
+  | 'metric_deviation'
+  | 'correlation_alert'
+  | 'streaming_anomaly';
 
 export interface AlertRule {
   id: string;

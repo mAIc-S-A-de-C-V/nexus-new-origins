@@ -55,6 +55,48 @@ async def list_notifications(
     return {"notifications": notifications, "unread_count": int(unread_count)}
 
 
+class SystemNotification(BaseModel):
+    title: str
+    message: str
+    details: dict = {}
+    severity: str = "info"
+
+
+@router.post("/system", status_code=201)
+async def post_system_notification(
+    body: SystemNotification,
+    tenant_id: str = "tenant-001",
+    pg: AsyncSession = Depends(get_pg_session),
+):
+    """Internal endpoint used by insight_engine to push nightly summaries.
+    Inserts a synthetic notification under a per-tenant 'system' rule that is
+    upserted lazily — keeps the FK contract intact while letting external
+    services post notifications without owning a real rule."""
+    import json
+    # Upsert system rule for this tenant. ON CONFLICT uses (tenant_id, name)
+    # — the unique index added in Phase 1.
+    row = await pg.execute(text(
+        "INSERT INTO alert_rules "
+        "(tenant_id, name, rule_type, object_type_id, config, cooldown_minutes, enabled) "
+        "VALUES (:tid, 'System', 'system', NULL, '{}'::jsonb, 0, FALSE) "
+        "ON CONFLICT (tenant_id, name) DO UPDATE SET name = EXCLUDED.name "
+        "RETURNING id"
+    ), {"tid": tenant_id})
+    rule_id = row.fetchone()._mapping["id"]
+    await pg.execute(text(
+        "INSERT INTO alert_notifications "
+        "(tenant_id, rule_id, rule_name, rule_type, severity, message, details) "
+        "VALUES (:tid, :rid, :rname, 'system', :sev, :msg, CAST(:det AS jsonb))"
+    ), {
+        "tid": tenant_id, "rid": rule_id,
+        "rname": body.title, "sev": body.severity,
+        "msg": body.message,
+        "det": json.dumps(body.details),
+    })
+    await pg.commit()
+    return {"ok": True}
+
+
 @router.post("/{notification_id}/read")
 async def mark_read(
     notification_id: str,

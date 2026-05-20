@@ -108,15 +108,18 @@ jobs:
           - service: schema-registry
             context: ./backend/schema_registry
             dockerfile: Dockerfile
-          - service: correlation-engine
+          - service: schema-match-engine
             context: ./backend
-            dockerfile: correlation_engine/Dockerfile
+            dockerfile: schema_match_engine/Dockerfile
           - service: process-engine-service
             context: ./backend/process_engine
             dockerfile: Dockerfile
           - service: alert-engine-service
             context: ./backend/alert_engine
             dockerfile: Dockerfile
+          - service: insight-engine-service
+            context: ./backend
+            dockerfile: insight_engine/Dockerfile
           - service: auth-service
             context: ./backend/auth_service
             dockerfile: Dockerfile
@@ -258,7 +261,9 @@ jobs:
             VITE_ONTOLOGY_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/ontology
             VITE_EVENT_LOG_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/event-log
             VITE_AUDIT_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/audit
-            VITE_CORRELATION_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/correlation
+            VITE_CORRELATION_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/schema-match
+            VITE_SCHEMA_MATCH_URL=https://${{ secrets.APP_DOMAIN }}/api/schema-match
+            VITE_INSIGHT_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/insights
             VITE_PROCESS_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/process
             VITE_ALERT_ENGINE_URL=https://${{ secrets.APP_DOMAIN }}/api/alert
             VITE_AUTH_SERVICE_URL=https://${{ secrets.APP_DOMAIN }}/api/auth

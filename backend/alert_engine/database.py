@@ -101,6 +101,57 @@ DDL_STATEMENTS = [
         updated_at        TIMESTAMPTZ DEFAULT NOW()
     )
     """,
+    # Phase 1: idempotent preset seeding needs (tenant_id, name) uniqueness.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_rules_tenant_name ON alert_rules (tenant_id, name)",
+    # Phase 13: streaming_anomaly evaluator state. Holds incremental EWMA /
+    # Holt-Winters baseline per rule so each tick doesn't re-fetch history.
+    """
+    CREATE TABLE IF NOT EXISTS alert_rule_streaming_state (
+        rule_id        TEXT PRIMARY KEY REFERENCES alert_rules(id) ON DELETE CASCADE,
+        ewma_mean      DOUBLE PRECISION,
+        ewma_var       DOUBLE PRECISION,
+        observation_count INTEGER NOT NULL DEFAULT 0,
+        model_state    JSONB,
+        last_update_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    # Phase 14: per-user routing + on-call schedule + user channel preferences.
+    """
+    CREATE TABLE IF NOT EXISTS alert_routing_rules (
+        id              TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        tenant_id       TEXT NOT NULL,
+        name            TEXT NOT NULL,
+        condition       JSONB NOT NULL DEFAULT '{}',
+        target_user_ids TEXT[] NOT NULL DEFAULT '{}',
+        channels        TEXT[] NOT NULL DEFAULT '{}',
+        priority        INTEGER NOT NULL DEFAULT 100,
+        enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_routing_tenant ON alert_routing_rules (tenant_id, priority)",
+    """
+    CREATE TABLE IF NOT EXISTS alert_oncall_schedules (
+        id          TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        tenant_id   TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        timezone    TEXT NOT NULL DEFAULT 'UTC',
+        rotation    JSONB NOT NULL DEFAULT '[]',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_oncall_tenant ON alert_oncall_schedules (tenant_id)",
+    """
+    CREATE TABLE IF NOT EXISTS alert_user_preferences (
+        user_id            TEXT PRIMARY KEY,
+        tenant_id          TEXT NOT NULL,
+        channel_prefs      JSONB NOT NULL DEFAULT '{}',
+        quiet_hours        JSONB,
+        do_not_disturb_until TIMESTAMPTZ,
+        updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_user_prefs_tenant ON alert_user_preferences (tenant_id)",
 ]
 
 

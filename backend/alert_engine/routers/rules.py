@@ -18,6 +18,9 @@ VALID_RULE_TYPES = {
     "slow_transition",
     "rework_spike",
     "case_volume_anomaly",
+    "metric_deviation",
+    "correlation_alert",
+    "streaming_anomaly",
 }
 
 

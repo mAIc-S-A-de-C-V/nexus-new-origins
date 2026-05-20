@@ -32,6 +32,8 @@ const OperationsModule = lazy(() => import('./modules/operations/OperationsModul
 const SharePage       = lazy(() => import('./modules/share/SharePage'));
 const ScenariosPage   = lazy(() => import('./modules/scenarios/ScenariosPage'));
 const ExternalAppsPage = lazy(() => import('./modules/external_apps/ExternalAppsPage'));
+const InsightsFeed     = lazy(() => import('./modules/insights/InsightsFeed'));
+const InsightRunsPage  = lazy(() => import('./modules/insights/InsightRunsPage'));
 
 const LoadingSpinner: React.FC<{ message?: string }> = ({ message = 'Loading...' }) => (
   <div style={{
@@ -132,6 +134,10 @@ const renderPage = (page: string): React.ReactNode => {
       return <Suspense fallback={<LoadingSpinner message="Loading Platform..." />}><SuperAdminPage /></Suspense>;
     case 'scenarios':
       return <Suspense fallback={<LoadingSpinner message="Loading Scenarios..." />}><ScenariosPage /></Suspense>;
+    case 'insights':
+      return <Suspense fallback={<LoadingSpinner message="Loading Insights..." />}><InsightsFeed /></Suspense>;
+    case 'insights-runs':
+      return <Suspense fallback={<LoadingSpinner message="Loading Run history..." />}><InsightRunsPage /></Suspense>;
     default:
       return <Suspense fallback={<LoadingSpinner />}><ConnectorGrid /></Suspense>;
   }

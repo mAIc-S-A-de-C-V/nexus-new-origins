@@ -18,7 +18,7 @@ type TabId = 'overview' | 'configuration' | 'pipelines' | 'schema' | 'health' | 
 
 const CONNECTOR_API = import.meta.env.VITE_CONNECTOR_SERVICE_URL || 'http://localhost:8001';
 const INFERENCE_API = import.meta.env.VITE_INFERENCE_SERVICE_URL || 'http://localhost:8003';
-const CORRELATION_API = import.meta.env.VITE_CORRELATION_ENGINE_URL || 'http://localhost:8008';
+const SCHEMA_MATCH_API = import.meta.env.VITE_SCHEMA_MATCH_URL || import.meta.env.VITE_CORRELATION_ENGINE_URL || 'http://localhost:8008';
 const ONTOLOGY_API = import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004';
 
 interface ConnectorDetailPanelProps {
@@ -1611,7 +1611,7 @@ const SchemaTab: React.FC<{ connector: ConnectorConfig }> = ({ connector }) => {
               sample_values: p.sampleValues || [],
             })),
           }));
-          const corrRes = await fetch(`${CORRELATION_API}/score-all`, {
+          const corrRes = await fetch(`${SCHEMA_MATCH_API}/score-all`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ schema_a: data, object_types: backendOTs }),
