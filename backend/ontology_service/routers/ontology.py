@@ -12,7 +12,7 @@ from shared.models import (
     EnrichmentProposal, FieldConflict, OntologyLink
 )
 from shared.property_inference import infer_properties
-from database import ObjectTypeRow, ObjectTypeVersionRow, OntologyLinkRow, get_session
+from database import ObjectTypeRow, ObjectTypeVersionRow, OntologyLinkRow, ObjectRecordRow, get_session
 
 router = APIRouter()
 
@@ -308,26 +308,28 @@ async def infer_properties_endpoint(
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Connector fetch failed: {e}")
     elif body.object_type_id:
-        # Sample from the OT's own records by hitting our own records
-        # endpoint over the network. Slightly indirect but keeps the
-        # records-table access logic in one place.
-        ontology_self = os.environ.get("ONTOLOGY_SELF_URL", "http://localhost:8005")
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.get(
-                    f"{ontology_self}/object-types/{body.object_type_id}/records",
-                    headers={"x-tenant-id": tenant_id},
-                    params={"limit": sample_size},
-                )
-                if r.is_success:
-                    body_json = r.json()
-                    # records endpoint returns {records: [...]} or a list
-                    if isinstance(body_json, list):
-                        records = body_json[:sample_size]
-                    elif isinstance(body_json, dict):
-                        records = (body_json.get("records") or body_json.get("rows") or [])[:sample_size]
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OT sample fetch failed: {e}")
+        # Sample existing records directly from the DB. Newest-first so the
+        # inference picks up the current shape if the OT's schema is still
+        # drifting.
+        ot_check = await db.execute(
+            select(ObjectTypeRow).where(
+                ObjectTypeRow.id == body.object_type_id,
+                ObjectTypeRow.tenant_id == tenant_id,
+            )
+        )
+        if not ot_check.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Object type not found")
+        rec_q = (
+            select(ObjectRecordRow)
+            .where(
+                ObjectRecordRow.object_type_id == body.object_type_id,
+                ObjectRecordRow.tenant_id == tenant_id,
+            )
+            .order_by(ObjectRecordRow.updated_at.desc())
+            .limit(sample_size)
+        )
+        rec_rows = (await db.execute(rec_q)).scalars().all()
+        records = [r.data for r in rec_rows if isinstance(r.data, dict)]
     else:
         raise HTTPException(
             status_code=400,

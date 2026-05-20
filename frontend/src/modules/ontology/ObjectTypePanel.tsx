@@ -813,53 +813,81 @@ interface InferredProperty {
   fill_rate: number;
 }
 
+type InferMode = 'paste' | 'fromOT';
+
 const InferFromDataModal: React.FC<{
   existingNames: Set<string>;
+  currentObjectTypeId: string;
   onClose: () => void;
   onApply: (props: InferredProperty[]) => void;
-}> = ({ existingNames, onClose, onApply }) => {
+}> = ({ existingNames, currentObjectTypeId, onClose, onApply }) => {
+  const { objectTypes, fetchObjectTypes } = useOntologyStore();
+  const [mode, setMode] = useState<InferMode>('paste');
   const [json, setJson] = useState('');
+  const [sourceOtId, setSourceOtId] = useState<string>('');
+  const [sampleSize, setSampleSize] = useState<number>(100);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<InferredProperty[] | null>(null);
+  const [sampleCount, setSampleCount] = useState<number>(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (objectTypes.length === 0) fetchObjectTypes();
+  }, []);
+
+  // For "From OT" mode, exclude the current OT (no point inferring its
+  // own shape into itself) UNLESS it actually has records — which we
+  // surface as a hint in the dropdown.
+  const otOptions = objectTypes.filter((o) => o.id !== currentObjectTypeId);
 
   const runInference = async () => {
     setErr(null);
     setLoading(true);
     try {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(json);
-      } catch (e) {
-        throw new Error(`Invalid JSON: ${(e as Error).message}`);
+      let body: Record<string, unknown> = { sample_size: sampleSize };
+
+      if (mode === 'paste') {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(json);
+        } catch (e) {
+          throw new Error(`Invalid JSON: ${(e as Error).message}`);
+        }
+        let records: unknown[] = [];
+        if (Array.isArray(parsed)) records = parsed;
+        else if (parsed && typeof parsed === 'object') {
+          const obj = parsed as Record<string, unknown>;
+          if (Array.isArray(obj.items)) records = obj.items as unknown[];
+          else if (Array.isArray(obj.data)) records = obj.data as unknown[];
+          else if (Array.isArray(obj.records)) records = obj.records as unknown[];
+          else if (Array.isArray(obj.rows)) records = obj.rows as unknown[];
+          else records = [parsed];
+        }
+        if (records.length === 0) throw new Error('No records found in JSON');
+        body = { records, sample_size: sampleSize };
+      } else {
+        if (!sourceOtId) throw new Error('Pick a source object type');
+        body = { object_type_id: sourceOtId, sample_size: sampleSize };
       }
-      let records: unknown[] = [];
-      if (Array.isArray(parsed)) records = parsed;
-      else if (parsed && typeof parsed === 'object') {
-        const obj = parsed as Record<string, unknown>;
-        // Common wrapper keys: {items: [...]}, {data: [...]}, {records: [...]}, single object
-        if (Array.isArray(obj.items)) records = obj.items as unknown[];
-        else if (Array.isArray(obj.data)) records = obj.data as unknown[];
-        else if (Array.isArray(obj.records)) records = obj.records as unknown[];
-        else if (Array.isArray(obj.rows)) records = obj.rows as unknown[];
-        else records = [parsed];
-      }
-      if (records.length === 0) throw new Error('No records found in JSON');
 
       const res = await fetch(`${ONTOLOGY_API}/object-types/infer-properties`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
-        body: JSON.stringify({ records, sample_size: 100 }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const txt = await res.text();
         throw new Error(`Inference failed (HTTP ${res.status}): ${txt.slice(0, 200)}`);
       }
-      const body = await res.json();
-      const props: InferredProperty[] = body.properties || [];
+      const respBody = await res.json();
+      const props: InferredProperty[] = respBody.properties || [];
+      if (props.length === 0) {
+        const warn = respBody.warning ? ` (${respBody.warning})` : '';
+        throw new Error(`No properties could be inferred${warn}`);
+      }
       setSuggestions(props);
-      // Default-select everything that isn't already in the OT
+      setSampleCount(respBody.sample_count || 0);
       setSelected(new Set(props.filter((p) => !existingNames.has(p.name)).map((p) => p.name)));
     } catch (e) {
       setErr((e as Error).message);
@@ -909,24 +937,82 @@ const InferFromDataModal: React.FC<{
 
         {!suggestions ? (
           <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
-            <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
-              Paste a JSON sample below. Accepts a list of records, or a wrapped object with{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>items</code> /{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>data</code> /{' '}
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>records</code>, or a single record. We'll infer name, type, and semantic type for each top-level field.
+            {/* Mode tabs */}
+            <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #E2E8F0' }}>
+              {([
+                ['paste', 'Paste JSON'],
+                ['fromOT', 'From existing OT records'],
+              ] as [InferMode, string][]).map(([m, label]) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  style={{
+                    fontSize: 12, padding: '8px 12px',
+                    border: 'none', background: 'none',
+                    color: mode === m ? '#7C3AED' : '#64748B',
+                    fontWeight: mode === m ? 600 : 500,
+                    borderBottom: mode === m ? '2px solid #7C3AED' : '2px solid transparent',
+                    cursor: 'pointer', marginBottom: -1,
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-            <textarea
-              value={json}
-              onChange={(e) => setJson(e.target.value)}
-              placeholder='[{"idKey":"KEY_001","emailPersonal":"x@y.com","fechaModificacion":"2026-04-30T18:02:46.983"}, ...]'
-              spellCheck={false}
-              style={{
-                width: '100%', minHeight: 280, padding: 10,
-                border: '1px solid #E2E8F0', borderRadius: 4,
-                fontFamily: 'var(--font-mono)', fontSize: 11, color: '#0D1117',
-                resize: 'vertical',
-              }}
-            />
+
+            {mode === 'paste' ? (
+              <>
+                <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
+                  Paste a JSON sample below. Accepts a list of records, or a wrapped object with{' '}
+                  <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>items</code> /{' '}
+                  <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>data</code> /{' '}
+                  <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>records</code>, or a single record.
+                </div>
+                <textarea
+                  value={json}
+                  onChange={(e) => setJson(e.target.value)}
+                  placeholder='[{"idKey":"KEY_001","emailPersonal":"x@y.com","fechaModificacion":"2026-04-30T18:02:46.983"}, ...]'
+                  spellCheck={false}
+                  style={{
+                    width: '100%', minHeight: 240, padding: 10,
+                    border: '1px solid #E2E8F0', borderRadius: 4,
+                    fontFamily: 'var(--font-mono)', fontSize: 11, color: '#0D1117',
+                    resize: 'vertical',
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
+                  Sample existing records from another ObjectType — useful when the data is already in the ontology and you want to derive a new OT's shape from it.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Source ObjectType</label>
+                  <select
+                    value={sourceOtId}
+                    onChange={(e) => setSourceOtId(e.target.value)}
+                    style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '6px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+                  >
+                    <option value="">— select —</option>
+                    {otOptions.map((o) => (
+                      <option key={o.id} value={o.id}>{o.displayName}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 180 }}>
+                  <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Sample size</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={sampleSize}
+                    onChange={(e) => setSampleSize(Math.max(1, Math.min(500, parseInt(e.target.value) || 100)))}
+                    style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '6px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+                  />
+                </div>
+              </>
+            )}
+
             {err && (
               <div style={{ fontSize: 12, color: '#DC2626', backgroundColor: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 4, padding: 8 }}>
                 {err}
@@ -938,12 +1024,12 @@ const InferFromDataModal: React.FC<{
               </button>
               <button
                 onClick={runInference}
-                disabled={!json.trim() || loading}
+                disabled={loading || (mode === 'paste' ? !json.trim() : !sourceOtId)}
                 style={{
                   fontSize: 12, padding: '6px 14px', border: 'none', borderRadius: 4,
                   backgroundColor: '#7C3AED', color: '#fff',
-                  cursor: !json.trim() || loading ? 'not-allowed' : 'pointer',
-                  opacity: !json.trim() || loading ? 0.5 : 1,
+                  cursor: loading || (mode === 'paste' ? !json.trim() : !sourceOtId) ? 'not-allowed' : 'pointer',
+                  opacity: loading || (mode === 'paste' ? !json.trim() : !sourceOtId) ? 0.5 : 1,
                 }}
               >
                 {loading ? 'Inferring…' : 'Infer Properties'}
@@ -953,7 +1039,7 @@ const InferFromDataModal: React.FC<{
         ) : (
           <>
             <div style={{ padding: '10px 18px', borderBottom: '1px solid #F1F5F9', fontSize: 12, color: '#475569', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span>{suggestions.length} fields detected · {selected.size} selected</span>
+              <span>{suggestions.length} fields detected from {sampleCount} record{sampleCount === 1 ? '' : 's'} · {selected.size} selected</span>
               <button
                 onClick={() => setSelected(new Set(suggestions.filter((p) => !existingNames.has(p.name)).map((p) => p.name)))}
                 style={{ marginLeft: 'auto', fontSize: 11, color: '#7C3AED', background: 'none', border: 'none', cursor: 'pointer' }}
@@ -1282,6 +1368,7 @@ const PropertiesTab: React.FC<{
       {showInfer && (
         <InferFromDataModal
           existingNames={new Set(objectType.properties.map((p) => p.name))}
+          currentObjectTypeId={objectType.id}
           onClose={() => setShowInfer(false)}
           onApply={acceptInferred}
         />
