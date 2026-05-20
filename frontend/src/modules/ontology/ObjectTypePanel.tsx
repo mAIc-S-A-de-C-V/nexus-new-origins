@@ -1054,8 +1054,11 @@ const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectType
   // Auto-fill join keys whenever the user picks a target: target side uses
   // the guess; source side prefers the same field name (very common case —
   // both ends share an `idKey` / `id`) and falls back to its own guess.
+  // Depend on `targetOT?.id` rather than `targetId` so the effect re-runs
+  // when the store finishes loading the target's properties (which arrive
+  // async and were previously missed).
   useEffect(() => {
-    if (!targetOT) {
+    if (!targetOT || !targetOT.properties || targetOT.properties.length === 0) {
       setSourceField('');
       setTargetField('');
       return;
@@ -1064,7 +1067,7 @@ const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectType
     setTargetField(tgt);
     const sameOnSource = objectType.properties.find((p) => p.name === tgt);
     setSourceField(sameOnSource ? tgt : guessIdField(objectType.properties));
-  }, [targetId]);
+  }, [targetOT?.id, targetOT?.properties?.length]);
 
   const tenantId = getTenantId() || 'tenant-001';
 
