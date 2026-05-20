@@ -1,16 +1,22 @@
-from typing import Optional
+import os
+from typing import Any, Optional
 from datetime import datetime, timezone
 from uuid import uuid4
+import httpx
 from fastapi import APIRouter, HTTPException, Header, Depends
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from shared.models import (
     ObjectType, ObjectTypeVersion, SchemaDiff, PropertyDiff,
     EnrichmentProposal, FieldConflict, OntologyLink
 )
+from shared.property_inference import infer_properties
 from database import ObjectTypeRow, ObjectTypeVersionRow, OntologyLinkRow, get_session
 
 router = APIRouter()
+
+CONNECTOR_API = os.environ.get("CONNECTOR_SERVICE_URL", "http://connector-service:8001")
 
 
 def _row_to_ot(row: ObjectTypeRow) -> ObjectType:
@@ -246,6 +252,96 @@ async def apply_enrichment(
     await _snapshot(db, existing, f"Enrichment from {proposal.source_connector_id}: +{len(new_props)} properties", "api")
     await db.commit()
     return existing
+
+
+# ── Property inference ────────────────────────────────────────────────────
+
+
+class InferPropertiesRequest(BaseModel):
+    # Pick exactly one source. Records is the most flexible (front-end can
+    # paste sample JSON), the other two are convenience wrappers.
+    records: Optional[list[dict[str, Any]]] = None
+    connector_id: Optional[str] = None
+    object_type_id: Optional[str] = None
+    sample_size: int = 50
+
+
+@router.post("/infer-properties")
+async def infer_properties_endpoint(
+    body: InferPropertiesRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Suggest ObjectType properties from sample data.
+
+    Three input modes, in order of precedence:
+      1. `records`: caller hands us the sample dicts directly (e.g. user
+         pasted JSON). Fastest path, no network.
+      2. `connector_id`: fetch `sample_rows` from the connector's `/schema`
+         endpoint and infer from those.
+      3. `object_type_id`: sample existing records from the OT (uses the
+         records router internally — see `/object-types/{id}/records`).
+    """
+    tenant_id = x_tenant_id or "tenant-001"
+    sample_size = max(1, min(int(body.sample_size or 50), 500))
+
+    records: list[dict[str, Any]] = []
+
+    if body.records is not None:
+        records = list(body.records)[:sample_size]
+    elif body.connector_id:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
+                    f"{CONNECTOR_API}/connectors/{body.connector_id}/schema",
+                    headers={"x-tenant-id": tenant_id},
+                    params={"limit": sample_size},
+                )
+                if not r.is_success:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Connector /schema returned {r.status_code}: {r.text[:200]}",
+                    )
+                records = r.json().get("sample_rows", [])[:sample_size]
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Connector fetch failed: {e}")
+    elif body.object_type_id:
+        # Sample from the OT's own records by hitting our own records
+        # endpoint over the network. Slightly indirect but keeps the
+        # records-table access logic in one place.
+        ontology_self = os.environ.get("ONTOLOGY_SELF_URL", "http://localhost:8005")
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(
+                    f"{ontology_self}/object-types/{body.object_type_id}/records",
+                    headers={"x-tenant-id": tenant_id},
+                    params={"limit": sample_size},
+                )
+                if r.is_success:
+                    body_json = r.json()
+                    # records endpoint returns {records: [...]} or a list
+                    if isinstance(body_json, list):
+                        records = body_json[:sample_size]
+                    elif isinstance(body_json, dict):
+                        records = (body_json.get("records") or body_json.get("rows") or [])[:sample_size]
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"OT sample fetch failed: {e}")
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide one of: records, connector_id, object_type_id",
+        )
+
+    if not records:
+        return {"properties": [], "sample_count": 0, "warning": "No sample records available"}
+
+    properties = infer_properties(records, max_samples=5)
+    return {
+        "properties": properties,
+        "sample_count": len(records),
+    }
 
 
 # ── Links ──────────────────────────────────────────────────────────────────

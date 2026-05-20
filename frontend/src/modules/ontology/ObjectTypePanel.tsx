@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search, GitBranch, Play, ArrowRight, Clock, AlertTriangle, CheckCircle2, Zap, Share2, Plus, Link2 } from 'lucide-react';
+import { X, GitCommit, ChevronDown, ChevronUp, Trash2, Pencil, Check, Maximize2, Search, GitBranch, Play, ArrowRight, Clock, AlertTriangle, CheckCircle2, Zap, Share2, Plus, Link2, Sparkles } from 'lucide-react';
 import { useGraphStore } from '../../store/graphStore';
 import { useNavigationStore } from '../../store/navigationStore';
 import { ObjectType, ObjectTypeVersion, SchemaDiff, OntologyLink, SemanticType } from '../../types/ontology';
@@ -799,6 +799,247 @@ const SIMPLE_TYPE_MAP: Record<SimpleType, { dataType: string; semanticType: Sema
   DateTime: { dataType: 'string',  semanticType: 'DATETIME' },
 };
 
+// ── Infer-from-data modal ────────────────────────────────────────────────
+
+interface InferredProperty {
+  name: string;
+  display_name: string;
+  data_type: string;
+  semantic_type: SemanticType;
+  required: boolean;
+  nullable: boolean;
+  sample_values: string[];
+  inference_confidence: number;
+  fill_rate: number;
+}
+
+const InferFromDataModal: React.FC<{
+  existingNames: Set<string>;
+  onClose: () => void;
+  onApply: (props: InferredProperty[]) => void;
+}> = ({ existingNames, onClose, onApply }) => {
+  const [json, setJson] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<InferredProperty[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const runInference = async () => {
+    setErr(null);
+    setLoading(true);
+    try {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(json);
+      } catch (e) {
+        throw new Error(`Invalid JSON: ${(e as Error).message}`);
+      }
+      let records: unknown[] = [];
+      if (Array.isArray(parsed)) records = parsed;
+      else if (parsed && typeof parsed === 'object') {
+        const obj = parsed as Record<string, unknown>;
+        // Common wrapper keys: {items: [...]}, {data: [...]}, {records: [...]}, single object
+        if (Array.isArray(obj.items)) records = obj.items as unknown[];
+        else if (Array.isArray(obj.data)) records = obj.data as unknown[];
+        else if (Array.isArray(obj.records)) records = obj.records as unknown[];
+        else if (Array.isArray(obj.rows)) records = obj.rows as unknown[];
+        else records = [parsed];
+      }
+      if (records.length === 0) throw new Error('No records found in JSON');
+
+      const res = await fetch(`${ONTOLOGY_API}/object-types/infer-properties`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant-id': getTenantId() },
+        body: JSON.stringify({ records, sample_size: 100 }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Inference failed (HTTP ${res.status}): ${txt.slice(0, 200)}`);
+      }
+      const body = await res.json();
+      const props: InferredProperty[] = body.properties || [];
+      setSuggestions(props);
+      // Default-select everything that isn't already in the OT
+      setSelected(new Set(props.filter((p) => !existingNames.has(p.name)).map((p) => p.name)));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggle = (name: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const apply = () => {
+    if (!suggestions) return;
+    onApply(suggestions.filter((p) => selected.has(p.name)));
+  };
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, backgroundColor: 'rgba(15,23,42,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 720, maxWidth: '92vw', maxHeight: '88vh',
+          backgroundColor: '#fff', borderRadius: 8, overflow: 'hidden',
+          display: 'flex', flexDirection: 'column',
+          boxShadow: '0 20px 50px rgba(15,23,42,0.25)',
+        }}
+      >
+        <div style={{ padding: '14px 18px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Sparkles size={15} style={{ color: '#7C3AED' }} />
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#0D1117' }}>Infer properties from data</div>
+          <button onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8' }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        {!suggestions ? (
+          <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
+            <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
+              Paste a JSON sample below. Accepts a list of records, or a wrapped object with{' '}
+              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>items</code> /{' '}
+              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>data</code> /{' '}
+              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>records</code>, or a single record. We'll infer name, type, and semantic type for each top-level field.
+            </div>
+            <textarea
+              value={json}
+              onChange={(e) => setJson(e.target.value)}
+              placeholder='[{"idKey":"KEY_001","emailPersonal":"x@y.com","fechaModificacion":"2026-04-30T18:02:46.983"}, ...]'
+              spellCheck={false}
+              style={{
+                width: '100%', minHeight: 280, padding: 10,
+                border: '1px solid #E2E8F0', borderRadius: 4,
+                fontFamily: 'var(--font-mono)', fontSize: 11, color: '#0D1117',
+                resize: 'vertical',
+              }}
+            />
+            {err && (
+              <div style={{ fontSize: 12, color: '#DC2626', backgroundColor: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 4, padding: 8 }}>
+                {err}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={onClose} style={{ fontSize: 12, padding: '6px 12px', border: '1px solid #E2E8F0', borderRadius: 4, backgroundColor: '#fff', color: '#64748B', cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button
+                onClick={runInference}
+                disabled={!json.trim() || loading}
+                style={{
+                  fontSize: 12, padding: '6px 14px', border: 'none', borderRadius: 4,
+                  backgroundColor: '#7C3AED', color: '#fff',
+                  cursor: !json.trim() || loading ? 'not-allowed' : 'pointer',
+                  opacity: !json.trim() || loading ? 0.5 : 1,
+                }}
+              >
+                {loading ? 'Inferring…' : 'Infer Properties'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ padding: '10px 18px', borderBottom: '1px solid #F1F5F9', fontSize: 12, color: '#475569', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>{suggestions.length} fields detected · {selected.size} selected</span>
+              <button
+                onClick={() => setSelected(new Set(suggestions.filter((p) => !existingNames.has(p.name)).map((p) => p.name)))}
+                style={{ marginLeft: 'auto', fontSize: 11, color: '#7C3AED', background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Select new
+              </button>
+              <button
+                onClick={() => setSelected(new Set())}
+                style={{ fontSize: 11, color: '#7C3AED', background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                Clear
+              </button>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
+              {suggestions.map((p) => {
+                const exists = existingNames.has(p.name);
+                return (
+                  <label
+                    key={p.name}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '8px 18px', borderBottom: '1px solid #F8FAFC',
+                      cursor: exists ? 'not-allowed' : 'pointer',
+                      opacity: exists ? 0.5 : 1,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(p.name)}
+                      disabled={exists}
+                      onChange={() => toggle(p.name)}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: '#0D1117', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {p.name}
+                        {exists && (
+                          <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, backgroundColor: '#F1F5F9', color: '#64748B', fontWeight: 600 }}>
+                            EXISTS
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#94A3B8', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {p.sample_values.slice(0, 2).join(' · ')}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 3, backgroundColor: '#F1F5F9', color: '#475569', flexShrink: 0 }}>
+                      {p.data_type}
+                    </span>
+                    <span style={{ fontSize: 10, color: '#94A3B8', minWidth: 90, textAlign: 'right', flexShrink: 0 }}>
+                      {p.semantic_type}
+                    </span>
+                    <span style={{ fontSize: 10, color: '#94A3B8', minWidth: 38, textAlign: 'right', flexShrink: 0 }}>
+                      {Math.round(p.fill_rate * 100)}%
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ padding: '12px 18px', borderTop: '1px solid #E2E8F0', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setSuggestions(null); setSelected(new Set()); }}
+                style={{ fontSize: 12, padding: '6px 12px', border: '1px solid #E2E8F0', borderRadius: 4, backgroundColor: '#fff', color: '#64748B', cursor: 'pointer' }}
+              >
+                Back
+              </button>
+              <button
+                onClick={apply}
+                disabled={selected.size === 0}
+                style={{
+                  fontSize: 12, padding: '6px 14px', border: 'none', borderRadius: 4,
+                  backgroundColor: '#7C3AED', color: '#fff',
+                  cursor: selected.size === 0 ? 'not-allowed' : 'pointer',
+                  opacity: selected.size === 0 ? 0.5 : 1,
+                }}
+              >
+                Add {selected.size} {selected.size === 1 ? 'property' : 'properties'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+};
+
 const PropertiesTab: React.FC<{
   objectType: ObjectType;
   updateObjectType: (id: string, updates: Partial<ObjectType>) => Promise<void>;
@@ -814,6 +1055,34 @@ const PropertiesTab: React.FC<{
   const [propDesc, setPropDesc] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [showInfer, setShowInfer] = useState(false);
+
+  // Map the backend's data_type → semantic_type pair to the ObjectProperty
+  // shape used elsewhere in the editor. Conservative: trust the inferred
+  // semantic type, default piiLevel = NONE (user can adjust later).
+  const acceptInferred = async (props: InferredProperty[]) => {
+    if (props.length === 0) return;
+    setSaving(true);
+    try {
+      const newProps: import('../../types/ontology').ObjectProperty[] = props.map((p) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}-${p.name}`,
+        name: p.name,
+        displayName: p.display_name || p.name,
+        semanticType: p.semantic_type,
+        dataType: p.data_type,
+        piiLevel: 'NONE',
+        required: p.required,
+        sampleValues: p.sample_values,
+        inferenceConfidence: p.inference_confidence,
+      }));
+      await updateObjectType(objectType.id, {
+        properties: [...objectType.properties, ...newProps],
+      });
+      setShowInfer(false);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleAdd = async () => {
     const name = propName.trim();
@@ -980,19 +1249,42 @@ const PropertiesTab: React.FC<{
           </div>
         </div>
       ) : (
-        <button
-          onClick={() => setShowForm(true)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            margin: '10px 16px', padding: '7px 12px',
-            border: '1px dashed #DDD6FE', borderRadius: 6,
-            backgroundColor: '#FAFAFE', color: '#7C3AED',
-            fontSize: 12, fontWeight: 500, cursor: 'pointer', justifyContent: 'center',
-          }}
-        >
-          <Plus size={13} />
-          Add Property
-        </button>
+        <div style={{ display: 'flex', gap: 8, margin: '10px 16px' }}>
+          <button
+            onClick={() => setShowForm(true)}
+            style={{
+              flex: 1, display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 12px',
+              border: '1px dashed #DDD6FE', borderRadius: 6,
+              backgroundColor: '#FAFAFE', color: '#7C3AED',
+              fontSize: 12, fontWeight: 500, cursor: 'pointer', justifyContent: 'center',
+            }}
+          >
+            <Plus size={13} />
+            Add Property
+          </button>
+          <button
+            onClick={() => setShowInfer(true)}
+            title="Paste sample JSON and let the platform suggest properties"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 12px',
+              border: '1px dashed #DDD6FE', borderRadius: 6,
+              backgroundColor: '#FAFAFE', color: '#7C3AED',
+              fontSize: 12, fontWeight: 500, cursor: 'pointer', justifyContent: 'center',
+            }}
+          >
+            <Sparkles size={13} />
+            Infer from Data
+          </button>
+        </div>
+      )}
+      {showInfer && (
+        <InferFromDataModal
+          existingNames={new Set(objectType.properties.map((p) => p.name))}
+          onClose={() => setShowInfer(false)}
+          onApply={acceptInferred}
+        />
       )}
     </div>
   );
