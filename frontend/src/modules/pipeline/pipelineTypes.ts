@@ -42,7 +42,7 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
   {
     type: 'OBJECT_SOURCE',
     label: 'Object Source',
-    description: 'Read records from an existing Object Type and emit them as rows. Use this to drive an ENRICH lookup off ontology data instead of an external connector.',
+    description: 'Read records from an existing Object Type and emit them as rows. Use this to drive an ENRICH lookup off ontology data instead of an external connector. Set Fields to only carry forward what downstream nodes need — e.g. just the join key — so the resulting child OT relates back via foreign key instead of duplicating columns.',
     color: '#0D6E5A',
     iconName: 'Boxes',
     configFields: [
@@ -50,6 +50,7 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
       { key: 'limit', label: 'Max records', type: 'number', default: 5000 },
       { key: 'filterField', label: 'Filter field (optional)', type: 'text', placeholder: 'status' },
       { key: 'filterValue', label: 'Filter value (optional)', type: 'text', placeholder: 'active' },
+      { key: 'fields', label: 'Fields to emit (optional, comma/newline-separated)', type: 'textarea', placeholder: 'idKey\nstatus' },
     ],
   },
   {

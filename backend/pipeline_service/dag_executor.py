@@ -1621,6 +1621,12 @@ async def _object_source(node, pipeline: Pipeline) -> list[dict]:
       limit          — max records to fetch in one run (default 5000)
       filterField    — optional: only emit rows where filterField == filterValue
       filterValue    — value compared with filterField as a string
+      fields         — optional: comma/newline-separated list of field names to keep
+                        on each emitted row. Default (empty) emits the whole record.
+                        Use this to avoid snapshotting upstream OT columns onto every
+                        downstream row — e.g. emit only `idKey` so the downstream
+                        ENRICH+FLATTEN+SINK chain produces a clean child OT that
+                        relates back via foreign key instead of duplicating data.
     """
     cfg = node.config or {}
     ot_id = (
@@ -1638,6 +1644,12 @@ async def _object_source(node, pipeline: Pipeline) -> list[dict]:
 
     filter_field = cfg.get("filterField") or cfg.get("filter_field")
     filter_value = cfg.get("filterValue") or cfg.get("filter_value")
+
+    fields_raw = cfg.get("fields") or cfg.get("projection") or ""
+    if isinstance(fields_raw, list):
+        projection = [str(f).strip() for f in fields_raw if str(f).strip()]
+    else:
+        projection = [f.strip() for f in str(fields_raw).replace("\n", ",").split(",") if f.strip()]
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -1657,6 +1669,10 @@ async def _object_source(node, pipeline: Pipeline) -> list[dict]:
             rec for rec in records
             if str(rec.get(filter_field, "")) == str(filter_value)
         ]
+
+    if projection:
+        records = [{k: rec.get(k) for k in projection} for rec in records]
+
     return records
 
 
