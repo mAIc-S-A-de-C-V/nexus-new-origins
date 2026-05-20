@@ -1,6 +1,51 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import { getTenantId } from './authStore';
+
+const MAX_CONVERSATIONS = 50;
+
+/**
+ * localStorage wrapper that recovers from QuotaExceededError by dropping the
+ * oldest conversations from the persisted payload and retrying. Without this,
+ * a full quota turns every assistant action into an uncaught exception.
+ */
+const quotaSafeStorage: StateStorage = {
+  getItem: (name) => localStorage.getItem(name),
+  removeItem: (name) => localStorage.removeItem(name),
+  setItem: (name, value) => {
+    try {
+      localStorage.setItem(name, value);
+      return;
+    } catch (err) {
+      if (!isQuotaError(err)) throw err;
+    }
+    let parsed: any;
+    try { parsed = JSON.parse(value); } catch { localStorage.removeItem(name); return; }
+    const convos: AssistantConversation[] | undefined = parsed?.state?.conversations;
+    if (!Array.isArray(convos) || convos.length === 0) {
+      localStorage.removeItem(name);
+      return;
+    }
+    const sorted = [...convos].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    for (let keep = Math.max(1, sorted.length - 1); keep >= 1; keep--) {
+      parsed.state.conversations = sorted.slice(0, keep);
+      try {
+        localStorage.setItem(name, JSON.stringify(parsed));
+        return;
+      } catch (err) {
+        if (!isQuotaError(err)) throw err;
+      }
+    }
+    localStorage.removeItem(name);
+  },
+};
+
+function isQuotaError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'QuotaExceededError'
+    || err.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || /quota/i.test(err.message);
+}
 
 export interface AssistantMessage {
   id: string;
@@ -62,7 +107,11 @@ export const useAssistantStore = create<AssistantStore>()(
           updatedAt: now,
           tenantId: getTenantId(),
         };
-        set((s) => ({ conversations: [convo, ...s.conversations], activeId: id, open: true }));
+        set((s) => ({
+          conversations: [convo, ...s.conversations].slice(0, MAX_CONVERSATIONS),
+          activeId: id,
+          open: true,
+        }));
         return id;
       },
 
@@ -139,7 +188,14 @@ export const useAssistantStore = create<AssistantStore>()(
 
       setStreamingMessageId: (id) => set({ streamingMessageId: id }),
     }),
-    { name: 'nexus-assistant' }
+    {
+      name: 'nexus-assistant',
+      storage: createJSONStorage(() => quotaSafeStorage),
+      partialize: (state) => ({
+        activeId: state.activeId,
+        conversations: state.conversations,
+      }),
+    }
   )
 );
 
