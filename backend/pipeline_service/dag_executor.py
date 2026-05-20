@@ -1359,7 +1359,22 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                 all_rows: list[dict] = []
                 page_limit = batch_size  # rows per page request
                 offset = 0
-                page_num = 1  # used when pagination_strategy == "page"
+                # Page-strategy params are configurable so APIs that use
+                # camelCase (`perPage`) or start at page 0 work without a
+                # backend change. Defaults preserve historical behavior.
+                page_param_name = str(
+                    conn_config.get("pageParam") or conn_config.get("page_param") or "page"
+                )
+                page_size_param_name = str(
+                    conn_config.get("pageSizeParam") or conn_config.get("page_size_param") or "per_page"
+                )
+                _start_page_raw = conn_config.get("startPage")
+                if _start_page_raw is None:
+                    _start_page_raw = conn_config.get("start_page", 1)
+                try:
+                    page_num = int(_start_page_raw)
+                except (TypeError, ValueError):
+                    page_num = 1
                 first_call = True
                 http_method = (cfg.get("method") or cfg.get("http_method") or "GET").upper()
                 paginate = cfg.get("paginate", True)
@@ -1386,8 +1401,8 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
                     page_params = dict(params)
                     if paginate:
                         if pagination_strategy == "page":
-                            page_params["page"] = page_num
-                            page_params["per_page"] = page_limit
+                            page_params[page_param_name] = page_num
+                            page_params[page_size_param_name] = page_limit
                         else:
                             page_params["limit"] = page_limit
                             page_params["offset"] = offset
@@ -1683,14 +1698,34 @@ def _map(node, records_in: list[dict]) -> list[dict]:
             new_rec: dict = {} if drop_unmapped else dict(rec)
             for src_path, tgt_spec in mappings_raw.items():
                 specs = tgt_spec if isinstance(tgt_spec, list) else [tgt_spec]
-                # Pop the source key whenever a rename is configured for it
-                # — even if the value is None / empty. Otherwise the OT ends
-                # up with both `Task L` AND `task_l` columns side-by-side
-                # whenever some rows had an empty value for the source.
-                if not drop_unmapped and "." not in src_path and src_path in new_rec:
-                    src_was_present = True
-                else:
-                    src_was_present = False
+
+                # Collect target field names so we don't pop a source that's
+                # also one of the targets — e.g. `"status": "status"` or
+                # `"status": {"target": "status", "transform": "lowercase"}`
+                # writes new_rec["status"] then the source-pop would delete it.
+                target_fields: set[str] = set()
+                for spec in specs:
+                    if isinstance(spec, str):
+                        target_fields.add(spec)
+                    elif isinstance(spec, dict):
+                        t = spec.get("target") or spec.get("targetField")
+                        if t:
+                            target_fields.add(t)
+
+                # For dotted source paths (e.g. `address.city`) we want to
+                # drop the top-level segment (`address`) too, so the raw
+                # nested dict doesn't ride through to the sink and render as
+                # [object Object]. The pop still skips when the top-level
+                # segment is itself a target.
+                pop_key = src_path
+                if "." in src_path:
+                    pop_key = src_path.split(".", 1)[0]
+
+                src_was_present = (
+                    not drop_unmapped
+                    and pop_key in new_rec
+                    and pop_key not in target_fields
+                )
 
                 for spec in specs:
                     if isinstance(spec, str):
@@ -1708,11 +1743,8 @@ def _map(node, records_in: list[dict]) -> list[dict]:
                         if tmp.get(tgt_field) is not None:
                             new_rec[tgt_field] = tmp[tgt_field]
 
-                # Always drop the source key once we've attempted the rename
-                # (regardless of whether the value was non-null), so the
-                # output schema doesn't carry both forms.
                 if src_was_present:
-                    new_rec.pop(src_path, None)
+                    new_rec.pop(pop_key, None)
             result.append(new_rec)
         return result
 

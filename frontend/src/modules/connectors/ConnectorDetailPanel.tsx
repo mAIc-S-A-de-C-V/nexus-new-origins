@@ -648,6 +648,15 @@ const ConfigurationTab: React.FC<{
   const [clientId, setClientId] = useState(creds.clientId || '');
   const [clientSecret, setClientSecret] = useState(creds.clientSecret || '');
   const [paginationStrategy, setPaginationStrategy] = useState<string>(connector.paginationStrategy || 'cursor');
+  const [pageParamName, setPageParamName] = useState<string>(
+    (connector.config?.pageParam as string) || 'page',
+  );
+  const [pageSizeParamName, setPageSizeParamName] = useState<string>(
+    (connector.config?.pageSizeParam as string) || 'per_page',
+  );
+  const [startPage, setStartPage] = useState<string>(
+    String(connector.config?.startPage ?? 1),
+  );
   const [endpointBody, setEndpointBody] = useState<string>((connector.config?.body as string) || '');
   interface HeaderRule {
     key: string;
@@ -782,6 +791,16 @@ const ConfigurationTab: React.FC<{
       if (endpointBody.trim()) { newConfig.body = endpointBody.trim(); } else { delete newConfig.body; }
       if (Object.keys(builtHeaders).length > 0) { newConfig.headers = builtHeaders; } else { delete newConfig.headers; }
       if (Object.keys(builtQueryParams).length > 0) { newConfig.queryParams = builtQueryParams; } else { delete newConfig.queryParams; }
+      if (paginationStrategy === 'page') {
+        newConfig.pageParam = pageParamName.trim() || 'page';
+        newConfig.pageSizeParam = pageSizeParamName.trim() || 'per_page';
+        const sp = parseInt(startPage, 10);
+        newConfig.startPage = Number.isFinite(sp) ? sp : 1;
+      } else {
+        delete newConfig.pageParam;
+        delete newConfig.pageSizeParam;
+        delete newConfig.startPage;
+      }
       await updateConnector(connector.id, {
         baseUrl: baseUrl.trim() || undefined,
         authType,
@@ -1109,6 +1128,36 @@ const ConfigurationTab: React.FC<{
             <option value="none">None</option>
           </select>
         </FieldGroup>
+
+        {paginationStrategy === 'page' && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+            <FieldGroup label="Page Param">
+              <input
+                value={pageParamName}
+                onChange={(e) => setPageParamName(e.target.value)}
+                placeholder="page"
+                style={inputStyle}
+              />
+            </FieldGroup>
+            <FieldGroup label="Page Size Param">
+              <input
+                value={pageSizeParamName}
+                onChange={(e) => setPageSizeParamName(e.target.value)}
+                placeholder="per_page"
+                style={inputStyle}
+              />
+            </FieldGroup>
+            <FieldGroup label="Start Page">
+              <input
+                type="number"
+                value={startPage}
+                onChange={(e) => setStartPage(e.target.value)}
+                placeholder="1"
+                style={inputStyle}
+              />
+            </FieldGroup>
+          </div>
+        )}
       </div>
 
       {/* Connection test panel */}
