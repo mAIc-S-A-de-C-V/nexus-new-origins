@@ -384,13 +384,19 @@ class DagExecutor:
                                 mappings = {}
                     stats = {"mappings": mappings or {}}
                 elif node.type == NodeType.ENRICH:
-                    matched = len(records_out)
+                    enrich_counters = audit_extras.get("counters") or {}
+                    matched = enrich_counters.get("matched", len(records_out))
                     total = len(records_in)
                     stats = {
                         "match_rate": round(matched / total, 3) if total else 0,
                         "matched": matched,
-                        "unmatched": total - matched,
+                        "unmatched": max(0, total - matched),
                         "join_key": cfg.get("joinKey") or cfg.get("join_key", ""),
+                        "lookup_connector_id": cfg.get("lookupConnectorId") or cfg.get("lookup_connector_id", ""),
+                        "array_mode": cfg.get("arrayMode") or cfg.get("array_mode") or "first",
+                        "http_err": enrich_counters.get("http_err", 0),
+                        "exception": enrich_counters.get("exception", 0),
+                        "no_join_val": enrich_counters.get("no_join_val", 0),
                     }
                 elif node.type == NodeType.DEDUPE:
                     stats = {"duplicates_removed": dropped, "keys": cfg.get("keys", "")}
@@ -455,6 +461,17 @@ class DagExecutor:
                         "filtered_row_count": audit_extras.get("filtered_row_count"),
                         "dropped_by_watermark": audit_extras.get("dropped_by_watermark"),
                     }
+
+                # ── Generic surface: any node can attach failures and warnings to
+                # audit_extras and they bubble into the audit's stats and the
+                # in-UI Logs tab. Keeps silent-failure debugging visible without
+                # bolting on per-node UI for each kind of error.
+                node_failures = audit_extras.get("sample_failures") or []
+                node_warnings = audit_extras.get("warnings") or []
+                if node_failures:
+                    stats["sample_failures"] = node_failures
+                for w in node_warnings:
+                    _log("WARN", f"{node.type.value}: {w}", node_id=node_id)
 
                 # Flatten sample rows: strip large nested arrays to keep payload small
                 def _flatten_sample(rows: list[dict], n: int = 5) -> list[dict]:
@@ -584,7 +601,7 @@ async def _execute_node(
     if node.type == NodeType.OBJECT_SOURCE:
         return await _object_source(node, pipeline)
     if node.type == NodeType.ENRICH:
-        return await _enrich(node, records_in, pipeline)
+        return await _enrich(node, records_in, pipeline, audit_extras=audit_extras)
     if node.type == NodeType.MAP:
         return _map(node, records_in)
     if node.type == NodeType.FILTER:
@@ -1643,7 +1660,7 @@ async def _object_source(node, pipeline: Pipeline) -> list[dict]:
     return records
 
 
-async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
+async def _enrich(node, records_in: list[dict], pipeline: Pipeline, audit_extras: dict | None = None) -> list[dict]:
     """
     Per-row detail lookup against a second connector.
 
@@ -1670,24 +1687,23 @@ async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict
     array_mode = str(cfg.get("arrayMode") or cfg.get("array_mode") or "first").lower()
     array_field = cfg.get("arrayField") or cfg.get("array_field") or "rows"
 
+    ax = audit_extras if audit_extras is not None else {}
+    warnings: list[str] = ax.setdefault("warnings", [])
+    sample_failures: list[dict] = ax.setdefault("sample_failures", [])
+    counters: dict = ax.setdefault("counters", {})
+
     if not lookup_connector_id:
-        logger.warning("[ENRICH] node=%s skipped — lookupConnectorId is not set", node.id)
+        warnings.append("Skipped — Detail Connector is not set on this node.")
         return records_in
     if not records_in:
         return records_in
 
-    logger.info(
-        "[ENRICH] node=%s connector=%s join_key=%s lookup_field=%s array_mode=%s rows=%d",
-        node.id, lookup_connector_id, join_key, lookup_field, array_mode, len(records_in),
-    )
-
-    enriched: list[dict] = []
-    stats_counter = {"matched": 0, "no_join_val": 0, "http_err": 0, "exception": 0}
+    counters.update({"matched": 0, "no_join_val": 0, "http_err": 0, "exception": 0})
 
     async def _lookup_one(row: dict) -> dict:
         join_val = row.get(join_key)
         if join_val is None:
-            stats_counter["no_join_val"] += 1
+            counters["no_join_val"] += 1
             return row
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -1698,24 +1714,27 @@ async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict
                 )
                 if r.is_success:
                     body = r.json()
-                    stats_counter["matched"] += 1
+                    counters["matched"] += 1
                     if array_mode == "store":
                         return {**row, array_field: body.get("rows", [])}
                     detail = body.get("row", {})
                     return {**row, **detail}
-                stats_counter["http_err"] += 1
-                if stats_counter["http_err"] <= 3:
-                    logger.warning(
-                        "[ENRICH] node=%s fetch-row failed for join_val=%s · status=%d · body=%s",
-                        node.id, join_val, r.status_code, r.text[:300],
-                    )
+                counters["http_err"] += 1
+                if len(sample_failures) < 5:
+                    sample_failures.append({
+                        "kind": "http_error",
+                        "join_val": str(join_val),
+                        "status": r.status_code,
+                        "body": r.text[:500],
+                    })
         except Exception as exc:
-            stats_counter["exception"] += 1
-            if stats_counter["exception"] <= 3:
-                logger.warning(
-                    "[ENRICH] node=%s fetch-row exception for join_val=%s · %s",
-                    node.id, join_val, exc,
-                )
+            counters["exception"] += 1
+            if len(sample_failures) < 5:
+                sample_failures.append({
+                    "kind": "exception",
+                    "join_val": str(join_val),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
         return row
 
     # Run lookups in concurrent batches to avoid overwhelming the detail endpoint
@@ -1724,11 +1743,15 @@ async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict
         results = await asyncio.gather(*[_lookup_one(row) for row in batch])
         enriched.extend(results)
 
-    logger.info(
-        "[ENRICH] node=%s done · matched=%d · no_join_val=%d · http_err=%d · exception=%d",
-        node.id, stats_counter["matched"], stats_counter["no_join_val"],
-        stats_counter["http_err"], stats_counter["exception"],
-    )
+    # Promote counters into a human-readable summary warning so it shows up
+    # in the Logs tab without needing to open Stats.
+    if counters.get("http_err") or counters.get("exception") or counters.get("no_join_val"):
+        warnings.append(
+            f"{counters.get('matched', 0)}/{len(records_in)} enriched · "
+            f"http_err={counters.get('http_err', 0)} · "
+            f"exception={counters.get('exception', 0)} · "
+            f"no_join_val={counters.get('no_join_val', 0)}"
+        )
 
     return enriched
 

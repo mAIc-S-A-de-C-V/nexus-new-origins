@@ -383,7 +383,10 @@ const SampleData: React.FC<{ node: NodeAuditDetail }> = ({ node }) => {
 };
 
 const MetadataBlock: React.FC<{ node: NodeAuditDetail }> = ({ node }) => {
-  const stats = node.stats || {};
+  const statsRaw = (node.stats || {}) as Record<string, unknown>;
+  // Pull failures out so they get their own panel instead of a JSON blob row.
+  const sampleFailures = (statsRaw.sample_failures as Array<Record<string, unknown>> | undefined) || [];
+  const { sample_failures: _omit, ...stats } = statsRaw;
   return (
     <div>
       <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
@@ -402,6 +405,9 @@ const MetadataBlock: React.FC<{ node: NodeAuditDetail }> = ({ node }) => {
           ))}
         </tbody>
       </table>
+      {sampleFailures.length > 0 && (
+        <FailuresPanel failures={sampleFailures} />
+      )}
     </div>
   );
 };
@@ -413,6 +419,77 @@ const Row: React.FC<{ k: string; v: string }> = ({ k, v }) => (
                   fontFamily: MONO, wordBreak: 'break-word' }}>{v}</td>
   </tr>
 );
+
+const FailuresPanel: React.FC<{ failures: Array<Record<string, unknown>> }> = ({ failures }) => {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggle = (i: number) => {
+    const next = new Set(expanded);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    setExpanded(next);
+  };
+  return (
+    <div style={{ marginTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <AlertCircle size={12} color={C.error} />
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                       color: C.error, letterSpacing: '.04em' }}>
+          Failures
+        </div>
+        <span style={{ fontSize: 11, color: C.subtle, fontFamily: MONO }}>
+          showing first {failures.length}
+        </span>
+      </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 4, overflow: 'hidden' }}>
+        {failures.map((f, i) => {
+          const kind = String(f.kind || 'failure');
+          const joinVal = f.join_val != null ? String(f.join_val) : '';
+          const status = f.status != null ? String(f.status) : '';
+          const body = f.body != null ? String(f.body) : f.error != null ? String(f.error) : '';
+          const isExpanded = expanded.has(i);
+          return (
+            <div key={i} style={{ borderBottom: i < failures.length - 1 ? `1px solid ${C.hover}` : 'none' }}>
+              <div
+                onClick={() => toggle(i)}
+                style={{ padding: '8px 10px', display: 'flex', gap: 10, alignItems: 'center',
+                         cursor: 'pointer', background: isExpanded ? C.hover : C.panel,
+                         fontSize: 12, fontFamily: MONO }}
+              >
+                <span style={{ color: C.subtle, width: 14 }}>{isExpanded ? '▾' : '▸'}</span>
+                <span style={{
+                  padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                  background: kind === 'http_error' ? C.warnLight : C.errorLight,
+                  color: kind === 'http_error' ? C.warn : C.error,
+                }}>{kind}</span>
+                {status && (
+                  <span style={{ color: C.error, fontWeight: 600 }}>{status}</span>
+                )}
+                {joinVal && (
+                  <span style={{ color: C.muted }}>
+                    join=<span style={{ color: C.text }}>{joinVal}</span>
+                  </span>
+                )}
+                <span style={{
+                  flex: 1, color: C.subtle, overflow: 'hidden',
+                  textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {body}
+                </span>
+              </div>
+              {isExpanded && body && (
+                <pre style={{
+                  margin: 0, padding: '8px 10px 12px 38px', background: C.bg,
+                  fontSize: 11, color: C.text, fontFamily: MONO,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  borderTop: `1px dashed ${C.border}`,
+                }}>{body}</pre>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 // ── AGENT RUN VIEW ───────────────────────────────────────────────────────────
 
