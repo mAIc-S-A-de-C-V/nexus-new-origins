@@ -836,10 +836,11 @@ const InferFromDataModal: React.FC<{
     if (objectTypes.length === 0) fetchObjectTypes();
   }, []);
 
-  // For "From OT" mode, exclude the current OT (no point inferring its
-  // own shape into itself) UNLESS it actually has records — which we
-  // surface as a hint in the dropdown.
-  const otOptions = objectTypes.filter((o) => o.id !== currentObjectTypeId);
+  // Include every OT — even the current one. Re-inferring an OT's own
+  // shape from its records is a real use case (e.g. records have new
+  // fields the schema hasn't caught up with yet). The "EXISTS" badge in
+  // the suggestion table already handles dup-name protection.
+  const otOptions = objectTypes;
 
   const runInference = async () => {
     setErr(null);
@@ -995,7 +996,9 @@ const InferFromDataModal: React.FC<{
                   >
                     <option value="">— select —</option>
                     {otOptions.map((o) => (
-                      <option key={o.id} value={o.id}>{o.displayName}</option>
+                      <option key={o.id} value={o.id}>
+                        {o.displayName}{o.id === currentObjectTypeId ? ' (this OT)' : ''}
+                      </option>
                     ))}
                   </select>
                 </div>
