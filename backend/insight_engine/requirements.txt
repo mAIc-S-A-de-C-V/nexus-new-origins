@@ -30,7 +30,7 @@ recordlinkage==0.16
 jellyfish==1.1.0
 
 # Causal inference
-dowhy==0.11.1
+dowhy==0.12
 
 # Phase 15: LLM titles + recommendations (gated by llm_titles_enabled in cfg)
 anthropic==0.34.2
