@@ -289,6 +289,19 @@ async def _rest_api(base_url: Optional[str], creds: dict, cfg: dict, db=None, la
 
     path = cfg.get("path", "")
     method = cfg.get("method", "GET").lower()
+
+    # Path templating — if the path contains `{name}` placeholders and
+    # raw_qp has a matching key, substitute it in. Removes the consumed
+    # key from raw_qp so it doesn't get re-appended as a query param.
+    # Enables ENRICH against endpoints like `/api/notas/resumen-carrera/{idKey}`
+    # where the join value goes in the URL path, not the query string.
+    path_placeholders = _re.findall(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', path)
+    if path_placeholders and raw_qp:
+        raw_qp = dict(raw_qp)
+        for ph in path_placeholders:
+            if ph in raw_qp:
+                path = path.replace("{" + ph + "}", str(raw_qp.pop(ph)))
+
     url = base_url.rstrip("/") + (path if path.startswith("/") else f"/{path}")
     if raw_qp:
         import urllib.parse as _urlparse
