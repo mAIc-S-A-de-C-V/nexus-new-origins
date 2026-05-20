@@ -1699,6 +1699,7 @@ async def _enrich(node, records_in: list[dict], pipeline: Pipeline, audit_extras
         return records_in
 
     counters.update({"matched": 0, "no_join_val": 0, "http_err": 0, "exception": 0})
+    enriched: list[dict] = []
 
     async def _lookup_one(row: dict) -> dict:
         join_val = row.get(join_key)
