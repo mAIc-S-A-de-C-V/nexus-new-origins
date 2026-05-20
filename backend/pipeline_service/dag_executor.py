@@ -581,8 +581,10 @@ async def _execute_node(
 ) -> list[dict]:
     if node.type == NodeType.SOURCE:
         return await _source(node, pipeline, audit_extras=audit_extras)
+    if node.type == NodeType.OBJECT_SOURCE:
+        return await _object_source(node, pipeline)
     if node.type == NodeType.ENRICH:
-        return await _enrich(node, records_in)
+        return await _enrich(node, records_in, pipeline)
     if node.type == NodeType.MAP:
         return _map(node, records_in)
     if node.type == NodeType.FILTER:
@@ -1588,7 +1590,60 @@ async def _source(node, pipeline: Pipeline, audit_extras: dict | None = None) ->
     return []
 
 
-async def _enrich(node, records_in: list[dict]) -> list[dict]:
+async def _object_source(node, pipeline: Pipeline) -> list[dict]:
+    """
+    OBJECT_SOURCE — emit rows from an existing ObjectType.
+
+    Lets a pipeline use the ontology itself as its starting point — e.g. an OT
+    of students whose key field drives a downstream ENRICH lookup. Use this
+    when the seed data already lives in the ontology rather than in an
+    external connector.
+
+    Config fields:
+      objectTypeId   — OT to read records from (required)
+      limit          — max records to fetch in one run (default 5000)
+      filterField    — optional: only emit rows where filterField == filterValue
+      filterValue    — value compared with filterField as a string
+    """
+    cfg = node.config or {}
+    ot_id = (
+        cfg.get("objectTypeId")
+        or cfg.get("object_type_id")
+        or getattr(node, "object_type_id", None)
+    )
+    if not ot_id:
+        return []
+
+    try:
+        limit = int(cfg.get("limit") or 5000)
+    except (TypeError, ValueError):
+        limit = 5000
+
+    filter_field = cfg.get("filterField") or cfg.get("filter_field")
+    filter_value = cfg.get("filterValue") or cfg.get("filter_value")
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.get(
+                f"{ONTOLOGY_API}/object-types/{ot_id}/records",
+                params={"limit": limit},
+                headers={"x-tenant-id": pipeline.tenant_id or "tenant-001"},
+            )
+            if not r.is_success:
+                return []
+            records = r.json().get("records", [])
+    except Exception:
+        return []
+
+    if filter_field and filter_value is not None:
+        records = [
+            rec for rec in records
+            if str(rec.get(filter_field, "")) == str(filter_value)
+        ]
+    return records
+
+
+async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict]:
     """
     Per-row detail lookup against a second connector.
 
@@ -1601,12 +1656,19 @@ async def _enrich(node, records_in: list[dict]) -> list[dict]:
       lookupConnectorId  — the connector that holds the detail endpoint
       joinKey            — field on the incoming row whose value is passed as the lookup param
       lookupField        — query param name on the detail endpoint (defaults to joinKey)
+      arrayMode          — "first" (default) merges the first response element onto the row;
+                            "store" keeps the full response array under arrayField, so a
+                            downstream FLATTEN node can fan one input row into N output rows
+      arrayField         — when arrayMode="store", the field name to stash the array under
+                            (default "rows")
     """
     cfg = node.config or {}
     lookup_connector_id = cfg.get("lookupConnectorId") or cfg.get("lookup_connector_id")
     join_key = cfg.get("joinKey") or cfg.get("join_key", "id")
     # The query param name on the detail endpoint — often same as join_key (e.g. "id")
     lookup_field = cfg.get("lookupField") or cfg.get("lookup_field") or join_key
+    array_mode = str(cfg.get("arrayMode") or cfg.get("array_mode") or "first").lower()
+    array_field = cfg.get("arrayField") or cfg.get("array_field") or "rows"
 
     if not lookup_connector_id or not records_in:
         return records_in
@@ -1625,7 +1687,10 @@ async def _enrich(node, records_in: list[dict]) -> list[dict]:
                     headers={"x-tenant-id": pipeline.tenant_id or "tenant-001"},
                 )
                 if r.is_success:
-                    detail = r.json().get("row", {})
+                    body = r.json()
+                    if array_mode == "store":
+                        return {**row, array_field: body.get("rows", [])}
+                    detail = body.get("row", {})
                     return {**row, **detail}
         except Exception:
             pass

@@ -40,6 +40,19 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
     ],
   },
   {
+    type: 'OBJECT_SOURCE',
+    label: 'Object Source',
+    description: 'Read records from an existing Object Type and emit them as rows. Use this to drive an ENRICH lookup off ontology data instead of an external connector.',
+    color: '#0D6E5A',
+    iconName: 'Boxes',
+    configFields: [
+      { key: 'objectTypeId', label: 'Source Object Type', type: 'select', options: [], required: true },
+      { key: 'limit', label: 'Max records', type: 'number', default: 5000 },
+      { key: 'filterField', label: 'Filter field (optional)', type: 'text', placeholder: 'status' },
+      { key: 'filterValue', label: 'Filter value (optional)', type: 'text', placeholder: 'active' },
+    ],
+  },
+  {
     type: 'FILTER',
     label: 'Filter',
     description: 'Keep only rows that match a condition',
@@ -75,13 +88,15 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
   {
     type: 'ENRICH',
     label: 'Enrich',
-    description: 'Per-row detail lookup — for each incoming row, call a second connector using a field value as the lookup key and merge the full response back onto the row.',
+    description: 'Per-row detail lookup — for each incoming row, call a second connector using a field value as the lookup key and merge the response back onto the row. Set Array Mode = store + chain FLATTEN when the detail endpoint returns an array.',
     color: '#D97706',
     iconName: 'Sparkles',
     configFields: [
       { key: 'lookupConnectorId', label: 'Detail Connector', type: 'select', options: [], required: true },
       { key: 'joinKey', label: 'Join Key (field on incoming row)', type: 'text', placeholder: 'id', required: true },
       { key: 'lookupField', label: 'Lookup Param (query param on detail endpoint)', type: 'text', placeholder: 'id' },
+      { key: 'arrayMode', label: 'Array Mode', type: 'select', default: 'first', options: ['first', 'store'] },
+      { key: 'arrayField', label: 'Array Field (when Array Mode = store)', type: 'text', default: 'rows', placeholder: 'rows' },
     ],
   },
   {

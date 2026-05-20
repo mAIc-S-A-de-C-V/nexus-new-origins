@@ -2,13 +2,14 @@ import React from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
 import {
   Plug, Filter, ArrowRightLeft, Repeat, Sparkles,
-  Layers, LayoutGrid, Copy, ShieldCheck, Database, Activity
+  Layers, LayoutGrid, Copy, ShieldCheck, Database, Activity, Boxes
 } from 'lucide-react';
 import { NodeType } from '../../types/pipeline';
 import { nodeColors } from '../../design-system/tokens';
 
 const ICONS: Record<string, React.ReactNode> = {
   SOURCE: <Plug size={14} />,
+  OBJECT_SOURCE: <Boxes size={14} />,
   FILTER: <Filter size={14} />,
   MAP: <ArrowRightLeft size={14} />,
   CAST: <Repeat size={14} />,
@@ -34,7 +35,7 @@ export const PipelineNodeComponent: React.FC<NodeProps> = ({ data, selected }) =
   const nodeData = data as unknown as PipelineNodeData;
   const { label, nodeType, rowCount, status } = nodeData;
   const color = nodeColors[nodeType] || '#64748B';
-  const isSource = nodeType === 'SOURCE';
+  const isSource = nodeType === 'SOURCE' || nodeType === 'OBJECT_SOURCE';
   const isSink = nodeType === 'SINK_EVENT';
 
   const statusColor: Record<string, string> = {

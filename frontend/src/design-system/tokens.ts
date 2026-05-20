@@ -91,6 +91,7 @@ export const layout = {
 
 export const nodeColors: Record<string, string> = {
   SOURCE: '#1A3C6E',
+  OBJECT_SOURCE: '#0D6E5A',
   FILTER: '#7C3AED',
   MAP: '#0891B2',
   CAST: '#059669',

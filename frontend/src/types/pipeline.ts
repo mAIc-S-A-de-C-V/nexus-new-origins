@@ -1,5 +1,6 @@
 export type NodeType =
   | 'SOURCE'
+  | 'OBJECT_SOURCE'
   | 'FILTER'
   | 'MAP'
   | 'CAST'

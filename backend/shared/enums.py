@@ -32,6 +32,7 @@ class ExtractionPattern(str, Enum):
 
 class NodeType(str, Enum):
     SOURCE = "SOURCE"
+    OBJECT_SOURCE = "OBJECT_SOURCE"
     FILTER = "FILTER"
     MAP = "MAP"
     CAST = "CAST"
