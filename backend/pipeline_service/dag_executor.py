@@ -1670,14 +1670,24 @@ async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict
     array_mode = str(cfg.get("arrayMode") or cfg.get("array_mode") or "first").lower()
     array_field = cfg.get("arrayField") or cfg.get("array_field") or "rows"
 
-    if not lookup_connector_id or not records_in:
+    if not lookup_connector_id:
+        logger.warning("[ENRICH] node=%s skipped — lookupConnectorId is not set", node.id)
+        return records_in
+    if not records_in:
         return records_in
 
+    logger.info(
+        "[ENRICH] node=%s connector=%s join_key=%s lookup_field=%s array_mode=%s rows=%d",
+        node.id, lookup_connector_id, join_key, lookup_field, array_mode, len(records_in),
+    )
+
     enriched: list[dict] = []
+    stats_counter = {"matched": 0, "no_join_val": 0, "http_err": 0, "exception": 0}
 
     async def _lookup_one(row: dict) -> dict:
         join_val = row.get(join_key)
         if join_val is None:
+            stats_counter["no_join_val"] += 1
             return row
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -1688,12 +1698,24 @@ async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict
                 )
                 if r.is_success:
                     body = r.json()
+                    stats_counter["matched"] += 1
                     if array_mode == "store":
                         return {**row, array_field: body.get("rows", [])}
                     detail = body.get("row", {})
                     return {**row, **detail}
-        except Exception:
-            pass
+                stats_counter["http_err"] += 1
+                if stats_counter["http_err"] <= 3:
+                    logger.warning(
+                        "[ENRICH] node=%s fetch-row failed for join_val=%s · status=%d · body=%s",
+                        node.id, join_val, r.status_code, r.text[:300],
+                    )
+        except Exception as exc:
+            stats_counter["exception"] += 1
+            if stats_counter["exception"] <= 3:
+                logger.warning(
+                    "[ENRICH] node=%s fetch-row exception for join_val=%s · %s",
+                    node.id, join_val, exc,
+                )
         return row
 
     # Run lookups in concurrent batches to avoid overwhelming the detail endpoint
@@ -1701,6 +1723,12 @@ async def _enrich(node, records_in: list[dict], pipeline: Pipeline) -> list[dict
         batch = records_in[i:i + _ENRICH_CONCURRENCY]
         results = await asyncio.gather(*[_lookup_one(row) for row in batch])
         enriched.extend(results)
+
+    logger.info(
+        "[ENRICH] node=%s done · matched=%d · no_join_val=%d · http_err=%d · exception=%d",
+        node.id, stats_counter["matched"], stats_counter["no_join_val"],
+        stats_counter["http_err"], stats_counter["exception"],
+    )
 
     return enriched
 
