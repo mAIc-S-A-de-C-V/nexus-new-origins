@@ -1034,6 +1034,37 @@ const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectType
   const [targetId, setTargetId] = useState('');
   const [relType, setRelType] = useState<OntologyLink['relationshipType']>('has_many');
   const [label, setLabel] = useState('');
+  const [sourceField, setSourceField] = useState('');
+  const [targetField, setTargetField] = useState('');
+
+  const targetOT = objectTypes.find((o) => o.id === targetId);
+
+  // Guess the identifier-ish property of an OT for default join-key wiring:
+  // prefer IDENTIFIER semantic type, then a property literally named `id` /
+  // ending in `_id`, then the first property. Same heuristic both sides.
+  const guessIdField = (props: ObjectType['properties']): string => {
+    if (!props || props.length === 0) return '';
+    const byIdentifier = props.find((p) => p.semanticType === 'IDENTIFIER');
+    if (byIdentifier) return byIdentifier.name;
+    const byNameId = props.find((p) => p.name === 'id' || p.name.endsWith('_id') || p.name.endsWith('Id'));
+    if (byNameId) return byNameId.name;
+    return props[0].name;
+  };
+
+  // Auto-fill join keys whenever the user picks a target: target side uses
+  // the guess; source side prefers the same field name (very common case —
+  // both ends share an `idKey` / `id`) and falls back to its own guess.
+  useEffect(() => {
+    if (!targetOT) {
+      setSourceField('');
+      setTargetField('');
+      return;
+    }
+    const tgt = guessIdField(targetOT.properties);
+    setTargetField(tgt);
+    const sameOnSource = objectType.properties.find((p) => p.name === tgt);
+    setSourceField(sameOnSource ? tgt : guessIdField(objectType.properties));
+  }, [targetId]);
 
   const tenantId = getTenantId() || 'tenant-001';
 
@@ -1059,12 +1090,16 @@ const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectType
     if (!targetId) return;
     setSaving(true);
     try {
+      const joinKeys =
+        sourceField.trim() && targetField.trim()
+          ? [{ source_field: sourceField.trim(), target_field: targetField.trim() }]
+          : [];
       const body = {
         id: '',
         source_object_type_id: objectType.id,
         target_object_type_id: targetId,
         relationship_type: relType,
-        join_keys: [],
+        join_keys: joinKeys,
         is_inferred: false,
         label: label.trim() || null,
       };
@@ -1078,6 +1113,8 @@ const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectType
         setTargetId('');
         setRelType('has_many');
         setLabel('');
+        setSourceField('');
+        setTargetField('');
         await loadLinks();
       }
     } finally {
@@ -1184,6 +1221,41 @@ const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectType
             </select>
           </div>
 
+          {targetOT && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>
+                  Source field <span style={{ color: '#CBD5E1' }}>(this OT)</span>
+                </label>
+                <select
+                  value={sourceField}
+                  onChange={(e) => setSourceField(e.target.value)}
+                  style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+                >
+                  <option value="">— select —</option>
+                  {objectType.properties.map((p) => (
+                    <option key={p.name} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>
+                  Target field <span style={{ color: '#CBD5E1' }}>({targetOT.displayName})</span>
+                </label>
+                <select
+                  value={targetField}
+                  onChange={(e) => setTargetField(e.target.value)}
+                  style={{ fontSize: 12, border: '1px solid #E2E8F0', borderRadius: 4, padding: '5px 8px', color: '#0D1117', backgroundColor: '#fff' }}
+                >
+                  <option value="">— select —</option>
+                  {targetOT.properties.map((p) => (
+                    <option key={p.name} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <label style={{ fontSize: 11, color: '#64748B', fontWeight: 500 }}>Label <span style={{ color: '#CBD5E1' }}>(optional)</span></label>
             <input
@@ -1196,7 +1268,7 @@ const LinksTab: React.FC<{ objectType: ObjectType }> = ({ objectType: objectType
 
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 2 }}>
             <button
-              onClick={() => { setShowForm(false); setTargetId(''); setLabel(''); }}
+              onClick={() => { setShowForm(false); setTargetId(''); setLabel(''); setSourceField(''); setTargetField(''); }}
               style={{ fontSize: 12, padding: '5px 12px', border: '1px solid #E2E8F0', borderRadius: 4, backgroundColor: '#fff', color: '#64748B', cursor: 'pointer' }}
             >
               Cancel
