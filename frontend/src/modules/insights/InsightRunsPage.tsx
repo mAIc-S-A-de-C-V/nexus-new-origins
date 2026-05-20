@@ -10,7 +10,7 @@ const C = {
   success: '#22C55E', error: '#EF4444',
 };
 
-const INSIGHT_API = import.meta.env.VITE_INSIGHT_ENGINE_URL || 'http://localhost:8016';
+const INSIGHT_API = import.meta.env.VITE_INSIGHT_ENGINE_URL || 'http://localhost:8029';
 
 interface RunReport {
   run: InsightRun;

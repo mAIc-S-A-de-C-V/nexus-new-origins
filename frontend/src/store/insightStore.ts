@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { getTenantId } from './authStore';
 
-const INSIGHT_API = import.meta.env.VITE_INSIGHT_ENGINE_URL || 'http://localhost:8016';
+const INSIGHT_API = import.meta.env.VITE_INSIGHT_ENGINE_URL || 'http://localhost:8029';
 
 export type InsightStatus = 'new' | 'seen' | 'pinned' | 'dismissed' | 'promoted' | 'aged';
 

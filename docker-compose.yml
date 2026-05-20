@@ -366,7 +366,10 @@ services:
       context: ./backend
       dockerfile: insight_engine/Dockerfile
     ports:
-      - "8016:8016"
+      # Host 8029 → container 8016. eval-service already owns host 8016;
+      # container port stays 8016 so internal `http://insight-engine-service:8016`
+      # URLs (alert_engine, etc.) don't need to change.
+      - "8029:8016"
     mem_limit: 4g
     environment:
       - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
