@@ -102,6 +102,9 @@
 	handle_path /api/kernel/* {
 		reverse_proxy kernel-service:8026
 	}
+	handle_path /api/pdf-extractor/* {
+		reverse_proxy pdf-extractor-service:8033
+	}
 	handle_path /api/project/* {
 		reverse_proxy project-management-service:9000
 	}

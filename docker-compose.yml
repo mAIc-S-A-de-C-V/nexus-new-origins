@@ -40,6 +40,7 @@ services:
         VITE_API_GATEWAY_URL: ${VITE_API_GATEWAY_URL:-http://localhost:8021}
         VITE_ADMIN_SERVICE_URL: ${VITE_ADMIN_SERVICE_URL:-http://localhost:8022}
         VITE_KERNEL_SERVICE_URL: ${VITE_KERNEL_SERVICE_URL:-http://localhost:8026}
+        VITE_PDF_EXTRACTOR_SERVICE_URL: ${VITE_PDF_EXTRACTOR_SERVICE_URL:-http://localhost:8033}
         # apps-service is served at the same domain as the frontend in prod
         # (Caddy routes /cli, /sdk, /app-registry, /app-installs, /app-studio,
         # /apps-for-tenant, and most /apps/* paths to it). Unset → frontend
@@ -869,6 +870,46 @@ services:
         condition: service_healthy
     networks:
       - nexus-net
+    logging: *default-logging
+
+  # ─── PDF extractor (standalone, vision-LLM driven) ────────────────────────
+  # Self-contained service: upload a PDF, run vision-LLM extraction page by
+  # page, persist structured rows + matched images, optionally push to an
+  # ontology object type. Independent from connectors/pipelines on purpose.
+  pdf-extractor-service:
+    build:
+      context: ./backend
+      dockerfile: pdf_extractor_service/Dockerfile
+    ports:
+      - "8033:8033"
+    # PyMuPDF rendering of large catalogs (100+ MB) at 150 DPI + image xref
+    # extraction blows past 1 GB on the first ~10 pages — we were getting
+    # OOM-killed mid-job. 4g leaves comfortable headroom for the worker
+    # thread plus the FastAPI event loop.
+    mem_limit: 4g
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://nexus:nexus_pass@postgres:5432/nexus
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ONTOLOGY_SERVICE_URL=http://ontology-service:8004
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_admin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_pass}
+      - MINIO_BUCKET=nexus-documents
+      - MINIO_PUBLIC_BASE=http://localhost:9100
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,${ALLOWED_ORIGIN_EC2:-http://localhost:3000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - nexus-net
+    # No --reload: code is COPY'd into the image at build time (no bind
+    # mount) so reload buys nothing, and the reloader does NOT respawn
+    # workers killed by OOM — that left zombies during big-PDF extraction.
+    # restart policy catches process-level crashes (worker SIGKILL etc).
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8033
     logging: *default-logging
 
   # ─── Scraping (Scrapling-backed search + scrape) ─────────────────────────

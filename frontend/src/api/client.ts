@@ -8,6 +8,7 @@ const SERVICE_URLS = {
   ontology: import.meta.env.VITE_ONTOLOGY_SERVICE_URL || 'http://localhost:8004',
   eventLog: import.meta.env.VITE_EVENT_LOG_SERVICE_URL || 'http://localhost:8005',
   audit: import.meta.env.VITE_AUDIT_SERVICE_URL || 'http://localhost:8006',
+  pdfExtractor: import.meta.env.VITE_PDF_EXTRACTOR_SERVICE_URL || 'http://localhost:8033',
 };
 
 const createClient = (baseURL: string): AxiosInstance => {
@@ -53,5 +54,7 @@ export const inferenceClient = createClient(SERVICE_URLS.inference);
 export const ontologyClient = createClient(SERVICE_URLS.ontology);
 export const eventLogClient = createClient(SERVICE_URLS.eventLog);
 export const auditClient = createClient(SERVICE_URLS.audit);
+export const pdfExtractorClient = createClient(SERVICE_URLS.pdfExtractor);
+export const PDF_EXTRACTOR_BASE_URL = SERVICE_URLS.pdfExtractor;
 
 export default connectorClient;

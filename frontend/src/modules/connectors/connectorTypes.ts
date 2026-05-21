@@ -178,6 +178,14 @@ export const CONNECTOR_TYPES: ConnectorTypeDefinition[] = [
     iconName: 'FolderTree',
     color: '#0078D4',
   },
+  {
+    type: 'PDF_EXTRACTOR',
+    displayName: 'PDF Extractor',
+    description: 'Upload a PDF and run a vision LLM page-by-page to extract structured rows. Matches images to products. Optional one-click push to an ontology object type.',
+    category: 'Doc',
+    iconName: 'FileText',
+    color: '#7C3AED',
+  },
 ];
 
 export const getConnectorTypeDef = (type: string): ConnectorTypeDefinition | undefined =>

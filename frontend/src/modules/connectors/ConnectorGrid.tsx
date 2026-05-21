@@ -7,6 +7,7 @@ import { PostmanConnectorModal } from './PostmanConnectorModal';
 import { WhatsAppSetupModal } from './WhatsAppSetupModal';
 import { EmailSetupModal } from './EmailSetupModal';
 import { SharePointSetupModal } from './SharePointSetupModal';
+import { PdfExtractorSetupModal } from './PdfExtractorSetupModal';
 import { ConnectorConfig } from '../../types/connector';
 import { CONNECTOR_TYPES, ConnectorTypeDefinition } from './connectorTypes';
 import { useConnectorStore } from '../../store/connectorStore';
@@ -239,7 +240,10 @@ export const ConnectorGrid: React.FC = () => {
       {addingType && addingType.type === 'SHAREPOINT' && (
         <SharePointSetupModal onClose={() => setAddingType(null)} />
       )}
-      {addingType && addingType.type !== 'POSTMAN' && addingType.type !== 'WHATSAPP' && addingType.type !== 'EMAIL_INBOX' && addingType.type !== 'SHAREPOINT' && (
+      {addingType && addingType.type === 'PDF_EXTRACTOR' && (
+        <PdfExtractorSetupModal onClose={() => setAddingType(null)} />
+      )}
+      {addingType && addingType.type !== 'POSTMAN' && addingType.type !== 'WHATSAPP' && addingType.type !== 'EMAIL_INBOX' && addingType.type !== 'SHAREPOINT' && addingType.type !== 'PDF_EXTRACTOR' && (
         <AddConnectorModal
           connectorType={addingType}
           onClose={() => setAddingType(null)}
