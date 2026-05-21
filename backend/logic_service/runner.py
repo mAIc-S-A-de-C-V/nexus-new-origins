@@ -37,8 +37,16 @@ def _resolve(template: Any, context: dict) -> Any:
     """Recursively resolve {path.to.value} references in strings, dicts, and lists.
 
     Supports array indexing: records[0].field resolves the 0th element of a list.
+
+    Accepts both `{path}` and `{{path}}` syntax — the UI advertises the double-brace
+    style (familiar from Mustache/Jinja) so we normalize that down to single braces
+    before the resolver runs. A literal `{{...}}` therefore reduces to `{...}` and
+    then to the resolved value; this matches user expectations from the in-app hints.
     """
     if isinstance(template, str):
+        # Normalize double-brace to single-brace so {{block_id.result.records}}
+        # works the same as {block_id.result.records}.
+        template = re.sub(r'\{\{([^}]+)\}\}', r'{\1}', template)
         # Replace all {x.y.z} patterns
         def replacer(m: re.Match) -> str:
             # Split by "." but keep array indices attached to their key: "records[0]"
@@ -937,6 +945,170 @@ async def _run_ontology_update(block: dict, context: dict, tenant_id: str) -> An
     }
 
 
+async def _dispatch_block(
+    block: dict, context: dict, tenant_id: str, blocks: list[dict], trace: dict,
+) -> Any:
+    """Run a single block, dispatching on its type. Used both by the top-level
+    sequential loop and by foreach/conditional when they invoke child blocks."""
+    block_type = block["type"]
+    if block_type == "ontology_query":
+        return await _run_ontology_query(block.get("config", {}), context, tenant_id)
+    if block_type == "llm_call":
+        return await _run_llm_call(block, context, tenant_id)
+    if block_type == "action":
+        return await _run_action(block, context, tenant_id)
+    if block_type == "send_email":
+        return await _run_send_email(block, context)
+    if block_type == "transform":
+        return _run_transform(block, context)
+    if block_type == "utility_call":
+        return await _run_utility_call(block, context, tenant_id)
+    if block_type == "ontology_update":
+        return await _run_ontology_update(block, context, tenant_id)
+    if block_type == "http_call":
+        return await _run_http_call(block.get("config", {}), context)
+    if block_type == "foreach":
+        return await _run_foreach(block, context, tenant_id, blocks, trace)
+    if block_type == "conditional":
+        return await _run_conditional(block, context, tenant_id, blocks, trace)
+    return {"error": f"Unknown block type: {block_type}"}
+
+
+async def _run_child_block(
+    inner_block: dict, ctx: dict, tenant_id: str, blocks: list[dict], trace: dict,
+) -> Any:
+    """Execute a child block (called from foreach/conditional). Persists its result
+    into the provided ctx (so subsequent sibling blocks can reference it) and
+    appends a trace entry under the parent's iteration scope."""
+    inner_id = inner_block["id"]
+    t0 = time.monotonic()
+    try:
+        inner_result = await _dispatch_block(inner_block, ctx, tenant_id, blocks, trace)
+    except Exception as e:
+        inner_result = {"error": str(e)}
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    ctx[inner_id] = {"result": inner_result}
+    # Append per-iteration trace entries — keyed by block_id so the UI can show
+    # the LAST iteration's result (limitation: per-iteration history isn't
+    # preserved in this trace format). Good enough for debugging today.
+    trace[inner_id] = {
+        "result": inner_result, "duration_ms": duration_ms,
+        "status": "failed" if isinstance(inner_result, dict) and inner_result.get("error") else "completed",
+    }
+    return inner_result
+
+
+async def _run_foreach(
+    block: dict, context: dict, tenant_id: str, blocks: list[dict], trace: dict,
+) -> dict:
+    """FOREACH — iterate an array and run a sequence of child blocks per item.
+
+    Reads config from block top-level (array_input, iteration_variable, loop_blocks)
+    since the LogicStudio UI writes them there, not under config.
+    """
+    array_input = block.get("array_input") or block.get("arrayInput") or ""
+    iter_var = block.get("iteration_variable") or block.get("iterationVariable") or "item"
+    loop_block_ids = block.get("loop_blocks") or block.get("loopBlocks") or []
+
+    arr = _resolve(array_input, context) if isinstance(array_input, str) else array_input
+    if isinstance(arr, str):
+        # _resolve returned a string — the path didn't resolve to a list value.
+        # Try JSON-decoding it (resolve serializes lists/dicts via json.dumps).
+        try:
+            arr = json.loads(arr)
+        except Exception:
+            arr = None
+
+    if not isinstance(arr, list):
+        return {
+            "error": (f"foreach: array_input '{array_input}' did not resolve to a list "
+                      f"(got {type(arr).__name__})"),
+            "iterations": 0,
+        }
+
+    block_map = {b["id"]: b for b in blocks}
+    iter_results: list[dict] = []
+    for idx, item in enumerate(arr):
+        iter_ctx = dict(context)
+        iter_ctx[iter_var] = item
+        per_item: dict[str, Any] = {"index": idx, iter_var: item, "blocks": {}}
+        for inner_id in loop_block_ids:
+            inner_block = block_map.get(inner_id)
+            if not inner_block:
+                per_item["blocks"][inner_id] = {"error": "Block not found"}
+                continue
+            r = await _run_child_block(inner_block, iter_ctx, tenant_id, blocks, trace)
+            per_item["blocks"][inner_id] = r
+        iter_results.append(per_item)
+    return {"iterations": len(arr), "results": iter_results}
+
+
+def _eval_condition(expr: str, context: dict) -> bool:
+    """Evaluate a Python-style boolean expression after substituting refs."""
+    if not isinstance(expr, str) or not expr.strip():
+        return False
+    resolved = _resolve(expr, context)
+    if not isinstance(resolved, str):
+        return bool(resolved)
+    try:
+        # Restricted eval — no builtins, no locals. The user's blocks already
+        # have side-effect powers (ontology_update etc.), so the constraint is
+        # mainly about not letting condition expressions do anything beyond
+        # comparing values.
+        return bool(eval(resolved, {"__builtins__": {}}, {}))  # noqa: S307
+    except Exception:
+        return False
+
+
+async def _run_conditional(
+    block: dict, context: dict, tenant_id: str, blocks: list[dict], trace: dict,
+) -> dict:
+    """CONDITIONAL — evaluate an expression, run true_branch or false_branch IDs."""
+    expr = block.get("condition_expression") or block.get("conditionExpression") or ""
+    true_ids = block.get("true_branch") or block.get("trueBranch") or []
+    false_ids = block.get("false_branch") or block.get("falseBranch") or []
+
+    passed = _eval_condition(expr, context)
+    branch_ids = true_ids if passed else false_ids
+
+    block_map = {b["id"]: b for b in blocks}
+    branch_results: dict[str, Any] = {}
+    branch_ctx = dict(context)
+    for inner_id in branch_ids:
+        inner_block = block_map.get(inner_id)
+        if not inner_block:
+            branch_results[inner_id] = {"error": "Block not found"}
+            continue
+        r = await _run_child_block(inner_block, branch_ctx, tenant_id, blocks, trace)
+        branch_results[inner_id] = r
+    return {
+        "passed": passed,
+        "branch": "true" if passed else "false",
+        "results": branch_results,
+        "evaluated": expr,
+    }
+
+
+def _collect_child_block_ids(blocks: list[dict]) -> set[str]:
+    """Set of block IDs that are children of a foreach/conditional. The top-level
+    sequential loop must skip these so they don't double-execute."""
+    out: set[str] = set()
+    for b in blocks:
+        t = b.get("type")
+        if t == "foreach":
+            for cid in (b.get("loop_blocks") or b.get("loopBlocks") or []):
+                if isinstance(cid, str) and cid:
+                    out.add(cid)
+        elif t == "conditional":
+            for cid in (b.get("true_branch") or b.get("trueBranch") or []):
+                if isinstance(cid, str) and cid:
+                    out.add(cid)
+            for cid in (b.get("false_branch") or b.get("falseBranch") or []):
+                if isinstance(cid, str) and cid:
+                    out.add(cid)
+    return out
+
+
 async def execute_function(
     function_id: str,
     blocks: list[dict],
@@ -947,6 +1119,12 @@ async def execute_function(
     """
     Execute all blocks sequentially and return the trace + final output.
     Returns: { output, trace: {block_id: {result, duration_ms, error?}}, error? }
+
+    Blocks whose IDs appear in some other block's loop_blocks (foreach) or
+    true_branch/false_branch (conditional) are skipped at the top level —
+    they only run via their parent. This lets the user keep child blocks
+    flat in the block list (which is how the UI stores them) while still
+    only executing them once per iteration / branch entry.
     """
     _now = datetime.now(timezone.utc)
     context: dict[str, Any] = {
@@ -962,32 +1140,17 @@ async def execute_function(
         "now_minus_90d": (_now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     trace: dict[str, Any] = {}
+    child_ids = _collect_child_block_ids(blocks)
 
     for block in blocks:
         block_id = block["id"]
-        block_type = block["type"]
+        if block_id in child_ids:
+            # Owned by a foreach/conditional — skip the top-level execution.
+            continue
         t0 = time.monotonic()
 
         try:
-            if block_type == "ontology_query":
-                result = await _run_ontology_query(block.get("config", {}), context, tenant_id)
-            elif block_type == "llm_call":
-                result = await _run_llm_call(block, context, tenant_id)
-            elif block_type == "action":
-                result = await _run_action(block, context, tenant_id)
-            elif block_type == "send_email":
-                result = await _run_send_email(block, context)
-            elif block_type == "transform":
-                result = _run_transform(block, context)
-            elif block_type == "utility_call":
-                result = await _run_utility_call(block, context, tenant_id)
-            elif block_type == "ontology_update":
-                result = await _run_ontology_update(block, context, tenant_id)
-            elif block_type == "http_call":
-                result = await _run_http_call(block.get("config", {}), context)
-            else:
-                result = {"error": f"Unknown block type: {block_type}"}
-
+            result = await _dispatch_block(block, context, tenant_id, blocks, trace)
             duration_ms = int((time.monotonic() - t0) * 1000)
             context[block_id] = {"result": result}
             trace[block_id] = {"result": result, "duration_ms": duration_ms, "status": "completed"}
