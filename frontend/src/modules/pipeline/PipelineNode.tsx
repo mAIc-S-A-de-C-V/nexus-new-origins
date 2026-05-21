@@ -2,7 +2,7 @@ import React from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
 import {
   Plug, Filter, ArrowRightLeft, Repeat, Sparkles,
-  Layers, LayoutGrid, Copy, ShieldCheck, Database, Activity, Boxes
+  Layers, LayoutGrid, Copy, ShieldCheck, Database, Activity, Boxes, Rows3
 } from 'lucide-react';
 import { NodeType } from '../../types/pipeline';
 import { nodeColors } from '../../design-system/tokens';
@@ -15,6 +15,7 @@ const ICONS: Record<string, React.ReactNode> = {
   CAST: <Repeat size={14} />,
   ENRICH: <Sparkles size={14} />,
   FLATTEN: <Layers size={14} />,
+  UNPIVOT: <Rows3 size={14} />,
   PIVOT: <LayoutGrid size={14} />,
   DEDUPE: <Copy size={14} />,
   VALIDATE: <ShieldCheck size={14} />,

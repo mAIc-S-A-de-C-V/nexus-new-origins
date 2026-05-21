@@ -406,6 +406,13 @@ class DagExecutor:
                     stats = {"casts": cfg.get("casts", {})}
                 elif node.type == NodeType.FLATTEN:
                     stats = {"path": cfg.get("path", ""), "expanded_to": len(records_out)}
+                elif node.type == NodeType.UNPIVOT:
+                    stats = {
+                        "value_fields": cfg.get("valueFields") or cfg.get("value_fields", ""),
+                        "key_field": cfg.get("keyField") or cfg.get("key_field", "key"),
+                        "value_field": cfg.get("valueField") or cfg.get("value_field", "value"),
+                        "rows_in": len(records_in), "rows_out": len(records_out),
+                    }
                 elif node.type == NodeType.PIVOT:
                     stats = {"group_by": cfg.get("groupBy") or cfg.get("group_by", ""),
                              "key_field": cfg.get("keyField") or cfg.get("key_field", ""),
@@ -612,6 +619,8 @@ async def _execute_node(
         return _cast(node, records_in)
     if node.type == NodeType.FLATTEN:
         return _flatten(node, records_in)
+    if node.type == NodeType.UNPIVOT:
+        return _unpivot(node, records_in)
     if node.type == NodeType.PIVOT:
         return _pivot(node, records_in)
     if node.type == NodeType.VALIDATE:
@@ -2127,6 +2136,72 @@ def _flatten(node, records_in: list[dict]) -> list[dict]:
                 result.append(base)
         else:
             result.append(rec)
+    return result
+
+
+def _unpivot(node, records_in: list[dict]) -> list[dict]:
+    """UNPIVOT — wide → long: turn N columns into N rows.
+
+    For each input row, emit one output row per `valueFields` entry. Each
+    output row carries forward all other fields unchanged; the source column
+    name lands in `keyField` and its value in `valueField`. The inverse of
+    PIVOT — useful for turning columns like nota1/nota2/nota3 into long
+    format so a single chart can plot them as a series.
+
+    Config fields:
+      valueFields  — required; column names to unpivot, comma/newline-separated
+      keyField     — output column name holding the source column name (default "key")
+      valueField   — output column name holding the value (default "value")
+      keyLabels    — optional JSON dict like {"nota1": "1"} to rename keys in output
+      dropNulls    — skip emitting a row when the source value is None (default true)
+      dropZeros    — skip emitting a row when the source value is 0 (default false) —
+                      handy for in-progress scores stored as 0
+    """
+    import json as _json
+
+    cfg = node.config or {}
+
+    fields_raw = cfg.get("valueFields") or cfg.get("value_fields") or ""
+    if isinstance(fields_raw, list):
+        value_fields = [str(f).strip() for f in fields_raw if str(f).strip()]
+    else:
+        value_fields = [f.strip() for f in str(fields_raw).replace("\n", ",").split(",") if f.strip()]
+    if not value_fields:
+        return records_in
+
+    key_field = cfg.get("keyField") or cfg.get("key_field") or "key"
+    value_field = cfg.get("valueField") or cfg.get("value_field") or "value"
+
+    labels_raw = cfg.get("keyLabels") or cfg.get("key_labels") or {}
+    if isinstance(labels_raw, str):
+        try:
+            labels_raw = _json.loads(labels_raw)
+        except Exception:
+            labels_raw = {}
+    if not isinstance(labels_raw, dict):
+        labels_raw = {}
+
+    drop_nulls_raw = cfg.get("dropNulls")
+    if drop_nulls_raw is None:
+        drop_nulls_raw = cfg.get("drop_nulls")
+    drop_nulls = True if drop_nulls_raw is None else bool(drop_nulls_raw)
+    drop_zeros = bool(cfg.get("dropZeros") or cfg.get("drop_zeros") or False)
+
+    result: list[dict] = []
+    for rec in records_in:
+        if not isinstance(rec, dict):
+            continue
+        base = {k: v for k, v in rec.items() if k not in value_fields}
+        for src in value_fields:
+            val = rec.get(src)
+            if val is None and drop_nulls:
+                continue
+            if drop_zeros and val in (0, 0.0):
+                continue
+            new_row = dict(base)
+            new_row[key_field] = labels_raw.get(src, src)
+            new_row[value_field] = val
+            result.append(new_row)
     return result
 
 

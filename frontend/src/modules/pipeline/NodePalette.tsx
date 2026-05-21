@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   Plug, Filter, ArrowRightLeft, Repeat, Sparkles,
-  Layers, Copy, ShieldCheck, Database, Activity, Bot, Brain, Boxes
+  Layers, Copy, ShieldCheck, Database, Activity, Bot, Brain, Boxes, Rows3
 } from 'lucide-react';
 import { NODE_TYPE_DEFS } from './pipelineTypes';
 import { nodeColors } from '../../design-system/tokens';
@@ -20,6 +20,7 @@ const ICONS: Record<string, React.ReactNode> = {
   Bot: <Bot size={14} />,
   Brain: <Brain size={14} />,
   Boxes: <Boxes size={14} />,
+  Rows3: <Rows3 size={14} />,
 };
 
 export const NodePalette: React.FC = () => {

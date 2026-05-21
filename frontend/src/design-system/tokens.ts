@@ -97,6 +97,7 @@ export const nodeColors: Record<string, string> = {
   CAST: '#059669',
   ENRICH: '#D97706',
   FLATTEN: '#DC2626',
+  UNPIVOT: '#BE185D',
   DEDUPE: '#64748B',
   VALIDATE: '#0D9488',
   SINK_OBJECT: '#1A3C6E',

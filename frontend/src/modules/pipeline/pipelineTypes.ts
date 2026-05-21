@@ -113,6 +113,21 @@ export const NODE_TYPE_DEFS: NodeTypeDefinition[] = [
     ],
   },
   {
+    type: 'UNPIVOT',
+    label: 'Unpivot',
+    description: 'Wide → long: explode N columns into N rows. One input row becomes one row per listed column, carrying all other fields forward. The source column name lands in Key Field and its value in Value Field. Inverse of PIVOT.',
+    color: '#BE185D',
+    iconName: 'Rows3',
+    configFields: [
+      { key: 'valueFields', label: 'Value Fields (columns to unpivot)', type: 'textarea', placeholder: 'nota1\nnota2\nnota3', required: true },
+      { key: 'keyField', label: 'Key Field (name for the column-name output)', type: 'text', default: 'key', placeholder: 'parcial' },
+      { key: 'valueField', label: 'Value Field (name for the value output)', type: 'text', default: 'value', placeholder: 'score' },
+      { key: 'keyLabels', label: 'Key Labels (optional JSON, e.g. {"nota1":"1"})', type: 'code', placeholder: '{\n  "nota1": "1",\n  "nota2": "2",\n  "nota3": "3"\n}' },
+      { key: 'dropNulls', label: 'Drop rows where source value is null', type: 'boolean', default: true },
+      { key: 'dropZeros', label: 'Drop rows where source value is 0', type: 'boolean', default: false },
+    ],
+  },
+  {
     type: 'PIVOT',
     label: 'Pivot',
     description: 'Collapse long-format rows into wide format. e.g. one row per (sensor_name, time) with each metric as its own column.',
