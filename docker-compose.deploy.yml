@@ -85,5 +85,7 @@ services:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-finance-service:${IMAGE_TAG:-latest}
   apps-service:
     image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-apps-service:${IMAGE_TAG:-latest}
+  pdf-extractor-service:
+    image: ghcr.io/${IMAGE_NAMESPACE:-maic-s-a-de-c-v}/nexus-pdf-extractor-service:${IMAGE_TAG:-latest}
   # postgres, redis, timescaledb, backup-service already use stock images;
   # nothing to override.

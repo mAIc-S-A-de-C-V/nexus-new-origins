@@ -171,6 +171,9 @@ jobs:
           - service: scraping-service
             context: ./backend
             dockerfile: scraping_service/Dockerfile
+          - service: pdf-extractor-service
+            context: ./backend
+            dockerfile: pdf_extractor_service/Dockerfile
           - service: project-management-service
             context: ./nexus-apps/project-management-service
             dockerfile: Dockerfile
